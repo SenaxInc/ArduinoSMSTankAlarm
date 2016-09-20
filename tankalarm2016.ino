@@ -32,19 +32,17 @@ else
 delay(1000);
 }
 }
-sendSMS();
-}
+       }
 
-void sendSMS(){
+
 sms.beginSMS(remoteNumber);
 sms.print(txtMsg);
 sms.endSMS();
-gsm.shutdown();
-std.begin(WAKE_RTC_ALARM);
-std.standby(1);
+gsmAccess.shutdown();
 
-}
+// would like to include something here to make arduino sleep for an hour
+
        }
    }
-}
+
 
