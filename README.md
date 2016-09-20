@@ -12,7 +12,7 @@ Arduino will check sensor data on a schedualed basis. If sensor data is over a s
 		
 			Connect to Network
 			
-			Text #1 - Data Logger
+				Text #1 - Data Logger
 			
 				Text #2 - Emergency contact
 				
