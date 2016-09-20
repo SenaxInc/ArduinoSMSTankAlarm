@@ -5,36 +5,38 @@ Arduino will check sensor data on a schedualed basis. If sensor data is over a s
 
 # General Logic
 
-Read sensor
-
-	If over X
 	
-		Connect to Network
+	Read sensor
 		
-		Text #1 - Data Logger
-		
-			Text #2 - Emergency contact
-			
-			Text #3 - Emergency contact
-			
-		Disconnect
-		
-		Sleep 1Hr
-		
-	If under X
-	
-		If time = 5-6AM
+		If over X
 		
 			Connect to Network
 			
 			Text #1 - Data Logger
-		Disconnect
-		
+			
+				Text #2 - Emergency contact
+				
+				Text #3 - Emergency contact
+				
+			Disconnect
+			
 			Sleep 1Hr
 			
-		If time =/= 5-6AM
+		If under X
 		
-			Sleep 1Hr
+			If time = 5-6AM
+			
+				Connect to Network
+				
+				Text #1 - Data Logger
+				
+			Disconnect
+			
+				Sleep 1Hr
+				
+			If time =/= 5-6AM
+			
+				Sleep 1Hr
 
 # Links
 
