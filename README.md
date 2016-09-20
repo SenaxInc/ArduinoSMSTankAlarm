@@ -38,6 +38,10 @@ Arduino will check sensor data on a schedualed basis. If sensor data is over a s
 			
 				Sleep 1Hr
 
+# Bill of Materials
+
+http://www.arduino.org/products/shields/arduino-gsm-shield-2
+
 # Links
 
 http://www.arduino.org/learning/getting-started/getting-started-with-arduino-gsm-shield-2
