@@ -21,3 +21,34 @@ Read sensor
 			Sleep 1Hr
 		If time =/= 5-6AM
 			Sleep 1Hr
+
+# Links
+
+http://www.arduino.org/learning/getting-started/getting-started-with-arduino-gsm-shield-2
+
+http://www.arduino.org/learning/tutorials/ide-examples
+
+https://github.com/arduino-org/Arduino/tree/master/hardware/arduino/avr/libraries/GSM
+
+http://www.arduino.org/learning/tutorials/advanced-guides/how-to-use-the-arduino-gsm-shield-with-arduino-leonardo-arduino-yun-and-arduino-mega
+
+http://www.arduino.org/learning/reference/GSM
+
+http://www.arduino.org/learning/tutorials/boards-tutorials/play-with-force-sensor-example
+
+http://www.arduino.org/learning/tutorials/boards-tutorials/gsm-shield-2-voice-call-example
+
+http://www.arduino.org/learning/reference/gsm-constructor
+
+http://www.arduino.org/learning/reference/std-standby
+
+http://www.arduino.org/learning/reference/begin-mode
+
+http://playground.arduino.cc/Learning/arduinoSleepCode
+
+https://www.arduino.cc/en/Tutorial/Files
+
+https://www.arduino.cc/en/Hacking/BuildProcess
+
+https://www.arduino.cc/en/Guide/Environment
+
