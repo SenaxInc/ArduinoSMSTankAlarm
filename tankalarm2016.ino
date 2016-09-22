@@ -27,7 +27,7 @@ void loop() {
        // read a sensor
        int readvalue = analogRead(A0);
        // if the sensor is over height 
-       if (analogRead(A0) > threshold) {{
+       if (readvalue > threshold) {{
       // send SMS
       // Start GSM SHIELD
       // If your SIM has PIN, pass it as a parameter of begin() in quotes
