@@ -18,17 +18,16 @@ char txtMsg[200]="High Tank Alarm - Testing 1 2 3";
 boolean notConnected = true;
 
 // this is the threshold used for reading -- JWW sensor trigger
-const int threshold = 10;
+const int threshold = 500;
 
 void setup() {
 }
 
 void loop() {
-  for (int sensorNumber = 0; sensorNumber < 3; sensorNumber++) {
-    // read a sensor
-    int readvalue = analogRead(sensorNumber);
-    // if the sensor is pressed hard enough:
-    if (readvalue > threshold) {
+       // read a sensor
+       int readvalue = analogRead(A0);
+       // if the sensor is over height 
+       if (analogRead(A0) > threshold) {{
       // send SMS
       // Start GSM SHIELD
       // If your SIM has PIN, pass it as a parameter of begin() in quotes
@@ -46,5 +45,7 @@ void loop() {
   sms.endSMS();
   gsmAccess.shutdown();
   // would like to include something here to make arduino sleep for an hour
+            delay(3600000);
+
  }
 }
