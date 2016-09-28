@@ -41,7 +41,7 @@ void loop() {
       }
     }
   sms.beginSMS(remoteNumber);
-  sms.print(txtMsg);
+  sms.print(readvalue);
   sms.endSMS();
   gsmAccess.shutdown();
   // would like to include something here to make arduino sleep for an hour
