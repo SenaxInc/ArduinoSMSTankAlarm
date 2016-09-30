@@ -1,4 +1,5 @@
-// import the GSM library
+// import the GSM and rtos library
+#include <Arduino_FreeRTOS.h>
 #include <GSM.h>
 
 // PIN Number
