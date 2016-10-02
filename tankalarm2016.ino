@@ -22,6 +22,12 @@ boolean notConnected = true;
 const int threshold = 500;
 
 void setup() {
+  int readvalue = analogRead(A0);
+  sms.beginSMS(remoteNumber);
+  sms.print("Power On",readvalue);
+  sms.endSMS();
+  gsmAccess.shutdown();
+       //sleep?
 }
 
 void loop() {
