@@ -1,5 +1,4 @@
 // import the GSM and rtos library
-#include <Arduino_FreeRTOS.h>
 #include <GSM.h>
 
 // PIN Number
@@ -27,7 +26,7 @@ void setup() {
   sms.print("Power On",readvalue);
   sms.endSMS();
   gsmAccess.shutdown();
-       //sleep?
+
 }
 
 void loop() {
