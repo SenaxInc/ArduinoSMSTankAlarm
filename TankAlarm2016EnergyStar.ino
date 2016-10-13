@@ -27,12 +27,14 @@ boolean notConnected = true;
 const int threshold = 500;
 
 void setup() {
+  
   int readvalue = analogRead(A0);
   sms.beginSMS(remoteNumber);
   sms.print("Power On",readvalue);
   sms.endSMS();
   gsmAccess.shutdown();
-       //sleep?
+       //sleep
+  watchdogSTART();
 }
 
 void loop() {
@@ -60,4 +62,13 @@ void loop() {
             delay(3600000);
 
  }
+}
+
+
+void watchdogSTART() {
+  MCUSR = MCUSR & B11110111;
+  WDTCSR = WDTCSR | B00011000; 
+  WDTCSR = B00100001;
+  WDTCSR = WDTCSR | B01000000;
+  MCUSR = MCUSR & B11110111;
 }
