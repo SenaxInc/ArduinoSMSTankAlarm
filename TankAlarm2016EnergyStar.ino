@@ -9,6 +9,11 @@
 GSM gsmAccess;
 GSM_SMS sms;
 
+volatile int time_tick = 0;
+
+const int sleep_hours = 1;
+const int ticks_per_sleep = (sleep_hours*60*60)/8;
+
 // char array of the telephone number to send SMS
 char remoteNumber[20]= "1918XXXXXXX";
 
