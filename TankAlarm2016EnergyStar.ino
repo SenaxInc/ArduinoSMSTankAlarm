@@ -27,14 +27,26 @@ boolean notConnected = true;
 const int threshold = 500;
 
 void setup() {
+  //always off power saving settings
+  power_spi_disable(); //SPI off
+  SPCR = 0; //disable SPI
+  power_twi_disable(); //TWI off
   
+  //power on first contact
   int readvalue = analogRead(A0);
   sms.beginSMS(remoteNumber);
   sms.print("Power On",readvalue);
   sms.endSMS();
   gsmAccess.shutdown();
-       //sleep
-  watchdogSTART();
+
+  watchdogSTART();  //define watchdog settings
+  
+  //sleep
+    //sleepy time power saving settings
+        //ADC off
+    power_adc_disable(); //disable the clock to the ADC module
+    ADCSRA &= ~(1<<ADEN);  //adc hex code set to off
+  
 }
 
 void loop() {
