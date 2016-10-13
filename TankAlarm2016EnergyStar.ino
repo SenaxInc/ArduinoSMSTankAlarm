@@ -1,6 +1,6 @@
 // import the GSM and rtos library
-#include <Arduino_FreeRTOS.h>
 #include <GSM.h>
+#include <avr/sleep.h>
 
 // PIN Number
 #define PINNUMBER ""
