@@ -10,7 +10,8 @@
 GSM gsmAccess;
 GSM_SMS sms;
 
-volatile int time_tick = 0;
+volatile int time_tick_hours = 0;
+volatile int time_tick_daily = 0;
 
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
@@ -58,7 +59,7 @@ void loop() {
   
 //wake from sleep interput here//
   
-    if (time_tick > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
+    if (time_tick_hours > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
               
         noInterrupts (); // turn off interupts durring sesnsor read and transmission
 //prepare to read sensor
@@ -90,14 +91,16 @@ void loop() {
         sms.print(readvalue);
         sms.endSMS();
         gsmAccess.shutdown(); //turn off GSM once text sent
+//rest ticks                                    
+        time_tick_hours=0;
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
         ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
         interrupts (); //turn interupts back on
 //check for daily trigger - gotta move this to the correct part of an if statement                                    
-        if (time_tick > ticks_per_day) {   //if number of ticks has reached 24 hours worth send text no matter what
+        if (time_tick_daily > ticks_per_day) {   //if number of ticks has reached 24 hours worth send text no matter what
 //prepare to send text
-        time_tick = 0;  //daily tick reset
+        time_tick_daily = 0;  //daily tick reset
         }
     }
     }
@@ -123,5 +126,6 @@ void watchdogSET()
 
 ISR(WDT_vect)
 {
-    time_tick ++; //for each Watchdog Interupt, adds 1 to the number of 8 second ticks counted so far
+    time_tick_hours ++; //for each Watchdog Interupt, adds 1 to the number of 8 second ticks counted so far
+    time_tick_daily ++; //seperate tick total for each day
 }
