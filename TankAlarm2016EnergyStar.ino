@@ -46,8 +46,8 @@ void setup() {
     //sleepy time power saving settings
         //ADC off
     power_adc_disable(); //disable the clock to the ADC module
-    ADCSRA &= ~(1<<ADEN);  //adc hex code set to off
-  
+    ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
+                          //can USART be turned off here?
 }
 
 void loop() {
@@ -56,12 +56,18 @@ void loop() {
   
   noInterrupts (); // turn off interupts durring sesnsor read and transmission
   
+   
+    //prepare to read sensor
+        ADCSRA |= (1<<ADEN); //ADC hex code set to on
+        power_adc_disable(); //enable ADC module
+
        // read a sensor
        int readvalue = analogRead(A0);
        // if the sensor is over height 
        if (readvalue > threshold) {{
-      // send SMS
-      // Start GSM SHIELD
+      // prepare to send SMS
+               //turn on USART to be ready for GSM
+               // Start GSM SHIELD
       // If your SIM has PIN, pass it as a parameter of begin() in quotes
       while(notConnected) {
         if(gsmAccess.begin(PINNUMBER)==GSM_READY)
@@ -98,11 +104,11 @@ sleep_disable();
 }
 
 void watchdogSET() {
-  MCUSR = MCUSR & B11110111;
+  MCUSR = MCUSR & B11110111;  //reset watchdog
   WDTCSR = WDTCSR | B00011000; 
   WDTCSR = B00100001;
-  WDTCSR = WDTCSR | B01000000;
-  MCUSR = MCUSR & B11110111;
+  WDTCSR = WDTCSR | B01000000;  //put watchdog in interupt mode (interupt will happen every 8 seconds)
+  MCUSR = MCUSR & B11110111;  //reset watchdog
 }
 
 ISR(WDT_vect)
