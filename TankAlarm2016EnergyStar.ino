@@ -45,91 +45,83 @@ void setup() {
 
   watchdogSET();  //define watchdog settings
   
-  //sleep
-    //sleepy time power saving settings
-        //ADC off
+
+//prepare for sleep - turn off some settings
     power_adc_disable(); //disable the clock to the ADC module
     ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
                          //can USART be turned off here?
 }
 
 void loop() {
-  tickSleep();    
-  if (time_tick > ticks_per_sleep) {
   
-  noInterrupts (); // turn off interupts durring sesnsor read and transmission
+    tickSleep();  //puts arduino to sleep for about 8 seconds
   
-   
-    //prepare to read sensor
+//wake from sleep interput here//
+  
+    if (time_tick > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
+              
+        noInterrupts (); // turn off interupts durring sesnsor read and transmission
+//prepare to read sensor
         ADCSRA |= (1<<ADEN); //ADC hex code set to on
-        power_adc_disable(); //enable ADC module
-    
+        power_adc_disable(); //enable ADC module    
 //power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
-digitalWrite(5, HIGH);  //pin five powers 5V to sensor
-pinMode(5, OUTPUT);
-    delay(6000); //wait for sensor signal to normalize
-       // read a sensor from analog pin 0
-       int readvalue = analogRead(A0);
-
-    // turn off sensor
-digitalWrite(5, LOW);
-
-           // if the sensor is over height 
-       if (readvalue > threshold) {{
-      // prepare to send SMS
-               //turn on USART to be ready for GSM
-              delay(6000);    //delay to normalize
-               // Start GSM SHIELD
-      // If your SIM has PIN, pass it as a parameter of begin() in quotes
-      while(notConnected) {
-        if(gsmAccess.begin(PINNUMBER)==GSM_READY)
-          notConnected = false;
-        else
-        {
-          delay(1000);
+        digitalWrite(5, HIGH);  //pin five powers 5V to sensor
+        pinMode(5, OUTPUT);
+        delay(6000); //wait for sensor signal to normalize    
+        int readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
+        delay(2000);
+        int readvalue = analogRead(A0);  // read a sensor from analog pin 0
+        digitalWrite(5, LOW); // turn off sensor
+    
+        if (readvalue > threshold) {{ // if the sensor is over height
+// prepare to send SMS
+            //turn on USART to be ready for GSM
+            delay(6000);    //delay to normalize
+// Start GSM SHIELD
+            while(notConnected) {  //when not connected check for connection
+                if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
+                   notConnected = false;   //when connected, move on 
+                else {
+                      delay(1000); //if not connected, wait another second to check again
+                }
+            }
         }
-      }
-    }
-  sms.beginSMS(remoteNumber);
-  sms.print(readvalue);
-  sms.endSMS();
-  gsmAccess.shutdown();
-  // would like to include something here to make arduino sleep for an hour
-                                   //Turn off ADC
+        sms.beginSMS(remoteNumber);
+        sms.print(readvalue);
+        sms.endSMS();
+        gsmAccess.shutdown(); //turn off GSM once text sent
+//prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
-    ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
-                                   //Turn off USART
-interrupts (); //turn interupts back on
-                               
-                                   
-   if (time_tick > ticks_per_day) {   //daily text tigger
-
-     
-     time_tick = 0;  //daily tick reset
- }
-}
-  }
+        ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
+        interrupts (); //turn interupts back on
+//check for daily trigger - gotta move this to the correct part of an if statement                                    
+        if (time_tick > ticks_per_day) {   //if number of ticks has reached 24 hours worth send text no matter what
+//prepare to send text
+        time_tick = 0;  //daily tick reset
+        }
+    }
+    }
 }
     
 void tickSleep()   
 {
-set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
-sleep_enable();
-sleep_mode();
+    set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
+    sleep_enable();
+    sleep_mode();
 //after about 8 seconds the Watchdog Interupt will progress the code to the disable sleep command
-sleep_disable();             
+    sleep_disable();             
 }
 
 void watchdogSET()
 {
-  MCUSR = MCUSR & B11110111;  //reset watchdog
-  WDTCSR = WDTCSR | B00011000; 
-  WDTCSR = B00100001;
-  WDTCSR = WDTCSR | B01000000;  //put watchdog in interupt mode (interupt will happen every 8 seconds)
-  MCUSR = MCUSR & B11110111;  //reset watchdog
+    MCUSR = MCUSR & B11110111;  //reset watchdog
+    WDTCSR = WDTCSR | B00011000; 
+    WDTCSR = B00100001;
+    WDTCSR = WDTCSR | B01000000;  //put watchdog in interupt mode (interupt will happen every 8 seconds)
+    MCUSR = MCUSR & B11110111;  //reset watchdog
 }
 
 ISR(WDT_vect)
 {
-time_tick ++; //for each Watchdog Interupt, adds 1 to the number of 8 second ticks counted so far
+    time_tick ++; //for each Watchdog Interupt, adds 1 to the number of 8 second ticks counted so far
 }
