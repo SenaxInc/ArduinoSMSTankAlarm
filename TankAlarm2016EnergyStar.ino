@@ -13,6 +13,7 @@ volatile int time_tick = 0;
 
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
+const int ticks_per_day = 10800;
 
 // char array of the telephone number to send SMS
 char remoteNumber[20]= "1918XXXXXXX";
@@ -39,7 +40,7 @@ void setup() {
   sms.endSMS();
   gsmAccess.shutdown();
 
-  watchdogSTART();  //define watchdog settings
+  watchdogSET();  //define watchdog settings
   
   //sleep
     //sleepy time power saving settings
@@ -50,6 +51,10 @@ void setup() {
 }
 
 void loop() {
+  if (time_tick > ticks_per_sleep) {
+  
+  
+  
        // read a sensor
        int readvalue = analogRead(A0);
        // if the sensor is over height 
@@ -71,16 +76,35 @@ void loop() {
   sms.endSMS();
   gsmAccess.shutdown();
   // would like to include something here to make arduino sleep for an hour
-            delay(3600000);
 
+                                   
+                                   
+   if (time_tick > ticks_per_day) {   //daily text tigger
+
+     
+     time_tick = 0;  //daily tick reset
  }
 }
 
+    
+void tickSleep()   
+{
+set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
+sleep_enable();
+sleep_mode();
+//after about 8 seconds the Watchdog Interupt will progress the code to the disable sleep command
+sleep_disable();             
+}
 
-void watchdogSTART() {
+void watchdogSET() {
   MCUSR = MCUSR & B11110111;
   WDTCSR = WDTCSR | B00011000; 
   WDTCSR = B00100001;
   WDTCSR = WDTCSR | B01000000;
   MCUSR = MCUSR & B11110111;
+}
+
+ISR(WDT_vect)
+{
+time_tick ++; //for each Watchdog Interupt, adds 1 to the number of 8 second ticks counted so far
 }
