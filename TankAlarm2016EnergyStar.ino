@@ -47,7 +47,7 @@ void setup() {
         //ADC off
     power_adc_disable(); //disable the clock to the ADC module
     ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
-                          //can USART be turned off here?
+              ???            //can USART be turned off here?
 }
 
 void loop() {
@@ -60,13 +60,22 @@ void loop() {
     //prepare to read sensor
         ADCSRA |= (1<<ADEN); //ADC hex code set to on
         power_adc_disable(); //enable ADC module
-
-       // read a sensor
+    
+//power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
+digitalWrite(5, HIGH);  //pin five powers 5V to sensor
+pinMode(5, OUTPUT);
+    delay(6000); //wait for sensor signal to normalize
+       // read a sensor from analog pin 0
        int readvalue = analogRead(A0);
-       // if the sensor is over height 
+
+    // turn off sensor
+digitalWrite(5, LOW);
+
+           // if the sensor is over height 
        if (readvalue > threshold) {{
       // prepare to send SMS
-               //turn on USART to be ready for GSM
+             ???  //turn on USART to be ready for GSM
+              delay(6000);    //delay to normalize
                // Start GSM SHIELD
       // If your SIM has PIN, pass it as a parameter of begin() in quotes
       while(notConnected) {
@@ -83,6 +92,10 @@ void loop() {
   sms.endSMS();
   gsmAccess.shutdown();
   // would like to include something here to make arduino sleep for an hour
+                                   //Turn off ADC
+        power_adc_disable(); //disable the clock to the ADC module
+    ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
+                                   //Turn off USART
 Interrupts (); //turn interupts back on
                                
                                    
