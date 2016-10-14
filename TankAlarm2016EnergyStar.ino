@@ -1,6 +1,7 @@
 // import the GSM and rtos library
 #include <GSM.h>
 #include <avr/sleep.h>
+#include <avr/power.h>
 
 // PIN Number
 #define PINNUMBER ""
@@ -21,6 +22,8 @@ char remoteNumber[20]= "1918XXXXXXX";
 // char array of the message
 char txtMsg[200]="High Tank Alarm - Testing 1 2 3";
 
+String stringOne = "Power ON. Height = ";
+
 // connection state   -- JWW doesnt know what this does
 boolean notConnected = true;
 
@@ -36,7 +39,7 @@ void setup() {
   //power on first contact
   int readvalue = analogRead(A0);
   sms.beginSMS(remoteNumber);
-  sms.print("Power On",readvalue);
+  sms.print(stringOne.concat(readvalue));
   sms.endSMS();
   gsmAccess.shutdown();
 
@@ -47,7 +50,7 @@ void setup() {
         //ADC off
     power_adc_disable(); //disable the clock to the ADC module
     ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
-              ???            //can USART be turned off here?
+                         //can USART be turned off here?
 }
 
 void loop() {
@@ -74,7 +77,7 @@ digitalWrite(5, LOW);
            // if the sensor is over height 
        if (readvalue > threshold) {{
       // prepare to send SMS
-             ???  //turn on USART to be ready for GSM
+               //turn on USART to be ready for GSM
               delay(6000);    //delay to normalize
                // Start GSM SHIELD
       // If your SIM has PIN, pass it as a parameter of begin() in quotes
@@ -96,7 +99,7 @@ digitalWrite(5, LOW);
         power_adc_disable(); //disable the clock to the ADC module
     ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
                                    //Turn off USART
-Interrupts (); //turn interupts back on
+interrupts (); //turn interupts back on
                                
                                    
    if (time_tick > ticks_per_day) {   //daily text tigger
@@ -105,7 +108,8 @@ Interrupts (); //turn interupts back on
      time_tick = 0;  //daily tick reset
  }
 }
-
+  }
+}
     
 void tickSleep()   
 {
@@ -116,7 +120,8 @@ sleep_mode();
 sleep_disable();             
 }
 
-void watchdogSET() {
+void watchdogSET()
+{
   MCUSR = MCUSR & B11110111;  //reset watchdog
   WDTCSR = WDTCSR | B00011000; 
   WDTCSR = B00100001;
