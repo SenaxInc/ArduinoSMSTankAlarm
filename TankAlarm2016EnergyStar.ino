@@ -51,9 +51,10 @@ void setup() {
 }
 
 void loop() {
+  tickSleep();    
   if (time_tick > ticks_per_sleep) {
   
-  
+  noInterrupts (); // turn off interupts durring sesnsor read and transmission
   
        // read a sensor
        int readvalue = analogRead(A0);
@@ -76,8 +77,8 @@ void loop() {
   sms.endSMS();
   gsmAccess.shutdown();
   // would like to include something here to make arduino sleep for an hour
-
-                                   
+Interrupts (); //turn interupts back on
+                               
                                    
    if (time_tick > ticks_per_day) {   //daily text tigger
 
