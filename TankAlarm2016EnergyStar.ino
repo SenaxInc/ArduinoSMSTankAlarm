@@ -15,7 +15,7 @@ volatile int time_tick_daily = 0;
 
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
-const int ticks_per_day = 10800;
+const int ticks_per_day = 10575;  //23.5 hours of 8 second ticks to account for shifts in ticks total
 
 // char array of the telephone number to send SMS
 char remoteNumber[20]= "1918XXXXXXX";
