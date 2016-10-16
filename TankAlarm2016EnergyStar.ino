@@ -60,23 +60,24 @@ void loop() {
 //wake from sleep interput here//
   
 //check for daily trigger                          
+
         if (time_tick_daily > ticks_per_day && time_tick_hours > ticks_per_sleep) {   //if number of ticks has reached 24 hours worth send text no matter what
 
-        sleepyTEXT();
+            sleepyTEXT();
           
-        time_tick_daily = 0;  //daily tick reset
-        time_tick_hours = 0;  //hourly tick reset
+            time_tick_daily = 0;  //daily tick reset
+            time_tick_hours = 0;  //hourly tick reset
         } //end daily text/check
+
 else{  //if day has not elapsed then check hourly ticks
   
-    if (time_tick_hours > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
+        if (time_tick_hours > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
               
-    sleepyTEXT();
+            sleepyTEXT();
                                     
-    time_tick_hours=0;   //rest ticks
+            time_tick_hours=0;   //rest ticks
                                     
-    } //end hourly text/check
-    }
+        } //end hourly text/check
     }
 }
     
