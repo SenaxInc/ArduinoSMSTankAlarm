@@ -61,18 +61,46 @@ void loop() {
   
 //check for daily trigger                          
         if (time_tick_daily > ticks_per_day && time_tick_hours > ticks_per_sleep) {   //if number of ticks has reached 24 hours worth send text no matter what
-//prepare to send text
-          
-          //send daily text here//
+
+        sleepyTEXT();
           
         time_tick_daily = 0;  //daily tick reset
         time_tick_hours = 0;  //hourly tick reset
-        }
-else{
+        } //end daily text/check
+else{  //if day has not elapsed then check hourly ticks
   
     if (time_tick_hours > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
               
-        noInterrupts (); // turn off interupts durring sesnsor read and transmission
+    sleepyTEXT();
+                                    
+    time_tick_hours=0;   //rest ticks
+                                    
+    } //end hourly text/check
+    }
+    }
+}
+    
+void tickSleep()   
+{
+    set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
+    sleep_enable();
+    sleep_mode();
+//after about 8 seconds the Watchdog Interupt will progress the code to the disable sleep command
+    sleep_disable();             
+}
+
+void watchdogSET()
+{
+    MCUSR = MCUSR & B11110111;  //reset watchdog
+    WDTCSR = WDTCSR | B00011000; 
+    WDTCSR = B00100001;
+    WDTCSR = WDTCSR | B01000000;  //put watchdog in interupt mode (interupt will happen every 8 seconds)
+    MCUSR = MCUSR & B11110111;  //reset watchdog
+}
+
+void sleepyTEXT()
+{
+         noInterrupts (); // turn off interupts durring sesnsor read and transmission
 //prepare to read sensor
         ADCSRA |= (1<<ADEN); //ADC hex code set to on
         power_adc_disable(); //enable ADC module    
@@ -102,33 +130,12 @@ else{
         sms.print(readvalue);
         sms.endSMS();
         gsmAccess.shutdown(); //turn off GSM once text sent
-//rest ticks                                    
-        time_tick_hours=0;
+
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
         ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
         interrupts (); //turn interupts back on
-    }  //end hourly text
-    }
-    }
-}
-    
-void tickSleep()   
-{
-    set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
-    sleep_enable();
-    sleep_mode();
-//after about 8 seconds the Watchdog Interupt will progress the code to the disable sleep command
-    sleep_disable();             
-}
-
-void watchdogSET()
-{
-    MCUSR = MCUSR & B11110111;  //reset watchdog
-    WDTCSR = WDTCSR | B00011000; 
-    WDTCSR = B00100001;
-    WDTCSR = WDTCSR | B01000000;  //put watchdog in interupt mode (interupt will happen every 8 seconds)
-    MCUSR = MCUSR & B11110111;  //reset watchdog
+    }  //end hourly text 
 }
 
 ISR(WDT_vect)
