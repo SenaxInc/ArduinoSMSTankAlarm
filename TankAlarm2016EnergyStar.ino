@@ -59,6 +59,17 @@ void loop() {
   
 //wake from sleep interput here//
   
+//check for daily trigger                          
+        if (time_tick_daily > ticks_per_day && time_tick_hours > ticks_per_sleep) {   //if number of ticks has reached 24 hours worth send text no matter what
+//prepare to send text
+          
+          //send daily text here//
+          
+        time_tick_daily = 0;  //daily tick reset
+        time_tick_hours = 0;  //hourly tick reset
+        }
+else{
+  
     if (time_tick_hours > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
               
         noInterrupts (); // turn off interupts durring sesnsor read and transmission
@@ -97,11 +108,7 @@ void loop() {
         power_adc_disable(); //disable the clock to the ADC module
         ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
         interrupts (); //turn interupts back on
-//check for daily trigger - gotta move this to the correct part of an if statement                                    
-        if (time_tick_daily > ticks_per_day) {   //if number of ticks has reached 24 hours worth send text no matter what
-//prepare to send text
-        time_tick_daily = 0;  //daily tick reset
-        }
+    }  //end hourly text
     }
     }
 }
