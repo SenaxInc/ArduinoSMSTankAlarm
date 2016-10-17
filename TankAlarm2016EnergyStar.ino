@@ -100,11 +100,11 @@ void tickSleep()
 
 void watchdogSET()
 {
-    MCUSR = MCUSR & B11110111;  //reset watchdog
-    WDTCSR = WDTCSR | B00011000; 
-    WDTCSR = B00100001;
-    WDTCSR = WDTCSR | B01000000;  //put watchdog in interupt mode (interupt will happen every 8 seconds)
-    MCUSR = MCUSR & B11110111;  //reset watchdog
+    wdt_reset();   //reset watchdog
+    WDTCSR |= 0b00011000; 
+    WDTCSR = 0b00100001;
+    WDTCSR = WDTCSR | 0b01000000;  //put watchdog in interupt mode (interupt will happen every 8 seconds)
+    wdt_reset();   //reset watchdog
 }
 
 void sleepyTEXT()
@@ -139,7 +139,7 @@ void sleepyTEXT()
         sms.print(readvalue);
         sms.endSMS();
         gsmAccess.shutdown(); //turn off GSM once text sent
-
+        delay(4000);
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
         ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
