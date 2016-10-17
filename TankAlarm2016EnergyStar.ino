@@ -3,6 +3,7 @@
 #include <avr/sleep.h>
 #include <avr/power.h>
 #include <avr/wdt.h>
+#include <avr/interrupt.h>
 
 // PIN Number
 #define PINNUMBER ""
@@ -93,6 +94,7 @@ void tickSleep()
 {
     set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
     sleep_enable();
+    sei();
     sleep_mode();
 //after about 8 seconds the Watchdog Interupt will progress the code to the disable sleep command
     sleep_disable();             
@@ -109,7 +111,7 @@ void watchdogSET()
 
 void sleepyTEXT()
 {
-         noInterrupts (); // turn off interupts durring sesnsor read and transmission
+         // turn off interupts durring sesnsor read and transmission noInterrupts ();
 //prepare to read sensor
         ADCSRA |= (1<<ADEN); //ADC hex code set to on
         power_adc_disable(); //enable ADC module    
@@ -143,7 +145,7 @@ void sleepyTEXT()
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
         ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
-        interrupts (); //turn interupts back on
+        //turn interupts back on interrupts (); 
     }  //end hourly text 
 }
 
