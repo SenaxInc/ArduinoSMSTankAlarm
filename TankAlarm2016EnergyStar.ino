@@ -39,8 +39,14 @@ void setup() {
   SPCR = 0; //disable SPI
   power_twi_disable(); //TWI off
   
+  //power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
+  digitalWrite(5, HIGH);  //pin five powers 5V to sensor
+  pinMode(5, OUTPUT);
+  delay(6000); //wait for sensor signal to normalize    
+  int readvalue = analogRead(A0);  // read a sensor from analog pin 0
+  digitalWrite(5, LOW); // turn off sensor
+  
   //power on first contact
-  int readvalue = analogRead(A0);
   sms.beginSMS(remoteNumber);
   sms.print(stringOne.concat(readvalue));
   sms.endSMS();
