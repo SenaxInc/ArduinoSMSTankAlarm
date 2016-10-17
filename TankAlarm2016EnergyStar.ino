@@ -94,7 +94,7 @@ void tickSleep()
 {
     set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
     sleep_enable();
-    sei();
+    sei();  //enable interrupts
     sleep_mode();
 //after about 8 seconds the Watchdog Interupt will progress the code to the disable sleep command
     sleep_disable();             
