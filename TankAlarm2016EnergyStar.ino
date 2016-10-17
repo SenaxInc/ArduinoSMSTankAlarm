@@ -2,6 +2,7 @@
 #include <GSM.h>
 #include <avr/sleep.h>
 #include <avr/power.h>
+#include <avr/wdt.h>
 
 // PIN Number
 #define PINNUMBER ""
@@ -32,6 +33,7 @@ boolean notConnected = true;
 const int threshold = 500;
 
 void setup() {
+  wdt_disable(); //recomended
   //always off power saving settings
   power_spi_disable(); //SPI off
   SPCR = 0; //disable SPI
