@@ -135,8 +135,16 @@ void sleepyTEXT()
         if (readvalue > threshold) {{ // if the sensor is over height
 // prepare to send SMS
             //turn on USART to be ready for GSM
+          
             delay(6000);    //delay to normalize
-// Start GSM SHIELD
+// Power On GSM SHIELD          
+            digitalWrite(7, HIGH);  //pin seven powers on GSM shield
+            pinMode(7, OUTPUT);
+            delay(500); //wait for power signal to work   
+            digitalWrite(7, LOW); // turn off power signal
+          
+
+// Connect to GSM network
             while(notConnected) {  //when not connected check for connection
                 if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
                    notConnected = false;   //when connected, move on 
@@ -145,6 +153,7 @@ void sleepyTEXT()
                 }
             }
         }
+//Send SMS                                    
         sms.beginSMS(remoteNumber);
         sms.print(readvalue);
         sms.endSMS();
