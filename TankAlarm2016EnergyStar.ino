@@ -48,6 +48,13 @@ void setup() {
   digitalWrite(5, LOW); // turn off sensor
   
   //power on first contact
+              while(notConnected) {  //when not connected check for connection
+                if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
+                   notConnected = false;   //when connected, move on 
+                else {
+                      delay(1000); //if not connected, wait another second to check again
+                }
+            }
   sms.beginSMS(remoteNumber);
   sms.print(stringOne.concat(readvalue));
   sms.endSMS();
