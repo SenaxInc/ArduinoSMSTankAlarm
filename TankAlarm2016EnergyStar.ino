@@ -56,7 +56,7 @@ void setup() {
                 }
             }
   sms.beginSMS(remoteNumber);
-  sms.print(stringOne.concat(readvalue));
+  sms.print(readvalue);
   sms.endSMS();
   gsmAccess.shutdown();
   notConnected = true;
