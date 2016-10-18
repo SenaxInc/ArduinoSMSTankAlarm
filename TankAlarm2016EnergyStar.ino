@@ -38,9 +38,7 @@ int readfresh;
 void setup() {
   wdt_disable(); //recomended
   //always off power saving settings
-  power_spi_disable(); //SPI off
-  SPCR = 0; //disable SPI
-  power_twi_disable(); //TWI off
+
   
   //power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
   digitalWrite(5, HIGH);  //pin five powers 5V to sensor
