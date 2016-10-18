@@ -59,6 +59,7 @@ void setup() {
   sms.print(stringOne.concat(readvalue));
   sms.endSMS();
   gsmAccess.shutdown();
+  boolean notConnected = true;
 
   watchdogSET();  //define watchdog settings
   
@@ -148,6 +149,7 @@ void sleepyTEXT()
         sms.print(readvalue);
         sms.endSMS();
         gsmAccess.shutdown(); //turn off GSM once text sent
+        boolean notConnected = true;                                    
         delay(4000);
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
