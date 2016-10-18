@@ -32,6 +32,8 @@ boolean notConnected = true;
 
 // this is the threshold used for reading -- JWW sensor trigger
 const int threshold = 500;
+int readvalue;
+int readfresh;
 
 void setup() {
   wdt_disable(); //recomended
@@ -44,7 +46,7 @@ void setup() {
   digitalWrite(5, HIGH);  //pin five powers 5V to sensor
   pinMode(5, OUTPUT);
   delay(6000); //wait for sensor signal to normalize    
-  int readvalue = analogRead(A0);  // read a sensor from analog pin 0
+  readvalue = analogRead(A0);  // read a sensor from analog pin 0
   digitalWrite(5, LOW); // turn off sensor
   
   //power on first contact
@@ -59,7 +61,7 @@ void setup() {
   sms.print(stringOne.concat(readvalue));
   sms.endSMS();
   gsmAccess.shutdown();
-  boolean notConnected = true;
+  notConnected = true;
 
   watchdogSET();  //define watchdog settings
   
@@ -127,9 +129,9 @@ void sleepyTEXT()
         digitalWrite(5, HIGH);  //pin five powers 5V to sensor
         pinMode(5, OUTPUT);
         delay(6000); //wait for sensor signal to normalize    
-        int readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
+        readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
         delay(2000);
-        int readvalue = analogRead(A0);  // read a sensor from analog pin 0
+        readvalue = analogRead(A0);  // read a sensor from analog pin 0
         digitalWrite(5, LOW); // turn off sensor
     
         if (readvalue > threshold) {{ // if the sensor is over height
@@ -158,7 +160,7 @@ void sleepyTEXT()
         sms.print(readvalue);
         sms.endSMS();
         gsmAccess.shutdown(); //turn off GSM once text sent
-        boolean notConnected = true;                                    
+        notConnected = true;                                    
         delay(4000);
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
