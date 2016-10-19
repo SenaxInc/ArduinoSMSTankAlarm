@@ -44,10 +44,17 @@ void setup() {
   digitalWrite(5, HIGH);  //pin five powers 5V to sensor
   pinMode(5, OUTPUT);
   delay(6000); //wait for sensor signal to normalize    
-  readvalue = analogRead(A0);  // read a sensor from analog pin 0
+  readvalue = analogRead(A1);  // read a sensor from analog pin 1
   digitalWrite(5, LOW); // turn off sensor
   
-  //power on first contact
+  
+  // Power On GSM SHIELD          
+            digitalWrite(7, HIGH);  //pin seven powers on GSM shield
+            pinMode(7, OUTPUT);
+            delay(500); //wait for power signal to work   
+            digitalWrite(7, LOW); // turn off power signal
+  
+  //connect to network
               while(notConnected) {  //when not connected check for connection
                 if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
                    notConnected = false;   //when connected, move on 
@@ -127,9 +134,9 @@ void sleepyTEXT()
         digitalWrite(5, HIGH);  //pin five powers 5V to sensor
         pinMode(5, OUTPUT);
         delay(6000); //wait for sensor signal to normalize    
-        readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
+        readfresh = analogRead(A0);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue = analogRead(A0);  // read a sensor from analog pin 0
+        readvalue = analogRead(A1);  // read a sensor from analog pin 0
         digitalWrite(5, LOW); // turn off sensor
     
         if (readvalue > trigger) {{ // if the sensor is over height
