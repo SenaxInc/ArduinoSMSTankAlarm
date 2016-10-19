@@ -122,7 +122,7 @@ void sleepyTEXT()
          // turn off interupts durring sesnsor read and transmission noInterrupts ();
 //prepare to read sensor
         ADCSRA |= (1<<ADEN); //ADC hex code set to on
-        power_adc_disable(); //enable ADC module    
+        power_adc_enable(); //enable ADC module    
 //power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
         digitalWrite(5, HIGH);  //pin five powers 5V to sensor
         pinMode(5, OUTPUT);
