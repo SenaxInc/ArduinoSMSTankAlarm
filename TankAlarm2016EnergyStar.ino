@@ -20,7 +20,7 @@ const int ticks_per_sleep = (sleep_hours*60*60)/8;
 const int ticks_per_day = 10575;  //23.5 hours of 8 second ticks to account for shifts in ticks total
 
 // char array of the telephone number to send SMS
-char remoteNumber[20]= "1918XXXXXXX";
+char remoteNumber[20]= "19186057322";
 
 // char array of the message
 char txtMsg[200]="High Tank Alarm - Testing 1 2 3";
@@ -31,7 +31,7 @@ String stringOne = "Power ON. Height = ";
 boolean notConnected = true;
 
 // this is the threshold used for reading -- JWW sensor trigger
-const int threshold = 500;
+const int trigger = 500;
 int readvalue;
 int readfresh;
 
@@ -80,7 +80,7 @@ void loop() {
 
         if (time_tick_daily > ticks_per_day && time_tick_hours > ticks_per_sleep) {   //if number of ticks has reached 24 hours worth send text no matter what
 
-            sleepyTEXT();
+            dailyTEXT();
           
             time_tick_daily = 0;  //daily tick reset
             time_tick_hours = 0;  //hourly tick reset
@@ -132,7 +132,7 @@ void sleepyTEXT()
         readvalue = analogRead(A0);  // read a sensor from analog pin 0
         digitalWrite(5, LOW); // turn off sensor
     
-        if (readvalue > threshold) {{ // if the sensor is over height
+        if (readvalue > trigger) {{ // if the sensor is over height
 // prepare to send SMS
             //turn on USART to be ready for GSM
           
@@ -165,6 +165,56 @@ void sleepyTEXT()
         ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
         //turn interupts back on interrupts (); 
     }  //end hourly text 
+}
+
+
+void dailyTEXT()
+{
+         // turn off interupts durring sesnsor read and transmission noInterrupts ();
+//prepare to read sensor
+        ADCSRA |= (1<<ADEN); //ADC hex code set to on
+        power_adc_enable(); //enable ADC module    
+//power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
+        digitalWrite(5, HIGH);  //pin five powers 5V to sensor
+        pinMode(5, OUTPUT);
+        delay(6000); //wait for sensor signal to normalize    
+        readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
+        delay(2000);
+        readvalue = analogRead(A0);  // read a sensor from analog pin 0
+        digitalWrite(5, LOW); // turn off sensor
+    
+// prepare to send SMS
+            //turn on USART to be ready for GSM
+          
+            delay(6000);    //delay to normalize
+// Power On GSM SHIELD          
+            digitalWrite(7, HIGH);  //pin seven powers on GSM shield
+            pinMode(7, OUTPUT);
+            delay(500); //wait for power signal to work   
+            digitalWrite(7, LOW); // turn off power signal
+          
+
+// Connect to GSM network
+            while(notConnected) {  //when not connected check for connection
+                if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
+                   notConnected = false;   //when connected, move on 
+                else {
+                      delay(1000); //if not connected, wait another second to check again
+                }
+            }
+        
+//Send SMS                                    
+        sms.beginSMS(remoteNumber);
+        sms.print(readvalue);
+        sms.endSMS();
+        gsmAccess.shutdown(); //turn off GSM once text sent
+        notConnected = true;                                    
+        delay(4000);
+//prepare for sleep
+        power_adc_disable(); //disable the clock to the ADC module
+        ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
+        //turn interupts back on interrupts (); 
+      //end hourly text 
 }
 
 ISR(WDT_vect)
