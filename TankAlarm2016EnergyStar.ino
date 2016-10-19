@@ -67,7 +67,7 @@ void setup() {
 //prepare for sleep - turn off some settings
     power_adc_disable(); //disable the clock to the ADC module
     ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
-                         //can USART be turned off here?
+                         //can USART be turned off here? power_usart_disable()
 }
 
 void loop() {
