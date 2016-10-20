@@ -144,7 +144,7 @@ void sleepyTEXT()
         readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
         delay(2000);
         readvalue = analogRead(A1);  // read a sensor from analog pin #A1
-        delay(1000)
+        delay(1000);
         digitalWrite(5, LOW); // turn off sensor
     
         if (readvalue > trigger) {{ // if the sensor is over height
