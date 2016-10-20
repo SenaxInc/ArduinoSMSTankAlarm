@@ -23,29 +23,36 @@ const int ticks_per_day = 10575;  //23.5 hours of 8 second ticks to account for 
 char remoteNumber[20]= "1918XXXXXXX";
 
 // char array of the message
-char txtMsg[200]="High Tank Alarm - Testing 1 2 3";
+char txtMsg[200]="High Tank Alarm - Testing 1 2 3"; //not using right now
 
-String stringOne = "Power ON. Height = ";
+String stringOne = "Power ON. Height = ";  //not sure why, but string causes output of 1 in text message
 
-// connection state   -- JWW doesnt know what this does
+// set connection state variable
 boolean notConnected = true;
 
-// this is the threshold used for reading -- JWW sensor trigger
+// this is the threshold used for reading
 const int trigger = 500;
 int readvalue;
 int readfresh;
 
 void setup() {
+//start up routine 
   wdt_disable(); //recomended
-  //always off power saving settings
+  sei();  //enable interrupts
+  ADCSRA |= (1<<ADEN); //ADC hex code set to on
+  power_adc_enable(); //enable ADC module    
+//always off power saving settings
 
   
-  //power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
-  digitalWrite(5, HIGH);  //pin five powers 5V to sensor
-  pinMode(5, OUTPUT);
-  delay(6000); //wait for sensor signal to normalize    
-  readvalue = analogRead(A1);  // read a sensor from analog pin 1
-  digitalWrite(5, LOW); // turn off sensor
+//power up and read sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
+        digitalWrite(5, HIGH);  //pin #5 powers 5V to sensor
+        pinMode(5, OUTPUT);
+        delay(10000); //wait for sensor signal to normalize    
+        readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
+        delay(2000);
+        readvalue = analogRead(A1);  // read a sensor from analog pin #A1
+        delay(1000);
+        digitalWrite(5, LOW); // turn off sensor
   
   
   // Power On GSM SHIELD          
@@ -131,12 +138,13 @@ void sleepyTEXT()
         ADCSRA |= (1<<ADEN); //ADC hex code set to on
         power_adc_enable(); //enable ADC module    
 //power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
-        digitalWrite(5, HIGH);  //pin five powers 5V to sensor
+        digitalWrite(5, HIGH);  //pin #5 powers 5V to sensor
         pinMode(5, OUTPUT);
-        delay(6000); //wait for sensor signal to normalize    
-        readfresh = analogRead(A0);  //dummy read to refresh adc after wake up
+        delay(10000); //wait for sensor signal to normalize    
+        readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue = analogRead(A1);  // read a sensor from analog pin 0
+        readvalue = analogRead(A1);  // read a sensor from analog pin #A1
+        delay(1000)
         digitalWrite(5, LOW); // turn off sensor
     
         if (readvalue > trigger) {{ // if the sensor is over height
