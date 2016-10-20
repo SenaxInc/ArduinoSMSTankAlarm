@@ -43,8 +43,9 @@ void setup() {
   //power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
   digitalWrite(5, HIGH);  //pin five powers 5V to sensor
   pinMode(5, OUTPUT);
-  delay(6000); //wait for sensor signal to normalize    
+  delay(10000); //wait for sensor signal to normalize    
   readvalue = analogRead(A1);  // read a sensor from analog pin 1
+  delay(1000); //wait for sensor signal to normalize    
   digitalWrite(5, LOW); // turn off sensor
   
   
@@ -133,10 +134,15 @@ void sleepyTEXT()
 //power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
         digitalWrite(5, HIGH);  //pin five powers 5V to sensor
         pinMode(5, OUTPUT);
-        delay(6000); //wait for sensor signal to normalize    
+        delay(10000); //wait for sensor signal to normalize    
         readfresh = analogRead(A0);  //dummy read to refresh adc after wake up
+        delay(500);
+        readfresh = analogRead(A0);
+        delay(500);
+        readfresh = analogRead(A0);
         delay(2000);
         readvalue = analogRead(A1);  // read a sensor from analog pin 0
+        delay(1000);
         digitalWrite(5, LOW); // turn off sensor
     
         if (readvalue > trigger) {{ // if the sensor is over height
