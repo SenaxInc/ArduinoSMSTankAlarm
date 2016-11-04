@@ -12,8 +12,8 @@
 GSM gsmAccess;
 GSM_SMS sms;
 
-volatile int time_tick_hours = 0;
-volatile int time_tick_daily = 0;
+volatile int time_tick_hours = 1;
+volatile int time_tick_daily = 1;
 
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
@@ -96,8 +96,8 @@ void loop() {
 
             dailyTEXT();
           
-            time_tick_daily = 0;  //daily tick reset
-            time_tick_hours = 0;  //hourly tick reset
+            time_tick_daily = 1;  //daily tick reset
+            time_tick_hours = 1;  //hourly tick reset
         } //end daily text/check
 
 else{  //if day has not elapsed then check hourly ticks
@@ -106,7 +106,7 @@ else{  //if day has not elapsed then check hourly ticks
               
             sleepyTEXT();
                                     
-            time_tick_hours=0;   //rest ticks
+            time_tick_hours = 1;   //rest ticks
                                     
         } //end hourly text/check
     }
