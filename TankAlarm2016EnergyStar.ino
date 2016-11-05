@@ -93,21 +93,22 @@ void loop() {
 //check for daily trigger                          
 
         if (time_tick_daily > ticks_per_day && time_tick_hours > ticks_per_sleep) {   //if number of ticks has reached 24 hours worth send text no matter what
-
+  wdt_disable();
             dailyTEXT();
           
             time_tick_daily = 1;  //daily tick reset
             time_tick_hours = 1;  //hourly tick reset
+  watchdogSET();          
         } //end daily text/check
 
 else{  //if day has not elapsed then check hourly ticks
   
         if (time_tick_hours > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
-              
+  wdt_disable();              
             sleepyTEXT();
                                     
             time_tick_hours = 1;   //rest ticks
-                                    
+  watchdogSET();                                    
         } //end hourly text/check
     }
 }
