@@ -1,3 +1,6 @@
+// Code will serve web html on a continous basis and periodically pause serving to check for recieved sms data
+
+
 
 #include <SPI.h>
 #include <Ethernet.h>
