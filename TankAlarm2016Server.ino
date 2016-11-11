@@ -28,19 +28,29 @@ const int nosignalalarm_hours = 6; //how often to check for sms messages
 const int ticks_nosignalalarm = (sleep_hours*60*60)/8;
 const int ticks_per_day = 10575; //23.5 hours of 8 second ticks to account for shifts in ticks total
 
+int latest_readvalue;
+
 char remoteNumber[20]= "1918XXXXXXX";  //number to call if contact is lost with Sensor
 
 void setup()
 {
+    //start up routine 
+    wdt_disable(); //recomended
+    sei(); //enable interrupts
+    
     Ethernet.begin(mac, ip);  // initialize Ethernet device
     server.begin();           // start to listen for clients
+    
+    watchdogSET();
 }
+
 
 void loop()
 {
     EthernetClient client = server.available();  // try to get client
 
     if (client) {  // got client?
+        wdt_disable();
         boolean currentLineIsBlank = true;
         while (client.connected()) {
             if (client.available()) {   // client data available to read
@@ -93,7 +103,31 @@ void loop()
         } // end while (client.connected())
         delay(1);      // give the web browser time to receive the data
         client.stop(); // close the connection
+        watchdogSET(); 
     } // end if (client)
+    
+      if(ticks_per_check > time_tick_check) {
+        check_sms();
+      }
+    
+}
+
+
+void check_sms()
+{
+            wdt_disable();
+                while(notConnected) {  //when not connected check for connection
+                if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
+                   notConnected = false;   //when connected, move on 
+                else {
+                      delay(1000); //if not connected, wait another second to check again
+                }
+                }
+      if (sms.available()) {
+          latest_readvalue = sms.read()
+      }
+    time_tick_check = 1;
+            watchdogSET(); 
 }
 
 
