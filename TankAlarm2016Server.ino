@@ -23,9 +23,9 @@ volatile int time_tick_nosignalalarm = 1;
 volatile int time_tick_daily = 1;
 
 const int check_hours = 1; //how often to check for sms messages
-const int ticks_per_check = (sleep_hours*60*60)/8;
+const int ticks_per_check = (check_hours*60*60)/8;
 const int nosignalalarm_hours = 6; //how often to check for sms messages
-const int ticks_nosignalalarm = (sleep_hours*60*60)/8;
+const int ticks_nosignalalarm = (nosignalalarm_hours*60*60)/8;
 const int ticks_per_day = 10575; //23.5 hours of 8 second ticks to account for shifts in ticks total
 
 int latest_readvalue_silas_sw;
@@ -33,6 +33,8 @@ const int silas_sw_height = 400;
 const int silas_sw_alarm = 300;
 
 char remoteNumber[20]= "1918XXXXXXX";  //number to call if contact is lost with Sensor
+
+boolean notConnected = true;
 
 void setup()
 {
@@ -79,9 +81,9 @@ void loop()
                     client.println("</center><br><br>MTD: ");
                     client.println("280 BBL");
                     client.println("</td><td><table height=95% cellspacing=0 cellpadding=10 width=95% bgcolor=#FFFFFF border=1 align=center><tr height=99%><td><table cellspacing=0 border=0 height=100% width=100%><tr><td bgcolor=green></td><tr height=");
-                    client.println(lastest_readvalue_silas_sw/silas_sw_height);
+                    client.println(latest_readvalue_silas_sw/silas_sw_height);
                     client.println("%><td bgcolor=blue></td></tr></table></td><td><table border=1 height=100% width=100%><tr><td></td><tr></tr></table></td><td><table border=1 height=100% width=100%><tr><td></td><tr></tr></table></td></tr><tr><td><center>");
-                    client.println(latest_readvalue);
+                    client.println(latest_readvalue_silas_sw);
                     client.println("</center></td><td><center>");
                     client.println("2ft  6in");
                     client.println("</center></td><td><center>");
@@ -126,12 +128,21 @@ void check_sms()
                 }
                 }
       if (sms.available()) {
-          latest_readvalue = sms.read()
+          latest_readvalue_silas_sw = sms.read();
       }
     time_tick_check = 1;
             watchdogSET(); 
 }
 
+
+void watchdogSET()
+{
+    wdt_reset();   //reset watchdog
+    WDTCSR |= 0b00011000; 
+    WDTCSR = 0b00100001;
+    WDTCSR = WDTCSR | 0b01000000;  //put watchdog in interupt mode (interupt will happen every 8 seconds)
+    wdt_reset();   //reset watchdog
+}
 
 ISR(WDT_vect)
 {
