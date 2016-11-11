@@ -1,14 +1,34 @@
 // Code will serve web html on a continous basis and periodically pause serving to check for recieved sms data
 
-
-
 #include <SPI.h>
 #include <Ethernet.h>
+#include <GSM.h>
+#include <avr/wdt.h>
+#include <avr/interrupt.h>
+
+// PIN Number
+#define PINNUMBER ""
+
+// initialize the library instance
+GSM gsmAccess;
+GSM_SMS sms;
 
 // MAC address from Ethernet shield sticker under board
 byte mac[] = { 0xXX, 0xXX, 0xXX, 0xXX, 0xXX, 0xXX };
 IPAddress ip(192, 168, XXX, XXX); // IP address, may need to change depending on network
 EthernetServer server(XXXX);  // us port forwarding on router, 80 is usually blocked by home ISPs
+
+volatile int time_tick_check = 1;
+volatile int time_tick_nosignalalarm = 1;
+volatile int time_tick_daily = 1;
+
+const int check_hours = 1; //how often to check for sms messages
+const int ticks_per_check = (sleep_hours*60*60)/8;
+const int nosignalalarm_hours = 6; //how often to check for sms messages
+const int ticks_nosignalalarm = (sleep_hours*60*60)/8;
+const int ticks_per_day = 10575; //23.5 hours of 8 second ticks to account for shifts in ticks total
+
+char remoteNumber[20]= "1918XXXXXXX";  //number to call if contact is lost with Sensor
 
 void setup()
 {
@@ -74,4 +94,12 @@ void loop()
         delay(1);      // give the web browser time to receive the data
         client.stop(); // close the connection
     } // end if (client)
+}
+
+
+ISR(WDT_vect)
+{
+    time_tick_check ++; //for each Watchdog Interupt, adds 1 to the number of 8 second ticks counted so far
+    time_tick_daily ++; //seperate tick total for each day
+    time_tick_nosignalalarm ++; //seperate tick total for alarm signal loss countdown
 }
