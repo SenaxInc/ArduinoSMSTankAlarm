@@ -110,7 +110,7 @@ void loop()
         watchdogSET(); 
     } // end if (client)
     
-      if(ticks_per_check > time_tick_check) {
+      if(time_tick_check > ticks_per_check) {
         check_sms();
       }
     
