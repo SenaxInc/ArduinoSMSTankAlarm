@@ -125,6 +125,7 @@ void check_sms()
                    notConnected = false;   //when connected, move on 
                 else {
                       delay(1000); //if not connected, wait another second to check again
+ /////////////////////getting stuck here if no sim or unable to connect
                 }
                 }
       if (sms.available()) {
