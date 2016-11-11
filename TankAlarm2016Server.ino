@@ -28,7 +28,9 @@ const int nosignalalarm_hours = 6; //how often to check for sms messages
 const int ticks_nosignalalarm = (sleep_hours*60*60)/8;
 const int ticks_per_day = 10575; //23.5 hours of 8 second ticks to account for shifts in ticks total
 
-int latest_readvalue;
+int latest_readvalue_silas_sw;
+const int silas_sw_height = 400;
+const int silas_sw_alarm = 300;
 
 char remoteNumber[20]= "1918XXXXXXX";  //number to call if contact is lost with Sensor
 
@@ -77,9 +79,9 @@ void loop()
                     client.println("</center><br><br>MTD: ");
                     client.println("280 BBL");
                     client.println("</td><td><table height=95% cellspacing=0 cellpadding=10 width=95% bgcolor=#FFFFFF border=1 align=center><tr height=99%><td><table cellspacing=0 border=0 height=100% width=100%><tr><td bgcolor=green></td><tr height=");
-                    client.println("30");
+                    client.println(lastest_readvalue_silas_sw/silas_sw_height);
                     client.println("%><td bgcolor=blue></td></tr></table></td><td><table border=1 height=100% width=100%><tr><td></td><tr></tr></table></td><td><table border=1 height=100% width=100%><tr><td></td><tr></tr></table></td></tr><tr><td><center>");
-                    client.println("4ft  6in");
+                    client.println(latest_readvalue);
                     client.println("</center></td><td><center>");
                     client.println("2ft  6in");
                     client.println("</center></td><td><center>");
