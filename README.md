@@ -73,3 +73,11 @@ https://www.arduino.cc/en/Hacking/BuildProcess
 https://www.arduino.cc/en/Guide/Environment
 
 https://create.arduino.cc/projecthub/feilipu/battery-powered-arduino-applications-through-freertos-3b7401
+
+https://www.arduino.cc/en/Reference/GSMSMSRead
+
+https://www.arduino.cc/en/Reference/Char
+
+https://www.arduino.cc/en/Reference/Array
+
+https://www.arduino.cc/en/Tutorial/GSMExamplesReceiveSMS
