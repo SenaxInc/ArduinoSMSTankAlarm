@@ -21,6 +21,7 @@ EthernetServer server(XXXX);  // us port forwarding on router, 80 is usually blo
 volatile int time_tick_check = 1;
 volatile int time_tick_nosignalalarm = 1;
 volatile int time_tick_daily = 1;
+volatile int timeout = 1;
 
 const int check_hours = 1; //how often to check for sms messages
 const int ticks_per_check = (check_hours*60*60)/8;
@@ -29,7 +30,7 @@ const int ticks_nosignalalarm = (nosignalalarm_hours*60*60)/8;
 const int ticks_per_day = 10575; //23.5 hours of 8 second ticks to account for shifts in ticks total
 
 int latest_readvalue_silas_sw;
-char latest_readvalue_silas_sw[];
+char string_latest_readvalue_silas_sw[];
 const int silas_sw_height = 400;
 const int silas_sw_alarm = 300;
 
@@ -121,18 +122,36 @@ void loop()
 void check_sms()
 {
             wdt_disable();
+    
+      // Power On GSM SHIELD          
+            digitalWrite(7, HIGH);  //pin seven powers on GSM shield
+            pinMode(7, OUTPUT);
+            delay(500); //wait for power signal to work   
+            digitalWrite(7, LOW); // turn off power signal
+    
                 while(notConnected) {  //when not connected check for connection
                 if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
                    notConnected = false;   //when connected, move on 
-                else {
+                else if (timeout > 20)
+                {
+                 notConnected = false;   
+                }    
+                else
+                {
                       delay(1000); //if not connected, wait another second to check again
+                    timeout ++;
  /////////////////////getting stuck here if no sim or unable to connect
                 }
                 }
+    delay(10000);
       if (sms.available()) {
-          latest_readvalue_silas_sw = sms.read();
+          string_latest_readvalue_silas_sw[] = sms.read();
+          latest_readvalue_silas_sw = string_latest_readvalue_silas_sw.toInt()
+          string_latest_readvalue_silas_sw[] = "";
       }
     time_tick_check = 1;
+            gsmAccess.shutdown(); //turn off GSM once text sent
+notConnected = true; 
             watchdogSET(); 
 }
 
