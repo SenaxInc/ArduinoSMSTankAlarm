@@ -29,6 +29,7 @@ const int ticks_nosignalalarm = (nosignalalarm_hours*60*60)/8;
 const int ticks_per_day = 10575; //23.5 hours of 8 second ticks to account for shifts in ticks total
 
 int latest_readvalue_silas_sw;
+char latest_readvalue_silas_sw[];
 const int silas_sw_height = 400;
 const int silas_sw_alarm = 300;
 
