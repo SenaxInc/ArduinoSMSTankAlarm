@@ -91,6 +91,9 @@ void loop()
                     client.println("</center></td><td><center>");
                     client.println("1ft  6in");
                     client.println("</center></td></tr></table></td></tr></table>");
+                    client.println("<br><br><br>timeout = ");
+                    client.println(timeout);
+                    client.println("<br><br><br>");
                     client.println("</body>");
                     client.println("</html>");
                     break;
@@ -132,6 +135,7 @@ void check_sms()
                 while(notConnected) {  //when not connected check for connection
                 if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
                    notConnected = false;   //when connected, move on 
+                   timeout = 0;
                 else if (timeout > 20)
                 {
                  notConnected = false;   
