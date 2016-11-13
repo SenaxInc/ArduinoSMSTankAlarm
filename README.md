@@ -81,3 +81,6 @@ https://www.arduino.cc/en/Reference/Char
 https://www.arduino.cc/en/Reference/Array
 
 https://www.arduino.cc/en/Tutorial/GSMExamplesReceiveSMS
+
+https://forum.arduino.cc/index.php?topic=163636.0
+
