@@ -40,9 +40,14 @@ void setup()
     //start up routine 
     wdt_disable(); //recomended
     
+    
+    
     Ethernet.begin(mac, ip);  // initialize Ethernet device
     server.begin();           // start to listen for clients
 
+    pinMode(4, OUTPUT);
+    digitalWrite(4, HIGH);
+    
     gsmAccess.secureShutdown();
     watchdogSET();
 }
