@@ -4,6 +4,7 @@
 #include <avr/power.h>
 #include <avr/wdt.h>
 #include <avr/interrupt.h>
+#include <EEPROM.h>
 
 // PIN Number
 #define PINNUMBER ""
@@ -72,6 +73,14 @@ void setup() {
   sms.beginSMS(remoteNumber);
   sms.print(readvalue);
   sms.endSMS();
+  
+  //READ RECIEVED TEXTS HERE
+  
+  //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
+  EEPROM.update(address, value) 
+  
+    
+  //SHUTDOWN GSM
   gsmAccess.shutdown();
   notConnected = true;
 
