@@ -26,13 +26,15 @@ char remoteNumber[20]= "1918XXXXXXX";
 // char array of the message
 char txtMsg[200]="High Tank Alarm - Testing 1 2 3"; //not using right now
 
+String string_triggertextraw;
 String stringOne = "Power ON. Height = ";  //not sure why, but string causes output of 1 in text message
 
 // set connection state variable
 boolean notConnected = true;
 
 // this is the threshold used for reading
-const int trigger = 500;
+int triggerinches = 60; //stored in EEPROM
+int trigger = 310; //default value for 5 feet
 int readvalue;
 int readfresh;
 
@@ -82,21 +84,26 @@ void setup() {
 //extract text into string
                     string_triggertextraw = sms.readString();    
           //delete "A" from begining of string here
-          
-      //convert string into integer
-          latest_readvalue_silas_sw = string_latest_readvalue_silas_sw.toInt();
-          string_latest_readvalue_silas_sw = "";
+          string_triggertextraw.remove(1,1);
+      //convert string into integer and define trigger
+          triggerinches = string_triggertextraw.toInt();
+          //clear out string for fun
+          string_triggertextraw = "";          
+          //delete text
 sms.flush();
           
     }
-  //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
-  EEPROM.update(address, value) 
+
   
-    
   //SHUTDOWN GSM
   gsmAccess.shutdown();
   notConnected = true;
 
+//WRITE NEW TRIGGER NUMBER TO EEPROM HERE
+  EEPROM.update(1, triggerinches) 
+//DEFINE ALARM TRIGGER FROM EEPROM DATA
+trigger = ((3.2792*EEPROM.read(1))+114);
+           
   watchdogSET();  //define watchdog settings
   
 
