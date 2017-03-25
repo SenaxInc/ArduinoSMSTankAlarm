@@ -75,7 +75,20 @@ void setup() {
   sms.endSMS();
   
   //READ RECIEVED TEXTS HERE
-  
+  if (sms.available())
+  {
+        if(sms.peek()=='A')
+    {
+//extract text into string
+                    string_triggertextraw = sms.readString();    
+          //delete "A" from begining of string here
+          
+      //convert string into integer
+          latest_readvalue_silas_sw = string_latest_readvalue_silas_sw.toInt();
+          string_latest_readvalue_silas_sw = "";
+sms.flush();
+          
+    }
   //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
   EEPROM.update(address, value) 
   
