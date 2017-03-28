@@ -91,6 +91,8 @@ void setup() {
           string_triggertextraw = "";          
           //delete text
 sms.flush();
+          //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
+  EEPROM.update(1, triggerinches) 
           
     }
 
@@ -99,8 +101,7 @@ sms.flush();
   gsmAccess.shutdown();
   notConnected = true;
 
-//WRITE NEW TRIGGER NUMBER TO EEPROM HERE
-  EEPROM.update(1, triggerinches) 
+
 //DEFINE ALARM TRIGGER FROM EEPROM DATA
 trigger = ((3.2792*EEPROM.read(1))+114);
            
