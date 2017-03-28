@@ -92,8 +92,8 @@ void setup() {
           //delete text
 sms.flush();
           //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
-  EEPROM.update(1, triggerinches) 
-          
+  EEPROM.update(1, triggerinches); 
+                  delay(1000);
     }
 
   
