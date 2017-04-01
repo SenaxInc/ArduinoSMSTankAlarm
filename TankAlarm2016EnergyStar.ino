@@ -95,7 +95,7 @@ sms.flush();
   EEPROM.update(1, triggerinches); 
                   delay(1000);
     }
-
+  }
   
   //SHUTDOWN GSM
   gsmAccess.shutdown();
