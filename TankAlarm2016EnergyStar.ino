@@ -75,26 +75,27 @@ void setup() {
   sms.beginSMS(remoteNumber);
   sms.print(readvalue);
   sms.endSMS();
-  
+  delay(10000);
   //READ RECIEVED TEXTS HERE
-  if (sms.available())
+  while (sms.available() > 0)
   {
-        if(sms.peek()=='A')
+        if(sms.peek() == 'A')
     {
 //extract text into string
-                    string_triggertextraw = sms.readString();    
+          string_triggertextraw = sms.readString();    
           //delete "A" from begining of string here
           string_triggertextraw.remove(1,1);
-      //convert string into integer and define trigger
+          //convert string into integer and define trigger
           triggerinches = string_triggertextraw.toInt();
           //clear out string for fun
           string_triggertextraw = "";          
-          //delete text
-sms.flush();
+
           //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
-  EEPROM.update(1, triggerinches); 
-                  delay(1000);
+          EEPROM.update(1, triggerinches); 
+          delay(1000);
     }
+              //delete text
+          sms.flush();
   }
   
   //SHUTDOWN GSM
@@ -105,7 +106,7 @@ sms.flush();
 //DEFINE ALARM TRIGGER FROM EEPROM DATA
 trigger = ((3.2792*EEPROM.read(1))+114);
            
-  watchdogSET();  //define watchdog settings
+watchdogSET();  //define watchdog settings
   
 
 //prepare for sleep - turn off some settings
