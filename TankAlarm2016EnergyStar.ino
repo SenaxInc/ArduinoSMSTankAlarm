@@ -103,7 +103,7 @@ void setup() {
   notConnected = true;
 
 
-//DEFINE ALARM TRIGGER FROM EEPROM DATA
+//On Startup - DEFINE ALARM TRIGGER FROM EEPROM DATA
 trigger = ((3.2792*EEPROM.read(1))+114);
            
 watchdogSET();  //define watchdog settings
@@ -264,6 +264,32 @@ void dailyTEXT()
       //end hourly text 
 }
 
+void receiveSETTINGS()
+{
+   //READ RECIEVED TEXTS HERE
+  while (sms.available() > 0)
+  {
+        if(sms.peek() == 'A')
+    {
+//extract text into string
+          string_triggertextraw = sms.readString();    
+          //delete "A" from begining of string here
+          string_triggertextraw.remove(1,1);
+          //convert string into integer and define trigger
+          triggerinches = string_triggertextraw.toInt();
+          //clear out string for fun
+          string_triggertextraw = "";          
+
+          //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
+          EEPROM.update(1, triggerinches); 
+          delay(1000);
+    }
+              //delete text
+          sms.flush();
+  } 
+}
+  
+  
 ISR(WDT_vect)
 {
     time_tick_hours ++; //for each Watchdog Interupt, adds 1 to the number of 8 second ticks counted so far
