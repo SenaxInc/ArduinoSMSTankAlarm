@@ -77,26 +77,8 @@ void setup() {
   sms.endSMS();
   delay(10000);
   //READ RECIEVED TEXTS HERE
-  while (sms.available() > 0)
-  {
-        if(sms.peek() == 'A')
-    {
-//extract text into string
-          string_triggertextraw = sms.readString();    
-          //delete "A" from begining of string here
-          string_triggertextraw.remove(1,1);
-          //convert string into integer and define trigger
-          triggerinches = string_triggertextraw.toInt();
-          //clear out string for fun
-          string_triggertextraw = "";          
 
-          //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
-          EEPROM.update(1, triggerinches); 
-          delay(1000);
-    }
-              //delete text
-          sms.flush();
-  }
+  receiveSETTINGS();
   
   //SHUTDOWN GSM
   gsmAccess.shutdown();
