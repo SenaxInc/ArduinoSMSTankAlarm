@@ -13,8 +13,8 @@
 GSM gsmAccess;
 GSM_SMS sms;
 
-volatile int time_tick_hours = 1;
-volatile int time_tick_daily = 1;
+volatile int time_tick_hours = 1; //start tick count at 1
+volatile int time_tick_daily = 1; //start tick count at 1
 
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
