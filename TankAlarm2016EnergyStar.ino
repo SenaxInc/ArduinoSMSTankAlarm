@@ -360,17 +360,28 @@ void receiveSETTINGS()
     }
                 if(sms.peek() == 'H')
     {
-//extract text into string
-          string_triggertextraw = sms.readString();    
-          //delete "A" from begining of string here
-          string_triggertextraw.remove(1,1);
-          //convert string into integer and define trigger
-          triggerinches = string_triggertextraw.toInt();
+          //extract text into string
+          string_settingtext_raw = sms.readString();  
+          
+          //delete "H" from begining of string here
+          string_settingtext_raw.remove(1,1);
+
+          //READ NEXT DIGIT AFTER "H" TO ASSIGN TO TANK # 1-9
+          settingtext_tanknumber = string_settingtext_raw.peek()
+          
+          //delete tank number from begining of string here
+          string_settingtext_raw.remove(1,1); 
+          
+          //convert the remaining digits in the string to the height intiger
+          settingtext_value = string_settingtext_raw.toInt();
+          
           //clear out string for fun
-          string_triggertextraw = "";          
+          string_settingtext_raw = "";          
 
           //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
-          EEPROM.update(30, triggerinches); 
+          EEPROM.update(39+settingtext_tanknumber, settingtext_value); 
+          
+          //wait for eeprom just for fun
           delay(1000);
     }
               //delete text
