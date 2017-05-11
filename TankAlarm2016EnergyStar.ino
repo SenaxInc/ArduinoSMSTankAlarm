@@ -399,5 +399,5 @@ void receiveSETTINGS()
 ISR(WDT_vect)
 {
     time_tick_hours ++; //for each Watchdog Interupt, adds 1 to the number of 8 second ticks counted so far
-    time_tick_daily ++; //seperate tick total for each day
+    time_tick_report ++; //seperate tick total for each day
 }
