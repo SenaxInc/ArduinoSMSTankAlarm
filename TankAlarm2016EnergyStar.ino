@@ -18,7 +18,7 @@ volatile int time_tick_daily = 1; //start tick count at 1
 
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
-const int ticks_per_day = 10575;  //23.5 hours of 8 second ticks to account for shifts in ticks total
+const int ticks_per_report = 10575;  //23.5 hours of 8 second ticks to account for shifts in ticks total
 
 // char array of the telephone number to send SMS
 char remoteNumber[20]= "1918XXXXXXX";
@@ -105,17 +105,17 @@ void loop() {
   
 //check for daily trigger                          
 
-        if (time_tick_daily > ticks_per_day && time_tick_hours > ticks_per_sleep) {   //if number of ticks has reached 24 hours worth send text no matter what
+        if (time_tick_report > ticks_per_report && time_tick_hours > ticks_per_sleep) {   //if number of ticks has reached 24 hours worth send text no matter what
   wdt_disable();
             dailyTEXT();
           
-            time_tick_daily = 1;  //daily tick reset
+            time_tick_report = 1;  //daily tick reset
             time_tick_hours = 1;  //hourly tick reset
   watchdogSET();          
         } //end daily text/check
 
 else{  //if day has not elapsed then check hourly ticks
-  
+  //hourly wake up to check for alarm trigger
         if (time_tick_hours > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
   wdt_disable();              
             sleepyTEXT();
@@ -186,6 +186,9 @@ void sleepyTEXT()
         sms.beginSMS(remoteNumber);
         sms.print(readvalue);
         sms.endSMS();
+        //Check for settings messages here
+        receiveSETTINGS();                          
+                                  
         gsmAccess.shutdown(); //turn off GSM once text sent
         notConnected = true;                                    
         delay(4000);
@@ -251,7 +254,59 @@ void receiveSETTINGS()
    //READ RECIEVED TEXTS HERE
   while (sms.available() > 0)
   {
-        if(sms.peek() == 'A')
+        if(sms.peek() == 'A') //A = ALARM
+    {
+          //extract text into string
+          string_triggertextraw = sms.readString();  
+          
+          //delete "A" from begining of string here
+          string_triggertextraw.remove(1,1);
+
+          //READ NEXT DIGIT AFTER "A" TO ASSIGN TO TANK # 1-9
+          tanknumber = string_triggertextraw.peek()
+          
+          //delete tank number from begining of string here
+          string_triggertextraw.remove(1,1); 
+          
+          //convert the remaining digits in the string to the trigger intiger
+          triggerinches = string_triggertextraw.toInt();
+          
+          //clear out string for fun
+          string_triggertextraw = "";          
+
+          //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
+          EEPROM.update(9+tanknumber, triggerinches); 
+          
+          //wait for eeprom just for fun
+          delay(1000);
+    }
+            if(sms.peek() == 'C') //C = Constant
+    {
+          //extract text into string
+          string_triggertextraw = sms.readString();  
+          
+          //delete "C" from begining of string here
+          string_triggertextraw.remove(1,1);
+
+          //READ NEXT DIGIT AFTER "A" TO ASSIGN TO TANK # 1-9
+          tanknumber = string_triggertextraw.peek()
+          
+          //delete tank number from begining of string here
+          string_triggertextraw.remove(1,1); 
+          
+          //convert the remaining digits in the string to the trigger intiger
+          triggerinches = string_triggertextraw.toInt();
+          
+          //clear out string for fun
+          string_triggertextraw = "";          
+
+          //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
+          EEPROM.update(9+tanknumber, triggerinches); 
+          
+          //wait for eeprom just for fun
+          delay(1000);
+    }
+            if(sms.peek() == 'T')
     {
 //extract text into string
           string_triggertextraw = sms.readString();    
@@ -263,7 +318,22 @@ void receiveSETTINGS()
           string_triggertextraw = "";          
 
           //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
-          EEPROM.update(1, triggerinches); 
+          EEPROM.update(0, triggerinches); 
+          delay(1000);
+    }
+                if(sms.peek() == 'H')
+    {
+//extract text into string
+          string_triggertextraw = sms.readString();    
+          //delete "A" from begining of string here
+          string_triggertextraw.remove(1,1);
+          //convert string into integer and define trigger
+          triggerinches = string_triggertextraw.toInt();
+          //clear out string for fun
+          string_triggertextraw = "";          
+
+          //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
+          EEPROM.update(30, triggerinches); 
           delay(1000);
     }
               //delete text
