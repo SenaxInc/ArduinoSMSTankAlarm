@@ -14,7 +14,7 @@ GSM gsmAccess;
 GSM_SMS sms;
 
 volatile int time_tick_hours = 1; //start tick count at 1
-volatile int time_tick_daily = 1; //start tick count at 1
+volatile int time_tick_report = 1; //start tick count at 1
 
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
@@ -27,7 +27,7 @@ char remoteNumber[20]= "1918XXXXXXX";
 // char array of the message
 char txtMsg[200]="High Tank Alarm - Testing 1 2 3"; //not using right now
 
-String string_triggertextraw;
+String string_settingtext_raw = "0";
 String stringOne = "Power ON. Height = ";  //not sure why, but string causes output of 1 in text message
 
 // set connection state variable
@@ -36,9 +36,11 @@ boolean notConnected = true;
 // this is the threshold used for reading
 int alarm_one = 310; //default value for 5 feet
 int readvalue_one;
+int constant_one;
+int contents_one;
 
 int settingtext_tanknumber;
-int settingtext_value
+int settingtext_value;
 int settingtext_tankcontents;
 int readfresh;
 
@@ -57,7 +59,7 @@ void setup() {
         delay(10000); //wait for sensor signal to normalize    
         readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue = analogRead(A1);  // read a sensor from analog pin #A1
+        readvalue_one = analogRead(A1);  // read a sensor from analog pin #A1
         delay(1000);
         digitalWrite(5, LOW); // turn off sensor
   
@@ -77,7 +79,7 @@ void setup() {
                 }
             }
   sms.beginSMS(remoteNumber);
-  sms.print(readvalue);
+  sms.print(readvalue_one); 
   sms.endSMS();
   delay(10000);
   //READ RECIEVED TEXTS HERE
@@ -94,14 +96,15 @@ void setup() {
 //On Startup - DEFINE ALARM TRIGGER FROM EEPROM DATA
 
 
-contents_one = EEPROM.read(30) 
+contents_one = EEPROM.read(30);
+
 if(contents_one == 1)
 {
-  constant_one = (EEPROM.read(20))/100
+  constant_one = (EEPROM.read(20))/100;
 }
 if(contents_one == 2)
 {
-  constant_one = 3+((EEPROM.read(20))/1000)
+  constant_one = 3+((EEPROM.read(20))/1000);
 }
 alarm_one = ((constant_one*EEPROM.read(10))+114); //also convert from inches to arduino value
 
@@ -181,7 +184,7 @@ void sleepyTEXT()
         delay(1000);
         digitalWrite(5, LOW); // turn off sensor
     
-        if (readvalue_one > trigger_one) {{ // if the sensor is over height
+        if (readvalue_one > alarm_one) {{ // if the sensor is over height
 // prepare to send SMS
             //turn on USART to be ready for GSM
           
@@ -204,7 +207,7 @@ void sleepyTEXT()
         }
 //Send SMS                                    
         sms.beginSMS(remoteNumber);
-        sms.print(readvalue);
+        sms.print(readvalue_one);
         sms.endSMS();
         //Check for settings messages here
         receiveSETTINGS();                          
@@ -232,7 +235,7 @@ void dailyTEXT()
         delay(6000); //wait for sensor signal to normalize    
         readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue = analogRead(A0);  // read a sensor from analog pin 0
+        readvalue_one = analogRead(A0);  // read a sensor from analog pin 0
         digitalWrite(5, LOW); // turn off sensor
     
 // prepare to send SMS
@@ -257,7 +260,7 @@ void dailyTEXT()
         
 //Send SMS                                    
         sms.beginSMS(remoteNumber);
-        sms.print(readvalue);
+        sms.print(readvalue_one); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
         sms.endSMS();
         gsmAccess.shutdown(); //turn off GSM once text sent
         notConnected = true;                                    
