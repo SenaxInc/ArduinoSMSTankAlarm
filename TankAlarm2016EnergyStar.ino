@@ -289,7 +289,7 @@ void receiveSETTINGS()
           string_settingtext_raw.remove(1,1);
 
           //READ NEXT DIGIT AFTER "A" TO ASSIGN TO TANK # 1-9
-          settingtext_tanknumber = string_settingtext_raw.charAt(1)
+          settingtext_tanknumber = string_settingtext_raw.charAt(1);
           
           //delete tank number from begining of string here
           string_settingtext_raw.remove(1,1); 
@@ -315,13 +315,13 @@ void receiveSETTINGS()
           string_settingtext_raw.remove(1,1);
 
           //READ NEXT DIGIT AFTER "C" TO ASSIGN TO TANK # 1-9
-          settingtext_tanknumber = string_settingtext_raw.charAt(1)
+          settingtext_tanknumber = string_settingtext_raw.charAt(1);
           
           //delete tank number from begining of string here
           string_settingtext_raw.remove(1,1); 
               
           //read digit after tank number to get tank contents code number (1 or 2)
-          settingtext_tankcontents = string_settingtext_raw.charAt(1)
+          settingtext_tankcontents = string_settingtext_raw.charAt(1);
           
           //delete contents code from string
           string_settingtext_raw.remove(1,1); 
@@ -373,7 +373,7 @@ void receiveSETTINGS()
           string_settingtext_raw.remove(1,1);
 
           //READ NEXT DIGIT AFTER "H" TO ASSIGN TO TANK # 1-9
-          settingtext_tanknumber = string_settingtext_raw.charAt(1)
+          settingtext_tanknumber = string_settingtext_raw.charAt(1);
           
           //delete tank number from begining of string here
           string_settingtext_raw.remove(1,1); 
