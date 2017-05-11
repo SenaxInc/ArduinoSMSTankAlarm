@@ -34,9 +34,12 @@ String stringOne = "Power ON. Height = ";  //not sure why, but string causes out
 boolean notConnected = true;
 
 // this is the threshold used for reading
-int triggerinches = 60; //stored in EEPROM
-int trigger = 310; //default value for 5 feet
-int readvalue;
+int alarm_one = 310; //default value for 5 feet
+int readvalue_one;
+
+int settingtext_tanknumber;
+int settingtext_value
+int settingtext_tankcontents;
 int readfresh;
 
 void setup() {
@@ -89,7 +92,18 @@ void setup() {
 //SET START UP EEPROM VARIABLES  
   
 //On Startup - DEFINE ALARM TRIGGER FROM EEPROM DATA
-trigger = ((3.2792*EEPROM.read(1))+114);
+
+
+contents_one = EEPROM.read(30) 
+if(contents_one = 1)
+{
+  constant_one = (EEPROM.read(20))/100
+}
+if(contents_one = 2)
+{
+  constant_one = 3+((EEPROM.read(20))/1000)
+}
+alarm_one = ((constant_one*EEPROM.read(10))+114); //also convert from inches to arduino value
 
 ticks_per_report = (((EEPROM.read(0))*60*60/8)-225);  //subtract 30 minutes to account for shifts
   
@@ -163,11 +177,11 @@ void sleepyTEXT()
         delay(10000); //wait for sensor signal to normalize    
         readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue = analogRead(A1);  // read a sensor from analog pin #A1
+        readvalue_one = analogRead(A1);  // read a sensor from analog pin #A1
         delay(1000);
         digitalWrite(5, LOW); // turn off sensor
     
-        if (readvalue > trigger) {{ // if the sensor is over height
+        if (readvalue_one > trigger_one) {{ // if the sensor is over height
 // prepare to send SMS
             //turn on USART to be ready for GSM
           
