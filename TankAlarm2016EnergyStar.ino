@@ -95,11 +95,11 @@ void setup() {
 
 
 contents_one = EEPROM.read(30) 
-if(contents_one = 1)
+if(contents_one == 1)
 {
   constant_one = (EEPROM.read(20))/100
 }
-if(contents_one = 2)
+if(contents_one == 2)
 {
   constant_one = 3+((EEPROM.read(20))/1000)
 }
