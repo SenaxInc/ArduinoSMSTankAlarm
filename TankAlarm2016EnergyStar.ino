@@ -257,25 +257,25 @@ void receiveSETTINGS()
         if(sms.peek() == 'A') //A = ALARM
     {
           //extract text into string
-          string_triggertextraw = sms.readString();  
+          string_settingtext_raw = sms.readString();  
           
           //delete "A" from begining of string here
-          string_triggertextraw.remove(1,1);
+          string_settingtext_raw.remove(1,1);
 
           //READ NEXT DIGIT AFTER "A" TO ASSIGN TO TANK # 1-9
-          tanknumber = string_triggertextraw.peek()
+          settingtext_tanknumber = string_settingtext_raw.peek()
           
           //delete tank number from begining of string here
-          string_triggertextraw.remove(1,1); 
+          string_settingtext_raw.remove(1,1); 
           
           //convert the remaining digits in the string to the trigger intiger
-          triggerinches = string_triggertextraw.toInt();
+          settingtext_value = string_settingtext_raw.toInt();
           
           //clear out string for fun
-          string_triggertextraw = "";          
+          string_settingtext_raw = "";          
 
           //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
-          EEPROM.update(9+tanknumber, triggerinches); 
+          EEPROM.update(9+settingtext_tanknumber, settingtext_value); 
           
           //wait for eeprom just for fun
           delay(1000);
@@ -283,25 +283,37 @@ void receiveSETTINGS()
             if(sms.peek() == 'C') //C = Constant
     {
           //extract text into string
-          string_triggertextraw = sms.readString();  
+          string_settingtext_raw = sms.readString();  
           
           //delete "C" from begining of string here
-          string_triggertextraw.remove(1,1);
+          string_settingtext_raw.remove(1,1);
 
-          //READ NEXT DIGIT AFTER "A" TO ASSIGN TO TANK # 1-9
-          tanknumber = string_triggertextraw.peek()
+          //READ NEXT DIGIT AFTER "C" TO ASSIGN TO TANK # 1-9
+          settingtext_tanknumber = string_settingtext_raw.peek()
           
           //delete tank number from begining of string here
-          string_triggertextraw.remove(1,1); 
+          string_settingtext_raw.remove(1,1); 
+              
+          //read digit after tank number to get tank contents code number (1 or 2)
+          settingtext_tankcontents = string_settingtext_raw.peek()
           
-          //convert the remaining digits in the string to the trigger intiger
-          triggerinches = string_triggertextraw.toInt();
+          //delete contents code from string
+          string_settingtext_raw.remove(1,1); 
+
+          //WRITE content code NUMBER TO EEPROM HERE
+          EEPROM.update(29+settingtext_tanknumber, settingtext_tankcontents);     
+          
+          //wait for eeprom just for fun
+          delay(1000);
+              
+          //convert the remaining digits in the string to the constant intiger
+          settingtext_value = string_settingtext_raw.toInt();
           
           //clear out string for fun
-          string_triggertextraw = "";          
+          string_settingtext_raw = "";          
 
-          //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
-          EEPROM.update(9+tanknumber, triggerinches); 
+          //WRITE NEW psi constant TO EEPROM HERE
+          EEPROM.update(19+settingtext_tanknumber, settingtext_value); 
           
           //wait for eeprom just for fun
           delay(1000);
