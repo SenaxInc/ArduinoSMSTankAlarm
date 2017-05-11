@@ -18,7 +18,8 @@ volatile int time_tick_daily = 1; //start tick count at 1
 
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
-const int ticks_per_report = 10575;  //23.5 hours of 8 second ticks to account for shifts in ticks total
+int ticks_per_report = 10575;  //23.5 hours of 8 second ticks to account for shifts in ticks total
+
 
 // char array of the telephone number to send SMS
 char remoteNumber[20]= "1918XXXXXXX";
@@ -85,9 +86,14 @@ void setup() {
   notConnected = true;
 
 
+//SET START UP EEPROM VARIABLES  
+  
 //On Startup - DEFINE ALARM TRIGGER FROM EEPROM DATA
 trigger = ((3.2792*EEPROM.read(1))+114);
-           
+
+ticks_per_report = (((EEPROM.read(0))*60*60/8)-225);  //subtract 30 minutes to account for shifts
+  
+  
 watchdogSET();  //define watchdog settings
   
 
@@ -318,19 +324,24 @@ void receiveSETTINGS()
           //wait for eeprom just for fun
           delay(1000);
     }
-            if(sms.peek() == 'T')
+            if(sms.peek() == 'T') //T = time between reports
     {
-//extract text into string
-          string_triggertextraw = sms.readString();    
-          //delete "A" from begining of string here
-          string_triggertextraw.remove(1,1);
-          //convert string into integer and define trigger
-          triggerinches = string_triggertextraw.toInt();
+          //extract text into string
+          string_settingtext_raw = sms.readString();  
+          
+          //delete "T" from begining of string here
+          string_settingtext_raw.remove(1,1);
+          
+          //convert the remaining digits in the string to the trigger intiger
+          settingtext_value = string_settingtext_raw.toInt();
+          
           //clear out string for fun
-          string_triggertextraw = "";          
+          string_settingtext_raw = "";          
 
           //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
-          EEPROM.update(0, triggerinches); 
+          EEPROM.update(0, settingtext_value); 
+          
+          //wait for eeprom just for fun
           delay(1000);
     }
                 if(sms.peek() == 'H')
