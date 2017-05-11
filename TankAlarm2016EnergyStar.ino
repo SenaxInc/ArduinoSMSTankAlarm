@@ -26,8 +26,11 @@ char remoteNumber[20]= "1918XXXXXXX";
 
 // char array of the message
 char txtMsg[200]="High Tank Alarm - Testing 1 2 3"; //not using right now
+char myString[] = "This is the first line"
+" this is the second line"
+" etcetera";
 
-String string_settingtext_raw = "0";
+String string_settingtext_raw;
 String stringOne = "Power ON. Height = ";  //not sure why, but string causes output of 1 in text message
 
 // set connection state variable
@@ -279,14 +282,14 @@ void receiveSETTINGS()
   {
         if(sms.peek() == 'A') //A = ALARM
     {
-          //extract text into string
+          //extract text stream into string
           string_settingtext_raw = sms.readString();  
           
           //delete "A" from begining of string here
           string_settingtext_raw.remove(1,1);
 
           //READ NEXT DIGIT AFTER "A" TO ASSIGN TO TANK # 1-9
-          settingtext_tanknumber = string_settingtext_raw.peek()
+          settingtext_tanknumber = string_settingtext_raw.charAt(1)
           
           //delete tank number from begining of string here
           string_settingtext_raw.remove(1,1); 
@@ -305,20 +308,20 @@ void receiveSETTINGS()
     }
             if(sms.peek() == 'C') //C = Constant
     {
-          //extract text into string
+          //extract text stream into string
           string_settingtext_raw = sms.readString();  
           
           //delete "C" from begining of string here
           string_settingtext_raw.remove(1,1);
 
           //READ NEXT DIGIT AFTER "C" TO ASSIGN TO TANK # 1-9
-          settingtext_tanknumber = string_settingtext_raw.peek()
+          settingtext_tanknumber = string_settingtext_raw.charAt(1)
           
           //delete tank number from begining of string here
           string_settingtext_raw.remove(1,1); 
               
           //read digit after tank number to get tank contents code number (1 or 2)
-          settingtext_tankcontents = string_settingtext_raw.peek()
+          settingtext_tankcontents = string_settingtext_raw.charAt(1)
           
           //delete contents code from string
           string_settingtext_raw.remove(1,1); 
@@ -370,7 +373,7 @@ void receiveSETTINGS()
           string_settingtext_raw.remove(1,1);
 
           //READ NEXT DIGIT AFTER "H" TO ASSIGN TO TANK # 1-9
-          settingtext_tanknumber = string_settingtext_raw.peek()
+          settingtext_tanknumber = string_settingtext_raw.charAt(1)
           
           //delete tank number from begining of string here
           string_settingtext_raw.remove(1,1); 
