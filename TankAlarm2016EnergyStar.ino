@@ -25,10 +25,11 @@ int ticks_per_report = 10575;  //23.5 hours of 8 second ticks to account for shi
 char remoteNumber[20]= "1918XXXXXXX";
 
 // char array of the message
-char txtMsg[200]="High Tank Alarm - Testing 1 2 3"; //not using right now
-char myString[] = "This is the first line"
-" this is the second line"
-" etcetera";
+char txtMsg[]="High Tank Alarm - Testing 1 2 3"; //not using right now
+char currentsettings_one[] = "T" char(EEPROM.read(0))
+"A"
+"C"
+"H";
 
 String string_settingtext_raw;
 String stringOne = "Power ON. Height = ";  //not sure why, but string causes output of 1 in text message
