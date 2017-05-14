@@ -333,7 +333,8 @@ void receiveSETTINGS()
           delay(1000);
               
           //convert the remaining digits in the string to the constant intiger
-          settingtext_value = string_settingtext_raw.toInt();
+          //divide by 4 to store in eeprom
+          settingtext_value = (string_settingtext_raw.toInt())/4;
           
           //clear out string for fun
           string_settingtext_raw = "";          
