@@ -37,10 +37,11 @@ String stringOne = "Power ON. Height = ";  //not sure why, but string causes out
 boolean notConnected = true;
 
 // this is the threshold used for reading
-int alarm_one = 310; //default value for 5 feet
 int readvalue_one;
-int constant_one;
 int contents_one;
+int constant_one;
+int toground_one;
+int alarm_one = 310; //default value for 5 feet
 
 int settingtext_tanknumber;
 int settingtext_value;
@@ -109,8 +110,9 @@ if(contents_one == 2)
 {
   constant_one = 3000+((EEPROM.read(20))*4); //stored as 3XXX instead of 3.XXX to use int variable
 }
-alarm_one = ((constant_one*EEPROM.read(10)/1000)+114); //also convert from inches to arduino value. divide by 1000 before add 114
-
+//subtract height of sensor from alarm height to adjust for actual reading
+alarm_one = ((constant_one*(EEPROM.read(10)-EEPROM.read(40))/1000)+114); //also convert from inches to arduino value. divide by 1000 before add 114
+  
 ticks_per_report = (((EEPROM.read(0))*60*60/8)-225);  //subtract 30 minutes to account for shifts
   
   
