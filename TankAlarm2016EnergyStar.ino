@@ -26,10 +26,7 @@ char remoteNumber[20]= "1918XXXXXXX";
 
 // char array of the message
 char txtMsg[]="High Tank Alarm - Testing 1 2 3"; //not using right now
-char currentsettings_one[] = "T" char(EEPROM.read(0))
-"A"
-"C"
-"H";
+char currentsettings_one[] = "";
 
 String string_settingtext_raw;
 String stringOne = "Power ON. Height = ";  //not sure why, but string causes output of 1 in text message
@@ -391,6 +388,41 @@ void receiveSETTINGS()
           //WRITE NEW TRIGGER NUMBER TO EEPROM HERE
           EEPROM.update(39+settingtext_tanknumber, settingtext_value); 
           
+          //wait for eeprom just for fun
+          delay(1000);
+    }
+                    if(sms.peek() == 'S') //Request for Currrent Settings for tank one would = S1
+    {
+          //extract text into string
+          string_settingtext_raw = sms.readString();  
+          
+          //delete "H" from begining of string here
+          string_settingtext_raw.remove(1,1);
+
+          //READ NEXT DIGIT AFTER "H" TO ASSIGN TO TANK # 1-9
+          settingtext_tanknumber = string_settingtext_raw.charAt(1);
+          
+          //clear out string for fun
+          string_settingtext_raw = "";          
+
+          //CREATE STRING OF CURRENT EEPROM SETTINGS BASED ON TANK NUMBER
+          String string_currentsettings = "Current Settings Tank #"
+          string_currentsettings +=settingtext_tanknumber;
+          string_currentsettings +="\n";
+          string_currentsettings +="T";
+          string_currentsettings +=EEPROM.read(0);
+          string_currentsettings +="\n";
+          string_currentsettings +="A";    
+          string_currentsettings +=EEPROM.read(9+settingtext_tanknumber);
+          string_currentsettings +="\n";
+          string_currentsettings +="C";    
+          string_currentsettings +=EEPROM.read(29+settingtext_tanknumber);
+          string_currentsettings +=EEPROM.read(19+settingtext_tanknumber);            
+          string_currentsettings +="\n";
+          string_currentsettings +="H";    
+          string_currentsettings +=EEPROM.read(39+settingtext_tanknumber);            
+          //SEND TEXT WIHT SETTINGS TO NUMBER TEXT RECEIVED FROM
+                      
           //wait for eeprom just for fun
           delay(1000);
     }
