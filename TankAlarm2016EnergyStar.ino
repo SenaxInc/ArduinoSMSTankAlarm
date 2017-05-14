@@ -23,6 +23,7 @@ int ticks_per_report = 10575;  //23.5 hours of 8 second ticks to account for shi
 
 // char array of the telephone number to send SMS
 char remoteNumber[20]= "1918XXXXXXX";
+char receivedNumber[20]; //does sms only recognize "remoteNumber" char?
 
 // char array of the message
 char txtMsg[]="High Tank Alarm - Testing 1 2 3"; //not using right now
@@ -422,7 +423,7 @@ void receiveSETTINGS()
           string_currentsettings +="H";    
           string_currentsettings +=EEPROM.read(39+settingtext_tanknumber);            
           //SEND TEXT WIHT SETTINGS TO NUMBER TEXT RECEIVED FROM
-                      
+          
           //wait for eeprom just for fun
           delay(1000);
     }
