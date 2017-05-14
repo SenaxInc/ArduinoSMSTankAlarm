@@ -103,13 +103,13 @@ contents_one = EEPROM.read(30);
 
 if(contents_one == 1)
 {
-  constant_one = (EEPROM.read(20))/100;
+  constant_one = (EEPROM.read(20))*4*10; //stored as XXX0 instead of X.XX to use int variable
 }
 if(contents_one == 2)
 {
-  constant_one = 3+((EEPROM.read(20))/1000);
+  constant_one = 3000+((EEPROM.read(20))*4); //stored as 3XXX instead of 3.XXX to use int variable
 }
-alarm_one = ((constant_one*EEPROM.read(10))+114); //also convert from inches to arduino value
+alarm_one = ((constant_one*EEPROM.read(10)/1000)+114); //also convert from inches to arduino value. divide by 1000 before add 114
 
 ticks_per_report = (((EEPROM.read(0))*60*60/8)-225);  //subtract 30 minutes to account for shifts
   
