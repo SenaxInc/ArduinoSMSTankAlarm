@@ -101,27 +101,7 @@ void setup() {
   notConnected = true;
 
 
-//SET START UP EEPROM VARIABLES  
-  
-//On Startup - DEFINE ALARM TRIGGER FROM EEPROM DATA
 
-
-contents_one = EEPROM.read(30);
-
-if(contents_one == 1)
-{
-  constant_one = (EEPROM.read(20))*4*10; //stored as XXX0 instead of X.XX to use int variable
-}
-if(contents_one == 2)
-{
-  constant_one = 3000+((EEPROM.read(20))*4); //stored as 3XXX instead of 3.XXX to use int variable
-}
-//subtract height of sensor from alarm height to adjust for actual reading
-alarm_one = ((constant_one*(EEPROM.read(10)-EEPROM.read(40))/1000)+114); //also convert from inches to arduino value. divide by 1000 before add 114
-  
-ticks_per_report = (((EEPROM.read(0))*60*60/8)-225);  //subtract 30 minutes to account for shifts
-  
-  
 watchdogSET();  //define watchdog settings
   
 
@@ -484,8 +464,25 @@ void receiveSETTINGS()
     }
               //delete text
           sms.flush();
-  } 
-}
+  } //end check for sms available
+
+  //DEFINE VARIABLES FROM EEPROM DATA
+  ticks_per_report = (((EEPROM.read(0))*60*60/8)-225);  //subtract 30 minutes to account for shifts  
+  //tank one variables - maybe use a FOR statement in the future
+  contents_one = EEPROM.read(30);
+
+  if(contents_one == 1)
+    {
+      constant_one = (EEPROM.read(20))*4*10; //stored as XXX0 instead of X.XX to use int variable
+    }
+  if(contents_one == 2)
+    {
+      constant_one = 3000+((EEPROM.read(20))*4); //stored as 3XXX instead of 3.XXX to use int variable
+    }
+   //subtract height of sensor from alarm height to adjust for actual reading
+  alarm_one = ((constant_one*(EEPROM.read(10)-EEPROM.read(40))/1000)+114); //also convert from inches to arduino value. divide by 1000 before add 114
+  
+} //end recieve settings loop
   
   
 ISR(WDT_vect)
