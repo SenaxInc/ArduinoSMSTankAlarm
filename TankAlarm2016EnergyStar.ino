@@ -67,9 +67,9 @@ void setup() {
         digitalWrite(5, HIGH);  //pin #5 powers 5V to sensor
         pinMode(5, OUTPUT);
         delay(10000); //wait for sensor signal to normalize    
-        readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
+        readfresh = analogRead(A0);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue_one = analogRead(A1);  // read a sensor from analog pin #A1
+        readvalue_one = analogRead(A0);  // read a sensor from analog pin #A1
         delay(1000);
         digitalWrite(5, LOW); // turn off sensor
   
@@ -238,7 +238,7 @@ void dailyTEXT()
         digitalWrite(5, HIGH);  //pin five powers 5V to sensor
         pinMode(5, OUTPUT);
         delay(6000); //wait for sensor signal to normalize    
-        readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
+        readfresh = analogRead(A0);  //dummy read to refresh adc after wake up
         delay(2000);
         readvalue_one = analogRead(A0);  // read a sensor from analog pin 0 // A0 = pin 14
         digitalWrite(5, LOW); // turn off sensor
