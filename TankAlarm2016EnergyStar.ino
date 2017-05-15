@@ -26,8 +26,9 @@ char remoteNumber[20]= "1918XXXXXXX";
 char receivedNumber[20]; //does sms only recognize "remoteNumber" char?
 
 // char array of the message
-char txtMsg[]="High Tank Alarm - Testing 1 2 3"; //not using right now
-char currentsettings_one[] = "";
+char char_reporttext[50]; //text sent with each report
+char char_alarmtext[50]; //text sent when alarm triggered
+char char_currentsettings[100]; //is length required?
 
 String string_settingtext_raw;
 String stringOne = "Power ON. Height = ";  //not sure why, but string causes output of 1 in text message
