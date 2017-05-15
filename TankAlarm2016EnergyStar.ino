@@ -438,7 +438,6 @@ void receiveSETTINGS()
 
           //clear out string for fun
           string_currentsettings = "";                   
-          char_currentsettings = '';
                       
           //wait for eeprom just for fun
           delay(1000);
