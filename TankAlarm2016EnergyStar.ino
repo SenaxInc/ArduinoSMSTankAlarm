@@ -214,6 +214,7 @@ void sleepyTEXT()
         sms.beginSMS(remoteNumber);
         sms.print(readvalue_one);
         sms.endSMS();
+                                        
         //Check for settings messages here
         receiveSETTINGS();                          
                                   
@@ -267,6 +268,10 @@ void dailyTEXT()
         sms.beginSMS(remoteNumber);
         sms.print(readvalue_one); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
         sms.endSMS();
+  
+        //Check for settings messages here
+        receiveSETTINGS();     
+  
         gsmAccess.shutdown(); //turn off GSM once text sent
         notConnected = true;                                    
         delay(4000);
