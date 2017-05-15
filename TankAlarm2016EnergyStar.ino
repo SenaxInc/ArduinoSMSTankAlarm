@@ -423,16 +423,22 @@ void receiveSETTINGS()
           string_currentsettings +="\n";
           string_currentsettings +="H";    
           string_currentsettings +=EEPROM.read(39+settingtext_tanknumber);   
+                      
           //turn string of settings into a character array so it can be sms'd
-          string_currentsettings.toCharArray(char_currentsettings,100);        //is length required?     
+          string_currentsettings.toCharArray(char_currentsettings,100);
+                      
           //wait for eeprom just for fun
           delay(1000);            
           
           //SEND TEXT WIHT SETTINGS TO NUMBER TEXT RECEIVED FROM
-          sms.remoteNumber(receivedNumber, 20);
+          sms.remoteNumber(receivedNumber, 20); //define phone number as number text received from
           sms.beginSMS(receivedNumber);
-          sms.print(string_currentsettings); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
+          sms.print(char_currentsettings); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
           sms.endSMS();       
+
+          //clear out string for fun
+          string_currentsettings = "";                   
+          char_currentsettings = '';
                       
           //wait for eeprom just for fun
           delay(1000);
