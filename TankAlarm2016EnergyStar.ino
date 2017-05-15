@@ -421,9 +421,17 @@ void receiveSETTINGS()
           string_currentsettings +=EEPROM.read(19+settingtext_tanknumber);            
           string_currentsettings +="\n";
           string_currentsettings +="H";    
-          string_currentsettings +=EEPROM.read(39+settingtext_tanknumber);            
-          //SEND TEXT WIHT SETTINGS TO NUMBER TEXT RECEIVED FROM
+          string_currentsettings +=EEPROM.read(39+settingtext_tanknumber);   
+                      
+          //wait for eeprom just for fun
+          delay(1000);            
           
+          //SEND TEXT WIHT SETTINGS TO NUMBER TEXT RECEIVED FROM
+          sms.remoteNumber(receivedNumber, 20);
+          sms.beginSMS(receivedNumber);
+          sms.print(string_currentsettings); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
+          sms.endSMS();       
+                      
           //wait for eeprom just for fun
           delay(1000);
     }
