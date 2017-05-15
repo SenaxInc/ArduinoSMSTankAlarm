@@ -210,7 +210,10 @@ void sleepyTEXT()
                 }
             }
         }
-//Send SMS                                    
+         
+        //CONSTRUCT ALARM TEXT HERE                                
+                                        
+//Send SMS                                              
         sms.beginSMS(remoteNumber);
         sms.print(readvalue_one);
         sms.endSMS();
@@ -241,7 +244,7 @@ void dailyTEXT()
         delay(6000); //wait for sensor signal to normalize    
         readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue_one = analogRead(A0);  // read a sensor from analog pin 0
+        readvalue_one = analogRead(A0);  // read a sensor from analog pin 0 // A0 = pin 14
         digitalWrite(5, LOW); // turn off sensor
     
 // prepare to send SMS
@@ -263,7 +266,23 @@ void dailyTEXT()
                       delay(1000); //if not connected, wait another second to check again
                 }
             }
-        
+   //CONSTRUCT REPORT TEXT HERE
+          String string_currentsettings = "TANK GAUGE:";
+  if(EEPROM.read(30)!=0){
+          string_currentsettings +=" (1) ";
+          string_currentsettings +=readvalue_one;
+  }
+    if(EEPROM.read(31)!=0){
+          string_currentsettings +=" (2) ";
+          string_currentsettings +=readvalue_two;
+  } 
+      if(EEPROM.read(32)!=0){
+          string_currentsettings +=" (3) ";
+          string_currentsettings +=readvalue_three;
+  } 
+          //turn string of settings into a character array so it can be sms'd
+          string_currentsettings.toCharArray(char_currentsettings,100);
+  
 //Send SMS                                    
         sms.beginSMS(remoteNumber);
         sms.print(readvalue_one); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
