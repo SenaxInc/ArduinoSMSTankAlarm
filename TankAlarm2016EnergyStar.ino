@@ -22,7 +22,8 @@ int ticks_per_report = 10575;  //23.5 hours of 8 second ticks to account for shi
 
 
 // char array of the telephone number to send SMS
-char remoteNumber[20]= "1918XXXXXXX";
+char remoteNumber[20]= "1918XXXXXXX"; //server
+char remoteNumber_two[20]= "1918XXXXXXX"; //alarm contact
 char receivedNumber[20]; //does sms only recognize "remoteNumber" char?
 
 // char array of the message
@@ -188,9 +189,9 @@ void sleepyTEXT()
         digitalWrite(5, HIGH);  //pin #5 powers 5V to sensor
         pinMode(5, OUTPUT);
         delay(10000); //wait for sensor signal to normalize    
-        readfresh = analogRead(A1);  //dummy read to refresh adc after wake up
+        readfresh = analogRead(A0);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue_one = analogRead(A1);  // read a sensor from analog pin #A1
+        readvalue_one = analogRead(A0);  // read a sensor from analog pin #A1
         delay(1000);
         digitalWrite(5, LOW); // turn off sensor
     
@@ -217,11 +218,21 @@ void sleepyTEXT()
         }
          
         //CONSTRUCT ALARM TEXT HERE                                
-                                        
+          String string_text = "ALARM! TANK";
+          string_text +=" (1) ";
+          string_text +=readvalue_one;
+
+          //turn string of settings into a character array so it can be sms'd
+          string_text.toCharArray(char_alarmtext,100);                     
 //Send SMS                                              
         sms.beginSMS(remoteNumber);
-        sms.print(readvalue_one);
+        sms.print(char_alarmtext);
         sms.endSMS();
+                                        
+        sms.beginSMS(remoteNumber_two);
+        sms.print(char_alarmtext);
+        sms.endSMS();                                
+                                        
                                         
         //Check for settings messages here
         receiveSETTINGS();                          
@@ -272,25 +283,25 @@ void dailyTEXT()
                 }
             }
    //CONSTRUCT REPORT TEXT HERE
-          String string_currentsettings = "TANK GAUGE:";
+          String string_text = "TANK GAUGE:";
   if(EEPROM.read(30)!=0){
-          string_currentsettings +=" (1) ";
-          string_currentsettings +=readvalue_one;
+          string_text +=" (1) ";
+          string_text +=readvalue_one;
   }
     if(EEPROM.read(31)!=0){
-          string_currentsettings +=" (2) ";
-          string_currentsettings +=readvalue_two;
+          string_text +=" (2) ";
+          string_text +=readvalue_two;
   } 
       if(EEPROM.read(32)!=0){
-          string_currentsettings +=" (3) ";
-          string_currentsettings +=readvalue_three;
+          string_text +=" (3) ";
+          string_text +=readvalue_three;
   } 
           //turn string of settings into a character array so it can be sms'd
-          string_currentsettings.toCharArray(char_currentsettings,100);
+          string_text.toCharArray(char_reporttext,100);
   
 //Send SMS                                    
         sms.beginSMS(remoteNumber);
-        sms.print(readvalue_one); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
+        sms.print(char_reporttext); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
         sms.endSMS();
   
         //Check for settings messages here
