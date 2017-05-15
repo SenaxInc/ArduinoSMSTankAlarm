@@ -407,7 +407,7 @@ void receiveSETTINGS()
           string_settingtext_raw = "";          
 
           //CREATE STRING OF CURRENT EEPROM SETTINGS BASED ON TANK NUMBER
-          String string_currentsettings = "Current Settings Tank #"
+          String string_currentsettings = "Current Settings Tank #";
           string_currentsettings +=settingtext_tanknumber;
           string_currentsettings +="\n";
           string_currentsettings +="T";
@@ -422,8 +422,8 @@ void receiveSETTINGS()
           string_currentsettings +="\n";
           string_currentsettings +="H";    
           string_currentsettings +=EEPROM.read(39+settingtext_tanknumber);   
-          char char_currentsettings[]; //is length required?
-          string_currentsettings.toCharArray(char_currentsettings);        //is length required?     
+          char char_currentsettings[100]; //is length required?
+          string_currentsettings.toCharArray(char_currentsettings,100);        //is length required?     
           //wait for eeprom just for fun
           delay(1000);            
           
