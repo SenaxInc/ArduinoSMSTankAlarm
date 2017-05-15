@@ -423,7 +423,7 @@ void receiveSETTINGS()
           string_currentsettings +="\n";
           string_currentsettings +="H";    
           string_currentsettings +=EEPROM.read(39+settingtext_tanknumber);   
-          char char_currentsettings[100]; //is length required?
+          //turn string of settings into a character array so it can be sms'd
           string_currentsettings.toCharArray(char_currentsettings,100);        //is length required?     
           //wait for eeprom just for fun
           delay(1000);            
