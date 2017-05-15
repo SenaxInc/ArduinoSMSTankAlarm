@@ -38,10 +38,15 @@ boolean notConnected = true;
 
 // this is the threshold used for reading
 int readvalue_one;
+int readvalue_two;
+int readvalue_three;
 int contents_one;
 int constant_one;
 int toground_one;
 int alarm_one = 310; //default value for 5 feet
+
+
+
 
 int settingtext_tanknumber;
 int settingtext_value;
