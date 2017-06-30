@@ -1,0 +1,57 @@
+#include <EEPROM.h>
+
+/*
+manion
+*/
+
+//ENTER DESIRED VALUES BELOW
+int T=24; //whole hours between reorts
+//tank 1
+int oneA=48;    //10     //alarm height in inches from bottom of tank
+int oneH=16;    //40     //height of sensor above bottom of tank
+int oneC=2;     //30     //0=inactive 1=oil 2=saltwater
+int oneP=433;   //20     //when C1=1 constant=X.XX //when C1=2 constant=3.XXX
+//tank 2
+int twoA=0;     //11
+int twoH=0;     //41
+int twoC=0;     //31
+int twoP=0;     //21
+
+//define constant
+int oneFullconstant;
+
+void setup() {
+
+delay(1000);
+       
+//update eeprom with variables defined above
+   EEPROM.update(0, T);
+   EEPROM.update(10, oneA);
+   EEPROM.update(40, oneH);
+   EEPROM.update(30, oneC);
+   EEPROM.update(20, oneP/4);  //devide by 4 to store in EEPROM
+   
+delay(1000);
+
+   //print to serial
+  Serial.begin(9600);
+  delay(100);
+  Serial.println("Hours between reports: ");
+  Serial.println(EEPROM.read(0));
+  Serial.println("Number of 8-second ticks between reports: ");
+  Serial.println((((EEPROM.read(0))*60*60/8)-225));
+  Serial.println("Tank #1 sensor height above tank bottom in inches: ");
+  Serial.println(EEPROM.read(40));
+  Serial.println("Tank #1 ALARM height above tank bottom in inches: ");
+  Serial.println(EEPROM.read(10));
+  Serial.println("Tank #1 ALARM height above sensor in arduino value: ");
+  Serial.println((((EEPROM.read(10)-EEPROM.read(40))*(8180/(10000/((EEPROM.read(20)*4)/12))))/10)+102);
+  Serial.println("Tank #1 contents type: ");
+  Serial.println(EEPROM.read(30));  
+  Serial.println("Tank #1 contents PSI per Foot: ");
+  Serial.println(EEPROM.read(20)*4);
+}  //end setup
+
+void loop() {
+    //nothing in loop
+}
