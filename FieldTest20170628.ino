@@ -27,8 +27,8 @@ int ticks_per_report = 442;  //default 59 min of 8 second ticks 59*60/8
 
 
 // char array of the telephone number to send SMS
-char remoteNumber[20]= "19186057322"; //server
-char remoteNumber_two[20]= "19186057322"; //alarm contact
+char remoteNumber[20]= "1918XXXXXXX"; //server
+char remoteNumber_two[20]= "1918XXXXXXX"; //alarm contact
 char receivedNumber[20]; //does sms only recognize "remoteNumber" char?
 
 // char array of the message
