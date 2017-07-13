@@ -40,7 +40,7 @@ Arduino will check sensor data on a schedualed basis. If sensor data is over a s
 
 # Bill of Materials
 
-http://www.arduino.org/products/shields/arduino-gsm-shield-2
+<a href="https://github.com/dorkmo/ArduinoSMSTankAlarm/blob/master/BillOfMaterials.md">Bill Of Materials</a>
 
 # Links
 
