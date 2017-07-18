@@ -27,7 +27,15 @@ int ticks_per_report = 442;  //default 59 min of 8 second ticks 59*60/8
 
 
 // char array of the telephone number to send SMS
+
+//USE "S" for SETUP, "A" for ALARM, "D" for DAILY
+//server
 char remoteNumber[20]= "1918XXXXXXX"; //server
+
+//daily text
+char remoteNumber[20]= "1918XXXXXXX"; //server
+
+//alarm
 char remoteNumber_two[20]= "1918XXXXXXX"; //alarm contact
 
 // char array of the message
