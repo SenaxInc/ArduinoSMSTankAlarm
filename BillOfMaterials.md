@@ -1,5 +1,8 @@
 # Electronics Parts
 
+* Pressure Sensor - Ratiometric 0.5-4.5V - 0-10psi 
+* Dwyer Part # 626-28-GH-P1-E6-S7
+* http://www.dwyer-inst.com/configurator/index.cfm?Group_ID=98
 * Arduino GSM Shield 2 with ANTENNA CONNECTOR
  * https://octopart.com/a000106-arduino-56764913
 * Terminal Block 6 and 10
