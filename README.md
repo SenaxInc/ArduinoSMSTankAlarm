@@ -98,6 +98,8 @@ SMS
 
 https://www.digi.com/resources/documentation/Digidocs/90002258/Reference/r_cmd_IP.htm
 
+https://www.digi.com/resources/documentation/digidocs/pdfs/90001543.pdf - pinout
+
 https://www.digi.com/resources/documentation/Digidocs/90002258/Reference/r_cmd_Ppound.htm?tocpath=AT%20commands%7CAddressing%20commands%7C_____4
 
 https://www.u-blox.com/sites/default/files/SARA-R4-SARA-N4_ATCommands_(UBX-17003787).pdf - Page 67
