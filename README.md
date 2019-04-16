@@ -98,7 +98,7 @@ SMS
 
 https://www.digi.com/resources/documentation/Digidocs/90002258/Reference/r_cmd_IP.htm
 
-https://www.digi.com/resources/documentation/digidocs/pdfs/90001543.pdf - pinout
+https://www.digi.com/resources/documentation/digidocs/pdfs/90001543.pdf - pinout Page 29
 
 https://www.digi.com/resources/documentation/Digidocs/90002258/Reference/r_cmd_Ppound.htm?tocpath=AT%20commands%7CAddressing%20commands%7C_____4
 
