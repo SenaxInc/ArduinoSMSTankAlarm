@@ -88,3 +88,16 @@ https://www.arduino.cc/en/Tutorial/GSMExamplesReceiveSMS
 https://forum.arduino.cc/index.php?topic=163636.0
 
 # Links - Digi Xbee
+
+
+Sleep
+
+https://www.digi.com/resources/documentation/Digidocs/90002258/#Reference/r_cmd_D8.htm
+
+SMS
+
+https://www.digi.com/resources/documentation/Digidocs/90002258/Reference/r_cmd_IP.htm
+
+https://www.u-blox.com/sites/default/files/SARA-R4-SARA-N4_ATCommands_(UBX-17003787).pdf - Page 67
+
+
