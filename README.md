@@ -111,6 +111,12 @@ https://electronics.stackexchange.com/questions/33421/how-to-call-at-command-on-
 https://forum.arduino.cc/index.php?topic=61238.0
 
 https://www.instructables.com/id/Digi-XBee3-Cellular-SMS-ActivityBot/
+https://www.digi.com/resources/documentation/Digidocs/90002258/#Reference/r_cmd_IP.htm%3FTocPath%3DAT%2520commands%7CNetwork%2520commands%7C_____1
+
+https://www.digi.com/resources/documentation/digidocs/90002253/default.htm#Reference/r_cmd_Ppound.htm%3FTocPath%3DAT%2520commands%7CAddressing%2520commands%7C_____4
+
+
+
 
 # Links - Cellular Service
 
