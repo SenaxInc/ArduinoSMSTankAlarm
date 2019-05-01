@@ -104,6 +104,14 @@ https://www.digi.com/resources/documentation/Digidocs/90002258/Reference/r_cmd_P
 
 https://www.u-blox.com/sites/default/files/SARA-R4-SARA-N4_ATCommands_(UBX-17003787).pdf - Page 67
 
+AT Commands
+
+https://electronics.stackexchange.com/questions/33421/how-to-call-at-command-on-xbee-from-arduino
+
+https://forum.arduino.cc/index.php?topic=61238.0
+
+https://www.instructables.com/id/Digi-XBee3-Cellular-SMS-ActivityBot/
+
 # Links - Cellular Service
 
 https://marketplace.att.com/products/att-iot-dataplans-lte-m-us
