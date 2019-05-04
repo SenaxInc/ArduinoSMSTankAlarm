@@ -1,10 +1,11 @@
 // import the GSM and rtos library
-#include <GSM.h>
 #include <avr/sleep.h>
 #include <avr/power.h>
 #include <avr/wdt.h>
 #include <avr/interrupt.h>
 #include <EEPROM.h>
+// We'll use SoftwareSerial to communicate with the XBee:
+#include <SoftwareSerial.h
 
 //CONNECT SENSOR #1 to PINS 5 and A0
 //CONNECT SENSOR #2 to PINS 6 and A1
@@ -20,7 +21,6 @@ volatile int time_tick_report = 1; //start tick count at 1
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
 int ticks_per_report = 442;  //default 59 min of 8 second ticks 59*60/8
-
 
 // char array of the telephone number to send SMS
 
@@ -82,11 +82,11 @@ defineSETTINGS();
         digitalWrite(5, LOW); // turn off sensor
         readinches_one = (10*(readvalue_one-102))/(8180/(10000/((EEPROM.read(20)*4)/12))); //converts to inches
   
-  // Power On GSM SHIELD          
-            digitalWrite(7, HIGH);  //pin seven powers on GSM shield
-            pinMode(7, OUTPUT);
+  // Power On XBEE SHIELD          
+            digitalWrite(9, HIGH);  //pin seven powers on GSM shield
+            pinMode(9, OUTPUT);
             delay(500); //wait for power signal to work   
-            digitalWrite(7, LOW); // turn off power signal
+            digitalWrite(9, LOW); // turn off power signal LOW = on, HIGH = sleep
   
   
   
