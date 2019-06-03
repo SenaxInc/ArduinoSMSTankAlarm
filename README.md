@@ -119,7 +119,7 @@ https://www.digi.com/resources/documentation/Digidocs/90002258/#Reference/r_cmd_
 
 https://www.digi.com/resources/documentation/digidocs/90002253/default.htm#Reference/r_cmd_Ppound.htm%3FTocPath%3DAT%2520commands%7CAddressing%2520commands%7C_____4
 
-
+https://itp.nyu.edu/classes/towers-spring2014/labs-how-to/send-sms-with-at-commands/
 
 
 # Links - Cellular Service
