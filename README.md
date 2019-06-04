@@ -87,6 +87,12 @@ https://www.arduino.cc/en/Tutorial/GSMExamplesReceiveSMS
 
 https://forum.arduino.cc/index.php?topic=163636.0
 
+*Sparkfun LTE-M Shield*
+
+https://www.sparkfun.com/products/14997
+
+https://learn.sparkfun.com/tutorials/lte-cat-m1nb-iot-shield-hookup-guide
+
 # Links - Digi Xbee
 
 
