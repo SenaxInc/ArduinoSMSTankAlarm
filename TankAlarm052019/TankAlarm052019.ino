@@ -1,16 +1,29 @@
-// import the GSM and rtos library
 #include <avr/sleep.h>
 #include <avr/power.h>
 #include <avr/wdt.h>
 #include <avr/interrupt.h>
 #include <EEPROM.h>
-// We'll use SoftwareSerial to communicate with the XBee:
-#include <SoftwareSerial.h>
+#include <SoftwareSerial.h>   //Use SoftwareSerial to communicate with LTEshield
+
+//Click here to get the library: http://librarymanager/All#SparkFun_LTE_Shield_Arduino_Library
+#include <SparkFun_LTE_Shield_Arduino_Library.h>
+
+// Create a SoftwareSerial object to pass to the LTE_Shield library
+SoftwareSerial lteSerial(8, 9);
+// Create a LTE_Shield object to use throughout the sketch
+LTE_Shield lte;
 
 //CONNECT SENSOR #1 to PINS 5 and A0
 //CONNECT SENSOR #2 to PINS 6 and A1
-//CONNECT SENSOR #3 to PINS 9 and A2
+//CONNECT SENSOR #3 to PINS 9 and A2   !!!
 //CONNECT SENSOR #4 to PINS 4 and A3
+
+// Plug in your Hologram device key here:
+String HOLOGRAM_DEVICE_KEY = "Ab12CdE4";
+
+// These values should remain the same:
+const char HOLOGRAM_URL[] = "cloudsocket.hologram.io";
+const unsigned int HOLOGRAM_PORT = 9999;
 
 // PIN Number
 #define PINNUMBER ""
@@ -82,13 +95,10 @@ defineSETTINGS();
         digitalWrite(5, LOW); // turn off sensor
         readinches_one = (10*(readvalue_one-102))/(8180/(10000/((EEPROM.read(20)*4)/12))); //converts to inches
   
-  // Power On XBEE SHIELD          
-            digitalWrite(9, HIGH);  //pin seven powers on GSM shield
-            pinMode(9, OUTPUT);
-            delay(500); //wait for power signal to work   
-            digitalWrite(9, LOW); // turn off power signal LOW = on, HIGH = sleep
-  
-  
+  // Start LTEshied communication     
+
+lte.begin(lteSerial, 9600)
+         
   
   //compose text string
   
@@ -121,6 +131,38 @@ defineSETTINGS();
           delay(1000);   
   
   //connect to network
+  int socket = -1;
+  String hologramMessage;
+
+  // New lines are not handled well
+  message.replace('\r', ' ');
+  message.replace('\n', ' ');
+
+  // Construct a JSON-encoded Hologram message string:
+  hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" +
+    message + "\"}";
+  
+  // Open a socket
+  socket = lte.socketOpen(LTE_SHIELD_TCP);
+  // On success, socketOpen will return a value between 0-5. On fail -1.
+  if (socket >= 0) {
+    // Use the socket to connec to the Hologram server
+    if (lte.socketConnect(socket, HOLOGRAM_URL, HOLOGRAM_PORT) == LTE_SHIELD_SUCCESS) {
+      // Send our message to the server:
+      if (lte.socketWrite(socket, hologramMessage) == LTE_SHIELD_SUCCESS)
+      {
+        // On succesful write, close the socket.
+        if (lte.socketClose(socket) == LTE_SHIELD_SUCCESS) {
+        }
+      } else {
+          // TODO - tick to retry 10 times
+        }
+    }
+  }
+  message = ""; // Clear message string
+
+  
+              /*
               while(notConnected) {  //when not connected check for connection
                 if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
                    notConnected = false;   //when connected, move on 
@@ -132,7 +174,7 @@ defineSETTINGS();
   sms.print(char_currentsettings); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
   sms.endSMS();
   delay(10000);
-  
+  */
           string_currentsettings = "";                   
                       
           //wait for eeprom just for fun
@@ -228,10 +270,12 @@ void sleepyTEXT()
           
             delay(6000);    //delay to normalize
 // Power On GSM SHIELD          
-            digitalWrite(7, HIGH);  //pin seven powers on GSM shield
-            pinMode(7, OUTPUT);
-            delay(500); //wait for power signal to work   
-            digitalWrite(7, LOW); // turn off power signal
+  //            digitalWrite(7, HIGH);  //pin seven powers on GSM shield
+  //            pinMode(7, OUTPUT);
+  //            digitalWrite(7, LOW); // turn off power signal
+
+lte.begin(lteSerial, 9600);   //begin lte communication
+            delay(1000); //wait for power signal to work   
           
 
 // Connect to GSM network
