@@ -11,7 +11,7 @@ LTE_Shield lte;
 
 
 // Hologram device key. Used to send messages:
-String HOLOGRAM_DEVICE_KEY = "XxXxXxXx";
+String HOLOGRAM_DEVICE_KEY = "12345678";
 
 // Hologram Server constants. Shouldn't have to change:
 const char HOLOGRAM_URL[] = "cloudsocket.hologram.io";
@@ -27,8 +27,8 @@ void loop() {
     Serial.println(F("LTE Shield connected!"));
   }
 
-String message = "sup bro";
-String topic = "ALERT1";
+String message = "High Tank";
+
 
 //"{"k":"XxXxXxXx","d":"Hello, World!","t":"TOPIC1"}";
 
@@ -45,14 +45,22 @@ void sendHologramMessage(String message)
 {
   int socket = -1;
   String hologramMessage;
+  String topic;
+
+  topic = "ALERT1";
 
   // New lines are not handled well
   message.replace('\r', ' ');
   message.replace('\n', ' ');
 
+  topic.replace('\r', ' ');
+  topic.replace('\n', ' ');
+
+
+
   // Construct a JSON-encoded Hologram message string:
-  hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" + message + "\"}";  
-//hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" + message + "\",\"t\":\"" + topic + "\"}";  
+//  hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" + message + "\"}";  
+    hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" + message + "\",\"t\":\"" + topic + "\"}";  
 
   
   // Open a socket
