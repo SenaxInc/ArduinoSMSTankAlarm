@@ -173,13 +173,12 @@ lte.begin(lteSerial, 9600);
 
   lte.poll();
 
-  //lte.powerOn();
-
+//Press power button to turn off LTE Radio
     pinMode(POWER_PIN, OUTPUT);
     digitalWrite(POWER_PIN, LOW);
     delay(LTE_SHIELD_POWER_PULSE_PERIOD);
     pinMode(POWER_PIN, INPUT); // Return to high-impedance, rely on SARA module internal pull-up
-    
+    //lte.powerOn(); ?     
   
               /*
               while(notConnected) {  //when not connected check for connection
@@ -201,11 +200,6 @@ lte.begin(lteSerial, 9600);
 
 
   
-  //SHUTDOWN GSM
-  gsmAccess.shutdown();
-  notConnected = true;
-
-delay(500);
 
 
 //define watchdog settings
@@ -298,6 +292,7 @@ lte.begin(lteSerial, 9600);   //begin lte communication
           
 
 // Connect to GSM network
+        /*
             while(notConnected) {  //when not connected check for connection
                 if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
                    notConnected = false;   //when connected, move on 
@@ -305,7 +300,7 @@ lte.begin(lteSerial, 9600);   //begin lte communication
                       delay(1000); //if not connected, wait another second to check again
                 }
             }
-        
+        */
          
         //CONSTRUCT ALARM TEXT HERE                                
           String string_text = "ALARM! TANK:";
@@ -315,6 +310,7 @@ lte.begin(lteSerial, 9600);   //begin lte communication
 
           //turn string of settings into a character array so it can be sms'd
           string_text.toCharArray(char_alarmtext,100);                     
+/*
 //Send SMS                                              
         sms.beginSMS(remoteNumber);
         sms.print(char_alarmtext);
@@ -323,11 +319,11 @@ lte.begin(lteSerial, 9600);   //begin lte communication
         sms.beginSMS(remoteNumber_two);
         sms.print(char_alarmtext);
         sms.endSMS();                                
-
+*/
         string_text = "";
 
-        gsmAccess.shutdown(); //turn off GSM once text sent
-        notConnected = true;                                    
+//        gsmAccess.shutdown(); //turn off GSM once text sent
+//        notConnected = true;                                    
         delay(4000);
         
 //prepare for sleep
