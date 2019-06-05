@@ -87,6 +87,12 @@ https://www.arduino.cc/en/Tutorial/GSMExamplesReceiveSMS
 
 https://forum.arduino.cc/index.php?topic=163636.0
 
+*Sparkfun LTE-M Shield*
+
+https://www.sparkfun.com/products/14997
+
+https://learn.sparkfun.com/tutorials/lte-cat-m1nb-iot-shield-hookup-guide
+
 # Links - Digi Xbee
 
 
@@ -106,6 +112,8 @@ https://www.u-blox.com/sites/default/files/SARA-R4-SARA-N4_ATCommands_(UBX-17003
 
 http://blockly.parallax.com/blockly/projectlink?id=7440&key=b787f9fa-7904-460e-bbff-f64d93a3c7e6#
 
+https://hologram.io/docs/reference/cloud/embedded/
+
 AT Commands
 
 https://electronics.stackexchange.com/questions/33421/how-to-call-at-command-on-xbee-from-arduino
@@ -117,7 +125,7 @@ https://www.digi.com/resources/documentation/Digidocs/90002258/#Reference/r_cmd_
 
 https://www.digi.com/resources/documentation/digidocs/90002253/default.htm#Reference/r_cmd_Ppound.htm%3FTocPath%3DAT%2520commands%7CAddressing%2520commands%7C_____4
 
-
+https://itp.nyu.edu/classes/towers-spring2014/labs-how-to/send-sms-with-at-commands/
 
 
 # Links - Cellular Service

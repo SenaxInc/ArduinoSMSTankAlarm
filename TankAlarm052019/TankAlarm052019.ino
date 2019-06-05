@@ -5,7 +5,7 @@
 #include <avr/interrupt.h>
 #include <EEPROM.h>
 // We'll use SoftwareSerial to communicate with the XBee:
-#include <SoftwareSerial.h
+#include <SoftwareSerial.h>
 
 //CONNECT SENSOR #1 to PINS 5 and A0
 //CONNECT SENSOR #2 to PINS 6 and A1
