@@ -11,12 +11,20 @@
 // Create a SoftwareSerial object to pass to the LTE_Shield library
 SoftwareSerial lteSerial(8, 9);
 // Create a LTE_Shield object to use throughout the sketch
+#define LTE_SHIELD_POWER_PULSE_PERIOD 3200
+#define POWER_PIN 5
+#define RESET_PIN 6
 LTE_Shield lte;
 
-//CONNECT SENSOR #1 to PINS 5 and A0
-//CONNECT SENSOR #2 to PINS 6 and A1
-//CONNECT SENSOR #3 to PINS 9 and A2   !!!
-//CONNECT SENSOR #4 to PINS 4 and A3
+//CONNECT SENSOR #1 to PINS 11 and A1
+#define SENSORVCC1_PIN 11
+#define SENSORADC1_PIN A1
+//CONNECT SENSOR #2 to PINS 12 and A2
+#define SENSORVCC1_PIN 12
+#define SENSORADC1_PIN A2
+//CONNECT SENSOR #3 to PINS 13 and A3
+#define SENSORVCC1_PIN 13
+#define SENSORADC1_PIN A3
 
 // Plug in your Hologram device key here:
 String HOLOGRAM_DEVICE_KEY = "Ab12CdE4";
@@ -39,10 +47,10 @@ int ticks_per_report = 442;  //default 59 min of 8 second ticks 59*60/8
 
 //USE "S" for SETUP, "A" for ALARM, "D" for DAILY
 //server
-char remoteNumber[20]= "1918XXXXXXX"; //server
+//char remoteNumber[20]= "1918XXXXXXX"; //server
 
 //daily text
-char remoteNumber[20]= "1918XXXXXXX"; //server
+//char remoteNumber[20]= "1918XXXXXXX"; //server
 
 //alarm
 char remoteNumber_two[20]= "1918XXXXXXX"; //alarm contact
@@ -85,19 +93,19 @@ void setup() {
 defineSETTINGS();
   
 //power up and read sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
-        digitalWrite(5, HIGH);  //pin #5 powers 5V to sensor
-        pinMode(5, OUTPUT);
+        digitalWrite(SENSORVCC1_PIN, HIGH);  //pin #5 powers 5V to sensor
+        pinMode(SENSORVCC1_PIN, OUTPUT);
         delay(10000); //wait for sensor signal to normalize    
-        readfresh = analogRead(A0);  //dummy read to refresh adc after wake up
+        readfresh = analogRead(SENSORADC1_PIN);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue_one = analogRead(A0);  // read a sensor from analog pin #A0
+        readvalue_one = analogRead(SENSORADC1_PIN);  // read a sensor from analog pin #A0
         delay(1000);
-        digitalWrite(5, LOW); // turn off sensor
+        digitalWrite(SENSORVCC1_PIN, LOW); // turn off sensor
         readinches_one = (10*(readvalue_one-102))/(8180/(10000/((EEPROM.read(20)*4)/12))); //converts to inches
   
   // Start LTEshied communication     
 
-lte.begin(lteSerial, 9600)
+lte.begin(lteSerial, 9600);
          
   
   //compose text string
@@ -133,7 +141,8 @@ lte.begin(lteSerial, 9600)
   //connect to network
   int socket = -1;
   String hologramMessage;
-
+  static String message = "";
+  
   // New lines are not handled well
   message.replace('\r', ' ');
   message.replace('\n', ' ');
@@ -156,11 +165,21 @@ lte.begin(lteSerial, 9600)
         }
       } else {
           // TODO - tick to retry 10 times
+            lte.poll();
         }
     }
   }
   message = ""; // Clear message string
 
+  lte.poll();
+
+  //lte.powerOn();
+
+    pinMode(POWER_PIN, OUTPUT);
+    digitalWrite(POWER_PIN, LOW);
+    delay(LTE_SHIELD_POWER_PULSE_PERIOD);
+    pinMode(POWER_PIN, INPUT); // Return to high-impedance, rely on SARA module internal pull-up
+    
   
               /*
               while(notConnected) {  //when not connected check for connection
@@ -253,14 +272,14 @@ void sleepyTEXT()
         ADCSRA |= (1<<ADEN); //ADC hex code set to on
         power_adc_enable(); //enable ADC module    
 //power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
-        digitalWrite(5, HIGH);  //pin #5 powers 5V to sensor
-        pinMode(5, OUTPUT);
+        digitalWrite(SENSORVCC1_PIN, HIGH);  //pin #5 powers 5V to sensor
+        pinMode(SENSORVCC1_PIN, OUTPUT);
         delay(10000); //wait for sensor signal to normalize    
-        readfresh = analogRead(A0);  //dummy read to refresh adc after wake up
+        readfresh = analogRead(SENSORADC1_PIN);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue_one = analogRead(A0);  // read a sensor from analog pin #A1
+        readvalue_one = analogRead(SENSORADC1_PIN);  // read a sensor from analog pin #A1
         delay(1000);
-        digitalWrite(5, LOW); // turn off sensor
+        digitalWrite(SENSORVCC1_PIN, LOW); // turn off sensor
         readinches_one = (10*(readvalue_one-102))/(8180/(10000/((EEPROM.read(20)*4)/12))); //converts to inches
     
         if (readvalue_one > alarm_one) {
@@ -328,34 +347,21 @@ void dailyTEXT()
         power_adc_enable(); //enable ADC module    
         
 //power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
-        digitalWrite(5, HIGH);  //pin five powers 5V to sensor
-        pinMode(5, OUTPUT);
+        digitalWrite(SENSORVCC1_PIN, HIGH);  //pin five powers 5V to sensor
+        pinMode(SENSORVCC1_PIN, OUTPUT);
         delay(6000); //wait for sensor signal to normalize    
-        readfresh = analogRead(A0);  //dummy read to refresh adc after wake up
+        readfresh = analogRead(SENSORADC1_PIN);  //dummy read to refresh adc after wake up
         delay(2000);
-        readvalue_one = analogRead(A0);  // read a sensor from analog pin 0 // A0 = pin 14
-        digitalWrite(5, LOW); // turn off sensor
+        readvalue_one = analogRead(SENSORADC1_PIN);  // read a sensor from analog pin 0 // A0 = pin 14
+        digitalWrite(SENSORVCC1_PIN, LOW); // turn off sensor
         readinches_one = (10*(readvalue_one-102))/(8180/(10000/((EEPROM.read(20)*4)/12))); //converts to inches
     
 // prepare to send SMS
             //turn on USART to be ready for GSM
           
             delay(6000);    //delay to normalize
-// Power On GSM SHIELD          
-            digitalWrite(7, HIGH);  //pin seven powers on GSM shield
-            pinMode(7, OUTPUT);
-            delay(500); //wait for power signal to work   
-            digitalWrite(7, LOW); // turn off power signal
-          
 
-// Connect to GSM network
-            while(notConnected) {  //when not connected check for connection
-                if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
-                   notConnected = false;   //when connected, move on 
-                else {
-                      delay(1000); //if not connected, wait another second to check again
-                }
-            }
+
    //CONSTRUCT REPORT TEXT HERE
           String string_text = "TANK GAUGE:";
   if(EEPROM.read(30)!=0){
@@ -373,16 +379,7 @@ void dailyTEXT()
           //turn string of settings into a character array so it can be sms'd
           string_text.toCharArray(char_reporttext,100);
   
-//Send SMS                                    
-        sms.beginSMS(remoteNumber);
-        sms.print(char_reporttext); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
-        sms.endSMS();
-        
-        string_text = "";  
-  
-        gsmAccess.shutdown(); //turn off GSM once text sent
-        notConnected = true;                                    
-        delay(4000);
+
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
         ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
