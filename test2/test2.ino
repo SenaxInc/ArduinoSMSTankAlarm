@@ -3,7 +3,20 @@
 #include <SparkFun_LTE_Shield_Arduino_Library.h>
 //#include <ArduinoJson.h>
 
-SoftwareSerial XBeeSerial(2,3);
+// Create a SoftwareSerial object to pass to the LTE_Shield library
+SoftwareSerial lteSerial(8, 9);
+
+// Create a LTE_Shield object to use throughout the sketch
+LTE_Shield lte;
+
+
+// Hologram device key. Used to send messages:
+String HOLOGRAM_DEVICE_KEY = "Ab12CdE4";
+
+// Hologram Server constants. Shouldn't have to change:
+const char HOLOGRAM_URL[] = "cloudsocket.hologram.io";
+const unsigned int HOLOGRAM_PORT = 9999;
+const unsigned int HOLOGRAM_LISTEN_PORT = 4010;
 
 void setup() {
   // put your setup code here, to run once:
