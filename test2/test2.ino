@@ -11,7 +11,7 @@ LTE_Shield lte;
 
 
 // Hologram device key. Used to send messages:
-String HOLOGRAM_DEVICE_KEY = "Ab12CdE4";
+String HOLOGRAM_DEVICE_KEY = "XxXxXxXx";
 
 // Hologram Server constants. Shouldn't have to change:
 const char HOLOGRAM_URL[] = "cloudsocket.hologram.io";
@@ -19,22 +19,63 @@ const unsigned int HOLOGRAM_PORT = 9999;
 const unsigned int HOLOGRAM_LISTEN_PORT = 4010;
 
 void setup() {
-  // put your setup code here, to run once:
-  
-            digitalWrite(9, HIGH);  //pin nine powers on XBee
-            pinMode(9, OUTPUT);
-            delay(500); //wait for power signal to work   
-            digitalWrite(9, LOW); // turn off power signal LOW = on, HIGH = sleep
-
-  XBeeSerial.begin(9600);
-delay(2000);
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  if (XBeeSerial.isListening())
-  {
-XBeeSerial.println('{"k":"(t87tF,x","d":"Hello, World!","t":"TOPIC1"}');
-delay(60000);
+  Serial.begin(9600);
+  if ( lte.begin(lteSerial, 9600) ) {
+    Serial.println(F("LTE Shield connected!"));
   }
-}
+
+String message = "sup bro";
+String topic = "ALERT1";
+
+//"{"k":"XxXxXxXx","d":"Hello, World!","t":"TOPIC1"}";
+
+sendHologramMessage(message);
+
+message = ""; // Clear message string
+
+
+lte.poll();
+
+} //end loop
+
+void sendHologramMessage(String message)
+{
+  int socket = -1;
+  String hologramMessage;
+
+  // New lines are not handled well
+  message.replace('\r', ' ');
+  message.replace('\n', ' ');
+
+  // Construct a JSON-encoded Hologram message string:
+  hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" + message + "\"}";  
+//hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" + message + "\",\"t\":\"" + topic + "\"}";  
+
+  
+  // Open a socket
+  socket = lte.socketOpen(LTE_SHIELD_TCP);
+  // On success, socketOpen will return a value between 0-5. On fail -1.
+  if (socket >= 0) {
+    // Use the socket to connec to the Hologram server
+    Serial.println("Connecting to socket: " + String(socket));
+    if (lte.socketConnect(socket, HOLOGRAM_URL, HOLOGRAM_PORT) == LTE_SHIELD_SUCCESS) {
+      // Send our message to the server:
+      Serial.println("Sending: " + String(hologramMessage));
+      if (lte.socketWrite(socket, hologramMessage) == LTE_SHIELD_SUCCESS)
+      {
+        // On succesful write, close the socket.
+        if (lte.socketClose(socket) == LTE_SHIELD_SUCCESS) {
+          Serial.println("Socket " + String(socket) + " closed");
+        }
+      } else {
+        Serial.println(F("Failed to write"));
+
+        //add tick to try 10 times
+        
+      }
+    }
+  }
+} //end sendHologramMessage
