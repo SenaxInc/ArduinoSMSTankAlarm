@@ -17,6 +17,7 @@ LTE_Shield lte;
 
 int lvlpin = 10; //liquid level switch set to Pin 10
 int lvlstate = digitalRead(lvlpin);  //to handle data of current State of a switch
+int levelState = HIGH;
 
 // Plug in your Hologram device key here:
 String HOLOGRAM_DEVICE_KEY = "Ab12CdE4";
@@ -38,7 +39,7 @@ int ticks_per_report = 442;  //default 59 min of 8 second ticks 59*60/8
 // char array of the telephone number to send SMS
 
 //USE "S" for SETUP, "A" for ALARM, "D" for DAILY
-//String topic;
+String topicType;
 
 int readfresh;
 
@@ -53,12 +54,10 @@ void setup() {
   power_adc_enable(); //enable ADC module    
 //always off power saving settings
 
-defineSETTINGS();
+ticks_per_report = ((24*60*60/8)-225);  //subtract 30 minutes to account for shifts  
 
-//
-
-checkLevel();  
-
+//send startup level
+  levelState = lvlState();
   topicType="";
   topicType="S";  //S == startup
   sendData(levelState, topicType); //connect LTE and send
@@ -73,33 +72,41 @@ watchdogSET();
 }
 
 void loop() {
-  
-    tickSleep();  //puts arduino to sleep for about 8 seconds
-  
-//wake from sleep interput here//
-  
-//check for daily trigger                          
+  //sleep for 8 seconds  
+  tickSleep();
+    
+  //check for daily trigger                          
+  if (time_tick_report > ticks_per_report && time_tick_hours > ticks_per_sleep) {   //if number of ticks has reached 24 hours worth send text no matter what
+    //turn off watchdog timer while communicating
+    wdt_disable();
 
-if (time_tick_report > ticks_per_report && time_tick_hours > ticks_per_sleep) {   //if number of ticks has reached 24 hours worth send text no matter what
-  wdt_disable();
-            dailyTEXT();
+    //send daily text
+    dailyTEXT();
           
-            time_tick_report = 1;  //daily tick reset
-            time_tick_hours = 1;  //hourly tick reset
-  watchdogSET();          
-        } //end daily text/check
+    //reset ticks
+    time_tick_report = 1;
+    time_tick_hours = 1;
+
+    //turn on watchdog timer
+    watchdogSET();          
+  }//end daily text/check
 
 //if day has not elapsed then check hourly ticks
-  //hourly wake up to check for alarm trigger
-else if (time_tick_hours > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
-  wdt_disable();              
-            sleepyTEXT();
-                                    
-            time_tick_hours = 1;   //rest ticks
-  watchdogSET();                                    
-        } //end hourly text/check
-    
-}
+//hourly wake up to check for alarm trigger
+  else if (time_tick_hours > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
+    //turn off watchdog timer while communicating
+    wdt_disable();
+
+    //send alarm if level HIGH              
+    sleepyTEXT();
+
+    //reset ticks
+    time_tick_hours = 1;   //rest ticks
+
+    //turn on watchdog timer
+     watchdogSET();                                    
+  } //end hourly text/check
+}//end loop
     
 void tickSleep()   
 {
@@ -120,70 +127,48 @@ void watchdogSET()
     wdt_reset();   //reset watchdog
 }
 
-void sleepyTEXT()
-{
-         // turn off interupts durring sesnsor read and transmission noInterrupts ();
+void sleepyTEXT() {
+  //prepare to read sensor
+  ADCSRA |= (1<<ADEN); //ADC hex code set to on
+  power_adc_enable(); //enable ADC module    
+
+  //define level state
+  levelState = lvlState();  //transplant into if statement below
+
+  if (levelState == HIGH) {    // if the sensor is over height
+    topicType="";
+    topicType="A";  //A=Alarm
+    sendData(levelState, topicType); //connect LTE and send
+  }
+
+  //prepare for sleep
+  power_adc_disable(); //disable the clock to the ADC module
+  ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
+}//end sleepytext void
+ 
+
+
+void dailyTEXT() {
 //prepare to read sensor
-        ADCSRA |= (1<<ADEN); //ADC hex code set to on
-        power_adc_enable(); //enable ADC module    
+  ADCSRA |= (1<<ADEN); //ADC hex code set to on
+  power_adc_enable(); //enable ADC module    
 
-checkLevel();  //transplant into if statement below
-
-if (levelState == HIGH) {    // if the sensor is over height
-  topicType="";
-  topicType="A";  //A=Alarm
-  sendData(levelState, topicType); //connect LTE and send
-}
-
-//prepare for sleep
-        power_adc_disable(); //disable the clock to the ADC module
-        ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
-        //turn interupts back on interrupts (); 
-    }  //end hourly text 
-} //end sleepytext void
-
-
-void dailyTEXT()
-{
-// turn off interupts durring sesnsor read and transmission noInterrupts ();
-         
-//prepare to read sensor
-        ADCSRA |= (1<<ADEN); //ADC hex code set to on
-        power_adc_enable(); //enable ADC module    
-        
-checkLevel();  //pull state from void?
-
+//send level state daily        
+  levelState = lvlState();
   topicType="";
   topicType="D";  //D=Daily
   sendData(levelState, topicType); //connect LTE and send
 
-//apply DAILY topic to message
-sendData(levelState, String topic)
-// SEND DATA HERE
-
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
         ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
         //turn interupts back on interrupts (); 
-      //end hourly text 
-}
-
-
-  
-void defineSETTINGS()
-{
-    ticks_per_report = (((EEPROM.read(0))*60*60/8)-225);  //subtract 30 minutes to account for shifts  
-  //tank one variables - maybe use a FOR statement in the future
-
-   //subtract height of sensor from alarm height to adjust for actual reading
-  alarm_one = ((((EEPROM.read(10)-EEPROM.read(40))*(8180/(10000/((EEPROM.read(20)*4)/12))))/10)+102); //converts from inches to arduino value.
-}
+} //end dailyTEXT 
 
 
 
 
-int levelState()
-{
+int lvlState() {
 static int checkState;
 pinMode(lvlpin,INPUT); //define liquid level pin mode
 digitalWrite(lvlpin,HIGH);
@@ -202,36 +187,31 @@ return checkState;
 
 
 
-
-void sendData(int levelState, String topic)
-{
-message = "";
-if(levelState == HIGH){
-message = "Level HIGH";
-}
-else
-{
-  message = "Level Nominal";
-}  
+void sendData(int levelState, String topic) {
+  static String message;
+  message = "";
+  if(levelState == HIGH){
+    message = "Level HIGH";
+  }
+  else
+  {
+    message = "Level Nominal";
+  }
 
   // Power On LTE SHIELD
   lte.begin(lteSerial, 9600);   //begin lte communication
   delay(1000); //wait for power signal to work   
-  //apply ALERT topic to message
+  lte.poll();
+
   // New lines are not handled well
   message.replace('\r', ' ');
   message.replace('\n', ' ');
   topic.replace('\r', ' ');
   topic.replace('\n', ' ');
-  //send message
-
+  
   //connect to network
   int socket = -1;
   String hologramMessage;
-
-  // New lines are not handled well
-  message.replace('\r', ' ');
-  message.replace('\n', ' ');
 
   // Construct a JSON-encoded Hologram message string:
   hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" +
