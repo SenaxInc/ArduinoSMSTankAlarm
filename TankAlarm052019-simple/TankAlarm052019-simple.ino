@@ -58,57 +58,11 @@ defineSETTINGS();
 //
 
 checkLevel();  
-  
-  // Start LTEshied communication     
-lte.begin(lteSerial, 9600);  
 
-//add STARTUP topic
-
-//send message
-  
-  //connect to network
-  int socket = -1;
-  String hologramMessage;
-  static String message = "";
-  
-  // New lines are not handled well
-  message.replace('\r', ' ');
-  message.replace('\n', ' ');
-
-  // Construct a JSON-encoded Hologram message string:
-  hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" +
-    message + "\"}";
-  
-  // Open a socket
-  socket = lte.socketOpen(LTE_SHIELD_TCP);
-  // On success, socketOpen will return a value between 0-5. On fail -1.
-  if (socket >= 0) {
-    // Use the socket to connec to the Hologram server
-    if (lte.socketConnect(socket, HOLOGRAM_URL, HOLOGRAM_PORT) == LTE_SHIELD_SUCCESS) {
-      // Send our message to the server:
-      if (lte.socketWrite(socket, hologramMessage) == LTE_SHIELD_SUCCESS)
-      {
-        // On succesful write, close the socket.
-        if (lte.socketClose(socket) == LTE_SHIELD_SUCCESS) {
-        }
-      } else {
-          // TODO - tick to retry 10 times
-            lte.poll();
-        }
-    }
-  }
-  message = ""; // Clear message string
-
-  lte.poll();
-
-//Press power button to turn off LTE Radio
-    pinMode(POWER_PIN, OUTPUT);
-    digitalWrite(POWER_PIN, LOW);
-    delay(LTE_SHIELD_POWER_PULSE_PERIOD);
-    pinMode(POWER_PIN, INPUT); // Return to high-impedance, rely on SARA module internal pull-up
-    //lte.powerOn(); ?     
-  
-  
+  topicType="";
+  topicType="S";  //S == startup
+  sendData(levelState, topicType); //connect LTE and send
+    
 //define watchdog settings
 watchdogSET();  
 
@@ -175,19 +129,12 @@ void sleepyTEXT()
 
 checkLevel();  //transplant into if statement below
 
-        if (readvalue_one > alarm_one) {
-           // if the sensor is over height
+if (levelState == HIGH) {    // if the sensor is over height
+  topicType="";
+  topicType="A";  //A=Alarm
+  sendData(levelState, topicType); //connect LTE and send
+}
 
-// Power On LTE SHIELD          
-lte.begin(lteSerial, 9600);   //begin lte communication
-            delay(1000); //wait for power signal to work   
-          
-checkLevel();
-
-//apply ALERT topic to message
-
-//send message
-        
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
         ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
@@ -206,8 +153,12 @@ void dailyTEXT()
         
 checkLevel();  //pull state from void?
 
-//apply DAILY topic to message
+  topicType="";
+  topicType="D";  //D=Daily
+  sendData(levelState, topicType); //connect LTE and send
 
+//apply DAILY topic to message
+sendData(levelState, String topic)
 // SEND DATA HERE
 
 //prepare for sleep
@@ -228,29 +179,95 @@ void defineSETTINGS()
   alarm_one = ((((EEPROM.read(10)-EEPROM.read(40))*(8180/(10000/((EEPROM.read(20)*4)/12))))/10)+102); //converts from inches to arduino value.
 }
 
-void checkLevel()
+
+
+
+int levelState()
 {
+static int checkState;
 pinMode(lvlpin,INPUT); //define liquid level pin mode
 digitalWrite(lvlpin,HIGH);
    
    // read the state of the switch into a local variable:
 digitalWrite(lvlpin, HIGH);
 delay(2000);
-  lvlstate = digitalRead(lvlpin);
+  checkState = digitalRead(lvlpin);
   delay(10);
-  lvlstate = digitalRead(lvlpin);
+  checkState = digitalRead(lvlpin);
 delay(2000);
-digitalWrite(lvlpin, LOW);
+digitalWrite(lvlpin, LOW); 
 
-  if (lvlstate == HIGH) {       //And If the current state of the switch is "HIGH", AKA the N.C. switch is tripped...      
-    Serial.print('K');   //Send the Kill Signal
-    delay(5000);     
-  } else {               //If the switch was not "HIGH"...
-    Serial.print('A');   //Send Alive Signal
-    delay(5000);     
-}
-  
+return checkState;
 } //end checkLevel
+
+
+
+
+void sendData(int levelState, String topic)
+{
+message = "";
+if(levelState == HIGH){
+message = "Level HIGH";
+}
+else
+{
+  message = "Level Nominal";
+}  
+
+  // Power On LTE SHIELD
+  lte.begin(lteSerial, 9600);   //begin lte communication
+  delay(1000); //wait for power signal to work   
+  //apply ALERT topic to message
+  // New lines are not handled well
+  message.replace('\r', ' ');
+  message.replace('\n', ' ');
+  topic.replace('\r', ' ');
+  topic.replace('\n', ' ');
+  //send message
+
+  //connect to network
+  int socket = -1;
+  String hologramMessage;
+
+  // New lines are not handled well
+  message.replace('\r', ' ');
+  message.replace('\n', ' ');
+
+  // Construct a JSON-encoded Hologram message string:
+  hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" +
+    message + "\"}";
+  
+  // Open a socket
+  socket = lte.socketOpen(LTE_SHIELD_TCP);
+  // On success, socketOpen will return a value between 0-5. On fail -1.
+  if (socket >= 0) {
+    // Use the socket to connec to the Hologram server
+    if (lte.socketConnect(socket, HOLOGRAM_URL, HOLOGRAM_PORT) == LTE_SHIELD_SUCCESS) {
+      // Send our message to the server:
+      if (lte.socketWrite(socket, hologramMessage) == LTE_SHIELD_SUCCESS)
+      {
+        // On succesful write, close the socket.
+        if (lte.socketClose(socket) == LTE_SHIELD_SUCCESS) {
+        }
+      } else {
+          // TODO - tick to retry 10 times
+            lte.poll();
+        }
+    }
+  }
+  message = ""; // Clear message string
+  topic = "";   // Clear topic string
+
+  lte.poll();
+
+//Press power button to turn off LTE Radio
+    pinMode(POWER_PIN, OUTPUT);
+    digitalWrite(POWER_PIN, LOW);
+    delay(LTE_SHIELD_POWER_PULSE_PERIOD);
+    pinMode(POWER_PIN, INPUT); // Return to high-impedance, rely on SARA module internal pull-up
+    //lte.powerOn(); ?     
+    
+} //end sendData
 
 ISR(WDT_vect)
 {
