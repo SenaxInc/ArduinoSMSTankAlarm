@@ -2,7 +2,6 @@
 #include <avr/power.h>
 #include <avr/wdt.h>
 #include <avr/interrupt.h>
-#include <EEPROM.h>
 #include <SoftwareSerial.h>   //Use SoftwareSerial to communicate with LTEshield
 
 //Click here to get the library: http://librarymanager/All#SparkFun_LTE_Shield_Arduino_Library
@@ -16,15 +15,8 @@ SoftwareSerial lteSerial(8, 9);
 #define RESET_PIN 6
 LTE_Shield lte;
 
-//CONNECT SENSOR #1 to PINS 11 and A1
-#define SENSORVCC1_PIN 11
-#define SENSORADC1_PIN A1
-//CONNECT SENSOR #2 to PINS 12 and A2
-#define SENSORVCC1_PIN 12
-#define SENSORADC1_PIN A2
-//CONNECT SENSOR #3 to PINS 13 and A3
-#define SENSORVCC1_PIN 13
-#define SENSORADC1_PIN A3
+int lvlpin = 10; //liquid level switch set to Pin 10
+int lvlstate = digitalRead(lvlpin);  //to handle data of current State of a switch
 
 // Plug in your Hologram device key here:
 String HOLOGRAM_DEVICE_KEY = "Ab12CdE4";
@@ -46,43 +38,14 @@ int ticks_per_report = 442;  //default 59 min of 8 second ticks 59*60/8
 // char array of the telephone number to send SMS
 
 //USE "S" for SETUP, "A" for ALARM, "D" for DAILY
-//server
-//char remoteNumber[20]= "1918XXXXXXX"; //server
+//String topic;
 
-//daily text
-//char remoteNumber[20]= "1918XXXXXXX"; //server
-
-//alarm
-char remoteNumber_two[20]= "1918XXXXXXX"; //alarm contact
-
-// char array of the message
-char char_reporttext[50]; //text sent with each report
-char char_alarmtext[50]; //text sent when alarm triggered
-char char_currentsettings[100]; //is length required?
-
-String string_settingtext_raw;
-
-// set connection state variable
-boolean notConnected = true;
-
-// this is the threshold used for reading
-int readvalue_one;
-int readvalue_two;
-int readvalue_three;
-int readinches_one;
-int readinches_two;
-int readinches_three;
-int contents_one;
-int constant_one;
-int toground_one;
-int alarm_one = 1; //alarm set to always go off until set otherwise
-
-int settingtext_tanknumber;
-int settingtext_value;
-int settingtext_tankcontents;
 int readfresh;
 
+/////////////////////////////////////////////////////
+
 void setup() {
+
 //start up routine 
   wdt_disable(); //recomended
   sei();  //enable interrupts
@@ -91,52 +54,17 @@ void setup() {
 //always off power saving settings
 
 defineSETTINGS();
-  
-//power up and read sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
-        digitalWrite(SENSORVCC1_PIN, HIGH);  //pin #5 powers 5V to sensor
-        pinMode(SENSORVCC1_PIN, OUTPUT);
-        delay(10000); //wait for sensor signal to normalize    
-        readfresh = analogRead(SENSORADC1_PIN);  //dummy read to refresh adc after wake up
-        delay(2000);
-        readvalue_one = analogRead(SENSORADC1_PIN);  // read a sensor from analog pin #A0
-        delay(1000);
-        digitalWrite(SENSORVCC1_PIN, LOW); // turn off sensor
-        readinches_one = (10*(readvalue_one-102))/(8180/(10000/((EEPROM.read(20)*4)/12))); //converts to inches
+
+//
+
+checkLevel();  
   
   // Start LTEshied communication     
+lte.begin(lteSerial, 9600);  
 
-lte.begin(lteSerial, 9600);
-         
-  
-  //compose text string
-  
-  //tank 1
-  settingtext_tanknumber=1;  //can this be a for statement?
-          String string_currentsettings = "Current Settings Tank #";
-          string_currentsettings +=settingtext_tanknumber;
-          string_currentsettings +="\n";
-          string_currentsettings +="T";
-          string_currentsettings +=EEPROM.read(0);
-          string_currentsettings +="\n";
-          string_currentsettings +="A";    
-          string_currentsettings +=EEPROM.read(9+settingtext_tanknumber);
-          string_currentsettings +="\n";
-          string_currentsettings +="C";    
-          string_currentsettings +=EEPROM.read(29+settingtext_tanknumber);
-          string_currentsettings +=EEPROM.read(19+settingtext_tanknumber);            
-          string_currentsettings +="\n";
-          string_currentsettings +="H";    
-          string_currentsettings +=EEPROM.read(39+settingtext_tanknumber);
-          string_currentsettings +="\n";
-          string_currentsettings +="Current Fluid Level Tank 1:";    
-          string_currentsettings +=readinches_one;   //convert to feet and inches here
-          string_currentsettings +=" inches"; 
-                      
-          //turn string of settings into a character array so it can be sms'd
-          string_currentsettings.toCharArray(char_currentsettings,100);
-                      
-          //wait for eeprom just for fun
-          delay(1000);   
+//add STARTUP topic
+
+//send message
   
   //connect to network
   int socket = -1;
@@ -180,28 +108,7 @@ lte.begin(lteSerial, 9600);
     pinMode(POWER_PIN, INPUT); // Return to high-impedance, rely on SARA module internal pull-up
     //lte.powerOn(); ?     
   
-              /*
-              while(notConnected) {  //when not connected check for connection
-                if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
-                   notConnected = false;   //when connected, move on 
-                else {
-                      delay(1000); //if not connected, wait another second to check again
-                }
-            }
-  sms.beginSMS(remoteNumber);
-  sms.print(char_currentsettings); //INCLUDE CURRENT EEPROM SETTINGS IN TEXT
-  sms.endSMS();
-  delay(10000);
-  */
-          string_currentsettings = "";                   
-                      
-          //wait for eeprom just for fun
-          delay(1000);
-
-
   
-
-
 //define watchdog settings
 watchdogSET();  
 
@@ -265,66 +172,21 @@ void sleepyTEXT()
 //prepare to read sensor
         ADCSRA |= (1<<ADEN); //ADC hex code set to on
         power_adc_enable(); //enable ADC module    
-//power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
-        digitalWrite(SENSORVCC1_PIN, HIGH);  //pin #5 powers 5V to sensor
-        pinMode(SENSORVCC1_PIN, OUTPUT);
-        delay(10000); //wait for sensor signal to normalize    
-        readfresh = analogRead(SENSORADC1_PIN);  //dummy read to refresh adc after wake up
-        delay(2000);
-        readvalue_one = analogRead(SENSORADC1_PIN);  // read a sensor from analog pin #A1
-        delay(1000);
-        digitalWrite(SENSORVCC1_PIN, LOW); // turn off sensor
-        readinches_one = (10*(readvalue_one-102))/(8180/(10000/((EEPROM.read(20)*4)/12))); //converts to inches
-    
+
+checkLevel();  //transplant into if statement below
+
         if (readvalue_one > alarm_one) {
            // if the sensor is over height
-// prepare to send SMS
-            //turn on USART to be ready for GSM
-          
-            delay(6000);    //delay to normalize
-// Power On GSM SHIELD          
-  //            digitalWrite(7, HIGH);  //pin seven powers on GSM shield
-  //            pinMode(7, OUTPUT);
-  //            digitalWrite(7, LOW); // turn off power signal
 
+// Power On LTE SHIELD          
 lte.begin(lteSerial, 9600);   //begin lte communication
             delay(1000); //wait for power signal to work   
           
+checkLevel();
 
-// Connect to GSM network
-        /*
-            while(notConnected) {  //when not connected check for connection
-                if(gsmAccess.begin(PINNUMBER)==GSM_READY) //check for a GSM connection to network
-                   notConnected = false;   //when connected, move on 
-                else {
-                      delay(1000); //if not connected, wait another second to check again
-                }
-            }
-        */
-         
-        //CONSTRUCT ALARM TEXT HERE                                
-          String string_text = "ALARM! TANK:";
-          string_text +=" (1) ";
-          string_text +=readinches_one;
-          string_text +="inches";
+//apply ALERT topic to message
 
-          //turn string of settings into a character array so it can be sms'd
-          string_text.toCharArray(char_alarmtext,100);                     
-/*
-//Send SMS                                              
-        sms.beginSMS(remoteNumber);
-        sms.print(char_alarmtext);
-        sms.endSMS();
-                                        
-        sms.beginSMS(remoteNumber_two);
-        sms.print(char_alarmtext);
-        sms.endSMS();                                
-*/
-        string_text = "";
-
-//        gsmAccess.shutdown(); //turn off GSM once text sent
-//        notConnected = true;                                    
-        delay(4000);
+//send message
         
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
@@ -342,39 +204,11 @@ void dailyTEXT()
         ADCSRA |= (1<<ADEN); //ADC hex code set to on
         power_adc_enable(); //enable ADC module    
         
-//power up sensor - GSM shield uses pins 0,1,2,3,7 + 8 for mega, 10 for yun 
-        digitalWrite(SENSORVCC1_PIN, HIGH);  //pin five powers 5V to sensor
-        pinMode(SENSORVCC1_PIN, OUTPUT);
-        delay(6000); //wait for sensor signal to normalize    
-        readfresh = analogRead(SENSORADC1_PIN);  //dummy read to refresh adc after wake up
-        delay(2000);
-        readvalue_one = analogRead(SENSORADC1_PIN);  // read a sensor from analog pin 0 // A0 = pin 14
-        digitalWrite(SENSORVCC1_PIN, LOW); // turn off sensor
-        readinches_one = (10*(readvalue_one-102))/(8180/(10000/((EEPROM.read(20)*4)/12))); //converts to inches
-    
-// prepare to send SMS
-            //turn on USART to be ready for GSM
-          
-            delay(6000);    //delay to normalize
+checkLevel();  //pull state from void?
 
+//apply DAILY topic to message
 
-   //CONSTRUCT REPORT TEXT HERE
-          String string_text = "TANK GAUGE:";
-  if(EEPROM.read(30)!=0){
-          string_text +=" (1) ";
-          string_text +=readinches_one;
-  }
-  if(EEPROM.read(31)!=0){
-          string_text +=" (2) ";
-          string_text +=readinches_two;
-  } 
-  if(EEPROM.read(32)!=0){
-          string_text +=" (3) ";
-          string_text +=readinches_three;
-  } 
-          //turn string of settings into a character array so it can be sms'd
-          string_text.toCharArray(char_reporttext,100);
-  
+// SEND DATA HERE
 
 //prepare for sleep
         power_adc_disable(); //disable the clock to the ADC module
@@ -394,7 +228,30 @@ void defineSETTINGS()
   alarm_one = ((((EEPROM.read(10)-EEPROM.read(40))*(8180/(10000/((EEPROM.read(20)*4)/12))))/10)+102); //converts from inches to arduino value.
 }
 
+void checkLevel()
+{
+pinMode(lvlpin,INPUT); //define liquid level pin mode
+digitalWrite(lvlpin,HIGH);
+   
+   // read the state of the switch into a local variable:
+digitalWrite(lvlpin, HIGH);
+delay(2000);
+  lvlstate = digitalRead(lvlpin);
+  delay(10);
+  lvlstate = digitalRead(lvlpin);
+delay(2000);
+digitalWrite(lvlpin, LOW);
+
+  if (lvlstate == HIGH) {       //And If the current state of the switch is "HIGH", AKA the N.C. switch is tripped...      
+    Serial.print('K');   //Send the Kill Signal
+    delay(5000);     
+  } else {               //If the switch was not "HIGH"...
+    Serial.print('A');   //Send Alive Signal
+    delay(5000);     
+}
   
+} //end checkLevel
+
 ISR(WDT_vect)
 {
     time_tick_hours ++; //for each Watchdog Interupt, adds 1 to the number of 8 second ticks counted so far
