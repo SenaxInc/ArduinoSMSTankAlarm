@@ -36,40 +36,41 @@ const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
 int ticks_per_report = 442;  //default 59 min of 8 second ticks 59*60/8
 
-// char array of the telephone number to send SMS
-
-//USE "S" for SETUP, "A" for ALARM, "D" for DAILY
+//Define topicType as "S" for SETUP, "A" for ALARM, "D" for DAILY
 String topicType;
 
 int readfresh;
 
 /////////////////////////////////////////////////////
 
-void setup() {
 
-//start up routine 
-  wdt_disable(); //recomended
+
+
+void setup() {
+  //start up settings
+  wdt_disable(); //disable for setup
   sei();  //enable interrupts
   ADCSRA |= (1<<ADEN); //ADC hex code set to on
   power_adc_enable(); //enable ADC module    
-//always off power saving settings
+  
+  ticks_per_report = ((24*60*60/8)-225);  //subtract 30 minutes to account for shifts  
 
-ticks_per_report = ((24*60*60/8)-225);  //subtract 30 minutes to account for shifts  
-
-//send startup level
+  //send startup level
   levelState = lvlState();
   topicType="";
   topicType="S";  //S == startup
   sendData(levelState, topicType); //connect LTE and send
-    
-//define watchdog settings
-watchdogSET();  
+     
+  //define watchdog settings
+  watchdogSET();  
 
-//prepare for sleep - turn off some settings
-    power_adc_disable(); //disable the clock to the ADC module
-    ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
-                         //can USART be turned off here? power_usart_disable()
-}
+  //prepare for sleep - turn off some settings
+  power_adc_disable(); //disable the clock to the ADC module
+  ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
+}//end setup
+
+
+
 
 void loop() {
   //sleep for 8 seconds  
@@ -91,8 +92,8 @@ void loop() {
     watchdogSET();          
   }//end daily text/check
 
-//if day has not elapsed then check hourly ticks
-//hourly wake up to check for alarm trigger
+  //if day has not elapsed then check hourly ticks
+  //hourly wake up to check for alarm trigger
   else if (time_tick_hours > ticks_per_sleep) {  //if number of ticks has reach hour goal send text 
     //turn off watchdog timer while communicating
     wdt_disable();
@@ -107,25 +108,9 @@ void loop() {
      watchdogSET();                                    
   } //end hourly text/check
 }//end loop
-    
-void tickSleep()   
-{
-    set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
-    sleep_enable();
-    sei();  //enable interrupts
-    sleep_mode();
-//after about 8 seconds the Watchdog Interupt will progress the code to the disable sleep command
-    sleep_disable();             
-}
 
-void watchdogSET()
-{
-    wdt_reset();   //reset watchdog
-    WDTCSR |= 0b00011000; 
-    WDTCSR = 0b00100001;
-    WDTCSR = WDTCSR | 0b01000000;  //put watchdog in interupt mode (interupt will happen every 8 seconds)
-    wdt_reset();   //reset watchdog
-}
+
+
 
 void sleepyTEXT() {
   //prepare to read sensor
@@ -148,46 +133,28 @@ void sleepyTEXT() {
  
 
 
+
 void dailyTEXT() {
-//prepare to read sensor
+  //prepare to read sensor
   ADCSRA |= (1<<ADEN); //ADC hex code set to on
   power_adc_enable(); //enable ADC module    
 
-//send level state daily        
+  //send level state daily        
   levelState = lvlState();
   topicType="";
   topicType="D";  //D=Daily
   sendData(levelState, topicType); //connect LTE and send
 
-//prepare for sleep
-        power_adc_disable(); //disable the clock to the ADC module
-        ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
-        //turn interupts back on interrupts (); 
+  //prepare for sleep
+  power_adc_disable(); //disable the clock to the ADC module
+  ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
 } //end dailyTEXT 
 
 
 
 
-int lvlState() {
-static int checkState;
-pinMode(lvlpin,INPUT); //define liquid level pin mode
-digitalWrite(lvlpin,HIGH);
-   
-   // read the state of the switch into a local variable:
-digitalWrite(lvlpin, HIGH);
-delay(2000);
-  checkState = digitalRead(lvlpin);
-  delay(10);
-  checkState = digitalRead(lvlpin);
-delay(2000);
-digitalWrite(lvlpin, LOW); 
-
-return checkState;
-} //end checkLevel
-
-
-
 void sendData(int levelState, String topic) {
+  //define message
   static String message;
   message = "";
   if(levelState == HIGH){
@@ -230,27 +197,72 @@ void sendData(int levelState, String topic) {
         if (lte.socketClose(socket) == LTE_SHIELD_SUCCESS) {
         }
       } else {
-          // TODO - tick to retry 10 times
-            lte.poll();
-        }
+        // TODO - tick to retry 10 times
+        lte.poll();
+      }
     }
-  }
+  }//end socket if
+  
   message = ""; // Clear message string
   topic = "";   // Clear topic string
 
   lte.poll();
 
-//Press power button to turn off LTE Radio
-    pinMode(POWER_PIN, OUTPUT);
-    digitalWrite(POWER_PIN, LOW);
-    delay(LTE_SHIELD_POWER_PULSE_PERIOD);
-    pinMode(POWER_PIN, INPUT); // Return to high-impedance, rely on SARA module internal pull-up
-    //lte.powerOn(); ?     
-    
+  //Press power button to turn off LTE Radio
+  pinMode(POWER_PIN, OUTPUT);
+  digitalWrite(POWER_PIN, LOW);
+  delay(LTE_SHIELD_POWER_PULSE_PERIOD);
+  pinMode(POWER_PIN, INPUT); // Return to high-impedance, rely on SARA module internal pull-up
+  //lte.powerOn(); ?         
 } //end sendData
 
-ISR(WDT_vect)
-{
+
+
+
+int lvlState() {
+  static int checkState;
+  pinMode(lvlpin,INPUT); //define liquid level pin mode
+  digitalWrite(lvlpin,HIGH);
+   
+  // read the state of the switch into a local variable:
+  digitalWrite(lvlpin, HIGH);
+  delay(1000);
+  checkState = digitalRead(lvlpin);
+  delay(10);
+  checkState = digitalRead(lvlpin);
+  delay(1000);
+  digitalWrite(lvlpin, LOW); 
+
+  return checkState;
+} //end checkLevel
+
+
+
+    
+void tickSleep() {
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN); 
+  sleep_enable();
+  sei();  //enable interrupts
+  sleep_mode();
+  //after about 8 seconds the Watchdog Interupt will progress the code to the disable sleep command
+  sleep_disable();             
+}
+
+
+
+
+void watchdogSET() {
+  wdt_reset();   //reset watchdog
+  WDTCSR |= 0b00011000; 
+  WDTCSR = 0b00100001;
+  WDTCSR = WDTCSR | 0b01000000;  //put watchdog in interupt mode (interupt will happen every 8 seconds)
+  wdt_reset();   //reset watchdog
+}
+
+
+
+
+ISR(WDT_vect) {
     time_tick_hours ++; //for each Watchdog Interupt, adds 1 to the number of 8 second ticks counted so far
     time_tick_report ++; //seperate tick total for each day
 }
