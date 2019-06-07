@@ -179,8 +179,10 @@ void sendData(int levelState, String topic) {
   String hologramMessage;
 
   // Construct a JSON-encoded Hologram message string:
+//  hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" + message + "\"}";
+
   hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" +
-    message + "\"}";
+    message + "\",\"t\":[\"" + topic + "\"]}";
 
   // Power On LTE SHIELD
 do{
