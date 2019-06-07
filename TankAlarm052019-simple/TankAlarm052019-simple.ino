@@ -31,6 +31,7 @@ const unsigned int HOLOGRAM_PORT = 9999;
 
 volatile int time_tick_hours = 1; //start tick count at 1
 volatile int time_tick_report = 1; //start tick count at 1
+volatile int tick_socket = 0; //integer to count socket retries
 
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
@@ -47,6 +48,8 @@ int readfresh;
 
 
 void setup() {
+  blinky();  
+
   //start up settings
   wdt_disable(); //disable for setup
   sei();  //enable interrupts
@@ -165,11 +168,6 @@ void sendData(int levelState, String topic) {
     message = "Level Nominal";
   }
 
-  // Power On LTE SHIELD
-  lte.begin(lteSerial, 9600);   //begin lte communication
-  delay(1000); //wait for power signal to work   
-  lte.poll();
-
   // New lines are not handled well
   message.replace('\r', ' ');
   message.replace('\n', ' ');
@@ -183,25 +181,35 @@ void sendData(int levelState, String topic) {
   // Construct a JSON-encoded Hologram message string:
   hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" +
     message + "\"}";
-  
-  // Open a socket
-  socket = lte.socketOpen(LTE_SHIELD_TCP);
-  // On success, socketOpen will return a value between 0-5. On fail -1.
-  if (socket >= 0) {
-    // Use the socket to connec to the Hologram server
-    if (lte.socketConnect(socket, HOLOGRAM_URL, HOLOGRAM_PORT) == LTE_SHIELD_SUCCESS) {
-      // Send our message to the server:
-      if (lte.socketWrite(socket, hologramMessage) == LTE_SHIELD_SUCCESS)
-      {
-        // On succesful write, close the socket.
-        if (lte.socketClose(socket) == LTE_SHIELD_SUCCESS) {
+
+  // Power On LTE SHIELD
+do{
+  blinky(); //blink arduino led
+  lte.begin(lteSerial, 9600);   //begin lte communication
+} while (lte.getNetwork() == MNO_INVALID);
+
+  tick_socket = 0;
+  while(tick_socket < 10) {
+    // Open a socket
+    socket = lte.socketOpen(LTE_SHIELD_TCP);
+    // On success, socketOpen will return a value between 0-5. On fail -1.
+    if (socket >= 0) {
+      // Use the socket to connect to the Hologram server
+      if (lte.socketConnect(socket, HOLOGRAM_URL, HOLOGRAM_PORT) == LTE_SHIELD_SUCCESS) {
+        // Send our message to the server:
+        if (lte.socketWrite(socket, hologramMessage) == LTE_SHIELD_SUCCESS)
+        {
+          // On succesful write, close the socket.
+          if (lte.socketClose(socket) == LTE_SHIELD_SUCCESS) {
+            tick_socket = 11;
+          }
+        } else {
+          tick_socket ++; //add one to tick
+          lte.poll();
         }
-      } else {
-        // TODO - tick to retry 10 times
-        lte.poll();
       }
-    }
-  }//end socket if
+    }//end socket if
+  }//end socket while
   
   message = ""; // Clear message string
   topic = "";   // Clear topic string
@@ -246,6 +254,19 @@ void tickSleep() {
   sleep_mode();
   //after about 8 seconds the Watchdog Interupt will progress the code to the disable sleep command
   sleep_disable();             
+}
+
+
+
+void blinky() {
+  digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level)
+  delay(2000);                       // wait for a second
+  digitalWrite(LED_BUILTIN, LOW);    // turn the LED off by making the voltage LOW
+  delay(1000);                       // wait for a second
+  digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level)
+  delay(3000);                       // wait for a second
+  digitalWrite(LED_BUILTIN, LOW);    // turn the LED off by making the voltage LOW
+  delay(1000);                       // wait for a second
 }
 
 
