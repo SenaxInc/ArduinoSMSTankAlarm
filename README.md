@@ -47,7 +47,8 @@ Arduino will check sensor data on a schedualed basis. If sensor data is over a s
 
 ## Wiring Diagram
 
-![Image](Wiring_Diagram_-_LTE_Box_-_2019.svg)
+
+![Image](WiringDiagram-2019.svg)
 
 # Links - Arduino
 
