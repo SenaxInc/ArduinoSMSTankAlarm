@@ -35,7 +35,7 @@ volatile int tick_socket = 0; //integer to count socket retries
 
 const int sleep_hours = 1;
 const int ticks_per_sleep = (sleep_hours*60*60)/8;
-int ticks_per_report = 442;  //default 59 min of 8 second ticks 59*60/8
+int ticks_per_report = 412;  //default 59 min of 8 second ticks 59*60/8
 
 //Define topicType as "S" for SETUP, "A" for ALARM, "D" for DAILY
 String topicType;
@@ -48,28 +48,32 @@ int readfresh;
 
 
 void setup() {
+Serial.begin(9600);
+Serial.println("A");
   blinky();  
 
   //start up settings
   wdt_disable(); //disable for setup
-//  sei();  //enable interrupts
-//  ADCSRA |= (1<<ADEN); //ADC hex code set to on
-//  power_adc_enable(); //enable ADC module    
-  
+  sei();  //enable interrupts
+  ADCSRA |= (1<<ADEN); //ADC hex code set to on
+  power_adc_enable(); //enable ADC module    
+  Serial.println("B");
   ticks_per_report = ((24*60*60/8)-225);  //subtract 30 minutes to account for shifts  
-
+Serial.println("C");
   //send startup level
   levelState = lvlState();
   topicType="";
   topicType="S";  //S == startup
+Serial.println("D");
   sendData(levelState, topicType); //connect LTE and send
-     
+Serial.println("E");     
   //define watchdog settings
   watchdogSET();  
-
+Serial.println("F");
   //prepare for sleep - turn off some settings
   power_adc_disable(); //disable the clock to the ADC module
   ADCSRA &= ~(1<<ADEN);  //ADC hex code set to off
+Serial.println("G");
 }//end setup
 
 
@@ -157,6 +161,7 @@ void dailyTEXT() {
 
 
 void sendData(int levelState, String topic) {
+Serial.println("a");
   //define message
   static String message;
   message = "";
@@ -167,63 +172,71 @@ void sendData(int levelState, String topic) {
   {
     message = "Level Nominal";
   }
-
+Serial.println("b");
   // New lines are not handled well
   message.replace('\r', ' ');
   message.replace('\n', ' ');
   topic.replace('\r', ' ');
   topic.replace('\n', ' ');
-  
+Serial.println("c");  
   //connect to network
   int socket = -1;
   String hologramMessage;
-
+Serial.println("d");
   // Construct a JSON-encoded Hologram message string:
 //  hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" + message + "\"}";
 
   hologramMessage = "{\"k\":\"" + HOLOGRAM_DEVICE_KEY + "\",\"d\":\"" +
     message + "\",\"t\":[\"" + topic + "\"]}";
-
+Serial.println("e");
   // Power On LTE SHIELD
 do{
+  Serial.println("f");
   blinky(); //blink arduino led
   lte.begin(lteSerial, 9600);   //begin lte communication
 } while (lte.getNetwork() == MNO_INVALID);
-
+Serial.println("g");
   tick_socket = 0;
   while(tick_socket < 10) {
+Serial.println("1");
     // Open a socket
     socket = lte.socketOpen(LTE_SHIELD_TCP);
+Serial.println("2");
     // On success, socketOpen will return a value between 0-5. On fail -1.
     if (socket >= 0) {
+Serial.println("3");
       // Use the socket to connect to the Hologram server
       if (lte.socketConnect(socket, HOLOGRAM_URL, HOLOGRAM_PORT) == LTE_SHIELD_SUCCESS) {
+Serial.println("4");
         // Send our message to the server:
-        if (lte.socketWrite(socket, hologramMessage) == LTE_SHIELD_SUCCESS)
-        {
+        if (lte.socketWrite(socket, hologramMessage) == LTE_SHIELD_SUCCESS) {
+Serial.println("5");
+            tick_socket = 11;
+  lte.poll();
           // On succesful write, close the socket.
           if (lte.socketClose(socket) == LTE_SHIELD_SUCCESS) {
-            tick_socket = 11;
+Serial.println("6");
           }
         } else {
+Serial.println("7");
           tick_socket ++; //add one to tick
-          lte.poll();
         }
       }
     }//end socket if
   }//end socket while
-  
+Serial.println("h");  
   message = ""; // Clear message string
   topic = "";   // Clear topic string
 
   lte.poll();
-
+Serial.println("i");
   //Press power button to turn off LTE Radio
   pinMode(POWER_PIN, OUTPUT);
   digitalWrite(POWER_PIN, LOW);
   delay(LTE_SHIELD_POWER_PULSE_PERIOD);
   pinMode(POWER_PIN, INPUT); // Return to high-impedance, rely on SARA module internal pull-up
-  //lte.powerOn(); ?         
+  //lte.powerOn(); ?
+Serial.println("j");           
 } //end sendData
 
 

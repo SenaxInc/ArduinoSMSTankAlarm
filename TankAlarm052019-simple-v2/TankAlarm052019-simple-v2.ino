@@ -15,9 +15,17 @@ SoftwareSerial lteSerial(8, 9);
 #define RESET_PIN 6
 LTE_Shield lte;
 
-int lvlpin = 10; //liquid level switch set to Pin 10
+int lvlpin = 11; //liquid level switch set to Pin 10
 int lvlstate = digitalRead(lvlpin);  //to handle data of current State of a switch
 int levelState = HIGH;
+
+int pwrPin2 = 12; //liquid level switch set to Pin 10 OUTPUT
+int pwrPin3 = 13; //liquid level switch set to Pin 10 OUTPUT
+
+int readPin2 = A2;
+int readPin3 = A3;
+                    // outside leads to ground and +5V
+int val = 0;  // variable to store the value read
 
 // Plug in your Hologram device key here:
 String HOLOGRAM_DEVICE_KEY = "12345678";
@@ -159,7 +167,7 @@ void dailyTEXT() {
 void sendData(int levelState, String topic) {
   //define message
   static String message;
-  message = "";
+  message = "SWT=";
   if(levelState == HIGH){
     message = "Level HIGH";
   }
@@ -167,6 +175,11 @@ void sendData(int levelState, String topic) {
   {
     message = "Level Nominal";
   }
+
+message +=":T2=";
+message +=lvlInch(pwrPin2,readPin2);
+message +=":T3=";
+message +=lvlInch(pwrPin3,readPin3);
 
   // New lines are not handled well
   message.replace('\r', ' ');
@@ -247,6 +260,21 @@ int lvlState() {
 } //end checkLevel
 
 
+
+int lvlInch(int pwrpin, int readpin) {
+  int lvlval = 0;
+  int lvlinch = 0;
+  pinMode(pwrpin,OUTPUT); //define liquid level pin mode
+  digitalWrite(pwrpin,HIGH);
+  delay(1000);
+  lvlval = analogRead(readpin);
+  delay(1000);
+  lvlval = analogRead(readpin);
+  delay(500);
+  digitalWrite(pwrpin,LOW);
+  lvlinch = (10*(lvlval-102))/(8180/(10000/((433)/12))); //converts to inches
+  return lvlinch;
+}
 
     
 void tickSleep() {
