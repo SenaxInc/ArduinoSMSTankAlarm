@@ -193,10 +193,12 @@ void sendData(int levelState, String topic) {
   // Power On LTE SHIELD
 do{
   lte.begin(lteSerial, 9600);   //begin lte communication
+  lte.poll();
 } while (lte.getNetwork() == MNO_INVALID);
 
+
   tick_socket = 0;
-  while(5 >= tick_socket) {
+do {
     // Open a socket
     socket = lte.socketOpen(LTE_SHIELD_TCP);
     // On success, socketOpen will return a value between 0-5. On fail -1.
@@ -207,14 +209,24 @@ do{
         if (lte.socketWrite(socket, hologramMessage) == LTE_SHIELD_SUCCESS)
         {
           // On succesful write, close the socket.
-          if (lte.socketClose(socket) == LTE_SHIELD_SUCCESS) { tick_socket = 11; }
+          if (lte.socketClose(socket) == LTE_SHIELD_SUCCESS) { 
+            tick_socket = 11;
+          }
+        tick_socket = 11;
         }
         else {
           tick_socket ++; //add one to tick
         }
+        tick_socket ++;
       }
+      tick_socket ++;
+      delay(5000);
+      lte.poll();
     }//end socket if
-  }//end socket while
+    delay(10000);
+    lte.poll();
+}
+while(5 >= tick_socket);//end socket while
   
   message = ""; // Clear message string
   topic = "";   // Clear topic string
