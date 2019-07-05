@@ -169,11 +169,11 @@ void sendData(int levelState, String topic) {
   static String message;
   message = "SWT=";
   if(levelState == HIGH){
-    message = "Level HIGH";
+    message += "Level HIGH";
   }
   else
   {
-    message = "Level Nominal";
+    message += "Level Nominal";
   }
 
 message +=":T2=";
