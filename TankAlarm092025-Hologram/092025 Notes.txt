@@ -1,0 +1,18 @@
+===Sep 2025 Notes===
+
+Tank level monitoring and alerts
+
+==Hardware==
+
+* Arduino MKR NB 1500 - Board
+** ublox SARA-R410M
+* Arduino MKR SD PROTO - Shield
+* MKR RELAY - Shield
+* Hologram.io SIM Card
+* SD Card
+
+==Software==
+
+* Utilizing github copilot to write code
+* Send text alerts for alarm states
+* Send daily email report of levels and changes
