@@ -10,6 +10,9 @@ This document lists all the components required for the September 2025 version o
 | 1 | Arduino MKR SD PROTO | ASX00008 | SD card shield with prototyping area | [Arduino Store](https://store.arduino.cc/products/arduino-mkr-sd-proto-shield) |
 | 1 | Arduino MKR RELAY | ASX00013 | Relay control shield | [Arduino Store](https://store.arduino.cc/products/arduino-mkr-relay-proto-shield) |
 | 1 | Hologram.io SIM Card | - | Cellular connectivity SIM card | [Hologram.io](https://hologram.io) |
+| 0-1 | NCD.io AMKR I2C Shield | - | Optional I2C shield for current loop sensors | [NCD Store](https://store.ncd.io/product/amkr-i2c-shield-for-arduino-mkr1000-and-mkr-modules/) |
+
+**Note**: The I2C shield is only required when using Option 3 (4-20mA Current Loop Sensors) for simplified connections.
 
 ## Storage & Memory
 
@@ -42,24 +45,26 @@ Choose ONE of the following sensor types based on your application requirements:
 ### Option 2: Analog Voltage Pressure Sensors (0.5-4.5V)
 | Qty | Component | Type | Specification | Application |
 |-----|-----------|------|---------------|-------------|
-| 1 | Pressure Sensor | Ratiometric 0.5-4.5V | 0-5 PSI typical | Continuous level monitoring |
+| 1 | Pressure Sensor | Ratiometric 0.5-4.5V | 0-5 PSI, 0.25% accuracy | Continuous level monitoring |
 
 #### Recommended Analog Pressure Sensor
-| Supplier | Series | Description | Link |
-|----------|--------|-------------|------|
-| Dwyer | 626 Series | Ratiometric 0.5-4.5V, 0.25% accuracy | [Dwyer Omega](https://www.dwyeromega.com/en-us/accurate-industrial-pressure-transmitters-0-25-1-accuracy-nema-4x/p/Series-626-628) |
+| Supplier | Part Number | Description | Link |
+|----------|-------------|-------------|------|
+| Dwyer | 626-06-GH-P9-E6-S7 | Ratiometric 0.5-4.5V, 0-5 PSI, 0.25% accuracy | [Dwyer Omega](https://www.dwyeromega.com/en-us/accurate-industrial-pressure-transmitters-0-25-1-accuracy-nema-4x/p/Series-626-628) |
 
 ### Option 3: 4-20mA Current Loop Sensors
 | Qty | Component | Type | Specification | Application |
 |-----|-----------|------|---------------|-------------|
-| 1 | Current Loop Sensor | 4-20mA output | Industrial standard | Long cable runs, high accuracy |
+| 1 | Current Loop Sensor | 4-20mA output | Industrial pressure transmitter | Long cable runs, high accuracy |
 | 1 | I2C Current Loop Module | 4-channel receiver | 16-bit ADS1115 based | Interface to Arduino |
+| 1 | I2C Shield | MKR I2C Shield | Simplified I2C connections | Easy sensor connection |
 
 #### Recommended Current Loop Components
 | Supplier | Product | Description | Link |
 |----------|---------|-------------|------|
+| Dwyer | 626-06-CB-P1-E5-S1 | 4-20mA pressure transmitter, 0-5 PSI, 0.25% accuracy | [Dwyer Omega](https://www.dwyeromega.com/en-us/accurate-industrial-pressure-transmitters-0-25-1-accuracy-nema-4x/p/Series-626-628) |
 | NCD.io | 4-Channel Current Loop Module | I2C interface with ADS1115 | [NCD Store](https://store.ncd.io/product/4-channel-4-20-ma-current-loop-receiver-16-bit-ads1115-i2c-mini-module/) |
-| Various | 4-20mA Pressure Transmitters | Industrial pressure sensors | Contact industrial suppliers |
+| NCD.io | AMKR I2C Shield | I2C shield for Arduino MKR modules | [NCD Store](https://store.ncd.io/product/amkr-i2c-shield-for-arduino-mkr1000-and-mkr-modules/) |
 
 ## Power Supply Options
 
@@ -141,11 +146,23 @@ Choose ONE of the following sensor types based on your application requirements:
 - MKR RELAY Shield: ~$25
 - Hologram.io SIM: ~$0 (monthly service fees apply)
 - MicroSD Card: ~$10
-- Float Switch: ~$30-50
 - Enclosure: ~$25-40
 - Cables & Misc: ~$20
 
-**Total Core System: ~$200-240**
+### Sensor Options (Choose One)
+**Option 1: Digital Float Switch**
+- Float Switch: ~$30-50
+- **Subtotal: ~$200-240**
+
+**Option 2: Analog Voltage Sensor**
+- Dwyer 626-06-GH-P9-E6-S7: ~$200-250
+- **Subtotal: ~$370-425**
+
+**Option 3: Current Loop Sensor**
+- Dwyer 626-06-CB-P1-E5-S1: ~$250-300
+- NCD.io 4-Channel Current Loop Module: ~$40
+- NCD.io AMKR I2C Shield: ~$25
+- **Subtotal: ~$485-540**
 
 ### Monthly Operating Costs
 - Hologram.io Service: ~$10-20/month (depending on data usage)
@@ -156,6 +173,7 @@ Choose ONE of the following sensor types based on your application requirements:
    - Arduino MKR NB 1500 (base)
    - MKR SD PROTO Shield
    - MKR RELAY Shield
+   - NCD.io AMKR I2C Shield (only for current loop sensors)
 
 2. **Power Considerations**:
    - Total system current: ~200mA active, <10mA sleep
