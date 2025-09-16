@@ -21,15 +21,45 @@ This document lists all the components required for the September 2025 version o
 
 | Qty | Component | Type | Specification | Application |
 |-----|-----------|------|---------------|-------------|
-| 1 | Tank Level Sensor | Float Switch | SPST, N.O., 12-24V rating | Tank level detection |
-| 1 | Float Switch | Miniature | 10A @ 250VAC contacts | Alternative sensor option |
+| 1 | Tank Level Sensor | Choose One | See sensor options below | Tank level detection |
 
-### Recommended Tank Level Sensors
+## Tank Level Sensor Options
 
+Choose ONE of the following sensor types based on your application requirements:
+
+### Option 1: Digital Float Switch Sensors
+| Qty | Component | Type | Specification | Application |
+|-----|-----------|------|---------------|-------------|
+| 1 | Float Switch | SPST, N.O. | 12-24V rating | Simple alarm detection |
+| 1 | Float Switch Alternative | Miniature | 10A @ 250VAC contacts | Heavy-duty applications |
+
+#### Recommended Digital Float Switch Suppliers
 | Supplier | Part Number | Description | Link |
 |----------|-------------|-------------|------|
 | Grainger | 3BY75 | N.C. Float Switch | [Grainger](https://www.grainger.com/product/DAYTON-Float-Switch-3BY75) |
 | McMaster-Carr | 4036K31 | Side-Mount Float Switch | [McMaster](https://www.mcmaster.com/4036K31/) |
+
+### Option 2: Analog Voltage Pressure Sensors (0.5-4.5V)
+| Qty | Component | Type | Specification | Application |
+|-----|-----------|------|---------------|-------------|
+| 1 | Pressure Sensor | Ratiometric 0.5-4.5V | 0-5 PSI typical | Continuous level monitoring |
+
+#### Recommended Analog Pressure Sensor
+| Supplier | Series | Description | Link |
+|----------|--------|-------------|------|
+| Dwyer | 626 Series | Ratiometric 0.5-4.5V, 0.25% accuracy | [Dwyer Omega](https://www.dwyeromega.com/en-us/accurate-industrial-pressure-transmitters-0-25-1-accuracy-nema-4x/p/Series-626-628) |
+
+### Option 3: 4-20mA Current Loop Sensors
+| Qty | Component | Type | Specification | Application |
+|-----|-----------|------|---------------|-------------|
+| 1 | Current Loop Sensor | 4-20mA output | Industrial standard | Long cable runs, high accuracy |
+| 1 | I2C Current Loop Module | 4-channel receiver | 16-bit ADS1115 based | Interface to Arduino |
+
+#### Recommended Current Loop Components
+| Supplier | Product | Description | Link |
+|----------|---------|-------------|------|
+| NCD.io | 4-Channel Current Loop Module | I2C interface with ADS1115 | [NCD Store](https://store.ncd.io/product/4-channel-4-20-ma-current-loop-receiver-16-bit-ads1115-i2c-mini-module/) |
+| Various | 4-20mA Pressure Transmitters | Industrial pressure sensors | Contact industrial suppliers |
 
 ## Power Supply Options
 

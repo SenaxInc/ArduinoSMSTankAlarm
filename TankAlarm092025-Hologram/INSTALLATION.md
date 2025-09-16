@@ -39,10 +39,26 @@ This guide walks you through setting up the Arduino MKR NB 1500 Tank Alarm syste
 2. **SD Card**: Format a microSD card as FAT32 and insert into MKR SD PROTO
 
 ### Step 3: Connect Sensor
-1. **Float Switch Wiring**:
+Choose the appropriate wiring based on your sensor type:
+
+1. **Digital Float Switch Wiring** (SENSOR_TYPE = DIGITAL_FLOAT):
    - Connect the Common (C) terminal to any Ground pin
    - Connect the Normally Open (NO) terminal to Pin 7
    - No external resistor needed (internal pullup is used)
+
+2. **Analog Voltage Sensor Wiring** (SENSOR_TYPE = ANALOG_VOLTAGE):
+   - Connect sensor Signal+ to Pin A1
+   - Connect sensor Signal- to Ground (GND)
+   - Connect sensor VCC to +3.3V pin
+   - Ensure sensor output range is 0.5-4.5V
+
+3. **Current Loop Sensor Wiring** (SENSOR_TYPE = CURRENT_LOOP):
+   - Connect NCD.io I2C module SDA to Pin 11 (SDA)
+   - Connect NCD.io I2C module SCL to Pin 12 (SCL)
+   - Connect NCD.io I2C module VCC to +3.3V
+   - Connect NCD.io I2C module GND to Ground
+   - Connect 4-20mA sensor to NCD.io module Channel 0
+   - Configure I2C address (default 0x48) if needed
 
 ### Step 4: Test Connections
 Upload and run the test sketch first:
@@ -57,7 +73,53 @@ File: TankAlarm092025-Test.ino
    - Copy `config_template.h` to `config.h`
    - Edit `config.h` with your specific settings
 
-2. **Update Configuration Values**:
+2. **Select Tank Level Sensor Type**:
+   ```cpp
+   // Choose sensor type: DIGITAL_FLOAT, ANALOG_VOLTAGE, or CURRENT_LOOP
+   #define SENSOR_TYPE DIGITAL_FLOAT
+   ```
+
+3. **Update Configuration Values**:
+   ```cpp
+   // Replace with your actual Hologram.io device key
+   #define HOLOGRAM_DEVICE_KEY "your_device_key_here"
+   
+   // Update with your phone numbers (include country code)
+   #define ALARM_PHONE_PRIMARY "+12223334444"
+   #define ALARM_PHONE_SECONDARY "+15556667777"
+   #define DAILY_REPORT_PHONE "+18889990000"
+   ```
+
+4. **Configure Sensor-Specific Settings**:
+
+   **For Digital Float Switch (SENSOR_TYPE = DIGITAL_FLOAT)**:
+   ```cpp
+   #define TANK_ALARM_STATE HIGH        // HIGH when float switch closes
+   #define SENSOR_DEBOUNCE_MS 100       // Debounce delay
+   ```
+
+   **For Analog Voltage Sensor (SENSOR_TYPE = ANALOG_VOLTAGE)**:
+   ```cpp
+   #define ANALOG_SENSOR_PIN A1         // Analog input pin
+   #define VOLTAGE_MIN 0.5              // Minimum sensor voltage
+   #define VOLTAGE_MAX 4.5              // Maximum sensor voltage
+   #define TANK_EMPTY_VOLTAGE 0.5       // Voltage when tank empty
+   #define TANK_FULL_VOLTAGE 4.5        // Voltage when tank full
+   #define ALARM_THRESHOLD_PERCENT 80   // Alarm at 80% full
+   ```
+
+   **For Current Loop Sensor (SENSOR_TYPE = CURRENT_LOOP)**:
+   ```cpp
+   #define I2C_CURRENT_LOOP_ADDRESS 0x48  // I2C address of NCD.io module
+   #define CURRENT_LOOP_CHANNEL 0         // Channel on NCD.io module (0-3)
+   #define CURRENT_MIN 4.0                // Minimum current (4mA)
+   #define CURRENT_MAX 20.0               // Maximum current (20mA)
+   #define TANK_EMPTY_CURRENT 4.0         // Current when tank empty
+   #define TANK_FULL_CURRENT 20.0         // Current when tank full
+   #define ALARM_THRESHOLD_CURRENT_PERCENT 80  // Alarm at 80% full
+   ```
+
+5. **Adjust Timing (Optional)**:
    ```cpp
    // Replace with your actual Hologram.io device key
    #define HOLOGRAM_DEVICE_KEY "your_device_key_here"

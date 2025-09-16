@@ -24,9 +24,32 @@
 #define RELAY_CONTROL_PIN 5            // Relay output control pin
 #define SD_CARD_CS_PIN 4               // SD card chip select pin
 
-// Tank Level Logic
+// Tank Level Sensor Configuration
+// Sensor Types: DIGITAL_FLOAT, ANALOG_VOLTAGE, CURRENT_LOOP
+#define SENSOR_TYPE DIGITAL_FLOAT      // Type of tank level sensor
+
+// Digital Float Switch Configuration (SENSOR_TYPE = DIGITAL_FLOAT)
 #define TANK_ALARM_STATE HIGH          // Sensor state that triggers alarm (HIGH or LOW)
 #define SENSOR_DEBOUNCE_MS 100         // Debounce delay for sensor reading
+
+// Analog Voltage Sensor Configuration (SENSOR_TYPE = ANALOG_VOLTAGE)
+// For Dwyer 626 series ratiometric 0.5-4.5V pressure sensors
+#define ANALOG_SENSOR_PIN A1           // Analog input pin for voltage sensor
+#define VOLTAGE_MIN 0.5                // Minimum sensor voltage (V)
+#define VOLTAGE_MAX 4.5                // Maximum sensor voltage (V)
+#define TANK_EMPTY_VOLTAGE 0.5         // Voltage when tank is empty (V)
+#define TANK_FULL_VOLTAGE 4.5          // Voltage when tank is full (V)
+#define ALARM_THRESHOLD_PERCENT 80     // Alarm when tank is X% full
+
+// Current Loop Sensor Configuration (SENSOR_TYPE = CURRENT_LOOP)
+// For 4-20mA sensors using NCD.io 4-channel current loop I2C module
+#define I2C_CURRENT_LOOP_ADDRESS 0x48  // I2C address of NCD.io module
+#define CURRENT_LOOP_CHANNEL 0         // Channel number (0-3) on NCD.io module
+#define CURRENT_MIN 4.0                // Minimum current (mA)
+#define CURRENT_MAX 20.0               // Maximum current (mA)
+#define TANK_EMPTY_CURRENT 4.0         // Current when tank is empty (mA)
+#define TANK_FULL_CURRENT 20.0         // Current when tank is full (mA)
+#define ALARM_THRESHOLD_CURRENT_PERCENT 80  // Alarm when tank is X% full
 
 // Logging Configuration
 #define LOG_FILE_NAME "tanklog.txt"    // SD card log file name

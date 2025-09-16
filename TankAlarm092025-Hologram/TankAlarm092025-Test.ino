@@ -16,6 +16,18 @@
 
 #include <MKRNB.h>
 #include <SD.h>
+#include <Wire.h>
+
+// Include configuration (create config.h from template for testing)
+// For testing, you can define sensor type here or use config.h
+#ifndef SENSOR_TYPE
+#define SENSOR_TYPE 0  // 0=DIGITAL_FLOAT, 1=ANALOG_VOLTAGE, 2=CURRENT_LOOP
+#endif
+
+// Sensor type definitions
+#define DIGITAL_FLOAT 0
+#define ANALOG_VOLTAGE 1  
+#define CURRENT_LOOP 2
 
 // Initialize cellular components
 NB nbAccess;
@@ -23,9 +35,14 @@ NBSMS sms;
 
 // Pin definitions
 const int TANK_LEVEL_PIN = 7;
+const int ANALOG_SENSOR_PIN = A1;
 const int RELAY_PIN = 5;
 const int SD_CS_PIN = 4;
 const int LED_PIN = LED_BUILTIN;
+
+// I2C Configuration for current loop testing
+const int I2C_CURRENT_LOOP_ADDRESS = 0x48;
+const int CURRENT_LOOP_CHANNEL = 0;
 
 // Test configuration
 const char APN[] = "hologram";
@@ -42,8 +59,14 @@ void setup() {
   
   // Initialize pins
   pinMode(TANK_LEVEL_PIN, INPUT_PULLUP);
+  pinMode(ANALOG_SENSOR_PIN, INPUT);
   pinMode(RELAY_PIN, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
+  
+  // Initialize I2C if using current loop sensor
+  if (SENSOR_TYPE == CURRENT_LOOP) {
+    Wire.begin();
+  }
   
   // Test 1: LED Test
   Serial.println("Test 1: LED Test");
@@ -76,9 +99,30 @@ void setup() {
 
 void loop() {
   // Continuous sensor monitoring for testing
+#if SENSOR_TYPE == DIGITAL_FLOAT
   int sensorState = digitalRead(TANK_LEVEL_PIN);
-  Serial.print("Tank sensor state: ");
+  Serial.print("Digital sensor state: ");
   Serial.println(sensorState == HIGH ? "HIGH (ALARM)" : "LOW (NORMAL)");
+  
+#elif SENSOR_TYPE == ANALOG_VOLTAGE
+  int adcValue = analogRead(ANALOG_SENSOR_PIN);
+  float voltage = (adcValue / 4095.0) * 3.3;
+  Serial.print("Analog sensor - ADC: ");
+  Serial.print(adcValue);
+  Serial.print(", Voltage: ");
+  Serial.print(voltage, 3);
+  Serial.println("V");
+  
+#elif SENSOR_TYPE == CURRENT_LOOP
+  float current = readCurrentLoopValue();
+  Serial.print("Current loop sensor: ");
+  if (current >= 0) {
+    Serial.print(current, 2);
+    Serial.println(" mA");
+  } else {
+    Serial.println("ERROR - Check I2C connection");
+  }
+#endif
   
   // Blink LED to show system is running
   digitalWrite(LED_PIN, HIGH);
@@ -100,7 +144,10 @@ void testLED() {
 }
 
 void testTankSensor() {
-  Serial.println("  Reading tank level sensor...");
+  Serial.println("  Testing tank level sensor...");
+  
+#if SENSOR_TYPE == DIGITAL_FLOAT
+  Serial.println("  Digital Float Switch Test:");
   Serial.println("  (Try triggering your float switch during this test)");
   
   for (int i = 0; i < 10; i++) {
@@ -111,6 +158,46 @@ void testTankSensor() {
     Serial.println(level == HIGH ? "HIGH" : "LOW");
     delay(500);
   }
+  
+#elif SENSOR_TYPE == ANALOG_VOLTAGE
+  Serial.println("  Analog Voltage Sensor Test (0.5-4.5V):");
+  Serial.println("  (Check voltage readings from your pressure sensor)");
+  
+  for (int i = 0; i < 10; i++) {
+    int adcValue = analogRead(ANALOG_SENSOR_PIN);
+    float voltage = (adcValue / 4095.0) * 3.3;
+    Serial.print("  Reading ");
+    Serial.print(i + 1);
+    Serial.print(": ADC=");
+    Serial.print(adcValue);
+    Serial.print(", Voltage=");
+    Serial.print(voltage, 3);
+    Serial.println("V");
+    delay(500);
+  }
+  
+#elif SENSOR_TYPE == CURRENT_LOOP
+  Serial.println("  Current Loop Sensor Test (4-20mA):");
+  Serial.println("  (Check current readings from your I2C module)");
+  
+  for (int i = 0; i < 10; i++) {
+    float current = readCurrentLoopValue();
+    Serial.print("  Reading ");
+    Serial.print(i + 1);
+    Serial.print(": ");
+    if (current >= 0) {
+      Serial.print(current, 2);
+      Serial.println(" mA");
+    } else {
+      Serial.println("ERROR - Check I2C connection");
+    }
+    delay(500);
+  }
+  
+#else
+  Serial.println("  Unknown sensor type configured!");
+#endif
+
   Serial.println("  Tank sensor test complete.\n");
 }
 
@@ -216,4 +303,29 @@ void testSMS() {
   
   Serial.println("  SMS test skipped (uncomment code to enable).");
   Serial.println("  SMS test complete.\n");
+}
+
+// Read current value from NCD.io 4-channel current loop I2C module
+float readCurrentLoopValue() {
+  // Request 2 bytes from the current loop module
+  Wire.beginTransmission(I2C_CURRENT_LOOP_ADDRESS);
+  Wire.write(CURRENT_LOOP_CHANNEL); // Select channel
+  if (Wire.endTransmission() != 0) {
+    return -1; // Communication error
+  }
+  
+  Wire.requestFrom(I2C_CURRENT_LOOP_ADDRESS, 2);
+  
+  if (Wire.available() >= 2) {
+    // Read 16-bit value (big endian)
+    uint16_t rawValue = (Wire.read() << 8) | Wire.read();
+    
+    // Convert to current (mA)
+    // NCD.io module typically provides 16-bit resolution for 4-20mA range
+    float current = 4.0 + ((rawValue / 65535.0) * 16.0); // 4mA + (0-16mA range)
+    
+    return current;
+  }
+  
+  return -1; // Error reading
 }

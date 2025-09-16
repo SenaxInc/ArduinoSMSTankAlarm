@@ -14,14 +14,19 @@ This is the September 2025 version of the Arduino SMS Tank Alarm system, designe
 ### Additional Components
 - **Hologram.io SIM Card** - Cellular connectivity for SMS and data
 - **SD Card** - Local data logging (formatted as FAT32)
-- **Tank Level Sensor** - Digital float switch (normally open)
+- **Tank Level Sensor** - Choose from multiple sensor types:
+  - Digital float switch (normally open)
+  - Analog voltage sensor (0.5-4.5V ratiometric pressure sensor)
+  - 4-20mA current loop sensor (via I2C module)
 
 ## Pin Assignments
 
 ### MKR NB 1500 Pin Usage
 - **Pin 4**: SD Card Chip Select (CS)
 - **Pin 5**: Relay Control Output
-- **Pin 7**: Tank Level Sensor Input (with internal pullup)
+- **Pin 7**: Digital Tank Level Sensor Input (float switch with internal pullup)
+- **Pin A1**: Analog Tank Level Sensor Input (0.5-4.5V pressure sensor)
+- **SDA/SCL**: I2C communication for 4-20mA current loop sensors
 - **LED_BUILTIN**: Status indication LED
 
 ### Shield Connections
@@ -46,6 +51,27 @@ SD Card:
 ```
 
 ## Software Features
+
+### Tank Level Sensor Support
+The system supports three types of tank level sensors:
+
+1. **Digital Float Switch (DIGITAL_FLOAT)**
+   - Simple on/off detection
+   - Connected to digital pin with pullup resistor
+   - Suitable for alarm-only applications
+   - Low cost and reliable
+
+2. **Analog Voltage Sensor (ANALOG_VOLTAGE)**
+   - Ratiometric 0.5-4.5V pressure sensors (e.g., Dwyer 626 series)
+   - Provides continuous level measurement
+   - Configurable alarm thresholds as percentage
+   - Higher accuracy for level monitoring
+
+3. **4-20mA Current Loop Sensor (CURRENT_LOOP)**
+   - Industrial standard current loop sensors
+   - Uses NCD.io 4-channel current loop I2C module
+   - Excellent noise immunity for long cable runs
+   - Professional-grade accuracy and reliability
 
 ### Core Functionality
 1. **Tank Level Monitoring**: Continuously monitors digital tank level sensor

@@ -26,9 +26,15 @@
 #include <SD.h>           // SD card functionality
 #include <ArduinoLowPower.h>  // Low power sleep modes
 #include <RTCZero.h>      // Real-time clock
+#include <Wire.h>         // I2C communication for current loop sensors
 
 // Include configuration file (copy config_template.h to config.h and customize)
 #include "config_template.h"  // Change to "config.h" after setup
+
+// Sensor type definitions
+#define DIGITAL_FLOAT 0
+#define ANALOG_VOLTAGE 1  
+#define CURRENT_LOOP 2
 
 // Initialize cellular components
 NB nbAccess;
@@ -108,8 +114,15 @@ void setup() {
   }
 #endif
   
-  // Initialize pins
-  pinMode(TANK_LEVEL_PIN, INPUT_PULLUP);  // Tank level sensor with pullup
+  // Initialize pins based on sensor type
+#if SENSOR_TYPE == DIGITAL_FLOAT
+  pinMode(TANK_LEVEL_PIN, INPUT_PULLUP);  // Digital float switch with pullup
+#elif SENSOR_TYPE == ANALOG_VOLTAGE
+  pinMode(ANALOG_SENSOR_PIN, INPUT);      // Analog voltage sensor
+#elif SENSOR_TYPE == CURRENT_LOOP
+  Wire.begin();                           // Initialize I2C for current loop module
+#endif
+  
   pinMode(RELAY_CONTROL_PIN, OUTPUT);     // Relay control
   pinMode(LED_BUILTIN, OUTPUT);           // Status LED
   
@@ -236,6 +249,19 @@ bool connectToCellular() {
 }
 
 int readTankLevel() {
+#if SENSOR_TYPE == DIGITAL_FLOAT
+  return readDigitalFloatSensor();
+#elif SENSOR_TYPE == ANALOG_VOLTAGE
+  return readAnalogVoltageSensor();
+#elif SENSOR_TYPE == CURRENT_LOOP
+  return readCurrentLoopSensor();
+#else
+  #error "Invalid SENSOR_TYPE defined. Use DIGITAL_FLOAT, ANALOG_VOLTAGE, or CURRENT_LOOP"
+#endif
+}
+
+// Read digital float switch sensor
+int readDigitalFloatSensor() {
   // Read digital tank level sensor (float switch)
   // HIGH = tank full/alarm condition, LOW = tank normal
   int level = digitalRead(TANK_LEVEL_PIN);
@@ -260,6 +286,151 @@ int readTankLevel() {
 #endif
     return digitalRead(TANK_LEVEL_PIN);
   }
+}
+
+// Read analog voltage sensor (Dwyer 626 series)
+int readAnalogVoltageSensor() {
+  // Read analog sensor multiple times for stability
+  float totalVoltage = 0;
+  const int numReadings = 10;
+  
+  for (int i = 0; i < numReadings; i++) {
+    int adcValue = analogRead(ANALOG_SENSOR_PIN);
+    // Convert ADC value to voltage (MKR NB 1500 has 3.3V reference, 12-bit ADC)
+    float voltage = (adcValue / 4095.0) * 3.3;
+    totalVoltage += voltage;
+    delay(10);
+  }
+  
+  float avgVoltage = totalVoltage / numReadings;
+  
+  // Calculate tank level percentage
+  float tankPercent = ((avgVoltage - TANK_EMPTY_VOLTAGE) / (TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE)) * 100.0;
+  
+  // Constrain to valid range
+  tankPercent = constrain(tankPercent, 0.0, 100.0);
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) {
+    Serial.print("Voltage: ");
+    Serial.print(avgVoltage);
+    Serial.print("V, Tank Level: ");
+    Serial.print(tankPercent);
+    Serial.println("%");
+  }
+#endif
+  
+  // Log current level to SD card occasionally
+  static unsigned long lastLogTime = 0;
+  if (millis() - lastLogTime > 300000) { // Log every 5 minutes
+    String logMsg = "Analog sensor - Voltage: " + String(avgVoltage) + "V, Level: " + String(tankPercent) + "%";
+    logEvent(logMsg);
+    lastLogTime = millis();
+  }
+  
+  // Return HIGH if tank level exceeds alarm threshold
+  return (tankPercent >= ALARM_THRESHOLD_PERCENT) ? HIGH : LOW;
+}
+
+// Read 4-20mA current loop sensor via I2C
+int readCurrentLoopSensor() {
+  float current = readCurrentLoopValue();
+  
+  if (current < 0) {
+    // Error reading sensor
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Error reading current loop sensor");
+#endif
+    logEvent("Error reading current loop sensor");
+    return LOW; // Default to normal state on error
+  }
+  
+  // Calculate tank level percentage
+  float tankPercent = ((current - TANK_EMPTY_CURRENT) / (TANK_FULL_CURRENT - TANK_EMPTY_CURRENT)) * 100.0;
+  
+  // Constrain to valid range
+  tankPercent = constrain(tankPercent, 0.0, 100.0);
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) {
+    Serial.print("Current: ");
+    Serial.print(current);
+    Serial.print("mA, Tank Level: ");
+    Serial.print(tankPercent);
+    Serial.println("%");
+  }
+#endif
+  
+  // Log current level to SD card occasionally
+  static unsigned long lastLogTime = 0;
+  if (millis() - lastLogTime > 300000) { // Log every 5 minutes
+    String logMsg = "Current loop sensor - Current: " + String(current) + "mA, Level: " + String(tankPercent) + "%";
+    logEvent(logMsg);
+    lastLogTime = millis();
+  }
+  
+  // Return HIGH if tank level exceeds alarm threshold
+  return (tankPercent >= ALARM_THRESHOLD_CURRENT_PERCENT) ? HIGH : LOW;
+}
+
+// Read current value from NCD.io 4-channel current loop I2C module
+float readCurrentLoopValue() {
+  // Request 2 bytes from the current loop module
+  Wire.beginTransmission(I2C_CURRENT_LOOP_ADDRESS);
+  Wire.write(CURRENT_LOOP_CHANNEL); // Select channel
+  if (Wire.endTransmission() != 0) {
+    return -1; // Communication error
+  }
+  
+  Wire.requestFrom(I2C_CURRENT_LOOP_ADDRESS, 2);
+  
+  if (Wire.available() >= 2) {
+    // Read 16-bit value (big endian)
+    uint16_t rawValue = (Wire.read() << 8) | Wire.read();
+    
+    // Convert to current (mA)
+    // NCD.io module typically provides 16-bit resolution for 4-20mA range
+    float current = 4.0 + ((rawValue / 65535.0) * 16.0); // 4mA + (0-16mA range)
+    
+    return current;
+  }
+  
+  return -1; // Error reading
+}
+
+// Get current tank level as percentage for reporting
+float getTankLevelPercent() {
+#if SENSOR_TYPE == DIGITAL_FLOAT
+  // For digital sensors, return 0% or 100% based on state
+  return (currentLevelState == HIGH) ? 100.0 : 0.0;
+  
+#elif SENSOR_TYPE == ANALOG_VOLTAGE
+  // Read analog sensor and calculate percentage
+  float totalVoltage = 0;
+  const int numReadings = 5; // Fewer readings for reporting
+  
+  for (int i = 0; i < numReadings; i++) {
+    int adcValue = analogRead(ANALOG_SENSOR_PIN);
+    float voltage = (adcValue / 4095.0) * 3.3;
+    totalVoltage += voltage;
+    delay(5);
+  }
+  
+  float avgVoltage = totalVoltage / numReadings;
+  float tankPercent = ((avgVoltage - TANK_EMPTY_VOLTAGE) / (TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE)) * 100.0;
+  return constrain(tankPercent, 0.0, 100.0);
+  
+#elif SENSOR_TYPE == CURRENT_LOOP
+  // Read current loop sensor and calculate percentage
+  float current = readCurrentLoopValue();
+  if (current < 0) return -1.0; // Error indicator
+  
+  float tankPercent = ((current - TANK_EMPTY_CURRENT) / (TANK_FULL_CURRENT - TANK_EMPTY_CURRENT)) * 100.0;
+  return constrain(tankPercent, 0.0, 100.0);
+  
+#else
+  return -1.0; // Error
+#endif
 }
 
 void handleAlarmCondition() {
@@ -343,7 +514,28 @@ void sendDailyReport() {
   }
   
   String message = "Daily Tank Report - " + getCurrentTimestamp();
-  message += "\nCurrent Level: " + String(currentLevelState == HIGH ? "HIGH" : "LOW");
+  
+  // Get detailed tank level information
+  float tankPercent = getTankLevelPercent();
+  String levelInfo;
+  
+#if SENSOR_TYPE == DIGITAL_FLOAT
+  levelInfo = String(currentLevelState == HIGH ? "HIGH (Alarm)" : "LOW (Normal)");
+#elif SENSOR_TYPE == ANALOG_VOLTAGE
+  if (tankPercent >= 0) {
+    levelInfo = String(tankPercent, 1) + "% (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
+  } else {
+    levelInfo = "Sensor Error";
+  }
+#elif SENSOR_TYPE == CURRENT_LOOP
+  if (tankPercent >= 0) {
+    levelInfo = String(tankPercent, 1) + "% (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
+  } else {
+    levelInfo = "Sensor Error";
+  }
+#endif
+
+  message += "\nTank Level: " + levelInfo;
   message += "\nSystem Status: Normal";
   message += "\nNext report in 24 hours";
   
@@ -366,7 +558,29 @@ void sendDailyReport() {
 
 void sendStartupNotification() {
   String message = "Tank Alarm System Started - " + getCurrentTimestamp();
-  message += "\nInitial Level: " + String(currentLevelState == HIGH ? "HIGH" : "LOW");
+  
+  // Get detailed tank level information for startup
+  float tankPercent = getTankLevelPercent();
+  String levelInfo;
+  
+#if SENSOR_TYPE == DIGITAL_FLOAT
+  levelInfo = String(currentLevelState == HIGH ? "HIGH (Alarm)" : "LOW (Normal)");
+#elif SENSOR_TYPE == ANALOG_VOLTAGE
+  if (tankPercent >= 0) {
+    levelInfo = String(tankPercent, 1) + "% (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
+  } else {
+    levelInfo = "Sensor Error";
+  }
+#elif SENSOR_TYPE == CURRENT_LOOP
+  if (tankPercent >= 0) {
+    levelInfo = String(tankPercent, 1) + "% (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
+  } else {
+    levelInfo = "Sensor Error";
+  }
+#endif
+
+  message += "\nInitial Level: " + levelInfo;
+  message += "\nSystem ready for monitoring";
   message += "\nSystem ready for monitoring";
   
   // Send startup SMS to daily report number
