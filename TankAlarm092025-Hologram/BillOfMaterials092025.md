@@ -47,6 +47,8 @@ Choose ONE of the following sensor types based on your application requirements:
 |-----|-----------|------|---------------|-------------|
 | 1 | Pressure Sensor | Ratiometric 0.5-4.5V | 0-5 PSI, 0.25% accuracy | Continuous level monitoring |
 
+**Advantages**: Easy connection via A1-A4 screw terminals on MKR RELAY shield - no soldering required.
+
 #### Recommended Analog Pressure Sensor
 | Supplier | Part Number | Description | Link |
 |----------|-------------|-------------|------|

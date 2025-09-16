@@ -47,9 +47,15 @@ Choose the appropriate wiring based on your sensor type:
    - No external resistor needed (internal pullup is used)
 
 2. **Analog Voltage Sensor Wiring** (SENSOR_TYPE = ANALOG_VOLTAGE):
-   - Connect sensor Signal+ to Pin A1
-   - Connect sensor Signal- to Ground (GND)
-   - Connect sensor VCC to +3.3V pin
+   - **Option A - Direct connection to MKR NB 1500:**
+     - Connect sensor Signal+ to Pin A1
+     - Connect sensor Signal- to Ground (GND)
+     - Connect sensor VCC to +3.3V pin
+   - **Option B - Using MKR RELAY shield screw terminals (RECOMMENDED):**
+     - Connect sensor Signal+ to A1 screw terminal on MKR RELAY shield
+     - Connect sensor Signal- to GND screw terminal on MKR RELAY shield
+     - Connect sensor VCC to +3.3V screw terminal on MKR RELAY shield
+     - **Alternative pins**: Can use A2, A3, or A4 screw terminals (update ANALOG_SENSOR_PIN in config.h)
    - Ensure sensor output range is 0.5-4.5V
 
 3. **Current Loop Sensor Wiring** (SENSOR_TYPE = CURRENT_LOOP):
@@ -100,13 +106,14 @@ File: TankAlarm092025-Test.ino
 
    **For Analog Voltage Sensor (SENSOR_TYPE = ANALOG_VOLTAGE)**:
    ```cpp
-   #define ANALOG_SENSOR_PIN A1         // Analog input pin
+   #define ANALOG_SENSOR_PIN A1         // Analog input pin (A1, A2, A3, or A4)
    #define VOLTAGE_MIN 0.5              // Minimum sensor voltage
    #define VOLTAGE_MAX 4.5              // Maximum sensor voltage
    #define TANK_EMPTY_VOLTAGE 0.5       // Voltage when tank empty
    #define TANK_FULL_VOLTAGE 4.5        // Voltage when tank full
    #define ALARM_THRESHOLD_PERCENT 80   // Alarm at 80% full
    ```
+   **Note**: Use A1-A4 screw terminals on MKR RELAY shield for easy sensor connections.
 
    **For Current Loop Sensor (SENSOR_TYPE = CURRENT_LOOP)**:
    ```cpp

@@ -62,14 +62,18 @@ Option 1: Digital Float Switch             │
 └─────────────────────────┘
 
 Option 2: Analog Voltage Sensor (0.5-4.5V)
-┌─────────────────────────┐                
-│   Pressure Sensor       │                
-│   (Dwyer 626 series)    │                
-│                         │                
-│  Signal+ ───────────────┼────────────────► Pin A1
-│  Signal- ───────────────┼────────────────► GND
-│  VCC ───────────────────┼────────────────► +3.3V
-└─────────────────────────┘                
+┌─────────────────────────┐  ┌─────────────────────────┐
+│   Pressure Sensor       │  │   MKR RELAY Shield      │
+│   (Dwyer 626 series)    │  │   Screw Terminals       │
+│                         │  │                         │
+│  Signal+ ───────────────┼──┼─► A1 (or A2, A3, A4)    │
+│  Signal- ───────────────┼──┼─► GND                    │
+│  VCC ───────────────────┼──┼─► +3.3V                 │
+└─────────────────────────┘  └─────────────────────────┘
+
+Note: MKR RELAY shield provides convenient screw terminals
+for A1-A4 analog inputs, making sensor connections easy
+and secure without requiring breadboard or soldering.                
 
 Option 3: 4-20mA Current Loop
 ┌─────────────────────────┐  ┌─────────────────────────┐
@@ -149,7 +153,8 @@ Signal Flow:
 | Pin | Function | Direction | Description |
 |-----|----------|-----------|-------------|
 | D7 | Digital Tank Sensor | Input | Float switch (with pullup) - DIGITAL_FLOAT mode |
-| A1 | Analog Tank Sensor | Input | 0.5-4.5V pressure sensor - ANALOG_VOLTAGE mode |
+| A1-A4 | Analog Tank Sensors | Input | 0.5-4.5V pressure sensors - ANALOG_VOLTAGE mode |
+| A1 | Primary Analog Sensor | Input | Default analog sensor pin (configurable) |
 | D11 (SDA) | I2C Data | I/O | I2C communication for current loop module |
 | D12 (SCL) | I2C Clock | Output | I2C communication for current loop module |
 | D5 | Relay Control | Output | Relay activation via MKR RELAY shield |
@@ -159,6 +164,8 @@ Signal Flow:
 | 3.3V | Sensor Power | Output | Power supply for analog/current loop sensors |
 | GND | Ground | - | Common ground reference |
 | USB | USB Power | Input | USB power and programming |
+
+**Note**: A1-A4 pins are accessible via convenient screw terminals on the MKR RELAY shield, making analog sensor connections secure and easy without soldering.
 
 ## Shield Stack Order (Bottom to Top)
 1. **Arduino MKR NB 1500** (Base board with cellular radio)

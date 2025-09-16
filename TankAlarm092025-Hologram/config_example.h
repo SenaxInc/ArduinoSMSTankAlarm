@@ -36,12 +36,20 @@
 
 // Analog Voltage Sensor Configuration (SENSOR_TYPE = ANALOG_VOLTAGE)
 // For Dwyer 626 series ratiometric 0.5-4.5V pressure sensors
-#define ANALOG_SENSOR_PIN A1           // Analog input pin for voltage sensor
+// Can use A1-A4 pins on MKR RELAY shield with convenient screw terminals
+#define ANALOG_SENSOR_PIN A1           // Analog input pin for voltage sensor (A1, A2, A3, or A4)
 #define VOLTAGE_MIN 0.5                // Minimum sensor voltage (V)
 #define VOLTAGE_MAX 4.5                // Maximum sensor voltage (V)
 #define TANK_EMPTY_VOLTAGE 0.5         // Voltage when tank is empty (V)
 #define TANK_FULL_VOLTAGE 4.5          // Voltage when tank is full (V)
 #define ALARM_THRESHOLD_PERCENT 80     // Alarm when tank is X% full
+
+// Multiple Analog Sensor Support (Optional - for multiple tank monitoring)
+// Uncomment and configure additional sensors if needed
+// #define ENABLE_MULTI_ANALOG_SENSORS true
+// #define ANALOG_SENSOR_PIN_2 A2        // Second analog sensor
+// #define ANALOG_SENSOR_PIN_3 A3        // Third analog sensor  
+// #define ANALOG_SENSOR_PIN_4 A4        // Fourth analog sensor
 
 // Current Loop Sensor Configuration (SENSOR_TYPE = CURRENT_LOOP)
 // For 4-20mA sensors using NCD.io 4-channel current loop I2C module

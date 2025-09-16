@@ -26,6 +26,7 @@ This is the September 2025 version of the Arduino SMS Tank Alarm system, designe
 - **Pin 5**: Relay Control Output
 - **Pin 7**: Digital Tank Level Sensor Input (float switch with internal pullup)
 - **Pin A1**: Analog Tank Level Sensor Input (0.5-4.5V pressure sensor)
+- **Pins A1-A4**: Available analog inputs with screw terminals on MKR RELAY shield
 - **SDA/SCL**: I2C communication for 4-20mA current loop sensors
 - **LED_BUILTIN**: Status indication LED
 
@@ -61,11 +62,12 @@ The system supports three types of tank level sensors:
    - Suitable for alarm-only applications
    - Low cost and reliable
 
-2. **Analog Voltage Sensor (ANALOG_VOLTAGE)**
+2. **Analog Voltage Sensors (ANALOG_VOLTAGE)**
    - Ratiometric 0.5-4.5V pressure sensors (e.g., Dwyer 626 series)
    - Provides continuous level measurement
    - Configurable alarm thresholds as percentage
    - Higher accuracy for level monitoring
+   - **Convenient screw terminals**: Use A1-A4 pins on MKR RELAY shield for easy wiring
 
 3. **4-20mA Current Loop Sensor (CURRENT_LOOP)**
    - Industrial standard current loop sensors

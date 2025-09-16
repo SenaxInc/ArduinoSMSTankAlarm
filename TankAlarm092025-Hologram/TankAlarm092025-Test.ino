@@ -35,7 +35,7 @@ NBSMS sms;
 
 // Pin definitions
 const int TANK_LEVEL_PIN = 7;
-const int ANALOG_SENSOR_PIN = A1;
+const int ANALOG_SENSOR_PIN = A1;  // Can use A1, A2, A3, or A4 (screw terminals on MKR RELAY shield)
 const int RELAY_PIN = 5;
 const int SD_CS_PIN = 4;
 const int LED_PIN = LED_BUILTIN;
@@ -162,6 +162,7 @@ void testTankSensor() {
 #elif SENSOR_TYPE == ANALOG_VOLTAGE
   Serial.println("  Analog Voltage Sensor Test (0.5-4.5V):");
   Serial.println("  (Check voltage readings from your pressure sensor)");
+  Serial.println("  (Using screw terminals A1-A4 on MKR RELAY shield)");
   
   for (int i = 0; i < 10; i++) {
     int adcValue = analogRead(ANALOG_SENSOR_PIN);
