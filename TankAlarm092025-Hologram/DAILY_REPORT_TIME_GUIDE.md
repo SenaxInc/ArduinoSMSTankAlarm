@@ -11,18 +11,18 @@ The Tank Alarm system now supports configurable daily report times with automati
 Add or modify the following line in your SD card configuration file (`tank_config.txt`):
 
 ```
-DAILY_REPORT_TIME=06:00
+DAILY_REPORT_TIME=05:00
 ```
 
 - Use 24-hour format (HH:MM)
 - Valid hours: 00-23
 - Valid minutes: 00-59
-- Default: 06:00 (6:00 AM)
+- Default: 05:00 (5:00 AM)
 
 ### Examples
 
 ```
-DAILY_REPORT_TIME=06:00    # 6:00 AM
+DAILY_REPORT_TIME=05:00    # 5:00 AM
 DAILY_REPORT_TIME=18:30    # 6:30 PM
 DAILY_REPORT_TIME=12:00    # 12:00 PM (noon)
 DAILY_REPORT_TIME=00:00    # 12:00 AM (midnight)
@@ -38,8 +38,8 @@ DAILY_REPORT_TIME=00:00    # 12:00 AM (midnight)
 
 ### Report Scheduling
 
-- Reports are sent when the current time matches the configured time
-- 1-minute tolerance window (report sent between HH:MM and HH:MM+1)
+- Reports are sent when the current time matches the configured hour
+- 1-hour tolerance window (report sent anytime during the configured hour)
 - One report per day maximum (prevents duplicate reports)
 - Time comparison only active when time is successfully synchronized
 
@@ -92,7 +92,7 @@ ALARM_PHONE_PRIMARY=+15551234567
 DAILY_REPORT_PHONE=+15559876543
 SLEEP_INTERVAL_HOURS=1
 DAILY_REPORT_HOURS=24
-DAILY_REPORT_TIME=06:00
+DAILY_REPORT_TIME=05:00
 ```
 
 ## Version Compatibility

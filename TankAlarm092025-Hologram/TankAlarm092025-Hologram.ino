@@ -136,7 +136,7 @@ volatile int time_tick_report = 1;
 #define DAILY_REPORT_HOURS 24
 #endif
 #ifndef DAILY_REPORT_TIME
-#define DAILY_REPORT_TIME "06:00"
+#define DAILY_REPORT_TIME "05:00"
 #endif
 
 const int sleep_hours = SLEEP_INTERVAL_HOURS;
@@ -1165,13 +1165,13 @@ void parseTimeString(String timeStr, int &hours, int &minutes) {
     hours = timeStr.substring(0, colonPos).toInt();
     minutes = timeStr.substring(colonPos + 1).toInt();
   } else {
-    // Default to 6:00 AM if parsing fails
-    hours = 6;
+    // Default to 5:00 AM if parsing fails
+    hours = 5;
     minutes = 0;
   }
   
   // Validate values
-  if (hours < 0 || hours > 23) hours = 6;
+  if (hours < 0 || hours > 23) hours = 5;
   if (minutes < 0 || minutes > 59) minutes = 0;
 }
 
@@ -1188,10 +1188,8 @@ bool isTimeForDailyReport() {
   int currentHours = rtc.getHours();
   int currentMinutes = rtc.getMinutes();
   
-  // Check if current time matches the configured report time (within 1 minute tolerance)
-  if (currentHours == reportHours && 
-      currentMinutes >= reportMinutes && 
-      currentMinutes < reportMinutes + 1) {
+  // Check if current time matches the configured report time (within 1 hour tolerance)
+  if (currentHours == reportHours) {
     
     // Additional check to prevent multiple reports in the same hour
     // Reset the flag by checking if we've already sent a report today

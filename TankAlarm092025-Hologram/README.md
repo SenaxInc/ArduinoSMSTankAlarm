@@ -132,10 +132,10 @@ The system supports three types of tank level sensors:
 
 5. **Daily Report Time Configuration**:
    ```
-   DAILY_REPORT_TIME=06:00
+   DAILY_REPORT_TIME=05:00
    ```
    - Set specific time for daily reports in HH:MM format (24-hour)
-   - Default is 06:00 (6:00 AM)
+   - Default is 05:00 (5:00 AM)
    - Configure in SD card config file (tank_config.txt)
    - System automatically syncs with cellular network time
 
@@ -174,7 +174,7 @@ The system supports three types of tank level sensors:
 - **Startup Sync**: Time synchronized from cellular network during startup
 - **Daily Re-sync**: Automatic time sync once per 24 hours
 - **Fallback Mode**: Uses hour-counting if time sync fails
-- **Accuracy**: Reports sent within 1-minute window of configured time
+- **Accuracy**: Reports sent within 1-hour window of configured time
 
 ### LED Status Indicators
 - **Solid ON during alarm**: System detected high tank level
