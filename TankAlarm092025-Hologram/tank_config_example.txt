@@ -6,6 +6,19 @@
 SITE_NAME=Example Tank Farm
 TANK_NUMBER=1
 
+# Hologram.io Configuration
+HOLOGRAM_DEVICE_KEY=abc123def456ghi789
+HOLOGRAM_APN=hologram
+
+# Phone Numbers for Notifications (include country code)
+ALARM_PHONE_PRIMARY=+15551234567
+ALARM_PHONE_SECONDARY=+15559876543
+DAILY_REPORT_PHONE=+15555551234
+
+# Timing Configuration (in hours)
+SLEEP_INTERVAL_HOURS=1
+DAILY_REPORT_HOURS=24
+
 # Tank Physical Specifications
 TANK_HEIGHT_INCHES=120
 INCHES_PER_UNIT=1.0
@@ -27,6 +40,10 @@ LARGE_DECREASE_WAIT_HOURS=2
 # TANK_EMPTY_VOLTAGE=0.5
 # TANK_FULL_VOLTAGE=4.5
 # ANALOG_SENSOR_PIN=A1
+
+# Network Configuration (optional overrides)
+# CONNECTION_TIMEOUT_MS=30000
+# SMS_RETRY_ATTEMPTS=3
 
 # Log File Names (optional - will use defaults if not specified)
 # HOURLY_LOG_FILE=hourly_log.txt

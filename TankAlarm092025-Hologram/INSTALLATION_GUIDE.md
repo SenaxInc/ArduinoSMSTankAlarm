@@ -9,14 +9,13 @@
 cp config_template.h config.h
 ```
 
-**Edit config.h with your specific values:**
-- Update `HOLOGRAM_DEVICE_KEY` with your actual device key
-- Update phone numbers for alarm contacts
-- Set `TANK_NUMBER` and `SITE_LOCATION_NAME`
-- Configure tank physical parameters:
-  - `TANK_HEIGHT_INCHES` - Total tank height
-  - `HIGH_ALARM_INCHES` - High level alarm threshold
-  - `LOW_ALARM_INCHES` - Low level alarm threshold
+**Edit config.h with your specific values (minimal configuration now required):**
+- Hardware pin configurations (if different from defaults)
+- Sensor type selection (`SENSOR_TYPE`)
+- Sensor calibration ranges (if needed)
+- Debug options
+
+**Most settings are now configured on the SD card instead of in config.h**
 
 ### 2. Prepare SD Card
 
@@ -25,13 +24,22 @@ cp config_template.h config.h
 cp tank_config_example.txt [SD_CARD]/tank_config.txt
 ```
 
-**Edit tank_config.txt on SD card:**
+**Edit tank_config.txt on SD card with your specific values:**
 ```
+# Essential settings now configured on SD card
+HOLOGRAM_DEVICE_KEY=your_actual_device_key
+ALARM_PHONE_PRIMARY=+15551234567
+ALARM_PHONE_SECONDARY=+15559876543
+DAILY_REPORT_PHONE=+15555551234
+
 SITE_NAME=Your Tank Farm Name
 TANK_NUMBER=1
 TANK_HEIGHT_INCHES=120
 HIGH_ALARM_INCHES=100
 LOW_ALARM_INCHES=12
+
+SLEEP_INTERVAL_HOURS=1
+DAILY_REPORT_HOURS=24
 ```
 
 ### 3. Upload Firmware
@@ -66,36 +74,46 @@ LOW_ALARM_INCHES=12
 
 ### Software Configuration
 
-**In config.h:**
+**Minimal config.h setup (most settings now on SD card):**
 ```c
-// Essential settings
-#define HOLOGRAM_DEVICE_KEY "your_key_here"
-#define ALARM_PHONE_PRIMARY "+15551234567"
-#define ALARM_PHONE_SECONDARY "+15559876543"
-#define DAILY_REPORT_PHONE "+15555551234"
-
-// Tank configuration  
-#define TANK_NUMBER 1
-#define SITE_LOCATION_NAME "Your Site"
-#define TANK_HEIGHT_INCHES 120
-#define HIGH_ALARM_INCHES 100
-#define LOW_ALARM_INCHES 12
-
 // Sensor type selection
 #define SENSOR_TYPE DIGITAL_FLOAT  // or ANALOG_VOLTAGE or CURRENT_LOOP
+
+// Hardware pin configuration (if different from defaults)
+#define TANK_LEVEL_PIN 7
+#define RELAY_CONTROL_PIN 5
+#define SD_CARD_CS_PIN 4
+
+// Sensor calibration (for analog sensors)
+#define TANK_EMPTY_VOLTAGE 0.5
+#define TANK_FULL_VOLTAGE 4.5
 ```
 
-**On SD Card (tank_config.txt):**
+**Comprehensive SD card configuration (tank_config.txt):**
 ```
-# Tank configuration loaded at startup
+# Network and Communication (moved from config.h)
+HOLOGRAM_DEVICE_KEY=your_actual_device_key
+HOLOGRAM_APN=hologram
+ALARM_PHONE_PRIMARY=+15551234567
+ALARM_PHONE_SECONDARY=+15559876543
+DAILY_REPORT_PHONE=+15555551234
+
+# Tank Configuration
 SITE_NAME=Main Tank Farm
 TANK_NUMBER=1
 TANK_HEIGHT_INCHES=120
-INCHES_PER_UNIT=1.0
 HIGH_ALARM_INCHES=100
 LOW_ALARM_INCHES=12
+
+# System Timing
+SLEEP_INTERVAL_HOURS=1
+DAILY_REPORT_HOURS=24
+
+# Advanced Options
 LARGE_DECREASE_THRESHOLD_INCHES=24
 LARGE_DECREASE_WAIT_HOURS=2
+CONNECTION_TIMEOUT_MS=30000
+SMS_RETRY_ATTEMPTS=3
 ```
 
 ## Log File Formats

@@ -74,6 +74,9 @@ const int HOLOGRAM_PORT = 9999;
 #ifndef DAILY_REPORT_PHONE
 #define DAILY_REPORT_PHONE "+18889990000"
 #endif
+#ifndef HOLOGRAM_APN
+#define HOLOGRAM_APN "hologram"
+#endif
 
 // Default values for new configuration parameters
 #ifndef TANK_NUMBER
@@ -168,6 +171,27 @@ bool digitalHighAlarm = DIGITAL_HIGH_ALARM;
 bool digitalLowAlarm = DIGITAL_LOW_ALARM;
 float largeDecreaseThreshold = LARGE_DECREASE_THRESHOLD_INCHES;
 int largeDecreaseWaitHours = LARGE_DECREASE_WAIT_HOURS;
+
+// Network and communication configuration (loaded from SD card)
+String hologramDeviceKey = HOLOGRAM_DEVICE_KEY;
+String alarmPhonePrimary = ALARM_PHONE_PRIMARY;
+String alarmPhoneSecondary = ALARM_PHONE_SECONDARY;
+String dailyReportPhone = DAILY_REPORT_PHONE;
+String hologramAPN = HOLOGRAM_APN;
+
+// Timing configuration (loaded from SD card)
+int sleepIntervalHours = SLEEP_INTERVAL_HOURS;
+int dailyReportHours = DAILY_REPORT_HOURS;
+
+// Network configuration (loaded from SD card)
+int connectionTimeoutMs = CONNECTION_TIMEOUT_MS;
+int smsRetryAttempts = SMS_RETRY_ATTEMPTS;
+
+// Log file names (loaded from SD card)
+String hourlyLogFile = SD_HOURLY_LOG_FILE;
+String dailyLogFile = SD_DAILY_LOG_FILE;
+String alarmLogFile = SD_ALARM_LOG_FILE;
+String decreaseLogFile = SD_DECREASE_LOG_FILE;
 
 void setup() {
   // Initialize serial communication for debugging
@@ -277,7 +301,7 @@ void loop() {
   logHourlyData();
   
   // Check if it's time for daily report
-  if (time_tick_report >= report_hours) {
+  if (time_tick_report >= dailyReportHours) {
     sendDailyReport();
     logDailyData();
     time_tick_report = 0;  // Reset daily counter
@@ -313,19 +337,19 @@ void loop() {
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) {
     Serial.print("Entering sleep mode for ");
-    Serial.print(sleep_hours);
+    Serial.print(sleepIntervalHours);
     Serial.println(" hour(s)");
   }
 #endif
   
 #ifdef ENABLE_LOW_POWER_MODE
   if (ENABLE_LOW_POWER_MODE) {
-    LowPower.sleep(sleep_hours * 60 * 60 * 1000);  // Convert hours to milliseconds
+    LowPower.sleep(sleepIntervalHours * 60 * 60 * 1000);  // Convert hours to milliseconds
   } else {
-    delay(sleep_hours * 60 * 60 * 1000);  // Fallback to delay if low power disabled
+    delay(sleepIntervalHours * 60 * 60 * 1000);  // Fallback to delay if low power disabled
   }
 #else
-  delay(sleep_hours * 60 * 60 * 1000);  // Default delay
+  delay(sleepIntervalHours * 60 * 60 * 1000);  // Default delay
 #endif
 }
 
@@ -335,7 +359,7 @@ bool connectToCellular() {
 #endif
   
   // Connect to the network
-  if (nbAccess.begin("", HOLOGRAM_APN) != NB_READY) {
+  if (nbAccess.begin("", hologramAPN.c_str()) != NB_READY) {
 #ifdef ENABLE_SERIAL_DEBUG
     if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect to cellular network");
 #endif
@@ -554,7 +578,7 @@ void sendAlarmSMS() {
                   ". Immediate attention required.";
   
   // Send to primary contact
-  if (sms.beginSMS(ALARM_PHONE_PRIMARY)) {
+  if (sms.beginSMS(alarmPhonePrimary.c_str())) {
     sms.print(message);
     sms.endSMS();
 #ifdef ENABLE_SERIAL_DEBUG
@@ -566,7 +590,7 @@ void sendAlarmSMS() {
   delay(5000);  // Wait between messages
   
   // Send to secondary contact
-  if (sms.beginSMS(ALARM_PHONE_SECONDARY)) {
+  if (sms.beginSMS(alarmPhoneSecondary.c_str())) {
     sms.print(message);
     sms.endSMS();
 #ifdef ENABLE_SERIAL_DEBUG
@@ -601,7 +625,7 @@ void sendDailyReport() {
   message += "\nNext report in 24 hours";
   
   // Send daily SMS
-  if (sms.beginSMS(DAILY_REPORT_PHONE)) {
+  if (sms.beginSMS(dailyReportPhone.c_str())) {
     sms.print(message);
     sms.endSMS();
 #ifdef ENABLE_SERIAL_DEBUG
@@ -625,7 +649,7 @@ void sendStartupNotification() {
   message += "\nSystem ready for monitoring";
   
   // Send startup SMS to daily report number
-  if (sms.beginSMS(DAILY_REPORT_PHONE)) {
+  if (sms.beginSMS(dailyReportPhone.c_str())) {
     sms.print(message);
     sms.endSMS();
 #ifdef ENABLE_SERIAL_DEBUG
@@ -639,7 +663,7 @@ void sendStartupNotification() {
 
 void sendHologramData(String topic, String message) {
   // Create JSON message for Hologram.io
-  String jsonPayload = "{\"k\":\"" + String(HOLOGRAM_DEVICE_KEY) + "\",";
+  String jsonPayload = "{\"k\":\"" + hologramDeviceKey + "\",";
   jsonPayload += "\"d\":\"" + message + "\",";
   jsonPayload += "\"t\":[\"" + topic + "\"]}";
   
@@ -756,6 +780,32 @@ void loadSDCardConfiguration() {
         largeDecreaseThreshold = value.toFloat();
       } else if (key == "LARGE_DECREASE_WAIT_HOURS") {
         largeDecreaseWaitHours = value.toInt();
+      } else if (key == "HOLOGRAM_DEVICE_KEY") {
+        hologramDeviceKey = value;
+      } else if (key == "HOLOGRAM_APN") {
+        hologramAPN = value;
+      } else if (key == "ALARM_PHONE_PRIMARY") {
+        alarmPhonePrimary = value;
+      } else if (key == "ALARM_PHONE_SECONDARY") {
+        alarmPhoneSecondary = value;
+      } else if (key == "DAILY_REPORT_PHONE") {
+        dailyReportPhone = value;
+      } else if (key == "SLEEP_INTERVAL_HOURS") {
+        sleepIntervalHours = value.toInt();
+      } else if (key == "DAILY_REPORT_HOURS") {
+        dailyReportHours = value.toInt();
+      } else if (key == "CONNECTION_TIMEOUT_MS") {
+        connectionTimeoutMs = value.toInt();
+      } else if (key == "SMS_RETRY_ATTEMPTS") {
+        smsRetryAttempts = value.toInt();
+      } else if (key == "HOURLY_LOG_FILE") {
+        hourlyLogFile = value;
+      } else if (key == "DAILY_LOG_FILE") {
+        dailyLogFile = value;
+      } else if (key == "ALARM_LOG_FILE") {
+        alarmLogFile = value;
+      } else if (key == "DECREASE_LOG_FILE") {
+        decreaseLogFile = value;
       }
     }
   }
@@ -866,7 +916,7 @@ void logHourlyData() {
   String logEntry = timestamp + ",H," + String(tankNumber) + "," + feetInchesFormat + "," + 
                    changePrefix + changeFeetInchesFormat + ",";
   
-  File hourlyFile = SD.open(SD_HOURLY_LOG_FILE, FILE_WRITE);
+  File hourlyFile = SD.open(hourlyLogFile.c_str(), FILE_WRITE);
   if (hourlyFile) {
     hourlyFile.println(logEntry);
     hourlyFile.close();
@@ -890,7 +940,7 @@ void logDailyData() {
   String logEntry = timestamp + ",D," + siteLocationName + "," + String(tankNumber) + "," + 
                    feetInchesFormat + "," + changePrefix + changeFeetInchesFormat + ",";
   
-  File dailyFile = SD.open(SD_DAILY_LOG_FILE, FILE_WRITE);
+  File dailyFile = SD.open(dailyLogFile.c_str(), FILE_WRITE);
   if (dailyFile) {
     dailyFile.println(logEntry);
     dailyFile.close();
@@ -909,7 +959,7 @@ void logAlarmEvent(String alarmState) {
   String timestamp = getDateTimestamp();
   String logEntry = timestamp + ",A," + siteLocationName + "," + String(tankNumber) + "," + alarmState;
   
-  File alarmFile = SD.open(SD_ALARM_LOG_FILE, FILE_WRITE);
+  File alarmFile = SD.open(alarmLogFile.c_str(), FILE_WRITE);
   if (alarmFile) {
     alarmFile.println(logEntry);
     alarmFile.close();
@@ -961,7 +1011,7 @@ void logLargeDecrease(float totalDecrease) {
   
   String logEntry = timestamp + ",S," + String(tankNumber) + "," + decreaseFeetInchesFormat;
   
-  File decreaseFile = SD.open(SD_DECREASE_LOG_FILE, FILE_WRITE);
+  File decreaseFile = SD.open(decreaseLogFile.c_str(), FILE_WRITE);
   if (decreaseFile) {
     decreaseFile.println(logEntry);
     decreaseFile.close();
