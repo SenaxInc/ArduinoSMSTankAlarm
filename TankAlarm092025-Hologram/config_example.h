@@ -73,6 +73,32 @@
 #define ENABLE_LOW_POWER_MODE true     // Enable low power sleep modes
 #define WAKE_CHECK_DURATION_MS 5000    // How long to stay awake for each check
 
+// Tank Configuration for Inches/Feet Measurements
+#define TANK_NUMBER 1                  // Tank number identifier (1-99)
+#define SITE_LOCATION_NAME "Example Site"  // Site location name for reports
+#define INCHES_PER_UNIT 1.0            // Inches per sensor unit (calibration factor)
+#define TANK_HEIGHT_INCHES 120         // Total tank height in inches
+
+// Alarm Thresholds in Inches/Feet (for analog/current loop sensors)
+#define HIGH_ALARM_INCHES 100          // High alarm threshold in inches
+#define LOW_ALARM_INCHES 12            // Low alarm threshold in inches
+
+// Digital Float Switch Alarm Configuration (for DIGITAL_FLOAT sensors)
+#define DIGITAL_HIGH_ALARM true        // Enable high alarm for digital float
+#define DIGITAL_LOW_ALARM false        // Enable low alarm for digital float
+
+// Large Decrease Detection
+#define ENABLE_LARGE_DECREASE_DETECTION true  // Enable detection of large decreases
+#define LARGE_DECREASE_THRESHOLD_INCHES 24    // Threshold for large decrease in inches
+#define LARGE_DECREASE_WAIT_HOURS 2           // Hours to wait before logging large decrease
+
+// SD Card Configuration Files
+#define SD_CONFIG_FILE "tank_config.txt"      // SD card configuration file
+#define SD_HOURLY_LOG_FILE "hourly_log.txt"   // Hourly data log file
+#define SD_DAILY_LOG_FILE "daily_log.txt"     // Daily report log file
+#define SD_ALARM_LOG_FILE "alarm_log.txt"     // Alarm event log file
+#define SD_DECREASE_LOG_FILE "decrease_log.txt" // Large decrease log file
+
 // Debug Options (for development/testing)
 #define DEBUG_WAIT_SERIAL false        // Wait for serial connection at startup
 // #define ENABLE_TEST_MODE true       // Uncomment to enable test mode features

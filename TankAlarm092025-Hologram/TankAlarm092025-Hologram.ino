@@ -74,6 +74,56 @@ const int HOLOGRAM_PORT = 9999;
 #ifndef DAILY_REPORT_PHONE
 #define DAILY_REPORT_PHONE "+18889990000"
 #endif
+#ifndef HOLOGRAM_APN
+#define HOLOGRAM_APN "hologram"
+#endif
+
+// Default values for new configuration parameters
+#ifndef TANK_NUMBER
+#define TANK_NUMBER 1
+#endif
+#ifndef SITE_LOCATION_NAME
+#define SITE_LOCATION_NAME "Tank Site"
+#endif
+#ifndef INCHES_PER_UNIT
+#define INCHES_PER_UNIT 1.0
+#endif
+#ifndef TANK_HEIGHT_INCHES
+#define TANK_HEIGHT_INCHES 120
+#endif
+#ifndef HIGH_ALARM_INCHES
+#define HIGH_ALARM_INCHES 100
+#endif
+#ifndef LOW_ALARM_INCHES
+#define LOW_ALARM_INCHES 12
+#endif
+#ifndef DIGITAL_HIGH_ALARM
+#define DIGITAL_HIGH_ALARM true
+#endif
+#ifndef DIGITAL_LOW_ALARM
+#define DIGITAL_LOW_ALARM false
+#endif
+#ifndef LARGE_DECREASE_THRESHOLD_INCHES
+#define LARGE_DECREASE_THRESHOLD_INCHES 24
+#endif
+#ifndef LARGE_DECREASE_WAIT_HOURS
+#define LARGE_DECREASE_WAIT_HOURS 2
+#endif
+#ifndef SD_CONFIG_FILE
+#define SD_CONFIG_FILE "tank_config.txt"
+#endif
+#ifndef SD_HOURLY_LOG_FILE
+#define SD_HOURLY_LOG_FILE "hourly_log.txt"
+#endif
+#ifndef SD_DAILY_LOG_FILE
+#define SD_DAILY_LOG_FILE "daily_log.txt"
+#endif
+#ifndef SD_ALARM_LOG_FILE
+#define SD_ALARM_LOG_FILE "alarm_log.txt"
+#endif
+#ifndef SD_DECREASE_LOG_FILE
+#define SD_DECREASE_LOG_FILE "decrease_log.txt"
+#endif
 
 // Timing variables
 volatile int time_tick_hours = 1;
@@ -94,11 +144,54 @@ int currentLevelState = LOW;
 int previousLevelState = LOW;
 bool alarmSent = false;
 
+// Tank level measurements in inches
+float currentLevelInches = 0.0;
+float previousLevelInches = 0.0;
+float levelChange24Hours = 0.0;
+
+// Large decrease detection
+float decreaseStartLevel = 0.0;
+unsigned long decreaseStartTime = 0;
+bool decreaseDetected = false;
+
 // Data logging
 #ifndef LOG_FILE_NAME
 #define LOG_FILE_NAME "tanklog.txt"
 #endif
 String logFileName = LOG_FILE_NAME;
+
+// SD Card configuration variables (loaded from SD card config file)
+String siteLocationName = SITE_LOCATION_NAME;
+int tankNumber = TANK_NUMBER;
+float inchesPerUnit = INCHES_PER_UNIT;
+float tankHeightInches = TANK_HEIGHT_INCHES;
+float highAlarmInches = HIGH_ALARM_INCHES;
+float lowAlarmInches = LOW_ALARM_INCHES;
+bool digitalHighAlarm = DIGITAL_HIGH_ALARM;
+bool digitalLowAlarm = DIGITAL_LOW_ALARM;
+float largeDecreaseThreshold = LARGE_DECREASE_THRESHOLD_INCHES;
+int largeDecreaseWaitHours = LARGE_DECREASE_WAIT_HOURS;
+
+// Network and communication configuration (loaded from SD card)
+String hologramDeviceKey = HOLOGRAM_DEVICE_KEY;
+String alarmPhonePrimary = ALARM_PHONE_PRIMARY;
+String alarmPhoneSecondary = ALARM_PHONE_SECONDARY;
+String dailyReportPhone = DAILY_REPORT_PHONE;
+String hologramAPN = HOLOGRAM_APN;
+
+// Timing configuration (loaded from SD card)
+int sleepIntervalHours = SLEEP_INTERVAL_HOURS;
+int dailyReportHours = DAILY_REPORT_HOURS;
+
+// Network configuration (loaded from SD card)
+int connectionTimeoutMs = CONNECTION_TIMEOUT_MS;
+int smsRetryAttempts = SMS_RETRY_ATTEMPTS;
+
+// Log file names (loaded from SD card)
+String hourlyLogFile = SD_HOURLY_LOG_FILE;
+String dailyLogFile = SD_DAILY_LOG_FILE;
+String alarmLogFile = SD_ALARM_LOG_FILE;
+String decreaseLogFile = SD_DECREASE_LOG_FILE;
 
 void setup() {
   // Initialize serial communication for debugging
@@ -137,6 +230,9 @@ void setup() {
     if (ENABLE_SERIAL_DEBUG) Serial.println("SD card initialized successfully");
 #endif
     logEvent("System startup - SD card initialized");
+    
+    // Load configuration from SD card
+    loadSDCardConfiguration();
   }
   
   // Initialize RTC
@@ -164,6 +260,10 @@ void setup() {
   currentLevelState = readTankLevel();
   previousLevelState = currentLevelState;
   
+  // Get initial level in inches
+  currentLevelInches = getTankLevelInches();
+  previousLevelInches = currentLevelInches;
+  
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) Serial.println("Setup complete - entering main loop");
 #endif
@@ -174,6 +274,14 @@ void loop() {
   // Read tank level
   currentLevelState = readTankLevel();
   
+  // Get current level in inches
+  float newLevelInches = getTankLevelInches();
+  
+  // Update level measurements
+  if (newLevelInches >= 0) {  // Valid reading
+    currentLevelInches = newLevelInches;
+  }
+  
   // Check for alarm condition (tank level HIGH indicates alarm)
   if (currentLevelState == HIGH && !alarmSent) {
     handleAlarmCondition();
@@ -183,16 +291,29 @@ void loop() {
   if (currentLevelState == LOW && alarmSent) {
     alarmSent = false;
     logEvent("Tank level returned to normal");
+    logAlarmEvent("normal");
   }
   
+  // Check for large decrease in level
+  checkLargeDecrease();
+  
+  // Check if it's time for hourly log entry
+  logHourlyData();
+  
   // Check if it's time for daily report
-  if (time_tick_report >= report_hours) {
+  if (time_tick_report >= dailyReportHours) {
     sendDailyReport();
+    logDailyData();
     time_tick_report = 0;  // Reset daily counter
+    
+    // Update 24-hour change tracking
+    levelChange24Hours = currentLevelInches - previousLevelInches;
+    previousLevelInches = currentLevelInches;
   }
   
   // Log current status
-  String statusMsg = "Tank level: " + String(currentLevelState == HIGH ? "HIGH" : "LOW");
+  String statusMsg = "Tank level: " + String(currentLevelInches, 1) + " inches";
+  statusMsg += " (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
   statusMsg += ", Hours: " + String(time_tick_hours);
   statusMsg += ", Report hours: " + String(time_tick_report);
   
@@ -216,19 +337,19 @@ void loop() {
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) {
     Serial.print("Entering sleep mode for ");
-    Serial.print(sleep_hours);
+    Serial.print(sleepIntervalHours);
     Serial.println(" hour(s)");
   }
 #endif
   
 #ifdef ENABLE_LOW_POWER_MODE
   if (ENABLE_LOW_POWER_MODE) {
-    LowPower.sleep(sleep_hours * 60 * 60 * 1000);  // Convert hours to milliseconds
+    LowPower.sleep(sleepIntervalHours * 60 * 60 * 1000);  // Convert hours to milliseconds
   } else {
-    delay(sleep_hours * 60 * 60 * 1000);  // Fallback to delay if low power disabled
+    delay(sleepIntervalHours * 60 * 60 * 1000);  // Fallback to delay if low power disabled
   }
 #else
-  delay(sleep_hours * 60 * 60 * 1000);  // Default delay
+  delay(sleepIntervalHours * 60 * 60 * 1000);  // Default delay
 #endif
 }
 
@@ -238,7 +359,7 @@ bool connectToCellular() {
 #endif
   
   // Connect to the network
-  if (nbAccess.begin("", HOLOGRAM_APN) != NB_READY) {
+  if (nbAccess.begin("", hologramAPN.c_str()) != NB_READY) {
 #ifdef ENABLE_SERIAL_DEBUG
     if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect to cellular network");
 #endif
@@ -275,17 +396,26 @@ int readDigitalFloatSensor() {
   
   int level2 = digitalRead(TANK_LEVEL_PIN);
   
-  if (level == level2) {
-    return level;
-  } else {
+  if (level != level2) {
     // If readings don't match, take a third reading
 #ifdef SENSOR_DEBOUNCE_MS
     delay(SENSOR_DEBOUNCE_MS);
 #else
     delay(100);
 #endif
-    return digitalRead(TANK_LEVEL_PIN);
+    level = digitalRead(TANK_LEVEL_PIN);
   }
+  
+  // Check if alarm condition is met based on configuration
+  bool alarmTriggered = false;
+  if (digitalHighAlarm && level == HIGH) {
+    alarmTriggered = true;
+  }
+  if (digitalLowAlarm && level == LOW) {
+    alarmTriggered = true;
+  }
+  
+  return alarmTriggered ? HIGH : LOW;
 }
 
 // Read analog voltage sensor (Dwyer 626 series)
@@ -304,32 +434,29 @@ int readAnalogVoltageSensor() {
   
   float avgVoltage = totalVoltage / numReadings;
   
-  // Calculate tank level percentage
-  float tankPercent = ((avgVoltage - TANK_EMPTY_VOLTAGE) / (TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE)) * 100.0;
-  
-  // Constrain to valid range
-  tankPercent = constrain(tankPercent, 0.0, 100.0);
+  // Convert voltage to inches
+  float levelInches = convertToInches(avgVoltage);
   
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) {
     Serial.print("Voltage: ");
     Serial.print(avgVoltage);
     Serial.print("V, Tank Level: ");
-    Serial.print(tankPercent);
-    Serial.println("%");
+    Serial.print(levelInches);
+    Serial.println(" inches");
   }
 #endif
   
   // Log current level to SD card occasionally
   static unsigned long lastLogTime = 0;
   if (millis() - lastLogTime > 300000) { // Log every 5 minutes
-    String logMsg = "Analog sensor - Voltage: " + String(avgVoltage) + "V, Level: " + String(tankPercent) + "%";
+    String logMsg = "Analog sensor - Voltage: " + String(avgVoltage) + "V, Level: " + String(levelInches) + " inches";
     logEvent(logMsg);
     lastLogTime = millis();
   }
   
-  // Return HIGH if tank level exceeds alarm threshold
-  return (tankPercent >= ALARM_THRESHOLD_PERCENT) ? HIGH : LOW;
+  // Return HIGH if tank level exceeds high alarm threshold or goes below low alarm threshold
+  return (levelInches >= highAlarmInches || levelInches <= lowAlarmInches) ? HIGH : LOW;
 }
 
 // Read 4-20mA current loop sensor via I2C
@@ -345,32 +472,29 @@ int readCurrentLoopSensor() {
     return LOW; // Default to normal state on error
   }
   
-  // Calculate tank level percentage
-  float tankPercent = ((current - TANK_EMPTY_CURRENT) / (TANK_FULL_CURRENT - TANK_EMPTY_CURRENT)) * 100.0;
-  
-  // Constrain to valid range
-  tankPercent = constrain(tankPercent, 0.0, 100.0);
+  // Convert current to inches
+  float levelInches = convertToInches(current);
   
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) {
     Serial.print("Current: ");
     Serial.print(current);
     Serial.print("mA, Tank Level: ");
-    Serial.print(tankPercent);
-    Serial.println("%");
+    Serial.print(levelInches);
+    Serial.println(" inches");
   }
 #endif
   
   // Log current level to SD card occasionally
   static unsigned long lastLogTime = 0;
   if (millis() - lastLogTime > 300000) { // Log every 5 minutes
-    String logMsg = "Current loop sensor - Current: " + String(current) + "mA, Level: " + String(tankPercent) + "%";
+    String logMsg = "Current loop sensor - Current: " + String(current) + "mA, Level: " + String(levelInches) + " inches";
     logEvent(logMsg);
     lastLogTime = millis();
   }
   
-  // Return HIGH if tank level exceeds alarm threshold
-  return (tankPercent >= ALARM_THRESHOLD_CURRENT_PERCENT) ? HIGH : LOW;
+  // Return HIGH if tank level exceeds high alarm threshold or goes below low alarm threshold
+  return (levelInches >= highAlarmInches || levelInches <= lowAlarmInches) ? HIGH : LOW;
 }
 
 // Read current value from NCD.io 4-channel current loop I2C module
@@ -398,44 +522,9 @@ float readCurrentLoopValue() {
   return -1; // Error reading
 }
 
-// Get current tank level as percentage for reporting
-float getTankLevelPercent() {
-#if SENSOR_TYPE == DIGITAL_FLOAT
-  // For digital sensors, return 0% or 100% based on state
-  return (currentLevelState == HIGH) ? 100.0 : 0.0;
-  
-#elif SENSOR_TYPE == ANALOG_VOLTAGE
-  // Read analog sensor and calculate percentage
-  float totalVoltage = 0;
-  const int numReadings = 5; // Fewer readings for reporting
-  
-  for (int i = 0; i < numReadings; i++) {
-    int adcValue = analogRead(ANALOG_SENSOR_PIN);
-    float voltage = (adcValue / 4095.0) * 3.3;
-    totalVoltage += voltage;
-    delay(5);
-  }
-  
-  float avgVoltage = totalVoltage / numReadings;
-  float tankPercent = ((avgVoltage - TANK_EMPTY_VOLTAGE) / (TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE)) * 100.0;
-  return constrain(tankPercent, 0.0, 100.0);
-  
-#elif SENSOR_TYPE == CURRENT_LOOP
-  // Read current loop sensor and calculate percentage
-  float current = readCurrentLoopValue();
-  if (current < 0) return -1.0; // Error indicator
-  
-  float tankPercent = ((current - TANK_EMPTY_CURRENT) / (TANK_FULL_CURRENT - TANK_EMPTY_CURRENT)) * 100.0;
-  return constrain(tankPercent, 0.0, 100.0);
-  
-#else
-  return -1.0; // Error
-#endif
-}
-
 void handleAlarmCondition() {
 #ifdef ENABLE_SERIAL_DEBUG
-  if (ENABLE_SERIAL_DEBUG) Serial.println("ALARM: Tank level HIGH detected!");
+  if (ENABLE_SERIAL_DEBUG) Serial.println("ALARM: Tank level alarm condition detected!");
 #endif
   
   // Set alarm flag
@@ -447,8 +536,18 @@ void handleAlarmCondition() {
   // Activate relay (if needed for alarm indication)
   digitalWrite(RELAY_CONTROL_PIN, HIGH);
   
+  // Determine alarm type
+  String alarmType = "change";
+  if (currentLevelInches >= highAlarmInches) {
+    alarmType = "high";
+  } else if (currentLevelInches <= lowAlarmInches) {
+    alarmType = "low";
+  }
+  
   // Log alarm event
-  logEvent("ALARM: Tank level HIGH detected");
+  String alarmMsg = "ALARM: Tank level " + alarmType + " - " + String(currentLevelInches, 1) + " inches";
+  logEvent(alarmMsg);
+  logAlarmEvent(alarmType);
   
   // Connect to network if not connected
   if (!connectToCellular()) {
@@ -463,7 +562,7 @@ void handleAlarmCondition() {
   sendAlarmSMS();
   
   // Send alarm data to Hologram.io
-  sendHologramData("ALARM", "Tank level HIGH - immediate attention required");
+  sendHologramData("ALARM", alarmMsg);
   
   // Turn off status LED after alarm sent
   digitalWrite(LED_BUILTIN, LOW);
@@ -473,11 +572,13 @@ void handleAlarmCondition() {
 }
 
 void sendAlarmSMS() {
-  String message = "TANK ALARM: High level detected at " + getCurrentTimestamp();
-  message += ". Immediate attention required.";
+  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
+  String message = "TANK ALARM " + siteLocationName + " Tank #" + String(tankNumber) + 
+                  ": Level " + feetInchesFormat + " at " + getCurrentTimestamp() + 
+                  ". Immediate attention required.";
   
   // Send to primary contact
-  if (sms.beginSMS(ALARM_PHONE_PRIMARY)) {
+  if (sms.beginSMS(alarmPhonePrimary.c_str())) {
     sms.print(message);
     sms.endSMS();
 #ifdef ENABLE_SERIAL_DEBUG
@@ -489,7 +590,7 @@ void sendAlarmSMS() {
   delay(5000);  // Wait between messages
   
   // Send to secondary contact
-  if (sms.beginSMS(ALARM_PHONE_SECONDARY)) {
+  if (sms.beginSMS(alarmPhoneSecondary.c_str())) {
     sms.print(message);
     sms.endSMS();
 #ifdef ENABLE_SERIAL_DEBUG
@@ -513,34 +614,18 @@ void sendDailyReport() {
     return;
   }
   
-  String message = "Daily Tank Report - " + getCurrentTimestamp();
+  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
+  String changeFeetInchesFormat = formatInchesToFeetInches(abs(levelChange24Hours));
+  String changePrefix = (levelChange24Hours >= 0) ? "+" : "";
   
-  // Get detailed tank level information
-  float tankPercent = getTankLevelPercent();
-  String levelInfo;
-  
-#if SENSOR_TYPE == DIGITAL_FLOAT
-  levelInfo = String(currentLevelState == HIGH ? "HIGH (Alarm)" : "LOW (Normal)");
-#elif SENSOR_TYPE == ANALOG_VOLTAGE
-  if (tankPercent >= 0) {
-    levelInfo = String(tankPercent, 1) + "% (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
-  } else {
-    levelInfo = "Sensor Error";
-  }
-#elif SENSOR_TYPE == CURRENT_LOOP
-  if (tankPercent >= 0) {
-    levelInfo = String(tankPercent, 1) + "% (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
-  } else {
-    levelInfo = "Sensor Error";
-  }
-#endif
-
-  message += "\nTank Level: " + levelInfo;
-  message += "\nSystem Status: Normal";
+  String message = "Daily Tank Report " + siteLocationName + " - " + getCurrentTimestamp();
+  message += "\nTank #" + String(tankNumber) + " Level: " + feetInchesFormat;
+  message += "\n24hr Change: " + changePrefix + changeFeetInchesFormat;
+  message += "\nStatus: " + String(currentLevelState == HIGH ? "ALARM" : "Normal");
   message += "\nNext report in 24 hours";
   
   // Send daily SMS
-  if (sms.beginSMS(DAILY_REPORT_PHONE)) {
+  if (sms.beginSMS(dailyReportPhone.c_str())) {
     sms.print(message);
     sms.endSMS();
 #ifdef ENABLE_SERIAL_DEBUG
@@ -557,34 +642,14 @@ void sendDailyReport() {
 }
 
 void sendStartupNotification() {
-  String message = "Tank Alarm System Started - " + getCurrentTimestamp();
-  
-  // Get detailed tank level information for startup
-  float tankPercent = getTankLevelPercent();
-  String levelInfo;
-  
-#if SENSOR_TYPE == DIGITAL_FLOAT
-  levelInfo = String(currentLevelState == HIGH ? "HIGH (Alarm)" : "LOW (Normal)");
-#elif SENSOR_TYPE == ANALOG_VOLTAGE
-  if (tankPercent >= 0) {
-    levelInfo = String(tankPercent, 1) + "% (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
-  } else {
-    levelInfo = "Sensor Error";
-  }
-#elif SENSOR_TYPE == CURRENT_LOOP
-  if (tankPercent >= 0) {
-    levelInfo = String(tankPercent, 1) + "% (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
-  } else {
-    levelInfo = "Sensor Error";
-  }
-#endif
-
-  message += "\nInitial Level: " + levelInfo;
-  message += "\nSystem ready for monitoring";
+  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
+  String message = "Tank Alarm System Started " + siteLocationName + " - " + getCurrentTimestamp();
+  message += "\nTank #" + String(tankNumber) + " Initial Level: " + feetInchesFormat;
+  message += "\nStatus: " + String(currentLevelState == HIGH ? "ALARM" : "Normal");
   message += "\nSystem ready for monitoring";
   
   // Send startup SMS to daily report number
-  if (sms.beginSMS(DAILY_REPORT_PHONE)) {
+  if (sms.beginSMS(dailyReportPhone.c_str())) {
     sms.print(message);
     sms.endSMS();
 #ifdef ENABLE_SERIAL_DEBUG
@@ -598,7 +663,7 @@ void sendStartupNotification() {
 
 void sendHologramData(String topic, String message) {
   // Create JSON message for Hologram.io
-  String jsonPayload = "{\"k\":\"" + String(HOLOGRAM_DEVICE_KEY) + "\",";
+  String jsonPayload = "{\"k\":\"" + hologramDeviceKey + "\",";
   jsonPayload += "\"d\":\"" + message + "\",";
   jsonPayload += "\"t\":[\"" + topic + "\"]}";
   
@@ -655,4 +720,309 @@ String getCurrentTimestamp() {
   timestamp += String(rtc.getSeconds());
   
   return timestamp;
+}
+
+// Load configuration from SD card
+void loadSDCardConfiguration() {
+  if (!SD.begin(SD_CARD_CS_PIN)) {
+    logEvent("Failed to initialize SD card for configuration loading");
+    return;
+  }
+  
+  File configFile = SD.open(SD_CONFIG_FILE);
+  if (!configFile) {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Config file not found, using defaults");
+#endif
+    logEvent("Config file not found, using defaults from config.h");
+    return;
+  }
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Loading configuration from SD card...");
+#endif
+  
+  while (configFile.available()) {
+    String line = configFile.readStringUntil('\n');
+    line.trim();
+    
+    // Skip comments and empty lines
+    if (line.startsWith("#") || line.length() == 0) {
+      continue;
+    }
+    
+    // Parse key=value pairs
+    int equalPos = line.indexOf('=');
+    if (equalPos > 0) {
+      String key = line.substring(0, equalPos);
+      String value = line.substring(equalPos + 1);
+      key.trim();
+      value.trim();
+      
+      // Update configuration variables
+      if (key == "SITE_NAME") {
+        siteLocationName = value;
+      } else if (key == "TANK_NUMBER") {
+        tankNumber = value.toInt();
+      } else if (key == "TANK_HEIGHT_INCHES") {
+        tankHeightInches = value.toFloat();
+      } else if (key == "INCHES_PER_UNIT") {
+        inchesPerUnit = value.toFloat();
+      } else if (key == "HIGH_ALARM_INCHES") {
+        highAlarmInches = value.toFloat();
+      } else if (key == "LOW_ALARM_INCHES") {
+        lowAlarmInches = value.toFloat();
+      } else if (key == "DIGITAL_HIGH_ALARM") {
+        digitalHighAlarm = (value == "true");
+      } else if (key == "DIGITAL_LOW_ALARM") {
+        digitalLowAlarm = (value == "true");
+      } else if (key == "LARGE_DECREASE_THRESHOLD_INCHES") {
+        largeDecreaseThreshold = value.toFloat();
+      } else if (key == "LARGE_DECREASE_WAIT_HOURS") {
+        largeDecreaseWaitHours = value.toInt();
+      } else if (key == "HOLOGRAM_DEVICE_KEY") {
+        hologramDeviceKey = value;
+      } else if (key == "HOLOGRAM_APN") {
+        hologramAPN = value;
+      } else if (key == "ALARM_PHONE_PRIMARY") {
+        alarmPhonePrimary = value;
+      } else if (key == "ALARM_PHONE_SECONDARY") {
+        alarmPhoneSecondary = value;
+      } else if (key == "DAILY_REPORT_PHONE") {
+        dailyReportPhone = value;
+      } else if (key == "SLEEP_INTERVAL_HOURS") {
+        sleepIntervalHours = value.toInt();
+      } else if (key == "DAILY_REPORT_HOURS") {
+        dailyReportHours = value.toInt();
+      } else if (key == "CONNECTION_TIMEOUT_MS") {
+        connectionTimeoutMs = value.toInt();
+      } else if (key == "SMS_RETRY_ATTEMPTS") {
+        smsRetryAttempts = value.toInt();
+      } else if (key == "HOURLY_LOG_FILE") {
+        hourlyLogFile = value;
+      } else if (key == "DAILY_LOG_FILE") {
+        dailyLogFile = value;
+      } else if (key == "ALARM_LOG_FILE") {
+        alarmLogFile = value;
+      } else if (key == "DECREASE_LOG_FILE") {
+        decreaseLogFile = value;
+      }
+    }
+  }
+  
+  configFile.close();
+  
+  String configMsg = "Configuration loaded - Site: " + siteLocationName + 
+                    ", Tank: " + String(tankNumber) + 
+                    ", Height: " + String(tankHeightInches) + "in";
+  logEvent(configMsg);
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println(configMsg);
+#endif
+}
+
+// Convert sensor reading to inches
+float convertToInches(float sensorValue) {
+#if SENSOR_TYPE == DIGITAL_FLOAT
+  // For digital sensors, return full tank height if HIGH, 0 if LOW
+  return (sensorValue == HIGH) ? tankHeightInches : 0.0;
+  
+#elif SENSOR_TYPE == ANALOG_VOLTAGE
+  // Calculate percentage first, then convert to inches
+  float voltage = sensorValue;
+  float tankPercent = ((voltage - TANK_EMPTY_VOLTAGE) / (TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE)) * 100.0;
+  tankPercent = constrain(tankPercent, 0.0, 100.0);
+  return (tankPercent / 100.0) * tankHeightInches;
+  
+#elif SENSOR_TYPE == CURRENT_LOOP
+  // Calculate percentage first, then convert to inches
+  float current = sensorValue;
+  float tankPercent = ((current - TANK_EMPTY_CURRENT) / (TANK_FULL_CURRENT - TANK_EMPTY_CURRENT)) * 100.0;
+  tankPercent = constrain(tankPercent, 0.0, 100.0);
+  return (tankPercent / 100.0) * tankHeightInches;
+  
+#else
+  return 0.0;
+#endif
+}
+
+// Get current tank level in inches
+float getTankLevelInches() {
+#if SENSOR_TYPE == DIGITAL_FLOAT
+  return convertToInches(currentLevelState);
+  
+#elif SENSOR_TYPE == ANALOG_VOLTAGE
+  // Read analog sensor and calculate inches
+  float totalVoltage = 0;
+  const int numReadings = 5;
+  
+  for (int i = 0; i < numReadings; i++) {
+    int adcValue = analogRead(ANALOG_SENSOR_PIN);
+    float voltage = (adcValue / 4095.0) * 3.3;
+    totalVoltage += voltage;
+    delay(5);
+  }
+  
+  float avgVoltage = totalVoltage / numReadings;
+  return convertToInches(avgVoltage);
+  
+#elif SENSOR_TYPE == CURRENT_LOOP
+  // Read current loop sensor and calculate inches
+  float current = readCurrentLoopValue();
+  if (current < 0) return -1.0; // Error indicator
+  
+  return convertToInches(current);
+  
+#else
+  return -1.0; // Error
+#endif
+}
+
+// Convert inches to feet and inches format
+String formatInchesToFeetInches(float totalInches) {
+  int feet = (int)(totalInches / 12);
+  float inches = totalInches - (feet * 12);
+  
+  String result = String(feet) + "FT," + String(inches, 1) + "IN";
+  return result;
+}
+
+// Create timestamp in YYYYMMDD format
+String getDateTimestamp() {
+  String timestamp = String(rtc.getYear() + 2000);
+  if (rtc.getMonth() < 10) timestamp += "0";
+  timestamp += String(rtc.getMonth());
+  if (rtc.getDay() < 10) timestamp += "0";
+  timestamp += String(rtc.getDay());
+  if (rtc.getHours() < 10) timestamp += "0";
+  timestamp += String(rtc.getHours()) + ":";
+  if (rtc.getMinutes() < 10) timestamp += "0";
+  timestamp += String(rtc.getMinutes());
+  
+  return timestamp;
+}
+
+// Log hourly data in required format
+// YYYYMMDD00:00,H,(Tank Number),(Number of Feet)FT,(Number of Inches)IN,+(Number of feet added in last 24hrs)FT,(Number of inches added in last 24hrs)IN,
+void logHourlyData() {
+  if (!SD.begin(SD_CARD_CS_PIN)) return;
+  
+  String timestamp = getDateTimestamp();
+  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
+  String changeFeetInchesFormat = formatInchesToFeetInches(abs(levelChange24Hours));
+  String changePrefix = (levelChange24Hours >= 0) ? "+" : "-";
+  
+  String logEntry = timestamp + ",H," + String(tankNumber) + "," + feetInchesFormat + "," + 
+                   changePrefix + changeFeetInchesFormat + ",";
+  
+  File hourlyFile = SD.open(hourlyLogFile.c_str(), FILE_WRITE);
+  if (hourlyFile) {
+    hourlyFile.println(logEntry);
+    hourlyFile.close();
+    
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Hourly log: " + logEntry);
+#endif
+  }
+}
+
+// Log daily data in required format
+// YYYYMMDD00:00,D,(site location name),(Tank Number),(Number of Feet)FT,(Number of Inches)IN,+(Number of feet added in last 24hrs)FT,(Number of inches added in last 24hrs)IN,
+void logDailyData() {
+  if (!SD.begin(SD_CARD_CS_PIN)) return;
+  
+  String timestamp = getDateTimestamp();
+  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
+  String changeFeetInchesFormat = formatInchesToFeetInches(abs(levelChange24Hours));
+  String changePrefix = (levelChange24Hours >= 0) ? "+" : "-";
+  
+  String logEntry = timestamp + ",D," + siteLocationName + "," + String(tankNumber) + "," + 
+                   feetInchesFormat + "," + changePrefix + changeFeetInchesFormat + ",";
+  
+  File dailyFile = SD.open(dailyLogFile.c_str(), FILE_WRITE);
+  if (dailyFile) {
+    dailyFile.println(logEntry);
+    dailyFile.close();
+    
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Daily log: " + logEntry);
+#endif
+  }
+}
+
+// Log alarm events in required format
+// YYYYMMDD00:00,A,(site location name),(Tank Number),(alarm state, high or low or change)
+void logAlarmEvent(String alarmState) {
+  if (!SD.begin(SD_CARD_CS_PIN)) return;
+  
+  String timestamp = getDateTimestamp();
+  String logEntry = timestamp + ",A," + siteLocationName + "," + String(tankNumber) + "," + alarmState;
+  
+  File alarmFile = SD.open(alarmLogFile.c_str(), FILE_WRITE);
+  if (alarmFile) {
+    alarmFile.println(logEntry);
+    alarmFile.close();
+    
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Alarm log: " + logEntry);
+#endif
+  }
+}
+
+// Check for large decreases in tank level
+void checkLargeDecrease() {
+  float levelDifference = previousLevelInches - currentLevelInches;
+  
+  if (levelDifference >= largeDecreaseThreshold && !decreaseDetected) {
+    // Large decrease detected for first time
+    decreaseDetected = true;
+    decreaseStartLevel = previousLevelInches;
+    decreaseStartTime = millis();
+    
+    String msg = "Large decrease detected: " + String(levelDifference, 1) + " inches";
+    logEvent(msg);
+    
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println(msg);
+#endif
+  }
+  
+  // Check if we should log the large decrease (after waiting period)
+  if (decreaseDetected && (millis() - decreaseStartTime) >= (largeDecreaseWaitHours * 60 * 60 * 1000)) {
+    float totalDecrease = decreaseStartLevel - currentLevelInches;
+    
+    if (totalDecrease >= largeDecreaseThreshold) {
+      logLargeDecrease(totalDecrease);
+    }
+    
+    // Reset decrease detection
+    decreaseDetected = false;
+  }
+}
+
+// Log large decrease in required format
+// YYYYMMDD00:00,S,(Tank Number),(total Number of Feet decreased)FT,(total Number of Inches decreased)IN
+void logLargeDecrease(float totalDecrease) {
+  if (!SD.begin(SD_CARD_CS_PIN)) return;
+  
+  String timestamp = getDateTimestamp();
+  String decreaseFeetInchesFormat = formatInchesToFeetInches(totalDecrease);
+  
+  String logEntry = timestamp + ",S," + String(tankNumber) + "," + decreaseFeetInchesFormat;
+  
+  File decreaseFile = SD.open(decreaseLogFile.c_str(), FILE_WRITE);
+  if (decreaseFile) {
+    decreaseFile.println(logEntry);
+    decreaseFile.close();
+    
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Large decrease log: " + logEntry);
+#endif
+  }
+  
+  // Log the event in main log as well
+  String eventMsg = "Large decrease logged: " + String(totalDecrease, 1) + " inches over " + 
+                   String(largeDecreaseWaitHours) + " hours";
+  logEvent(eventMsg);
 }
