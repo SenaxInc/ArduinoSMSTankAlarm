@@ -18,6 +18,7 @@
 // Timing Configuration (in hours)
 #define SLEEP_INTERVAL_HOURS 1          // How often to check tank level (default: 1 hour)
 #define DAILY_REPORT_HOURS 24           // How often to send daily report (default: 24 hours)
+#define DAILY_REPORT_TIME "06:00"       // Time of day for daily report in HH:MM format (24-hour)
 
 // Pin Configuration (adjust if using different pins)
 #define TANK_LEVEL_PIN 7               // Tank level sensor input pin

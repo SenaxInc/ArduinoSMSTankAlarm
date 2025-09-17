@@ -135,6 +135,9 @@ volatile int time_tick_report = 1;
 #ifndef DAILY_REPORT_HOURS
 #define DAILY_REPORT_HOURS 24
 #endif
+#ifndef DAILY_REPORT_TIME
+#define DAILY_REPORT_TIME "06:00"
+#endif
 
 const int sleep_hours = SLEEP_INTERVAL_HOURS;
 const int report_hours = DAILY_REPORT_HOURS;
@@ -182,6 +185,18 @@ String hologramAPN = HOLOGRAM_APN;
 // Timing configuration (loaded from SD card)
 int sleepIntervalHours = SLEEP_INTERVAL_HOURS;
 int dailyReportHours = DAILY_REPORT_HOURS;
+String dailyReportTime = DAILY_REPORT_TIME;
+
+// Time synchronization variables
+bool timeIsSynced = false;
+unsigned long lastTimeSyncMillis = 0;
+const unsigned long TIME_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // Sync once per day
+
+// Function declarations
+bool connectToCellular();
+bool syncTimeFromCellular();
+bool isTimeForDailyReport();
+void parseTimeString(String timeStr, int &hours, int &minutes);
 
 // Network configuration (loaded from SD card)
 int connectionTimeoutMs = CONNECTION_TIMEOUT_MS;
@@ -244,6 +259,17 @@ void setup() {
     if (ENABLE_SERIAL_DEBUG) Serial.println("Connected to cellular network");
 #endif
     
+    // Sync time from cellular network
+    if (syncTimeFromCellular()) {
+#ifdef ENABLE_SERIAL_DEBUG
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Time synchronized from cellular network");
+#endif
+    } else {
+#ifdef ENABLE_SERIAL_DEBUG
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to sync time from network");
+#endif
+    }
+    
     // Send startup notification
     sendStartupNotification();
     
@@ -300,11 +326,18 @@ void loop() {
   // Check if it's time for hourly log entry
   logHourlyData();
   
-  // Check if it's time for daily report
-  if (time_tick_report >= dailyReportHours) {
+  // Check for periodic time sync (once per day)
+  if (timeIsSynced && (millis() - lastTimeSyncMillis > TIME_SYNC_INTERVAL_MS)) {
+    if (connectToCellular()) {
+      syncTimeFromCellular();
+    }
+  }
+  
+  // Check if it's time for daily report using configured time
+  if (isTimeForDailyReport()) {
     sendDailyReport();
     logDailyData();
-    time_tick_report = 0;  // Reset daily counter
+    time_tick_report = 0;  // Reset daily counter for fallback compatibility
     
     // Update 24-hour change tracking
     levelChange24Hours = currentLevelInches - previousLevelInches;
@@ -316,6 +349,12 @@ void loop() {
   statusMsg += " (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
   statusMsg += ", Hours: " + String(time_tick_hours);
   statusMsg += ", Report hours: " + String(time_tick_report);
+  if (timeIsSynced) {
+    statusMsg += ", Time: " + getCurrentTimestamp();
+    statusMsg += ", Next report: " + dailyReportTime;
+  } else {
+    statusMsg += ", Time: NOT SYNCED";
+  }
   
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) Serial.println("Status: " + statusMsg);
@@ -794,6 +833,8 @@ void loadSDCardConfiguration() {
         sleepIntervalHours = value.toInt();
       } else if (key == "DAILY_REPORT_HOURS") {
         dailyReportHours = value.toInt();
+      } else if (key == "DAILY_REPORT_TIME") {
+        dailyReportTime = value;
       } else if (key == "CONNECTION_TIMEOUT_MS") {
         connectionTimeoutMs = value.toInt();
       } else if (key == "SMS_RETRY_ATTEMPTS") {
@@ -814,7 +855,8 @@ void loadSDCardConfiguration() {
   
   String configMsg = "Configuration loaded - Site: " + siteLocationName + 
                     ", Tank: " + String(tankNumber) + 
-                    ", Height: " + String(tankHeightInches) + "in";
+                    ", Height: " + String(tankHeightInches) + "in" +
+                    ", Daily Report: " + dailyReportTime;
   logEvent(configMsg);
   
 #ifdef ENABLE_SERIAL_DEBUG
@@ -1025,4 +1067,142 @@ void logLargeDecrease(float totalDecrease) {
   String eventMsg = "Large decrease logged: " + String(totalDecrease, 1) + " inches over " + 
                    String(largeDecreaseWaitHours) + " hours";
   logEvent(eventMsg);
+}
+
+// Synchronize time from cellular network
+bool syncTimeFromCellular() {
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Attempting to sync time from cellular network...");
+#endif
+
+  // Ensure we're connected to cellular
+  if (!connectToCellular()) {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect for time sync");
+#endif
+    return false;
+  }
+
+  // Get network time (Unix timestamp)
+  unsigned long networkTime = nbAccess.getTime();
+  
+  if (networkTime == 0) {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to get network time");
+#endif
+    return false;
+  }
+
+  // Convert Unix timestamp to date/time components
+  // Note: This is a simplified conversion assuming UTC
+  // For production, consider timezone adjustments
+  unsigned long epochTime = networkTime;
+  unsigned long days = epochTime / 86400;
+  unsigned long hours = (epochTime % 86400) / 3600;
+  unsigned long minutes = (epochTime % 3600) / 60;
+  unsigned long seconds = epochTime % 60;
+  
+  // Calculate year, month, day from days since epoch (1970-01-01)
+  int year = 1970;
+  int month = 1;
+  int day = 1;
+  
+  // Simple approximation for date calculation
+  days += 1; // Adjust for epoch start
+  while (days > 365) {
+    if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
+      if (days > 366) {
+        days -= 366;
+        year++;
+      } else {
+        break;
+      }
+    } else {
+      days -= 365;
+      year++;
+    }
+  }
+  
+  // Simple month calculation (approximation)
+  int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
+    daysInMonth[1] = 29; // Leap year
+  }
+  
+  while (days > daysInMonth[month - 1]) {
+    days -= daysInMonth[month - 1];
+    month++;
+    if (month > 12) {
+      month = 1;
+      year++;
+    }
+  }
+  day = days;
+
+  // Set the RTC with the network time
+  rtc.setTime(hours, minutes, seconds);
+  rtc.setDate(day, month, year - 2000); // RTCZero expects year as offset from 2000
+
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) {
+    Serial.println("Time synchronized from network:");
+    Serial.println("Date: " + String(year) + "-" + String(month) + "-" + String(day));
+    Serial.println("Time: " + String(hours) + ":" + String(minutes) + ":" + String(seconds));
+  }
+#endif
+
+  timeIsSynced = true;
+  lastTimeSyncMillis = millis();
+  logEvent("Time synchronized from cellular network");
+  
+  return true;
+}
+
+// Parse time string in HH:MM format
+void parseTimeString(String timeStr, int &hours, int &minutes) {
+  int colonPos = timeStr.indexOf(':');
+  if (colonPos > 0 && colonPos < timeStr.length() - 1) {
+    hours = timeStr.substring(0, colonPos).toInt();
+    minutes = timeStr.substring(colonPos + 1).toInt();
+  } else {
+    // Default to 6:00 AM if parsing fails
+    hours = 6;
+    minutes = 0;
+  }
+  
+  // Validate values
+  if (hours < 0 || hours > 23) hours = 6;
+  if (minutes < 0 || minutes > 59) minutes = 0;
+}
+
+// Check if it's time for the daily report based on configured time
+bool isTimeForDailyReport() {
+  if (!timeIsSynced) {
+    // Fall back to the old tick-based system if time isn't synced
+    return (time_tick_report >= dailyReportHours);
+  }
+  
+  int reportHours, reportMinutes;
+  parseTimeString(dailyReportTime, reportHours, reportMinutes);
+  
+  int currentHours = rtc.getHours();
+  int currentMinutes = rtc.getMinutes();
+  
+  // Check if current time matches the configured report time (within 1 minute tolerance)
+  if (currentHours == reportHours && 
+      currentMinutes >= reportMinutes && 
+      currentMinutes < reportMinutes + 1) {
+    
+    // Additional check to prevent multiple reports in the same hour
+    // Reset the flag by checking if we've already sent a report today
+    static int lastReportDay = -1;
+    int currentDay = rtc.getDay();
+    
+    if (currentDay != lastReportDay) {
+      lastReportDay = currentDay;
+      return true;
+    }
+  }
+  
+  return false;
 }
