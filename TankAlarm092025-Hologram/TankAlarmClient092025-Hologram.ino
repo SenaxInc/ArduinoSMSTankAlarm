@@ -1767,6 +1767,23 @@ void sendRecoveryNotification() {
   // Send recovery data to Hologram.io
   sendHologramData("RECOVERY", message);
   
+  // Send power failure notification to server for daily email tracking
+  sendPowerFailureNotificationToServer();
+  
   logEvent("Recovery notification completed");
+}
+
+void sendPowerFailureNotificationToServer() {
+  if (!connectToCellular()) return;
+  
+  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
+  String powerFailureData = siteLocationName + "|" + String(tankNumber) + 
+                           "|" + getCurrentTimestamp() + "|" + feetInchesFormat + 
+                           "|" + lastShutdownReason;
+  
+  // Send to server using POWER_FAILURE topic for daily email inclusion
+  sendHologramData("POWER_FAILURE", powerFailureData);
+  
+  logEvent("Power failure notification sent to server for daily email tracking");
 }
 }

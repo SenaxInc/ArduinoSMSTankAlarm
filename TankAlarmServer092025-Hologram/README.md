@@ -21,6 +21,7 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
 - **Email Management**: Web-based interface to manage email recipient lists stored on SD card
 - **Tank Management**: Remote ping functionality for testing tank client connectivity (foundation for future remote control)
 - **Daily Email Summaries**: Composes and sends daily email summaries of tank level changes via Hologram API (default) or SMS gateway (fallback)
+- **Power Failure Tracking**: Receives and tracks power failure notifications from client devices, includes power failure events in daily email reports
 - **Monthly CSV Reports**: Generates comprehensive monthly reports grouped by tank location with daily changes and major decreases
 - **Real-time Monitoring**: Displays current tank levels and 24-hour changes
 
@@ -84,9 +85,11 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
   - `daily_reports.txt`: Tank level reports
   - `alarm_log.txt`: Alarm notifications
   - `server_log.txt`: Server events and status
+  - `power_failure_log.txt`: Power failure events from client devices
   - `monthly_report_YYYY-MM.csv`: Monthly CSV reports with tank data grouped by location
   - `daily_emails.txt`: List of daily email recipients (managed via web interface)
   - `monthly_emails.txt`: List of monthly email recipients (managed via web interface)
+  - `power_failure_backup.txt`: Backup of power failure events for recovery
 
 ## Power Failure Recovery
 
@@ -232,7 +235,8 @@ The server automatically sends daily email summaries with two delivery methods:
 ### Primary Method: Hologram API (Default)
 - **Time**: Configurable (default 6:00 AM)
 - **Delivery**: Direct email via Hologram.io API
-- **Content**: All tank level changes from the previous 24 hours
+- **Content**: All tank level changes from the previous 24 hours plus power failure events
+- **Power Failures**: Includes any power failure recovery events from client devices
 - **Configuration**: Set `USE_HOLOGRAM_EMAIL = true` and configure `HOLOGRAM_EMAIL_RECIPIENT`
 
 ### Fallback Method: SMS-to-Email Gateway

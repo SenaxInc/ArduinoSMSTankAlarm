@@ -113,11 +113,17 @@ The system supports three types of tank level sensors:
   - **Cellular Wake**: Modem configured to wake device on incoming data
   - **Configurable Intervals**: Sleep durations adjustable via SD card configuration
   - **Battery Life**: Optimized for months of operation on battery power
+- **Power Failure Recovery**:
+  - **Automatic Detection**: Detects unexpected shutdowns vs normal operation
+  - **State Restoration**: Tank levels, timing, and alarm status preserved across power cycles
+  - **Recovery Notifications**: SMS alerts sent when power failure recovery occurs
+  - **Server Notification**: Automatically notifies Tank Alarm Server of power failures for daily email tracking
 
 ### Server Communication
 - **Server Device ID**: Configure `SERVER_DEVICE_KEY` to communicate with Tank Alarm Server
 - **Remote Commands**: Listens for ping and control commands from server (every 10 minutes)
 - **Command Types**: Supports PING, RELAY_ON, RELAY_OFF (future expansion for more commands)
+- **Power Failure Reporting**: Automatically sends power failure notifications to server for inclusion in daily email reports
 - **Response System**: Sends acknowledgments back to server for command execution
 - **Configuration Storage**: Server device ID stored on SD card for easy updates
 

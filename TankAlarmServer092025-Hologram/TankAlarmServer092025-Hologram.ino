@@ -92,9 +92,22 @@ struct PingStatus {
   bool pingInProgress;
 };
 
+// Power failure tracking for daily emails
+struct PowerFailureEvent {
+  String timestamp;
+  String siteLocation;
+  int tankNumber;
+  String currentLevel;
+  String shutdownReason;
+};
+
 const int MAX_PING_ENTRIES = 20;
 PingStatus pingStatuses[MAX_PING_ENTRIES];
 int pingStatusCount = 0;
+
+const int MAX_POWER_FAILURE_EVENTS = 50;
+PowerFailureEvent powerFailureEvents[MAX_POWER_FAILURE_EVENTS];
+int powerFailureEventCount = 0;
 
 void setup() {
   // Initialize serial communication for debugging
@@ -207,6 +220,9 @@ void parseHologramMessage(String message) {
   } else if (message.indexOf("ALARM") >= 0) {
     topic = "ALARM";
     data = message;
+  } else if (message.indexOf("POWER_FAILURE") >= 0) {
+    topic = "POWER_FAILURE";
+    data = message;
   } else {
     // Try to parse as simple format "topic:data"
     int colonIndex = message.indexOf(":");
@@ -222,6 +238,8 @@ void parseHologramMessage(String message) {
     processDailyReport(data);
   } else if (topic == "ALARM") {
     processAlarmReport(data);
+  } else if (topic == "POWER_FAILURE") {
+    processPowerFailureReport(data);
   } else {
     // Log unknown message type
     logEvent("Unknown message type received: " + message);
@@ -296,6 +314,43 @@ void processAlarmReport(String alarmData) {
   appendToFile("alarm_log.txt", logEntry);
   
   logEvent("Alarm received: " + alarmData);
+}
+
+void processPowerFailureReport(String powerFailureData) {
+  Serial.println("Processing power failure report: " + powerFailureData);
+  
+  // Parse power failure data: siteLocation|tankNumber|timestamp|currentLevel|shutdownReason
+  int firstPipe = powerFailureData.indexOf("|");
+  int secondPipe = powerFailureData.indexOf("|", firstPipe + 1);
+  int thirdPipe = powerFailureData.indexOf("|", secondPipe + 1);
+  int fourthPipe = powerFailureData.indexOf("|", thirdPipe + 1);
+  
+  if (firstPipe > 0 && secondPipe > firstPipe && thirdPipe > secondPipe) {
+    PowerFailureEvent event;
+    event.siteLocation = powerFailureData.substring(0, firstPipe);
+    event.tankNumber = powerFailureData.substring(firstPipe + 1, secondPipe).toInt();
+    event.timestamp = powerFailureData.substring(secondPipe + 1, thirdPipe);
+    event.currentLevel = powerFailureData.substring(thirdPipe + 1, fourthPipe);
+    if (fourthPipe > 0) {
+      event.shutdownReason = powerFailureData.substring(fourthPipe + 1);
+    } else {
+      event.shutdownReason = "Unknown";
+    }
+    
+    // Store in memory for daily email inclusion
+    if (powerFailureEventCount < MAX_POWER_FAILURE_EVENTS) {
+      powerFailureEvents[powerFailureEventCount] = event;
+      powerFailureEventCount++;
+    }
+    
+    // Log power failure to SD card
+    String logEntry = getCurrentTimestamp() + ",POWER_FAILURE," + event.siteLocation + 
+                     "," + String(event.tankNumber) + "," + event.timestamp + "," + 
+                     event.currentLevel + "," + event.shutdownReason;
+    appendToFile("power_failure_log.txt", logEntry);
+    
+    logEvent("Power failure reported: " + event.siteLocation + " Tank #" + String(event.tankNumber));
+  }
 }
 
 void logTankReport(TankReport report) {
@@ -569,6 +624,35 @@ String composeDailyEmailContent() {
     }
   }
   
+  // Include power failure events from the last 24 hours
+  if (powerFailureEventCount > 0) {
+    content += "\nPOWER FAILURE EVENTS:\n";
+    
+    String today = getDateString();
+    bool hasPowerFailures = false;
+    
+    for (int i = 0; i < powerFailureEventCount; i++) {
+      PowerFailureEvent event = powerFailureEvents[i];
+      
+      // Only include power failures from today
+      if (event.timestamp.substring(0, 10) == today) {
+        if (!hasPowerFailures) {
+          hasPowerFailures = true;
+        }
+        content += "\n" + event.siteLocation + " Tank #" + String(event.tankNumber) + ":\n";
+        content += "  Recovery Time: " + event.timestamp + "\n";
+        content += "  Level at Recovery: " + event.currentLevel + "\n";
+        content += "  Shutdown Reason: " + event.shutdownReason + "\n";
+      }
+    }
+    
+    if (!hasPowerFailures) {
+      content += "\nNo power failures reported in the last 24 hours.\n";
+    }
+  } else {
+    content += "\nNo power failures reported in the last 24 hours.\n";
+  }
+  
   content += "\n--- Tank Alarm Server 092025 ---";
   
   return content;
@@ -714,6 +798,9 @@ void restoreSystemState() {
     restoreTankReportsFromSD();
   }
   
+  // Restore power failure events
+  restorePowerFailureEventsFromSD();
+  
   logEvent("System state restoration completed");
 }
 
@@ -764,6 +851,43 @@ void restoreTankReportsFromSD() {
   }
 }
 
+void restorePowerFailureEventsFromSD() {
+  Serial.println("Restoring power failure events from SD card...");
+  
+  File powerFailureFile = SD.open("power_failure_backup.txt", FILE_READ);
+  if (powerFailureFile) {
+    powerFailureEventCount = 0;
+    
+    while (powerFailureFile.available() && powerFailureEventCount < MAX_POWER_FAILURE_EVENTS) {
+      String line = powerFailureFile.readStringUntil('\n');
+      line.trim();
+      
+      if (line.length() > 0) {
+        // Parse backup format: timestamp,siteLocation,tankNumber,currentLevel,shutdownReason
+        int firstComma = line.indexOf(',');
+        int secondComma = line.indexOf(',', firstComma + 1);
+        int thirdComma = line.indexOf(',', secondComma + 1);
+        int fourthComma = line.indexOf(',', thirdComma + 1);
+        
+        if (firstComma > 0 && secondComma > firstComma && thirdComma > secondComma && fourthComma > thirdComma) {
+          powerFailureEvents[powerFailureEventCount].timestamp = line.substring(0, firstComma);
+          powerFailureEvents[powerFailureEventCount].siteLocation = line.substring(firstComma + 1, secondComma);
+          powerFailureEvents[powerFailureEventCount].tankNumber = line.substring(secondComma + 1, thirdComma).toInt();
+          powerFailureEvents[powerFailureEventCount].currentLevel = line.substring(thirdComma + 1, fourthComma);
+          powerFailureEvents[powerFailureEventCount].shutdownReason = line.substring(fourthComma + 1);
+          powerFailureEventCount++;
+        }
+      }
+    }
+    
+    powerFailureFile.close();
+    Serial.println("Restored " + String(powerFailureEventCount) + " power failure events");
+    logEvent("Restored " + String(powerFailureEventCount) + " power failure events from backup");
+  } else {
+    Serial.println("No power failure events backup found");
+  }
+}
+
 void saveSystemState(String reason) {
   // Save current state for power failure recovery
   File stateFile = SD.open("system_state.txt", FILE_WRITE);
@@ -782,6 +906,9 @@ void saveSystemState(String reason) {
   
   // Backup tank reports
   backupTankReportsToSD();
+  
+  // Backup power failure events
+  backupPowerFailureEventsToSD();
 }
 
 void backupTankReportsToSD() {
@@ -796,6 +923,20 @@ void backupTankReportsToSD() {
                          tankReports[i].status);
     }
     reportsFile.close();
+  }
+}
+
+void backupPowerFailureEventsToSD() {
+  File powerFailureFile = SD.open("power_failure_backup.txt", FILE_WRITE);
+  if (powerFailureFile) {
+    for (int i = 0; i < powerFailureEventCount; i++) {
+      powerFailureFile.println(powerFailureEvents[i].timestamp + "," + 
+                              powerFailureEvents[i].siteLocation + "," + 
+                              String(powerFailureEvents[i].tankNumber) + "," + 
+                              powerFailureEvents[i].currentLevel + "," + 
+                              powerFailureEvents[i].shutdownReason);
+    }
+    powerFailureFile.close();
   }
 }
 
