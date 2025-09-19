@@ -713,26 +713,56 @@ void sendAlarmSMS() {
                   ": Level " + feetInchesFormat + " at " + getCurrentTimestamp() + 
                   ". Immediate attention required.";
   
-  // Send to primary contact
-  if (sms.beginSMS(alarmPhonePrimary.c_str())) {
-    sms.print(message);
-    sms.endSMS();
+  // Send to primary contact with retry logic
+  bool primarySent = false;
+  for (int attempt = 1; attempt <= smsRetryAttempts && !primarySent; attempt++) {
+    if (sms.beginSMS(alarmPhonePrimary.c_str())) {
+      sms.print(message);
+      sms.endSMS();
+      primarySent = true;
 #ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Alarm SMS sent to primary contact");
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Alarm SMS sent to primary contact (attempt " + String(attempt) + ")");
 #endif
-    logEvent("Alarm SMS sent to primary contact");
+      logEvent("Alarm SMS sent to primary contact (attempt " + String(attempt) + ")");
+    } else {
+#ifdef ENABLE_SERIAL_DEBUG
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to send SMS to primary contact (attempt " + String(attempt) + ")");
+#endif
+      if (attempt < smsRetryAttempts) {
+        delay(3000);  // Wait 3 seconds before retry
+      }
+    }
+  }
+  
+  if (!primarySent) {
+    logEvent("Failed to send alarm SMS to primary contact after " + String(smsRetryAttempts) + " attempts");
   }
   
   delay(5000);  // Wait between messages
   
-  // Send to secondary contact
-  if (sms.beginSMS(alarmPhoneSecondary.c_str())) {
-    sms.print(message);
-    sms.endSMS();
+  // Send to secondary contact with retry logic
+  bool secondarySent = false;
+  for (int attempt = 1; attempt <= smsRetryAttempts && !secondarySent; attempt++) {
+    if (sms.beginSMS(alarmPhoneSecondary.c_str())) {
+      sms.print(message);
+      sms.endSMS();
+      secondarySent = true;
 #ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Alarm SMS sent to secondary contact");
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Alarm SMS sent to secondary contact (attempt " + String(attempt) + ")");
 #endif
-    logEvent("Alarm SMS sent to secondary contact");
+      logEvent("Alarm SMS sent to secondary contact (attempt " + String(attempt) + ")");
+    } else {
+#ifdef ENABLE_SERIAL_DEBUG
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to send SMS to secondary contact (attempt " + String(attempt) + ")");
+#endif
+      if (attempt < smsRetryAttempts) {
+        delay(3000);  // Wait 3 seconds before retry
+      }
+    }
+  }
+  
+  if (!secondarySent) {
+    logEvent("Failed to send alarm SMS to secondary contact after " + String(smsRetryAttempts) + " attempts");
   }
 }
 
@@ -760,25 +790,34 @@ void sendDailyReport() {
   message += "\nStatus: " + String(currentLevelState == HIGH ? "ALARM" : "Normal");
   message += "\nNext report in 24 hours";
   
-  // Send daily SMS
-  if (sms.beginSMS(dailyReportPhone.c_str())) {
-    sms.print(message);
-    sms.endSMS();
+  // Send daily SMS with retry logic
+  bool dailySmsSent = false;
+  for (int attempt = 1; attempt <= smsRetryAttempts && !dailySmsSent; attempt++) {
+    if (sms.beginSMS(dailyReportPhone.c_str())) {
+      sms.print(message);
+      sms.endSMS();
+      dailySmsSent = true;
 #ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Daily report SMS sent");
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Daily report SMS sent (attempt " + String(attempt) + ")");
 #endif
-    
-    // Log successful daily report transmission
-    logSuccessfulReport();
-    
-  } else {
+      
+      // Log successful daily report transmission
+      logSuccessfulReport();
+      logEvent("Daily report SMS sent (attempt " + String(attempt) + ")");
+      
+    } else {
 #ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to send daily report SMS");
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to send daily report SMS (attempt " + String(attempt) + ")");
 #endif
-    logEvent("Daily report: Failed to send SMS");
-    return;
+      if (attempt < smsRetryAttempts) {
+        delay(3000);  // Wait 3 seconds before retry
+      }
+    }
   }
-    logEvent("Daily report SMS sent");
+  
+  if (!dailySmsSent) {
+    logEvent("Daily report: Failed to send SMS after " + String(smsRetryAttempts) + " attempts");
+    return;
   }
   
   // Send daily data to Hologram.io
@@ -795,13 +834,29 @@ void sendStartupNotification() {
   message += "\nStatus: " + String(currentLevelState == HIGH ? "ALARM" : "Normal");
   message += "\nSystem ready for monitoring";
   
-  // Send startup SMS to daily report number
-  if (sms.beginSMS(dailyReportPhone.c_str())) {
-    sms.print(message);
-    sms.endSMS();
+  // Send startup SMS to daily report number with retry logic
+  bool startupSmsSent = false;
+  for (int attempt = 1; attempt <= smsRetryAttempts && !startupSmsSent; attempt++) {
+    if (sms.beginSMS(dailyReportPhone.c_str())) {
+      sms.print(message);
+      sms.endSMS();
+      startupSmsSent = true;
 #ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Startup notification sent");
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Startup notification sent (attempt " + String(attempt) + ")");
 #endif
+      logEvent("Startup notification SMS sent (attempt " + String(attempt) + ")");
+    } else {
+#ifdef ENABLE_SERIAL_DEBUG
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to send startup notification SMS (attempt " + String(attempt) + ")");
+#endif
+      if (attempt < smsRetryAttempts) {
+        delay(3000);  // Wait 3 seconds before retry
+      }
+    }
+  }
+  
+  if (!startupSmsSent) {
+    logEvent("Failed to send startup notification SMS after " + String(smsRetryAttempts) + " attempts");
   }
   
   // Send startup data to Hologram.io
@@ -814,25 +869,49 @@ void sendHologramData(String topic, String message) {
   jsonPayload += "\"d\":\"" + message + "\",";
   jsonPayload += "\"t\":[\"" + topic + "\"]}";
   
-  // Connect to Hologram.io server
-  if (client.connect(HOLOGRAM_URL, HOLOGRAM_PORT)) {
-#ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Connected to Hologram.io");
-#endif
+  // Retry logic for sending data to Hologram.io
+  int attempts = 0;
+  const int maxAttempts = smsRetryAttempts;  // Use configured retry attempts
+  bool dataSent = false;
+  
+  while (attempts < maxAttempts && !dataSent) {
+    attempts++;
     
-    // Send the data
-    client.print(jsonPayload);
-    client.stop();
-    
+    // Connect to Hologram.io server
+    if (client.connect(HOLOGRAM_URL, HOLOGRAM_PORT)) {
 #ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Data sent to Hologram.io: " + topic);
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Connected to Hologram.io (attempt " + String(attempts) + ")");
 #endif
-    logEvent("Data sent to Hologram.io: " + topic);
-  } else {
+      
+      // Send the data
+      client.print(jsonPayload);
+      client.stop();
+      
+      dataSent = true;
+      
 #ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect to Hologram.io");
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Data sent to Hologram.io: " + topic);
 #endif
-    logEvent("Failed to connect to Hologram.io");
+      logEvent("Data sent to Hologram.io: " + topic + " (attempt " + String(attempts) + ")");
+    } else {
+#ifdef ENABLE_SERIAL_DEBUG
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect to Hologram.io (attempt " + String(attempts) + ")");
+#endif
+      
+      if (attempts < maxAttempts) {
+#ifdef ENABLE_SERIAL_DEBUG
+        if (ENABLE_SERIAL_DEBUG) Serial.println("Retrying in 5 seconds...");
+#endif
+        delay(5000);  // Wait 5 seconds before retry
+      }
+    }
+  }
+  
+  if (!dataSent) {
+    logEvent("Failed to send data to Hologram.io after " + String(maxAttempts) + " attempts: " + topic);
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("All retry attempts failed for topic: " + topic);
+#endif
   }
 }
 
