@@ -953,7 +953,7 @@ void sendRecoveryNotification() {
   if (!networkConnected) return;
   
   String message = "TANK ALARM SERVER RECOVERY NOTICE\n";
-  message += "Server: " + String(SITE_LOCATION_NAME) + "\n";
+  message += "Server: " + String(SERVER_LOCATION) + "\n";
   message += "Time: " + getCurrentTimestamp() + "\n";
   message += "Status: System recovered from power failure\n";
   message += "Last State: " + lastShutdownReason + "\n";
