@@ -32,9 +32,10 @@ DAILY_REPORT_TIME=00:00    # 12:00 AM (midnight)
 
 ### Time Synchronization
 
-1. **Startup**: System connects to cellular network and syncs time
-2. **Daily Re-sync**: Time is re-synchronized once every 24 hours
-3. **Fallback**: If time sync fails, system uses the old hour-counting method
+1. **Startup**: System connects to cellular network and syncs time using enhanced algorithm
+2. **Leap Year Support**: Robust date calculation properly handles leap years and century boundaries
+3. **Daily Re-sync**: Time is re-synchronized once every 24 hours
+4. **Fallback**: If time sync fails, system uses the old hour-counting method
 
 ### Report Scheduling
 

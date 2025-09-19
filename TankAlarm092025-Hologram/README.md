@@ -85,7 +85,8 @@ The system supports three types of tank level sensors:
 7. **Time Synchronization**: Syncs with cellular network time for accurate scheduling
 
 ### Time Management Features
-- **Cellular Time Sync**: Automatically synchronizes time with cellular network during startup
+- **Enhanced Cellular Time Sync**: Automatically synchronizes time with cellular network during startup using robust date calculation
+- **Leap Year Support**: Proper handling of leap years and Gregorian calendar rules including century boundaries  
 - **Configurable Daily Report Time**: Set specific time (HH:MM format) for daily reports via SD card config
 - **Dual Timing System**: Falls back to hour-based counting if time sync fails
 - **Automatic Re-sync**: Time synchronizes once per day to maintain accuracy
@@ -171,7 +172,8 @@ The system supports three types of tank level sensors:
 7. Returns to sleep mode
 
 ### Time Synchronization
-- **Startup Sync**: Time synchronized from cellular network during startup
+- **Startup Sync**: Time synchronized from cellular network during startup using enhanced algorithm
+- **Leap Year Support**: Robust date calculation handles all leap year rules and century boundaries
 - **Daily Re-sync**: Automatic time sync once per 24 hours
 - **Fallback Mode**: Uses hour-counting if time sync fails
 - **Accuracy**: Reports sent within 1-hour window of configured time

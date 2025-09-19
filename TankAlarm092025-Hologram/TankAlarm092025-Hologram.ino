@@ -1116,47 +1116,71 @@ bool syncTimeFromCellular() {
   // Note: This is a simplified conversion assuming UTC
   // For production, consider timezone adjustments
   unsigned long epochTime = networkTime;
-  unsigned long days = epochTime / 86400;
   unsigned long hours = (epochTime % 86400) / 3600;
   unsigned long minutes = (epochTime % 3600) / 60;
   unsigned long seconds = epochTime % 60;
   
-  // Calculate year, month, day from days since epoch (1970-01-01)
+  // Calculate date from days since Unix epoch (1970-01-01)
+  unsigned long daysSinceEpoch = epochTime / 86400;
+  
+  // Helper function to check if a year is a leap year
+  auto isLeapYear = [](int year) -> bool {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+  };
+  
+  // Helper function to get days in a month
+  auto getDaysInMonth = [&](int month, int year) -> int {
+    int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month == 2 && isLeapYear(year)) {
+      return 29;
+    }
+    return daysInMonth[month - 1];
+  };
+  
+  // Start from Unix epoch: January 1, 1970
   int year = 1970;
   int month = 1;
   int day = 1;
   
-  // Simple approximation for date calculation
-  // No adjustment needed for epoch start
-  while (days > 365) {
-    if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-      if (days > 366) {
-        days -= 366;
+  // Calculate the year
+  while (true) {
+    int daysInCurrentYear = isLeapYear(year) ? 366 : 365;
+    if (daysSinceEpoch >= daysInCurrentYear) {
+      daysSinceEpoch -= daysInCurrentYear;
+      year++;
+    } else {
+      break;
+    }
+  }
+  
+  // Calculate the month
+  while (true) {
+    int daysInCurrentMonth = getDaysInMonth(month, year);
+    if (daysSinceEpoch >= daysInCurrentMonth) {
+      daysSinceEpoch -= daysInCurrentMonth;
+      month++;
+      if (month > 12) {
+        month = 1;
         year++;
-      } else {
-        break;
       }
     } else {
-      days -= 365;
-      year++;
+      break;
     }
   }
   
-  // Simple month calculation (approximation)
-  int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-    daysInMonth[1] = 29; // Leap year
-  }
+  // Calculate the day (add 1 because daysSinceEpoch is 0-based, but days are 1-based)
+  day = daysSinceEpoch + 1;
   
-  while (days > daysInMonth[month - 1]) {
-    days -= daysInMonth[month - 1];
-    month++;
-    if (month > 12) {
-      month = 1;
-      year++;
-    }
+  // Validate the calculated date
+  if (day < 1 || day > getDaysInMonth(month, year)) {
+    // Fallback to a safe date if calculation is invalid
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Date calculation error, using fallback");
+#endif
+    year = 2025;
+    month = 1;
+    day = 1;
   }
-  day = days;
 
   // Set the RTC with the network time
   rtc.setTime(hours, minutes, seconds);
@@ -1165,8 +1189,11 @@ bool syncTimeFromCellular() {
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) {
     Serial.println("Time synchronized from network:");
+    Serial.println("Unix timestamp: " + String(networkTime));
+    Serial.println("Days since epoch: " + String(epochTime / 86400));
     Serial.println("Date: " + String(year) + "-" + String(month) + "-" + String(day));
     Serial.println("Time: " + String(hours) + ":" + String(minutes) + ":" + String(seconds));
+    Serial.println("Is leap year: " + String(isLeapYear(year) ? "Yes" : "No"));
   }
 #endif
 
