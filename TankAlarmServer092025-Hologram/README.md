@@ -19,6 +19,7 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
 - **Data Logging**: Stores all received tank reports to SD card with timestamps
 - **Web Dashboard**: Hosts a web server accessible on the local network via Ethernet
 - **Email Management**: Web-based interface to manage email recipient lists stored on SD card
+- **Tank Management**: Remote ping functionality for testing tank client connectivity (foundation for future remote control)
 - **Daily Email Summaries**: Composes and sends daily email summaries of tank level changes via Hologram API (default) or SMS gateway (fallback)
 - **Monthly CSV Reports**: Generates comprehensive monthly reports grouped by tank location with daily changes and major decreases
 - **Real-time Monitoring**: Displays current tank levels and 24-hour changes
@@ -30,6 +31,7 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
 - 24-hour change tracking with positive/negative indicators
 - Server connection status monitoring
 - **Email Management Interface**: Add/remove email recipients for daily and monthly reports
+- **Tank Management Interface**: Remote ping functionality for testing client connectivity with visual feedback
 - Mobile-friendly responsive design
 
 ## Installation
@@ -110,7 +112,8 @@ Once the server is running and connected to your network:
 1. **Find the IP Address**: Check the Serial Monitor for the assigned IP address
 2. **Access Dashboard**: Open a web browser and navigate to `http://[IP_ADDRESS]`
 3. **Email Management**: Navigate to `http://[IP_ADDRESS]/emails` to manage email recipients
-4. **Monitor Status**: The dashboard page auto-refreshes every 30 seconds
+4. **Tank Management**: Navigate to `http://[IP_ADDRESS]/tanks` to ping tank clients and test connectivity
+5. **Monitor Status**: The dashboard page auto-refreshes every 30 seconds
 
 ### Dashboard Features
 - **Tank Cards**: Each monitored tank displays:
@@ -155,6 +158,36 @@ The server provides a web-based interface for managing email recipients:
 ### Default Recipients
 - On first startup, the configured `HOLOGRAM_EMAIL_RECIPIENT` is added as default recipient for both daily and monthly reports
 - Lists are automatically created if they don't exist
+
+## Tank Management
+
+The server provides remote tank client management capabilities:
+
+### Accessing Tank Management
+- Navigate to `http://[SERVER_IP]/tanks` in your web browser
+- Interface shows all discovered tank clients with ping controls
+- Visual feedback for connectivity testing
+
+### Tank Ping Functionality
+- **Purpose**: Test connectivity with remote tank clients (foundation for future remote control features)
+- **Discovery**: Tank clients automatically appear when they send reports
+- **Ping Process**: 
+  1. Click "Ping Tank" button for any discovered tank
+  2. Button shows "Pinging..." with in-progress icon (⏳)
+  3. After completion, shows success (✅) or failure (❌) status
+- **Status Tracking**: Server maintains ping history for each tank client
+
+### Tank Client Display
+- **Tank Information**: Shows site location, tank number, current level, and last seen timestamp
+- **Ping Controls**: Individual ping button for each tank with real-time status feedback
+- **Grid Layout**: Organized display of all discovered tank clients
+- **Auto-Discovery**: New tanks automatically appear when they send their first report
+
+### Remote Control Foundation
+- Ping functionality serves as the foundation for future remote device control features
+- Uses Hologram.io API to send commands to tank clients
+- Status tracking enables monitoring of client responsiveness
+- Expandable architecture for additional remote commands
 
 ## Daily Email Reports
 

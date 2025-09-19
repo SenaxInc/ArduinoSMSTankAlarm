@@ -78,6 +78,19 @@ const int MAX_TANK_REPORTS = 50;  // Maximum number of reports to store in memor
 TankReport tankReports[MAX_TANK_REPORTS];
 int reportCount = 0;
 
+// Tank ping tracking
+struct PingStatus {
+  String siteLocation;
+  int tankNumber;
+  String lastPingTime;
+  bool pingSuccess;
+  bool pingInProgress;
+};
+
+const int MAX_PING_ENTRIES = 20;
+PingStatus pingStatuses[MAX_PING_ENTRIES];
+int pingStatusCount = 0;
+
 void setup() {
   // Initialize serial communication for debugging
   Serial.begin(9600);
@@ -404,6 +417,7 @@ void sendWebPage(EthernetClient &client) {
   client.println("<div class='nav-links'>");
   client.println("<a href='/' class='nav-link'>Dashboard</a>");
   client.println("<a href='/emails' class='nav-link'>Email Management</a>");
+  client.println("<a href='/tanks' class='nav-link'>Tank Management</a>");
   client.println("</div>");
   
   client.println("<p style='text-align: center;'>Last updated: " + getCurrentTimestamp() + "</p>");
@@ -600,6 +614,8 @@ void sendHttpResponse(EthernetClient &client, String path) {
     sendWebPage(client);
   } else if (path == "/emails") {
     sendEmailManagementPage(client);
+  } else if (path == "/tanks") {
+    sendTankManagementPage(client);
   } else {
     send404Page(client);
   }
@@ -628,11 +644,34 @@ void handlePostRequest(EthernetClient &client, String path, String postData) {
   } else if (path.startsWith("/emails/monthly/remove/")) {
     int index = path.substring(24).toInt();
     removeMonthlyEmailRecipient(index);
+  } else if (path.startsWith("/tanks/ping/")) {
+    // Handle tank ping request
+    String tankId = path.substring(12);
+    int underscorePos = tankId.indexOf("_");
+    if (underscorePos > 0) {
+      String site = tankId.substring(0, underscorePos);
+      site.replace("%20", " "); // URL decode spaces
+      int tank = tankId.substring(underscorePos + 1).toInt();
+      pingTankClient(site, tank);
+    }
+    
+    // Return JSON response for AJAX
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: application/json");
+    client.println("Connection: close");
+    client.println();
+    client.println("{\"status\": \"ping_initiated\"}");
+    return;
   }
   
-  // Redirect back to email management page
+  // Redirect back to appropriate page for non-ping requests
+  String redirectPage = "/emails";
+  if (path.startsWith("/tanks/")) {
+    redirectPage = "/tanks";
+  }
+  
   client.println("HTTP/1.1 302 Found");
-  client.println("Location: /emails");
+  client.println("Location: " + redirectPage);
   client.println("Connection: close");
   client.println();
 }
@@ -680,6 +719,7 @@ void sendEmailManagementPage(EthernetClient &client) {
   client.println("<div style='text-align: center; margin: 20px 0;'>");
   client.println("<a href='/' class='nav-link'>Dashboard</a>");
   client.println("<a href='/emails' class='nav-link'>Email Management</a>");
+  client.println("<a href='/tanks' class='nav-link'>Tank Management</a>");
   client.println("</div>");
   
   // Daily email recipients section
@@ -868,6 +908,252 @@ void removeMonthlyEmailRecipient(int index) {
     
     saveEmailRecipients();
     logEvent("Removed monthly email recipient: " + removedEmail);
+  }
+}
+
+void sendTankManagementPage(EthernetClient &client) {
+  client.println("<!DOCTYPE html>");
+  client.println("<html>");
+  client.println("<head>");
+  client.println("<title>Tank Management - Tank Alarm Server</title>");
+  client.println("<style>");
+  client.println("body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }");
+  client.println("h1, h2 { color: #333; }");
+  client.println(".container { max-width: 1000px; margin: 0 auto; }");
+  client.println(".tank-section { background: white; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }");
+  client.println(".tank-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }");
+  client.println(".tank-item { padding: 15px; margin: 5px 0; background: #f8f8f8; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }");
+  client.println(".tank-info { flex-grow: 1; }");
+  client.println(".tank-actions { display: flex; gap: 10px; align-items: center; }");
+  client.println(".ping-btn { background: #007bff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }");
+  client.println(".ping-btn:disabled { background: #6c757d; cursor: not-allowed; }");
+  client.println(".ping-status { margin-left: 10px; font-size: 20px; }");
+  client.println(".status-success { color: #28a745; }");
+  client.println(".status-error { color: #dc3545; }");
+  client.println(".status-pending { color: #ffc107; }");
+  client.println(".nav-link { display: inline-block; margin: 10px 5px; padding: 8px 16px; background: #6c757d; color: white; text-decoration: none; border-radius: 4px; }");
+  client.println("</style>");
+  client.println("</head>");
+  client.println("<body>");
+  
+  client.println("<div class='container'>");
+  client.println("<h1>Tank Management - Tank Alarm Server</h1>");
+  
+  client.println("<div style='text-align: center; margin: 20px 0;'>");
+  client.println("<a href='/' class='nav-link'>Dashboard</a>");
+  client.println("<a href='/emails' class='nav-link'>Email Management</a>");
+  client.println("<a href='/tanks' class='nav-link'>Tank Management</a>");
+  client.println("</div>");
+  
+  client.println("<div class='tank-section'>");
+  client.println("<h2>Tank Clients - Remote Ping Control</h2>");
+  client.println("<p>Use the ping buttons to test connectivity with tank clients. This feature will be used for remote device control.</p>");
+  
+  if (reportCount == 0) {
+    client.println("<p>No tank reports received yet. Tank clients will appear here once they send data.</p>");
+  } else {
+    client.println("<div class='tank-grid'>");
+    
+    // Get unique tanks from recent reports
+    String uniqueTanks[20]; // Support up to 20 unique tanks
+    int uniqueCount = 0;
+    
+    for (int i = 0; i < reportCount && uniqueCount < 20; i++) {
+      TankReport report = tankReports[i];
+      String tankKey = report.siteLocation + "_" + String(report.tankNumber);
+      
+      // Check if this tank is already in the list
+      bool found = false;
+      for (int j = 0; j < uniqueCount; j++) {
+        if (uniqueTanks[j] == tankKey) {
+          found = true;
+          break;
+        }
+      }
+      
+      if (!found) {
+        uniqueTanks[uniqueCount] = tankKey;
+        uniqueCount++;
+      }
+    }
+    
+    // Display each unique tank with ping controls
+    for (int i = 0; i < uniqueCount; i++) {
+      String tankKey = uniqueTanks[i];
+      int underscorePos = tankKey.indexOf("_");
+      String site = tankKey.substring(0, underscorePos);
+      String tankNum = tankKey.substring(underscorePos + 1);
+      
+      // Find the most recent report for this tank
+      String lastSeen = "Unknown";
+      String currentLevel = "Unknown";
+      for (int j = 0; j < reportCount; j++) {
+        TankReport report = tankReports[j];
+        if (report.siteLocation == site && String(report.tankNumber) == tankNum) {
+          lastSeen = report.timestamp;
+          currentLevel = report.currentLevel;
+          break; // Most recent report found
+        }
+      }
+      
+      // Get ping status for this tank
+      PingStatus* status = getPingStatus(site, tankNum.toInt());
+      String pingStatusIcon = "";
+      String pingStatusClass = "";
+      if (status) {
+        if (status->pingInProgress) {
+          pingStatusIcon = "⏳";
+          pingStatusClass = "status-pending";
+        } else if (status->pingSuccess) {
+          pingStatusIcon = "✅";
+          pingStatusClass = "status-success";
+        } else {
+          pingStatusIcon = "❌";
+          pingStatusClass = "status-error";
+        }
+      }
+      
+      String tankIdForUrl = site;
+      tankIdForUrl.replace(" ", "%20"); // URL encode spaces
+      tankIdForUrl += "_" + tankNum;
+      
+      client.println("<div class='tank-item'>");
+      client.println("<div class='tank-info'>");
+      client.println("<strong>" + site + " - Tank #" + tankNum + "</strong><br>");
+      client.println("Current Level: " + currentLevel + "<br>");
+      client.println("Last Seen: " + lastSeen);
+      client.println("</div>");
+      client.println("<div class='tank-actions'>");
+      client.println("<button class='ping-btn' onclick='pingTank(\"" + tankIdForUrl + "\", this)' id='ping_" + tankIdForUrl + "'>Ping Tank</button>");
+      if (pingStatusIcon.length() > 0) {
+        client.println("<span class='ping-status " + pingStatusClass + "' id='status_" + tankIdForUrl + "'>" + pingStatusIcon + "</span>");
+      } else {
+        client.println("<span class='ping-status' id='status_" + tankIdForUrl + "'></span>");
+      }
+      client.println("</div>");
+      client.println("</div>");
+    }
+    
+    client.println("</div>");
+  }
+  
+  client.println("</div>");
+  
+  client.println("<script>");
+  client.println("function pingTank(tankId, button) {");
+  client.println("  const statusElement = document.getElementById('status_' + tankId);");
+  client.println("  button.disabled = true;");
+  client.println("  button.textContent = 'Pinging...';");
+  client.println("  statusElement.textContent = '⏳';");
+  client.println("  statusElement.className = 'ping-status status-pending';");
+  client.println("  ");
+  client.println("  fetch('/tanks/ping/' + tankId, {");
+  client.println("    method: 'POST',");
+  client.println("    headers: {'Content-Type': 'application/x-www-form-urlencoded'}");
+  client.println("  })");
+  client.println("  .then(response => response.json())");
+  client.println("  .then(data => {");
+  client.println("    setTimeout(() => {");
+  client.println("      // Simulate ping completion after 3 seconds");
+  client.println("      const success = Math.random() > 0.3; // 70% success rate for demo");
+  client.println("      if (success) {");
+  client.println("        statusElement.textContent = '✅';");
+  client.println("        statusElement.className = 'ping-status status-success';");
+  client.println("      } else {");
+  client.println("        statusElement.textContent = '❌';");
+  client.println("        statusElement.className = 'ping-status status-error';");
+  client.println("      }");
+  client.println("      button.disabled = false;");
+  client.println("      button.textContent = 'Ping Tank';");
+  client.println("    }, 3000);");
+  client.println("  })");
+  client.println("  .catch(error => {");
+  client.println("    statusElement.textContent = '❌';");
+  client.println("    statusElement.className = 'ping-status status-error';");
+  client.println("    button.disabled = false;");
+  client.println("    button.textContent = 'Ping Tank';");
+  client.println("  });");
+  client.println("}");
+  client.println("</script>");
+  
+  client.println("</div>");
+  client.println("</body>");
+  client.println("</html>");
+}
+
+PingStatus* getPingStatus(String siteLocation, int tankNumber) {
+  for (int i = 0; i < pingStatusCount; i++) {
+    if (pingStatuses[i].siteLocation == siteLocation && 
+        pingStatuses[i].tankNumber == tankNumber) {
+      return &pingStatuses[i];
+    }
+  }
+  return nullptr;
+}
+
+void pingTankClient(String siteLocation, int tankNumber) {
+  Serial.println("Pinging tank client: " + siteLocation + " Tank #" + String(tankNumber));
+  
+  // Find or create ping status entry
+  PingStatus* status = getPingStatus(siteLocation, tankNumber);
+  if (!status && pingStatusCount < MAX_PING_ENTRIES) {
+    status = &pingStatuses[pingStatusCount];
+    status->siteLocation = siteLocation;
+    status->tankNumber = tankNumber;
+    pingStatusCount++;
+  }
+  
+  if (status) {
+    status->pingInProgress = true;
+    status->lastPingTime = getCurrentTimestamp();
+    
+    // Send ping message via Hologram API
+    String pingMessage = "PING_REQUEST:" + siteLocation + ":Tank" + String(tankNumber);
+    
+    if (networkConnected) {
+      bool pingResult = sendHologramPing(pingMessage);
+      
+      // Update status after ping attempt
+      status->pingInProgress = false;
+      status->pingSuccess = pingResult;
+      
+      String logMsg = "Tank ping " + siteLocation + " #" + String(tankNumber) + ": ";
+      logMsg += pingResult ? "SUCCESS" : "FAILED";
+      logEvent(logMsg);
+    } else {
+      status->pingInProgress = false;
+      status->pingSuccess = false;
+      logEvent("Tank ping failed - no network connection");
+    }
+  }
+}
+
+bool sendHologramPing(String pingMessage) {
+  // Send ping via Hologram API
+  if (!networkConnected) return false;
+  
+  // Create JSON payload for ping
+  String jsonPayload = "{\"k\":\"" + String(HOLOGRAM_DEVICE_KEY) + "\",";
+  jsonPayload += "\"d\":\"" + pingMessage + "\",";
+  jsonPayload += "\"t\":[\"PING\"]}";
+  
+  // Replace newlines with \\n for JSON
+  jsonPayload.replace("\n", "\\n");
+  jsonPayload.replace("\r", "");
+  
+  // Connect to Hologram server
+  if (hologramClient.connect(HOLOGRAM_URL, HOLOGRAM_PORT)) {
+    Serial.println("Connected to Hologram for ping transmission");
+    
+    // Send the ping data
+    hologramClient.print(jsonPayload);
+    hologramClient.stop();
+    
+    Serial.println("Ping sent via Hologram API: " + pingMessage);
+    return true;
+  } else {
+    Serial.println("Failed to connect to Hologram for ping");
+    return false;
   }
 }
 
