@@ -8,13 +8,13 @@ Does the code need to be different if the server is using a MKR SD PROTO shield 
 
 ## Shield Configurations in This Repository
 
-### Tank Alarm Client (TankAlarm092025-Hologram)
+### Tank Alarm Client (TankAlarm-092025-Client-Hologram)
 - **Primary Shield**: Arduino MKR SD PROTO Shield
 - **Secondary Shield**: Arduino MKR RELAY Shield (stacked on top)
 - **SD Card Location**: Dedicated SD card slot on MKR SD PROTO shield
 - **Pin Assignment**: Pin 4 (SD_CARD_CS_PIN)
 
-### Tank Alarm Server (TankAlarmServer092025-Hologram)
+### Tank Alarm Server (TankAlarm-092025-Server-Hologram)
 - **Primary Shield**: Arduino MKR ETH Shield
 - **SD Card Location**: Built-in SD card slot on MKR ETH shield
 - **Pin Assignment**: Pin 4 (SD_CARD_CS_PIN)
@@ -87,8 +87,8 @@ The Arduino SD library automatically handles the SPI bus sharing between devices
 
 ### Verified Working Code
 The existing code in both projects demonstrates compatibility:
-- `TankAlarmClient092025-Hologram.ino` works with MKR SD PROTO shield
-- `TankAlarmServer092025-Hologram.ino` works with MKR ETH shield
+- `TankAlarm-092025-Client-Hologram.ino` works with MKR SD PROTO shield
+- `TankAlarm-092025-Server-Hologram.ino` works with MKR ETH shield
 
 ## Migration Between Shields
 
