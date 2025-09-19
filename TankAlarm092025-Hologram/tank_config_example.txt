@@ -51,3 +51,4 @@ LARGE_DECREASE_WAIT_HOURS=2
 # DAILY_LOG_FILE=daily_log.txt
 # ALARM_LOG_FILE=alarm_log.txt
 # DECREASE_LOG_FILE=decrease_log.txt
+# REPORT_LOG_FILE=report_log.txt

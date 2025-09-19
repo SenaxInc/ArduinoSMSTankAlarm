@@ -97,5 +97,6 @@
 #define SD_DAILY_LOG_FILE "daily_log.txt"     // Daily report log file
 #define SD_ALARM_LOG_FILE "alarm_log.txt"     // Alarm event log file
 #define SD_DECREASE_LOG_FILE "decrease_log.txt" // Large decrease log file
+#define SD_REPORT_LOG_FILE "report_log.txt"     // Daily report transmission log file
 
 #endif // CONFIG_H

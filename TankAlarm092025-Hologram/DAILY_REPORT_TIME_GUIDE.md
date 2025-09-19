@@ -40,7 +40,9 @@ DAILY_REPORT_TIME=00:00    # 12:00 AM (midnight)
 
 - Reports are sent when the current time matches the configured hour
 - 1-hour tolerance window (report sent anytime during the configured hour)
-- One report per day maximum (prevents duplicate reports)
+- **Persistent duplicate prevention** using SD card log file (`report_log.txt`)
+- System checks log file on startup to determine when last report was sent
+- One report per day maximum (prevents duplicate reports even after system restarts)
 - Time comparison only active when time is successfully synchronized
 
 ### Status Information
@@ -56,6 +58,28 @@ The system status messages now include:
 2. **Network Accuracy**: Uses cellular network time for precision
 3. **Flexibility**: Easily change report time without code modifications
 4. **Reliability**: Falls back to hour-counting if time sync fails
+5. **Persistent Tracking**: SD card log prevents duplicate reports after restarts
+6. **Transmission Verification**: Logs successful report transmissions for monitoring
+
+## Report Log File Format
+
+The system maintains a dedicated log file (`report_log.txt`) that tracks successful daily report transmissions:
+
+```
+YYYYMMDD,YYYYMMDDHH:MM,SUCCESS,Daily report sent successfully
+```
+
+Example entries:
+```
+20250115,2025011505:30,SUCCESS,Daily report sent successfully
+20250116,2025011605:15,SUCCESS,Daily report sent successfully
+```
+
+This log is used to:
+- Prevent duplicate reports on the same day
+- Maintain report history across system restarts
+- Verify successful transmission times
+- Provide audit trail of report delivery
 
 ## Troubleshooting
 

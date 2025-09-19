@@ -124,6 +124,9 @@ const int HOLOGRAM_PORT = 9999;
 #ifndef SD_DECREASE_LOG_FILE
 #define SD_DECREASE_LOG_FILE "decrease_log.txt"
 #endif
+#ifndef SD_REPORT_LOG_FILE
+#define SD_REPORT_LOG_FILE "report_log.txt"
+#endif
 
 // Timing variables
 volatile int time_tick_hours = 1;
@@ -197,6 +200,8 @@ bool connectToCellular();
 bool syncTimeFromCellular();
 bool isTimeForDailyReport();
 void parseTimeString(String timeStr, int &hours, int &minutes);
+void logSuccessfulReport();
+String getLastReportDateFromLog();
 
 // Network configuration (loaded from SD card)
 int connectionTimeoutMs = CONNECTION_TIMEOUT_MS;
@@ -207,6 +212,7 @@ String hourlyLogFile = SD_HOURLY_LOG_FILE;
 String dailyLogFile = SD_DAILY_LOG_FILE;
 String alarmLogFile = SD_ALARM_LOG_FILE;
 String decreaseLogFile = SD_DECREASE_LOG_FILE;
+String reportLogFile = SD_REPORT_LOG_FILE;
 
 void setup() {
   // Initialize serial communication for debugging
@@ -670,6 +676,17 @@ void sendDailyReport() {
 #ifdef ENABLE_SERIAL_DEBUG
     if (ENABLE_SERIAL_DEBUG) Serial.println("Daily report SMS sent");
 #endif
+    
+    // Log successful daily report transmission
+    logSuccessfulReport();
+    
+  } else {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to send daily report SMS");
+#endif
+    logEvent("Daily report: Failed to send SMS");
+    return;
+  }
     logEvent("Daily report SMS sent");
   }
   
@@ -847,6 +864,8 @@ void loadSDCardConfiguration() {
         alarmLogFile = value;
       } else if (key == "DECREASE_LOG_FILE") {
         decreaseLogFile = value;
+      } else if (key == "REPORT_LOG_FILE") {
+        reportLogFile = value;
       }
     }
   }
@@ -1191,16 +1210,90 @@ bool isTimeForDailyReport() {
   // Check if current time matches the configured report time (within 1 hour tolerance)
   if (currentHours == reportHours) {
     
-    // Additional check to prevent multiple reports in the same hour
-    // Reset the flag by checking if we've already sent a report today
-    static int lastReportDay = -1;
-    int currentDay = rtc.getDay();
+    // Check if we've already sent a report today using the log file
+    String lastReportDate = getLastReportDateFromLog();
+    String currentDate = String(rtc.getYear() + 2000);
+    if (rtc.getMonth() < 10) currentDate = currentDate + "0";
+    currentDate = currentDate + String(rtc.getMonth());
+    if (rtc.getDay() < 10) currentDate = currentDate + "0";
+    currentDate = currentDate + String(rtc.getDay());
     
-    if (currentDay != lastReportDay) {
-      lastReportDay = currentDay;
+    // Only send report if we haven't sent one today
+    if (lastReportDate != currentDate) {
       return true;
     }
   }
   
   return false;
+}
+
+// Log successful daily report transmission to dedicated log file
+void logSuccessfulReport() {
+  if (!SD.begin(SD_CARD_CS_PIN)) {
+    logEvent("Failed to log successful report - SD card error");
+    return;
+  }
+  
+  String timestamp = getDateTimestamp();
+  String currentDate = String(rtc.getYear() + 2000);
+  if (rtc.getMonth() < 10) currentDate = currentDate + "0";
+  currentDate = currentDate + String(rtc.getMonth());
+  if (rtc.getDay() < 10) currentDate = currentDate + "0";
+  currentDate = currentDate + String(rtc.getDay());
+  
+  String logEntry = currentDate + "," + timestamp + ",SUCCESS,Daily report sent successfully";
+  
+  File reportFile = SD.open(reportLogFile.c_str(), FILE_WRITE);
+  if (reportFile) {
+    reportFile.println(logEntry);
+    reportFile.close();
+    
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Logged successful report: " + logEntry);
+#endif
+    logEvent("Daily report transmission logged successfully");
+  } else {
+    logEvent("Failed to open report log file for writing");
+  }
+}
+
+// Get the date of the last successful report from the log file
+String getLastReportDateFromLog() {
+  if (!SD.begin(SD_CARD_CS_PIN)) {
+    return ""; // Return empty string if SD card error
+  }
+  
+  File reportFile = SD.open(reportLogFile.c_str());
+  if (!reportFile) {
+    // No report log file exists yet
+    return "";
+  }
+  
+  String lastDate = "";
+  String line;
+  
+  // Read through all lines to find the last successful report
+  while (reportFile.available()) {
+    line = reportFile.readStringUntil('\n');
+    line.trim();
+    
+    // Check if this line indicates a successful report
+    if (line.indexOf("SUCCESS") >= 0) {
+      // Extract the date (first part before first comma)
+      int firstComma = line.indexOf(',');
+      if (firstComma > 0) {
+        lastDate = line.substring(0, firstComma);
+      }
+    }
+  }
+  
+  reportFile.close();
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG && lastDate.length() > 0) {
+    Serial.println("Last successful report date from log: " + lastDate);
+  }
+#endif
+  
+  return lastDate;
 }

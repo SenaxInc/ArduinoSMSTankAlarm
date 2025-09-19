@@ -184,6 +184,8 @@ The system supports three types of tank level sensors:
 - All events logged to "tanklog.txt" on SD card
 - Format: "YYYY-MM-DD HH:MM:SS - Event description"
 - Logs include: startup, alarms, daily reports, network status
+- **Daily report transmission log**: Separate "report_log.txt" tracks successful reports
+- **Persistent duplicate prevention**: System uses log files to prevent duplicate reports after restarts
 
 ## Troubleshooting
 
