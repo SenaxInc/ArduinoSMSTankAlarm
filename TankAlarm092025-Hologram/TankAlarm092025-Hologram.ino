@@ -1108,7 +1108,7 @@ bool syncTimeFromCellular() {
   int day = 1;
   
   // Simple approximation for date calculation
-  days += 1; // Adjust for epoch start
+  // No adjustment needed for epoch start
   while (days > 365) {
     if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
       if (days > 366) {
