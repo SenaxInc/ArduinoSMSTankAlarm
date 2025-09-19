@@ -159,17 +159,51 @@ The system supports three types of tank level sensors:
    - Configure in SD card config file (tank_config.txt)
    - System automatically syncs with cellular network time
 
-6. **Power Management Configuration**:
-   ```
-   SHORT_SLEEP_MINUTES=10     # Active monitoring sleep duration
-   NORMAL_SLEEP_HOURS=1       # Normal operation sleep duration
-   ENABLE_WAKE_ON_PING=true   # Enable wake-on-ping functionality
-   DEEP_SLEEP_MODE=false      # Use deep sleep for maximum power savings
-   ```
-   - **Wake-on-Ping**: Device wakes when server sends ping commands
-   - **Adaptive Sleep**: Shorter intervals during active monitoring
-   - **Deep Sleep**: Maximum power savings for extended deployments
-   - **Battery Optimization**: Configurable sleep durations for optimal battery life
+### Power Management Configuration
+```
+SHORT_SLEEP_MINUTES=10     # Active monitoring sleep duration
+NORMAL_SLEEP_HOURS=1       # Normal operation sleep duration
+ENABLE_WAKE_ON_PING=true   # Enable wake-on-ping functionality
+DEEP_SLEEP_MODE=false      # Use deep sleep for maximum power savings
+```
+- **Wake-on-Ping**: Device wakes when server sends ping commands
+- **Adaptive Sleep**: Shorter intervals during active monitoring
+- **Deep Sleep**: Maximum power savings for extended deployments
+- **Battery Optimization**: Configurable sleep durations for optimal battery life
+
+## Power Failure Recovery
+
+The system includes comprehensive power failure recovery to ensure reliable operation:
+
+### Automatic Recovery Features
+- **State Backup**: Critical system state automatically saved every 10 minutes to SD card
+- **Heartbeat Monitoring**: Regular heartbeat timestamps track system operation
+- **Tank Level Restoration**: Current and previous tank level measurements preserved
+- **Timing Recovery**: Report schedules and timing counters restored on startup
+- **Recovery Notifications**: Automatic SMS and Hologram notifications when power failure recovery occurs
+
+### Recovery Process
+1. **Detection**: System detects unexpected shutdown by checking last known state
+2. **State Restoration**: Automatically loads tank levels, timing data, and alarm status from SD card
+3. **Network Recovery**: Reconnects to cellular network with retry logic for reliability  
+4. **Recovery Notification**: Sends recovery alert to daily report contact with system status
+5. **Resume Operation**: Continues normal monitoring from restored state without data loss
+
+### Recovery Files on SD Card
+- `system_state.txt`: Current system state and shutdown reason tracking
+- `tank_levels.txt`: Current and previous tank measurements with alarm status
+- `timing_state.txt`: Hour and report timing counters for proper scheduling
+- `heartbeat.txt`: Last known operational timestamp for failure detection
+
+### Recovery Notifications
+Power failure recovery notifications include:
+- Site location and tank number identification
+- Recovery timestamp and system status  
+- Reason for previous shutdown (power failure vs normal shutdown)
+- Current tank level and alarm status
+- Confirmation that all systems are operational
+
+This ensures continuous monitoring even after unexpected power outages with no loss of critical tank level data or reporting schedules.
 
 ### Hardware Setup
 

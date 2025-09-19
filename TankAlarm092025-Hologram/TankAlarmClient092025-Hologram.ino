@@ -183,6 +183,12 @@ float decreaseStartLevel = 0.0;
 unsigned long decreaseStartTime = 0;
 bool decreaseDetected = false;
 
+// Power failure recovery state
+bool systemRecovering = false;
+String lastShutdownReason = "";
+unsigned long lastHeartbeat = 0;
+bool powerFailureRecovery = false;
+
 // Data logging
 #ifndef LOG_FILE_NAME
 #define LOG_FILE_NAME "tanklog.txt"
@@ -289,6 +295,9 @@ void setup() {
 #endif
     logEvent("System startup - SD card initialized");
     
+    // Check for power failure recovery
+    checkPowerFailureRecovery();
+    
     // Load configuration from SD card
     loadSDCardConfiguration();
   }
@@ -296,8 +305,8 @@ void setup() {
   // Initialize RTC
   rtc.begin();
   
-  // Connect to cellular network
-  if (connectToCellular()) {
+  // Connect to cellular network with retry logic
+  if (initializeCellular()) {
 #ifdef ENABLE_SERIAL_DEBUG
     if (ENABLE_SERIAL_DEBUG) Serial.println("Connected to cellular network");
 #endif
@@ -313,17 +322,24 @@ void setup() {
 #endif
     }
     
-    // Send startup notification
-    sendStartupNotification();
+    // Send startup or recovery notification
+    if (powerFailureRecovery) {
+      sendRecoveryNotification();
+    } else {
+      sendStartupNotification();
+    }
     
     // Log startup event
-    logEvent("System startup - Connected to network");
+    logEvent(powerFailureRecovery ? "System recovery completed" : "System startup - Connected to network");
   } else {
 #ifdef ENABLE_SERIAL_DEBUG
     if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect to cellular network");
 #endif
     logEvent("System startup - Network connection failed");
   }
+  
+  // Restore system state
+  restoreSystemState();
   
   // Read initial tank level
   currentLevelState = readTankLevel();
@@ -337,9 +353,15 @@ void setup() {
   if (ENABLE_SERIAL_DEBUG) Serial.println("Setup complete - entering main loop");
 #endif
   logEvent("Setup complete - entering main loop");
+  
+  // Mark successful startup
+  saveSystemState("normal_operation");
 }
 
 void loop() {
+  // Update heartbeat for power failure detection
+  updateHeartbeat();
+  
   // Read tank level
   currentLevelState = readTankLevel();
   
@@ -432,6 +454,13 @@ void loop() {
   time_tick_hours++;
   time_tick_report++;
   
+  // Periodic system state backup (every 10 minutes)
+  static unsigned long lastBackup = 0;
+  if (millis() - lastBackup > 600000) {  // 10 minutes
+    saveSystemState("periodic_backup");
+    lastBackup = millis();
+  }
+  
   // Determine sleep strategy based on current conditions
   bool needsFrequentChecking = (alarmSent || wakeFromCellular || checkServerCommands);
   
@@ -444,6 +473,7 @@ void loop() {
       Serial.println(" minute(s) - active monitoring");
     }
 #endif
+    saveSystemState("active_monitoring");
     enterPowerSaveMode();
   } else {
     // Use normal sleep intervals for routine monitoring
@@ -454,6 +484,7 @@ void loop() {
       Serial.println(" hour(s)");
     }
 #endif
+    saveSystemState("normal_sleep");
     enterDeepSleepMode();
   }
 }
@@ -1536,4 +1567,206 @@ void wakeUpCallback() {
 #endif
   
   // The main loop will continue execution after this callback
+}
+
+// Power failure recovery and system state management functions
+
+bool initializeCellular() {
+  // Initialize cellular connection with retry logic
+  Serial.println("Initializing cellular connection...");
+  
+  int attempts = 0;
+  const int maxAttempts = 3;  // Limit attempts to prevent excessive power drain
+  
+  while (attempts < maxAttempts) {
+    if (connectToCellular()) {
+      logEvent("Cellular connection established");
+      return true;
+    }
+    
+    attempts++;
+    Serial.println("Cellular connection attempt " + String(attempts) + " failed");
+    
+    if (attempts < maxAttempts) {
+      Serial.println("Retrying in 5 seconds...");
+      delay(5000);
+    }
+  }
+  
+  logEvent("Cellular connection failed after " + String(maxAttempts) + " attempts");
+  Serial.println("WARNING: Operating without cellular connection");
+  return false;
+}
+
+void checkPowerFailureRecovery() {
+  Serial.println("Checking for power failure recovery...");
+  
+  File stateFile = SD.open("system_state.txt", FILE_READ);
+  if (stateFile) {
+    String lastState = stateFile.readString();
+    stateFile.close();
+    
+    lastState.trim();
+    
+    if (lastState != "normal_shutdown" && lastState != "normal_operation") {
+      powerFailureRecovery = true;
+      systemRecovering = true;
+      lastShutdownReason = lastState;
+      Serial.println("Power failure detected! Last state: " + lastState);
+      logEvent("POWER FAILURE RECOVERY - Last state: " + lastState);
+      
+      // Restore critical system state
+      restoreSystemState();
+    } else {
+      Serial.println("Normal shutdown detected");
+      logEvent("Normal startup - no power failure");
+    }
+  } else {
+    Serial.println("No previous state file found - first startup");
+    logEvent("First startup - no previous state");
+  }
+}
+
+void restoreSystemState() {
+  Serial.println("Restoring system state...");
+  
+  // Restore tank level measurements
+  File levelFile = SD.open("tank_levels.txt", FILE_READ);
+  if (levelFile) {
+    String line = levelFile.readStringUntil('\n');
+    line.trim();
+    
+    if (line.length() > 0) {
+      // Parse saved levels: currentLevel,previousLevel,change24Hr,alarmSent
+      int pos = 0;
+      String parts[4];
+      
+      for (int i = 0; i < 4; i++) {
+        int nextPos = line.indexOf(',', pos);
+        if (nextPos == -1) {
+          parts[i] = line.substring(pos);
+          break;
+        } else {
+          parts[i] = line.substring(pos, nextPos);
+          pos = nextPos + 1;
+        }
+      }
+      
+      if (parts[0].length() > 0) {
+        currentLevelInches = parts[0].toFloat();
+        previousLevelInches = parts[1].toFloat();
+        levelChange24Hours = parts[2].toFloat();
+        alarmSent = (parts[3] == "1");
+        
+        Serial.println("Restored tank levels - Current: " + String(currentLevelInches) + 
+                      "in, Previous: " + String(previousLevelInches) + 
+                      "in, Change: " + String(levelChange24Hours) + "in");
+        logEvent("Tank level measurements restored");
+      }
+    }
+    
+    levelFile.close();
+  }
+  
+  // Restore timing counters
+  File timingFile = SD.open("timing_state.txt", FILE_READ);
+  if (timingFile) {
+    String line = timingFile.readStringUntil('\n');
+    line.trim();
+    
+    if (line.length() > 0) {
+      // Parse timing: hours,report_hours
+      int commaPos = line.indexOf(',');
+      if (commaPos > 0) {
+        time_tick_hours = line.substring(0, commaPos).toInt();
+        time_tick_report = line.substring(commaPos + 1).toInt();
+        
+        Serial.println("Restored timing - Hours: " + String(time_tick_hours) + 
+                      ", Report: " + String(time_tick_report));
+        logEvent("Timing counters restored");
+      }
+    }
+    
+    timingFile.close();
+  }
+  
+  logEvent("System state restoration completed");
+}
+
+void saveSystemState(String reason) {
+  // Update heartbeat for power failure detection
+  updateHeartbeat();
+  
+  // Save current state for power failure recovery
+  File stateFile = SD.open("system_state.txt", FILE_WRITE);
+  if (stateFile) {
+    stateFile.print(reason);
+    stateFile.close();
+  }
+  
+  // Save tank level measurements
+  File levelFile = SD.open("tank_levels.txt", FILE_WRITE);
+  if (levelFile) {
+    levelFile.println(String(currentLevelInches) + "," + 
+                     String(previousLevelInches) + "," + 
+                     String(levelChange24Hours) + "," + 
+                     String(alarmSent ? "1" : "0"));
+    levelFile.close();
+  }
+  
+  // Save timing counters
+  File timingFile = SD.open("timing_state.txt", FILE_WRITE);
+  if (timingFile) {
+    timingFile.println(String(time_tick_hours) + "," + String(time_tick_report));
+    timingFile.close();
+  }
+  
+  // Periodic backup (every 5 minutes during operation)
+  static unsigned long lastBackup = 0;
+  if (millis() - lastBackup > 300000) {  // 5 minutes
+    saveSystemState("periodic_backup");
+    lastBackup = millis();
+  }
+}
+
+void updateHeartbeat() {
+  // Update heartbeat timestamp for power failure detection
+  lastHeartbeat = millis();
+  
+  // Periodic heartbeat save (every 2 minutes)
+  static unsigned long lastHeartbeatSave = 0;
+  if (millis() - lastHeartbeatSave > 120000) {  // 2 minutes
+    File heartbeatFile = SD.open("heartbeat.txt", FILE_WRITE);
+    if (heartbeatFile) {
+      heartbeatFile.println(getCurrentTimestamp());
+      heartbeatFile.close();
+    }
+    lastHeartbeatSave = millis();
+  }
+}
+
+void sendRecoveryNotification() {
+  if (!connectToCellular()) return;
+  
+  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
+  String message = "TANK CLIENT RECOVERY NOTICE\n";
+  message += "Site: " + siteLocationName + " Tank #" + String(tankNumber) + "\n";
+  message += "Time: " + getCurrentTimestamp() + "\n";
+  message += "Status: System recovered from power failure\n";
+  message += "Last State: " + lastShutdownReason + "\n";
+  message += "Current Level: " + feetInchesFormat + "\n";
+  message += "All systems operational";
+  
+  // Send recovery SMS
+  if (sms.beginSMS(dailyReportPhone.c_str())) {
+    sms.print(message);
+    sms.endSMS();
+    logEvent("Recovery notification sent");
+  }
+  
+  // Send recovery data to Hologram.io
+  sendHologramData("RECOVERY", message);
+  
+  logEvent("Recovery notification completed");
+}
 }

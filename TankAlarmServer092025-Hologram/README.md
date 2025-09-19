@@ -88,6 +88,42 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
   - `daily_emails.txt`: List of daily email recipients (managed via web interface)
   - `monthly_emails.txt`: List of monthly email recipients (managed via web interface)
 
+## Power Failure Recovery
+
+The server includes comprehensive power failure recovery to ensure continuous operation:
+
+### Automatic Recovery Features
+- **State Backup**: Critical system state automatically saved every 5 minutes to SD card
+- **Heartbeat Monitoring**: Regular heartbeat timestamps track server operation
+- **Tank Report Recovery**: All recent tank reports backed up and restored from SD card
+- **Email Date Recovery**: Last email sending dates restored to prevent duplicate emails
+- **Network Recovery**: Automatic reconnection to Hologram and Ethernet networks with retry logic
+- **Recovery Notifications**: Email alerts sent to all daily recipients when power failure recovery occurs
+
+### Recovery Process
+1. **Detection**: Server detects unexpected shutdown by checking last known state on startup
+2. **State Restoration**: Automatically loads tank reports, email dates, and system configuration from SD card
+3. **Network Recovery**: Reconnects to both cellular and Ethernet networks with enhanced retry logic
+4. **Recovery Notification**: Sends detailed recovery email to all configured recipients
+5. **Resume Operation**: Continues normal server operation from restored state with no data loss
+
+### Recovery Files on SD Card
+- `system_state.txt`: Current system state and shutdown reason tracking
+- `tank_reports_backup.txt`: Backup of recent tank reports for restoration
+- `email_dates.txt`: Last daily and monthly email sending dates
+- `heartbeat.txt`: Last known operational timestamp for failure detection
+
+### Recovery Notifications
+Power failure recovery notifications include:
+- Server identification and location
+- Recovery timestamp and system status
+- Reason for previous shutdown (power failure vs normal shutdown)
+- Number of tank reports restored from backup
+- Confirmation that all network connections are operational
+- Email recipient counts for daily and monthly reports
+
+This ensures continuous tank monitoring service even after unexpected power outages with complete preservation of tank data and email schedules.
+
 ## Data Format
 
 ### Received Daily Reports

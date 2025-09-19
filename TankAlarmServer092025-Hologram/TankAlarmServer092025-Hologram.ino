@@ -78,6 +78,11 @@ const int MAX_TANK_REPORTS = 50;  // Maximum number of reports to store in memor
 TankReport tankReports[MAX_TANK_REPORTS];
 int reportCount = 0;
 
+// Power failure recovery state
+bool systemRecovering = false;
+String lastShutdownReason = "";
+unsigned long lastHeartbeat = 0;
+
 // Tank ping tracking
 struct PingStatus {
   String siteLocation;
@@ -108,31 +113,22 @@ void setup() {
     Serial.println("SD card initialization failed!");
   } else {
     Serial.println("SD card initialized successfully");
+    
+    // Check for power failure recovery
+    checkPowerFailureRecovery();
   }
   
-  // Initialize Ethernet connection
-  if (Ethernet.begin(mac) == 0) {
-    Serial.println("Failed to configure Ethernet using DHCP");
-    // Try to configure using static IP fallback
-    IPAddress ip(192, 168, 1, 100);
-    IPAddress gateway(192, 168, 1, 1);
-    IPAddress subnet(255, 255, 255, 0);
-    Ethernet.begin(mac, ip, gateway, subnet);
-  }
+  // Initialize Ethernet connection with retry logic
+  initializeEthernet();
   
-  Serial.print("Ethernet IP address: ");
-  Serial.println(Ethernet.localIP());
-  
-  // Start web server
-  webServer.begin();
-  Serial.println("Web server started");
-  ethernetConnected = true;
-  
-  // Initialize cellular connection for Hologram
-  connectToHologram();
+  // Initialize cellular connection for Hologram with recovery
+  initializeCellular();
   
   // Load email recipient lists from SD card
   loadEmailRecipients();
+  
+  // Restore system state from SD card
+  restoreSystemState();
   
   // Set up interrupt timer for periodic checks
   rtc.setAlarmTime(0, 5, 0);  // Check every hour at 5 minutes past
@@ -140,10 +136,16 @@ void setup() {
   rtc.attachInterrupt(periodicCheck);
   
   Serial.println("Tank Alarm Server initialized successfully");
-  logEvent("Server startup completed");
+  logEvent(systemRecovering ? "Server recovery completed" : "Server startup completed");
+  
+  // Mark successful startup
+  saveSystemState("normal_operation");
 }
 
 void loop() {
+  // Update heartbeat for power failure detection
+  updateHeartbeat();
+  
   // Handle web server requests
   handleWebRequests();
   
@@ -163,26 +165,17 @@ void loop() {
   // Maintain network connections
   maintainConnections();
   
+  // Periodic system state backup (every 5 minutes)
+  static unsigned long lastBackup = 0;
+  if (millis() - lastBackup > 300000) {  // 5 minutes
+    saveSystemState("periodic_backup");
+    lastBackup = millis();
+  }
+  
   delay(1000);  // Small delay to prevent excessive CPU usage
 }
 
-void connectToHologram() {
-  Serial.println("Connecting to Hologram network...");
-  
-  bool connected = false;
-  while (!connected) {
-    if ((nbAccess.begin("", HOLOGRAM_APN) == NB_READY) &&
-        (nbAccess.isAccessAlive())) {
-      connected = true;
-      networkConnected = true;
-      Serial.println("Connected to Hologram network");
-      logEvent("Connected to Hologram network");
-    } else {
-      Serial.println("Hologram connection failed, retrying...");
-      delay(5000);
-    }
-  }
-}
+
 
 void checkHologramMessages() {
   if (!networkConnected) return;
@@ -592,10 +585,255 @@ void maintainConnections() {
   if (Ethernet.linkStatus() == LinkOFF) {
     ethernetConnected = false;
     Serial.println("Ethernet connection lost");
+    logEvent("Ethernet connection lost - attempting recovery");
+    
+    // Attempt to reinitialize Ethernet
+    delay(5000);  // Wait before retry
+    initializeEthernet();
   } else if (!ethernetConnected) {
     ethernetConnected = true;
     Serial.println("Ethernet connection restored");
+    logEvent("Ethernet connection restored");
   }
+}
+
+void initializeEthernet() {
+  Serial.println("Initializing Ethernet connection...");
+  
+  // Try DHCP first
+  if (Ethernet.begin(mac) == 0) {
+    Serial.println("Failed to configure Ethernet using DHCP");
+    logEvent("DHCP failed - using static IP fallback");
+    
+    // Try to configure using static IP fallback
+    IPAddress ip(192, 168, 1, 100);
+    IPAddress gateway(192, 168, 1, 1);
+    IPAddress subnet(255, 255, 255, 0);
+    Ethernet.begin(mac, ip, gateway, subnet);
+  }
+  
+  Serial.print("Ethernet IP address: ");
+  Serial.println(Ethernet.localIP());
+  
+  // Start web server
+  webServer.begin();
+  Serial.println("Web server started");
+  ethernetConnected = true;
+  logEvent("Ethernet initialized - IP: " + String(Ethernet.localIP()));
+}
+
+void initializeCellular() {
+  Serial.println("Initializing cellular connection...");
+  
+  int attempts = 0;
+  const int maxAttempts = 5;
+  
+  while (attempts < maxAttempts) {
+    if (connectToHologram()) {
+      logEvent("Cellular connection established");
+      return;
+    }
+    
+    attempts++;
+    Serial.println("Cellular connection attempt " + String(attempts) + " failed");
+    
+    if (attempts < maxAttempts) {
+      Serial.println("Retrying in 10 seconds...");
+      delay(10000);
+    }
+  }
+  
+  logEvent("Cellular connection failed after " + String(maxAttempts) + " attempts");
+  Serial.println("WARNING: Operating without cellular connection");
+}
+
+bool connectToHologram() {
+  Serial.println("Connecting to Hologram network...");
+  
+  if ((nbAccess.begin("", HOLOGRAM_APN) == NB_READY) &&
+      (nbAccess.isAccessAlive())) {
+    networkConnected = true;
+    Serial.println("Connected to Hologram network");
+    return true;
+  } else {
+    Serial.println("Hologram connection failed");
+    networkConnected = false;
+    return false;
+  }
+}
+
+void checkPowerFailureRecovery() {
+  Serial.println("Checking for power failure recovery...");
+  
+  File stateFile = SD.open("system_state.txt", FILE_READ);
+  if (stateFile) {
+    String lastState = stateFile.readString();
+    stateFile.close();
+    
+    lastState.trim();
+    
+    if (lastState != "normal_shutdown" && lastState != "normal_operation") {
+      systemRecovering = true;
+      lastShutdownReason = lastState;
+      Serial.println("Power failure detected! Last state: " + lastState);
+      logEvent("POWER FAILURE RECOVERY - Last state: " + lastState);
+      
+      // Restore tank reports from backup
+      restoreTankReportsFromSD();
+      
+      // Send recovery notification
+      sendRecoveryNotification();
+    } else {
+      Serial.println("Normal shutdown detected");
+      logEvent("Normal startup - no power failure");
+    }
+  } else {
+    Serial.println("No previous state file found - first startup");
+    logEvent("First startup - no previous state");
+  }
+}
+
+void restoreSystemState() {
+  Serial.println("Restoring system state...");
+  
+  // Restore last email sent dates
+  File dateFile = SD.open("email_dates.txt", FILE_READ);
+  if (dateFile) {
+    lastEmailSentDate = dateFile.readStringUntil('\n');
+    lastEmailSentDate.trim();
+    lastMonthlyReportDate = dateFile.readStringUntil('\n');
+    lastMonthlyReportDate.trim();
+    dateFile.close();
+    
+    Serial.println("Restored email dates - Daily: " + lastEmailSentDate + ", Monthly: " + lastMonthlyReportDate);
+    logEvent("Email dates restored");
+  }
+  
+  // Restore tank reports if not already restored
+  if (!systemRecovering && reportCount == 0) {
+    restoreTankReportsFromSD();
+  }
+  
+  logEvent("System state restoration completed");
+}
+
+void restoreTankReportsFromSD() {
+  Serial.println("Restoring tank reports from SD card...");
+  
+  File reportsFile = SD.open("tank_reports_backup.txt", FILE_READ);
+  if (reportsFile) {
+    reportCount = 0;
+    
+    while (reportsFile.available() && reportCount < MAX_TANK_REPORTS) {
+      String line = reportsFile.readStringUntil('\n');
+      line.trim();
+      
+      if (line.length() > 0) {
+        // Parse backup format: timestamp,siteLocation,tankNumber,currentLevel,change24hr,status
+        int pos = 0;
+        String parts[6];
+        
+        for (int i = 0; i < 6; i++) {
+          int nextPos = line.indexOf(',', pos);
+          if (nextPos == -1) {
+            parts[i] = line.substring(pos);
+            break;
+          } else {
+            parts[i] = line.substring(pos, nextPos);
+            pos = nextPos + 1;
+          }
+        }
+        
+        if (parts[0].length() > 0) {
+          tankReports[reportCount].timestamp = parts[0];
+          tankReports[reportCount].siteLocation = parts[1];
+          tankReports[reportCount].tankNumber = parts[2].toInt();
+          tankReports[reportCount].currentLevel = parts[3];
+          tankReports[reportCount].change24hr = parts[4];
+          tankReports[reportCount].status = parts[5];
+          reportCount++;
+        }
+      }
+    }
+    
+    reportsFile.close();
+    Serial.println("Restored " + String(reportCount) + " tank reports");
+    logEvent("Restored " + String(reportCount) + " tank reports from backup");
+  } else {
+    Serial.println("No tank reports backup found");
+  }
+}
+
+void saveSystemState(String reason) {
+  // Save current state for power failure recovery
+  File stateFile = SD.open("system_state.txt", FILE_WRITE);
+  if (stateFile) {
+    stateFile.print(reason);
+    stateFile.close();
+  }
+  
+  // Save email dates
+  File dateFile = SD.open("email_dates.txt", FILE_WRITE);
+  if (dateFile) {
+    dateFile.println(lastEmailSentDate);
+    dateFile.println(lastMonthlyReportDate);
+    dateFile.close();
+  }
+  
+  // Backup tank reports
+  backupTankReportsToSD();
+}
+
+void backupTankReportsToSD() {
+  File reportsFile = SD.open("tank_reports_backup.txt", FILE_WRITE);
+  if (reportsFile) {
+    for (int i = 0; i < reportCount; i++) {
+      reportsFile.println(tankReports[i].timestamp + "," + 
+                         tankReports[i].siteLocation + "," + 
+                         String(tankReports[i].tankNumber) + "," + 
+                         tankReports[i].currentLevel + "," + 
+                         tankReports[i].change24hr + "," + 
+                         tankReports[i].status);
+    }
+    reportsFile.close();
+  }
+}
+
+void updateHeartbeat() {
+  // Update heartbeat timestamp for power failure detection
+  lastHeartbeat = millis();
+  
+  // Periodic heartbeat save (every minute)
+  static unsigned long lastHeartbeatSave = 0;
+  if (millis() - lastHeartbeatSave > 60000) {  // 1 minute
+    File heartbeatFile = SD.open("heartbeat.txt", FILE_WRITE);
+    if (heartbeatFile) {
+      heartbeatFile.println(getCurrentTimestamp());
+      heartbeatFile.close();
+    }
+    lastHeartbeatSave = millis();
+  }
+}
+
+void sendRecoveryNotification() {
+  if (!networkConnected) return;
+  
+  String message = "TANK ALARM SERVER RECOVERY NOTICE\n";
+  message += "Server: " + String(SITE_LOCATION_NAME) + "\n";
+  message += "Time: " + getCurrentTimestamp() + "\n";
+  message += "Status: System recovered from power failure\n";
+  message += "Last State: " + lastShutdownReason + "\n";
+  message += "Tank Reports Restored: " + String(reportCount) + "\n";
+  message += "All systems operational";
+  
+  // Send via Hologram API email if available
+  if (USE_HOLOGRAM_EMAIL && dailyRecipientCount > 0) {
+    for (int i = 0; i < dailyRecipientCount; i++) {
+      sendHologramEmail(dailyEmailRecipients[i], "Tank Server Recovery Notice", message);
+    }
+  }
+  
+  logEvent("Recovery notification sent");
 }
 
 void periodicCheck() {
