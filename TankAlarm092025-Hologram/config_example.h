@@ -9,6 +9,7 @@
 // Hologram.io Configuration
 // Get your device key from the Hologram.io dashboard after creating a device
 #define HOLOGRAM_DEVICE_KEY "abc123def456ghi789"  // Example - replace with your actual key
+#define SERVER_DEVICE_KEY "xyz987uvw654rst321"    // Server's Hologram device ID - replace with actual
 #define HOLOGRAM_APN "hologram"                   // Hologram.io APN (keep as "hologram")
 
 // Phone Numbers for Notifications

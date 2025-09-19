@@ -8,6 +8,7 @@
 
 // Hologram.io Configuration
 #define HOLOGRAM_DEVICE_KEY "your_device_key_here"  // Replace with your actual device key
+#define SERVER_DEVICE_KEY "server_device_key_here"  // Server's Hologram device ID for remote commands
 #define HOLOGRAM_APN "hologram"                     // Hologram.io APN (usually stays "hologram")
 
 // Phone Numbers for Notifications (include country code, e.g., +1 for US)

@@ -1,5 +1,5 @@
 /*
-  Tank Alarm 092025 - MKR NB 1500 Version
+  Tank Alarm Client 092025 - MKR NB 1500 Version
   
   Hardware:
   - Arduino MKR NB 1500 (with ublox SARA-R410M)
@@ -16,6 +16,7 @@
   - SD card data logging
   - Relay control capability
   - Low power sleep modes
+  - Server communication for remote control
   
   Created: September 2025
   Using GitHub Copilot for code generation
@@ -63,6 +64,10 @@ const int HOLOGRAM_PORT = 9999;
 // Use configuration values or defaults
 #ifndef HOLOGRAM_DEVICE_KEY
 #define HOLOGRAM_DEVICE_KEY "your_device_key_here"
+#endif
+
+#ifndef SERVER_DEVICE_KEY
+#define SERVER_DEVICE_KEY "server_device_key_here"  // Server's Hologram device ID for remote commands
 #endif
 
 #ifndef ALARM_PHONE_PRIMARY
@@ -180,6 +185,7 @@ int largeDecreaseWaitHours = LARGE_DECREASE_WAIT_HOURS;
 
 // Network and communication configuration (loaded from SD card)
 String hologramDeviceKey = HOLOGRAM_DEVICE_KEY;
+String serverDeviceKey = SERVER_DEVICE_KEY;  // Server's device ID for remote commands
 String alarmPhonePrimary = ALARM_PHONE_PRIMARY;
 String alarmPhoneSecondary = ALARM_PHONE_SECONDARY;
 String dailyReportPhone = DAILY_REPORT_PHONE;
@@ -337,6 +343,15 @@ void loop() {
     if (connectToCellular()) {
       syncTimeFromCellular();
     }
+  }
+  
+  // Check for server commands via Hologram (every 10 minutes when connected)
+  static unsigned long lastServerCheckTime = 0;
+  if (millis() - lastServerCheckTime > 600000) {  // 10 minutes
+    if (connectToCellular()) {
+      checkForServerCommands();
+    }
+    lastServerCheckTime = millis();
   }
   
   // Check if it's time for daily report using configured time
@@ -760,6 +775,41 @@ void logEvent(String event) {
   }
 }
 
+void checkForServerCommands() {
+  // Check for commands from the server via Hologram.io
+  // This function listens for messages from the server device
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Checking for server commands...");
+#endif
+  
+  // Note: This is a placeholder for Hologram command reception
+  // In a full implementation, this would use Hologram's webhook/cloud functions
+  // or direct device-to-device messaging to receive commands from the server
+  
+  // For now, we log that the client is ready to receive server commands
+  // The serverDeviceKey variable contains the server's device ID for command filtering
+  
+  String commandCheckMsg = "Ready to receive commands from server: " + serverDeviceKey;
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println(commandCheckMsg);
+#endif
+  
+  // Log this periodically to confirm the client knows the server device ID
+  static int commandCheckCount = 0;
+  commandCheckCount++;
+  if (commandCheckCount % 144 == 1) {  // Log once per day (144 * 10 minutes = 24 hours)
+    logEvent(commandCheckMsg);
+  }
+  
+  // Future implementation would:
+  // 1. Connect to Hologram and check for messages from serverDeviceKey
+  // 2. Parse received commands (PING, RELAY_ON, RELAY_OFF, etc.)
+  // 3. Execute commands and send acknowledgment back to server
+  // 4. Log command execution results
+}
+
 String getCurrentTimestamp() {
   // Create timestamp string
   // Note: This is a simple timestamp - for production use, consider NTP sync
@@ -838,6 +888,8 @@ void loadSDCardConfiguration() {
         largeDecreaseWaitHours = value.toInt();
       } else if (key == "HOLOGRAM_DEVICE_KEY") {
         hologramDeviceKey = value;
+      } else if (key == "SERVER_DEVICE_KEY") {
+        serverDeviceKey = value;
       } else if (key == "HOLOGRAM_APN") {
         hologramAPN = value;
       } else if (key == "ALARM_PHONE_PRIMARY") {

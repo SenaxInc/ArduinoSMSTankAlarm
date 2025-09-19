@@ -8,6 +8,7 @@ TANK_NUMBER=1
 
 # Hologram.io Configuration
 HOLOGRAM_DEVICE_KEY=abc123def456ghi789
+SERVER_DEVICE_KEY=xyz987uvw654rst321
 HOLOGRAM_APN=hologram
 
 # Phone Numbers for Notifications (include country code)

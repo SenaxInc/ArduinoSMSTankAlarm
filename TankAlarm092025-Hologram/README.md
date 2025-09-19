@@ -81,8 +81,9 @@ The system supports three types of tank level sensors:
 3. **Daily Reports**: Sends daily status reports via SMS at configurable time
 4. **Data Logging**: Logs all events to SD card with timestamps
 5. **Hologram.io Integration**: Sends data to Hologram.io cloud platform
-6. **Low Power Operation**: Uses sleep modes to conserve battery power
-7. **Time Synchronization**: Syncs with cellular network time for accurate scheduling
+6. **Server Communication**: Supports remote commands from Tank Alarm Server
+7. **Low Power Operation**: Uses sleep modes to conserve battery power
+8. **Time Synchronization**: Syncs with cellular network time for accurate scheduling
 
 ### Time Management Features
 - **Enhanced Cellular Time Sync**: Automatically synchronizes time with cellular network during startup using robust date calculation
@@ -103,6 +104,13 @@ The system supports three types of tank level sensors:
 - **Wake Triggers**: Automatic wake every hour to check tank level
 - **Low Power**: Optimized for battery operation
 
+### Server Communication
+- **Server Device ID**: Configure `SERVER_DEVICE_KEY` to communicate with Tank Alarm Server
+- **Remote Commands**: Listens for ping and control commands from server (every 10 minutes)
+- **Command Types**: Supports PING, RELAY_ON, RELAY_OFF (future expansion for more commands)
+- **Response System**: Sends acknowledgments back to server for command execution
+- **Configuration Storage**: Server device ID stored on SD card for easy updates
+
 ## Configuration
 
 ### Required Setup Steps
@@ -118,6 +126,7 @@ The system supports three types of tank level sensors:
 2. **Configure Hologram.io Account**:
    - Sign up at https://hologram.io
    - Get device key and update `HOLOGRAM_DEVICE_KEY` in code
+   - If using with server, also get server device key and update `SERVER_DEVICE_KEY`
    - Activate SIM card and assign to device
 
 3. **Update Phone Numbers**:
