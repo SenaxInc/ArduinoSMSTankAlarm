@@ -62,6 +62,13 @@ struct TankReport {
   String status;
 };
 
+// Email recipient management
+const int MAX_EMAIL_RECIPIENTS = 10;
+String dailyEmailRecipients[MAX_EMAIL_RECIPIENTS];
+String monthlyEmailRecipients[MAX_EMAIL_RECIPIENTS];
+int dailyRecipientCount = 0;
+int monthlyRecipientCount = 0;
+
 // Global variables
 bool networkConnected = false;
 bool ethernetConnected = false;
@@ -110,6 +117,9 @@ void setup() {
   
   // Initialize cellular connection for Hologram
   connectToHologram();
+  
+  // Load email recipient lists from SD card
+  loadEmailRecipients();
   
   // Set up interrupt timer for periodic checks
   rtc.setAlarmTime(0, 5, 0);  // Check every hour at 5 minutes past
@@ -300,30 +310,62 @@ void handleWebRequests() {
     Serial.println("Web client connected");
     boolean currentLineIsBlank = true;
     String request = "";
+    String httpMethod = "";
+    String requestPath = "";
+    String postData = "";
+    bool isPost = false;
+    bool headerComplete = false;
     
     while (client.connected()) {
       if (client.available()) {
         char c = client.read();
-        request += c;
         
-        if (c == '\n' && currentLineIsBlank) {
-          // Send HTTP response
-          client.println("HTTP/1.1 200 OK");
-          client.println("Content-Type: text/html");
-          client.println("Connection: close");
-          client.println();
+        if (!headerComplete) {
+          request += c;
           
-          // Send web page
-          sendWebPage(client);
-          break;
-        }
-        
-        if (c == '\n') {
-          currentLineIsBlank = true;
-        } else if (c != '\r') {
-          currentLineIsBlank = false;
+          // Parse HTTP method and path
+          if (request.indexOf('\n') == -1 && request.length() < 100) {
+            // Still reading first line
+            if (request.startsWith("GET ")) {
+              httpMethod = "GET";
+            } else if (request.startsWith("POST ")) {
+              httpMethod = "POST";
+              isPost = true;
+            }
+          }
+          
+          if (c == '\n' && currentLineIsBlank) {
+            headerComplete = true;
+            
+            // Extract path from request
+            int spacePos = request.indexOf(' ');
+            int secondSpacePos = request.indexOf(' ', spacePos + 1);
+            if (spacePos > 0 && secondSpacePos > spacePos) {
+              requestPath = request.substring(spacePos + 1, secondSpacePos);
+            }
+            
+            if (!isPost) {
+              // For GET requests, send response immediately
+              sendHttpResponse(client, requestPath);
+              break;
+            }
+          }
+          
+          if (c == '\n') {
+            currentLineIsBlank = true;
+          } else if (c != '\r') {
+            currentLineIsBlank = false;
+          }
+        } else if (isPost) {
+          // Read POST data
+          postData += c;
         }
       }
+    }
+    
+    // Handle POST requests
+    if (isPost && postData.length() > 0) {
+      handlePostRequest(client, requestPath, postData);
     }
     
     delay(1);
@@ -341,6 +383,8 @@ void sendWebPage(EthernetClient &client) {
   client.println("<style>");
   client.println("body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }");
   client.println("h1 { color: #333; text-align: center; }");
+  client.println(".nav-links { text-align: center; margin: 20px 0; }");
+  client.println(".nav-link { display: inline-block; margin: 0 10px; padding: 8px 16px; background: #6c757d; color: white; text-decoration: none; border-radius: 4px; }");
   client.println(".tank-container { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; }");
   client.println(".tank-card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); min-width: 250px; }");
   client.println(".tank-header { font-size: 18px; font-weight: bold; margin-bottom: 10px; }");
@@ -356,6 +400,12 @@ void sendWebPage(EthernetClient &client) {
   client.println("<body>");
   
   client.println("<h1>Tank Alarm Server Dashboard</h1>");
+  
+  client.println("<div class='nav-links'>");
+  client.println("<a href='/' class='nav-link'>Dashboard</a>");
+  client.println("<a href='/emails' class='nav-link'>Email Management</a>");
+  client.println("</div>");
+  
   client.println("<p style='text-align: center;'>Last updated: " + getCurrentTimestamp() + "</p>");
   
   if (reportCount == 0) {
@@ -403,6 +453,8 @@ void sendWebPage(EthernetClient &client) {
   client.println("<p>Email Delivery: <span style='color: orange;'>SMS Gateway</span></p>");
 #endif
 
+  client.println("<p>Email Recipients: Daily (" + String(dailyRecipientCount) + "), Monthly (" + String(monthlyRecipientCount) + ")</p>");
+
 #ifdef MONTHLY_REPORT_ENABLED
   if (MONTHLY_REPORT_ENABLED) {
     client.println("<p>Monthly Reports: <span style='color: green;'>Enabled</span> (Day " + String(MONTHLY_REPORT_DAY) + " at " + String(MONTHLY_REPORT_HOUR) + ":00)</p>");
@@ -437,45 +489,55 @@ void sendDailyEmail() {
   Serial.println("Sending daily email summary...");
   
   String emailContent = composeDailyEmailContent();
+  bool emailSent = false;
   
+  // Send to all daily email recipients
+  for (int i = 0; i < dailyRecipientCount; i++) {
+    String recipient = dailyEmailRecipients[i];
+    
 #ifdef USE_HOLOGRAM_EMAIL
-  if (USE_HOLOGRAM_EMAIL) {
-    // Send email via Hologram API (default method)
-    if (sendHologramEmail(HOLOGRAM_EMAIL_RECIPIENT, "Tank Alarm Daily Report", emailContent)) {
-      lastEmailSentDate = getDateString();
-      Serial.println("Daily email sent successfully via Hologram API");
-      logEvent("Daily email sent via Hologram API");
-    } else {
-      Serial.println("Failed to send daily email via Hologram API, trying SMS fallback");
-      // Fallback to SMS gateway
-      if (sms.beginSMS(DAILY_EMAIL_SMS_GATEWAY)) {
-        sms.print(emailContent);
-        sms.endSMS();
-        lastEmailSentDate = getDateString();
-        Serial.println("Daily email sent successfully via SMS fallback");
-        logEvent("Daily email sent via SMS fallback");
+    if (USE_HOLOGRAM_EMAIL) {
+      // Send email via Hologram API (default method)
+      if (sendHologramEmail(recipient, "Tank Alarm Daily Report", emailContent)) {
+        Serial.println("Daily email sent successfully to " + recipient + " via Hologram API");
+        logEvent("Daily email sent to " + recipient + " via Hologram API");
+        emailSent = true;
       } else {
-        Serial.println("Failed to send daily email via both methods");
-        logEvent("Failed to send daily email - all methods failed");
+        Serial.println("Failed to send daily email to " + recipient + " via Hologram API, trying SMS fallback");
+        // Fallback to SMS gateway (only for SMS-compatible addresses)
+        if (recipient.indexOf("@") != -1 && recipient.indexOf(".com") == -1) {
+          if (sms.beginSMS(recipient.c_str())) {
+            sms.print(emailContent);
+            sms.endSMS();
+            Serial.println("Daily email sent successfully to " + recipient + " via SMS fallback");
+            logEvent("Daily email sent to " + recipient + " via SMS fallback");
+            emailSent = true;
+          }
+        }
       }
-    }
-  } else {
-#endif
-    // Send email via SMS to configured email-to-SMS gateway (fallback method)
-    if (sms.beginSMS(DAILY_EMAIL_SMS_GATEWAY)) {
-      sms.print(emailContent);
-      sms.endSMS();
-      
-      lastEmailSentDate = getDateString();
-      Serial.println("Daily email sent successfully via SMS");
-      logEvent("Daily email sent via SMS");
     } else {
-      Serial.println("Failed to send daily email via SMS");
-      logEvent("Failed to send daily email via SMS");
-    }
-#ifdef USE_HOLOGRAM_EMAIL
-  }
 #endif
+      // Send email via SMS to SMS-compatible addresses only
+      if (recipient.indexOf("@") != -1 && recipient.indexOf(".com") == -1) {
+        if (sms.beginSMS(recipient.c_str())) {
+          sms.print(emailContent);
+          sms.endSMS();
+          Serial.println("Daily email sent successfully to " + recipient + " via SMS");
+          logEvent("Daily email sent to " + recipient + " via SMS");
+          emailSent = true;
+        }
+      }
+#ifdef USE_HOLOGRAM_EMAIL
+    }
+#endif
+  }
+  
+  if (emailSent) {
+    lastEmailSentDate = getDateString();
+  } else {
+    Serial.println("Failed to send daily email to any recipients");
+    logEvent("Failed to send daily email - all methods failed");
+  }
 }
 
 String composeDailyEmailContent() {
@@ -526,6 +588,287 @@ void periodicCheck() {
   // This function is called by RTC interrupt
   // Perform any periodic maintenance tasks here
   Serial.println("Periodic check triggered");
+}
+
+void sendHttpResponse(EthernetClient &client, String path) {
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/html");
+  client.println("Connection: close");
+  client.println();
+  
+  if (path == "/" || path == "/dashboard") {
+    sendWebPage(client);
+  } else if (path == "/emails") {
+    sendEmailManagementPage(client);
+  } else {
+    send404Page(client);
+  }
+}
+
+void handlePostRequest(EthernetClient &client, String path, String postData) {
+  if (path == "/emails/daily/add") {
+    String email = extractEmailFromPost(postData);
+    if (email.length() > 0 && dailyRecipientCount < MAX_EMAIL_RECIPIENTS) {
+      dailyEmailRecipients[dailyRecipientCount] = email;
+      dailyRecipientCount++;
+      saveEmailRecipients();
+      logEvent("Added daily email recipient: " + email);
+    }
+  } else if (path == "/emails/monthly/add") {
+    String email = extractEmailFromPost(postData);
+    if (email.length() > 0 && monthlyRecipientCount < MAX_EMAIL_RECIPIENTS) {
+      monthlyEmailRecipients[monthlyRecipientCount] = email;
+      monthlyRecipientCount++;
+      saveEmailRecipients();
+      logEvent("Added monthly email recipient: " + email);
+    }
+  } else if (path.startsWith("/emails/daily/remove/")) {
+    int index = path.substring(21).toInt();
+    removeDailyEmailRecipient(index);
+  } else if (path.startsWith("/emails/monthly/remove/")) {
+    int index = path.substring(24).toInt();
+    removeMonthlyEmailRecipient(index);
+  }
+  
+  // Redirect back to email management page
+  client.println("HTTP/1.1 302 Found");
+  client.println("Location: /emails");
+  client.println("Connection: close");
+  client.println();
+}
+
+String extractEmailFromPost(String postData) {
+  int emailStart = postData.indexOf("email=");
+  if (emailStart >= 0) {
+    emailStart += 6; // Length of "email="
+    int emailEnd = postData.indexOf("&", emailStart);
+    if (emailEnd == -1) {
+      emailEnd = postData.length();
+    }
+    String email = postData.substring(emailStart, emailEnd);
+    email.replace("%40", "@");  // URL decode @ symbol
+    email.replace("+", " ");     // URL decode spaces
+    return email;
+  }
+  return "";
+}
+
+void sendEmailManagementPage(EthernetClient &client) {
+  client.println("<!DOCTYPE html>");
+  client.println("<html>");
+  client.println("<head>");
+  client.println("<title>Email Management - Tank Alarm Server</title>");
+  client.println("<style>");
+  client.println("body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }");
+  client.println("h1, h2 { color: #333; }");
+  client.println(".container { max-width: 800px; margin: 0 auto; }");
+  client.println(".email-section { background: white; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }");
+  client.println(".email-list { margin: 10px 0; }");
+  client.println(".email-item { padding: 8px; margin: 5px 0; background: #f8f8f8; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }");
+  client.println(".remove-btn { background: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; }");
+  client.println(".add-form { margin-top: 15px; }");
+  client.println("input[type='email'] { padding: 8px; width: 250px; margin-right: 10px; }");
+  client.println("input[type='submit'] { background: #007bff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }");
+  client.println(".nav-link { display: inline-block; margin: 10px 5px; padding: 8px 16px; background: #6c757d; color: white; text-decoration: none; border-radius: 4px; }");
+  client.println("</style>");
+  client.println("</head>");
+  client.println("<body>");
+  
+  client.println("<div class='container'>");
+  client.println("<h1>Email Management - Tank Alarm Server</h1>");
+  
+  client.println("<div style='text-align: center; margin: 20px 0;'>");
+  client.println("<a href='/' class='nav-link'>Dashboard</a>");
+  client.println("<a href='/emails' class='nav-link'>Email Management</a>");
+  client.println("</div>");
+  
+  // Daily email recipients section
+  client.println("<div class='email-section'>");
+  client.println("<h2>Daily Report Recipients (" + String(dailyRecipientCount) + "/" + String(MAX_EMAIL_RECIPIENTS) + ")</h2>");
+  client.println("<div class='email-list'>");
+  
+  if (dailyRecipientCount == 0) {
+    client.println("<p>No daily email recipients configured.</p>");
+  } else {
+    for (int i = 0; i < dailyRecipientCount; i++) {
+      client.println("<div class='email-item'>");
+      client.println("<span>" + dailyEmailRecipients[i] + "</span>");
+      client.println("<button class='remove-btn' onclick='removeDailyEmail(" + String(i) + ")'>Remove</button>");
+      client.println("</div>");
+    }
+  }
+  
+  client.println("</div>");
+  
+  if (dailyRecipientCount < MAX_EMAIL_RECIPIENTS) {
+    client.println("<form class='add-form' method='post' action='/emails/daily/add'>");
+    client.println("<input type='email' name='email' placeholder='Enter email address' required>");
+    client.println("<input type='submit' value='Add Daily Recipient'>");
+    client.println("</form>");
+  }
+  
+  client.println("</div>");
+  
+  // Monthly email recipients section
+  client.println("<div class='email-section'>");
+  client.println("<h2>Monthly Report Recipients (" + String(monthlyRecipientCount) + "/" + String(MAX_EMAIL_RECIPIENTS) + ")</h2>");
+  client.println("<div class='email-list'>");
+  
+  if (monthlyRecipientCount == 0) {
+    client.println("<p>No monthly email recipients configured.</p>");
+  } else {
+    for (int i = 0; i < monthlyRecipientCount; i++) {
+      client.println("<div class='email-item'>");
+      client.println("<span>" + monthlyEmailRecipients[i] + "</span>");
+      client.println("<button class='remove-btn' onclick='removeMonthlyEmail(" + String(i) + ")'>Remove</button>");
+      client.println("</div>");
+    }
+  }
+  
+  client.println("</div>");
+  
+  if (monthlyRecipientCount < MAX_EMAIL_RECIPIENTS) {
+    client.println("<form class='add-form' method='post' action='/emails/monthly/add'>");
+    client.println("<input type='email' name='email' placeholder='Enter email address' required>");
+    client.println("<input type='submit' value='Add Monthly Recipient'>");
+    client.println("</form>");
+  }
+  
+  client.println("</div>");
+  
+  client.println("<script>");
+  client.println("function removeDailyEmail(index) {");
+  client.println("  if (confirm('Remove this daily email recipient?')) {");
+  client.println("    fetch('/emails/daily/remove/' + index, {method: 'POST'}).then(() => location.reload());");
+  client.println("  }");
+  client.println("}");
+  client.println("function removeMonthlyEmail(index) {");
+  client.println("  if (confirm('Remove this monthly email recipient?')) {");
+  client.println("    fetch('/emails/monthly/remove/' + index, {method: 'POST'}).then(() => location.reload());");
+  client.println("  }");
+  client.println("}");
+  client.println("</script>");
+  
+  client.println("</div>");
+  client.println("</body>");
+  client.println("</html>");
+}
+
+void send404Page(EthernetClient &client) {
+  client.println("<!DOCTYPE html>");
+  client.println("<html>");
+  client.println("<head><title>404 - Not Found</title></head>");
+  client.println("<body>");
+  client.println("<h1>404 - Page Not Found</h1>");
+  client.println("<p><a href='/'>Return to Dashboard</a></p>");
+  client.println("</body>");
+  client.println("</html>");
+}
+
+void loadEmailRecipients() {
+  // Load daily email recipients
+  if (SD.begin(SD_CARD_CS_PIN)) {
+    File dailyFile = SD.open("daily_emails.txt", FILE_READ);
+    if (dailyFile) {
+      dailyRecipientCount = 0;
+      while (dailyFile.available() && dailyRecipientCount < MAX_EMAIL_RECIPIENTS) {
+        String email = dailyFile.readStringUntil('\n');
+        email.trim();
+        if (email.length() > 0) {
+          dailyEmailRecipients[dailyRecipientCount] = email;
+          dailyRecipientCount++;
+        }
+      }
+      dailyFile.close();
+      Serial.println("Loaded " + String(dailyRecipientCount) + " daily email recipients");
+    } else {
+      // Add default recipient if file doesn't exist
+      dailyEmailRecipients[0] = HOLOGRAM_EMAIL_RECIPIENT;
+      dailyRecipientCount = 1;
+      saveEmailRecipients();
+      Serial.println("Created default daily email recipient");
+    }
+    
+    // Load monthly email recipients
+    File monthlyFile = SD.open("monthly_emails.txt", FILE_READ);
+    if (monthlyFile) {
+      monthlyRecipientCount = 0;
+      while (monthlyFile.available() && monthlyRecipientCount < MAX_EMAIL_RECIPIENTS) {
+        String email = monthlyFile.readStringUntil('\n');
+        email.trim();
+        if (email.length() > 0) {
+          monthlyEmailRecipients[monthlyRecipientCount] = email;
+          monthlyRecipientCount++;
+        }
+      }
+      monthlyFile.close();
+      Serial.println("Loaded " + String(monthlyRecipientCount) + " monthly email recipients");
+    } else {
+      // Add default recipient if file doesn't exist
+      monthlyEmailRecipients[0] = HOLOGRAM_EMAIL_RECIPIENT;
+      monthlyRecipientCount = 1;
+      saveEmailRecipients();
+      Serial.println("Created default monthly email recipient");
+    }
+  }
+}
+
+void saveEmailRecipients() {
+  if (SD.begin(SD_CARD_CS_PIN)) {
+    // Save daily email recipients
+    File dailyFile = SD.open("daily_emails.txt", FILE_WRITE);
+    if (dailyFile) {
+      // Clear file first
+      dailyFile.seek(0);
+      for (int i = 0; i < dailyRecipientCount; i++) {
+        dailyFile.println(dailyEmailRecipients[i]);
+      }
+      dailyFile.close();
+    }
+    
+    // Save monthly email recipients
+    File monthlyFile = SD.open("monthly_emails.txt", FILE_WRITE);
+    if (monthlyFile) {
+      // Clear file first
+      monthlyFile.seek(0);
+      for (int i = 0; i < monthlyRecipientCount; i++) {
+        monthlyFile.println(monthlyEmailRecipients[i]);
+      }
+      monthlyFile.close();
+    }
+    
+    logEvent("Email recipient lists saved to SD card");
+  }
+}
+
+void removeDailyEmailRecipient(int index) {
+  if (index >= 0 && index < dailyRecipientCount) {
+    String removedEmail = dailyEmailRecipients[index];
+    
+    // Shift remaining recipients down
+    for (int i = index; i < dailyRecipientCount - 1; i++) {
+      dailyEmailRecipients[i] = dailyEmailRecipients[i + 1];
+    }
+    dailyRecipientCount--;
+    
+    saveEmailRecipients();
+    logEvent("Removed daily email recipient: " + removedEmail);
+  }
+}
+
+void removeMonthlyEmailRecipient(int index) {
+  if (index >= 0 && index < monthlyRecipientCount) {
+    String removedEmail = monthlyEmailRecipients[index];
+    
+    // Shift remaining recipients down
+    for (int i = index; i < monthlyRecipientCount - 1; i++) {
+      monthlyEmailRecipients[i] = monthlyEmailRecipients[i + 1];
+    }
+    monthlyRecipientCount--;
+    
+    saveEmailRecipients();
+    logEvent("Removed monthly email recipient: " + removedEmail);
+  }
 }
 
 bool sendHologramEmail(String recipient, String subject, String body) {
@@ -592,23 +935,29 @@ void generateMonthlyReport() {
   // Save to SD card
   appendToFile(filename, monthlyReportContent);
   
-  // Send via email if enabled
+  // Send via email to all monthly recipients
   String subject = "Tank Alarm Monthly Report - " + getMonthString();
+  bool emailSent = false;
   
+  for (int i = 0; i < monthlyRecipientCount; i++) {
+    String recipient = monthlyEmailRecipients[i];
+    
 #ifdef USE_HOLOGRAM_EMAIL
-  if (USE_HOLOGRAM_EMAIL) {
-    if (sendHologramEmail(HOLOGRAM_EMAIL_RECIPIENT, subject, monthlyReportContent)) {
-      Serial.println("Monthly report sent successfully via Hologram API");
-      logEvent("Monthly report sent via Hologram API");
-    } else {
-      Serial.println("Failed to send monthly report via Hologram API");
-      logEvent("Failed to send monthly report via Hologram API");
+    if (USE_HOLOGRAM_EMAIL) {
+      if (sendHologramEmail(recipient, subject, monthlyReportContent)) {
+        Serial.println("Monthly report sent successfully to " + recipient + " via Hologram API");
+        logEvent("Monthly report sent to " + recipient + " via Hologram API");
+        emailSent = true;
+      } else {
+        Serial.println("Failed to send monthly report to " + recipient + " via Hologram API");
+        logEvent("Failed to send monthly report to " + recipient + " via Hologram API");
+      }
     }
-  }
 #endif
+  }
   
   lastMonthlyReportDate = getDateString();
-  logEvent("Monthly report generated: " + filename);
+  logEvent("Monthly report generated: " + filename + " (sent to " + String(monthlyRecipientCount) + " recipients)");
 }
 
 String composeMonthlyCSVReport() {

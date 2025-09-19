@@ -18,6 +18,7 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
 - **Receives Daily Reports**: Listens for daily tank reports sent via Hologram.io network from client Arduinos
 - **Data Logging**: Stores all received tank reports to SD card with timestamps
 - **Web Dashboard**: Hosts a web server accessible on the local network via Ethernet
+- **Email Management**: Web-based interface to manage email recipient lists stored on SD card
 - **Daily Email Summaries**: Composes and sends daily email summaries of tank level changes via Hologram API (default) or SMS gateway (fallback)
 - **Monthly CSV Reports**: Generates comprehensive monthly reports grouped by tank location with daily changes and major decreases
 - **Real-time Monitoring**: Displays current tank levels and 24-hour changes
@@ -28,6 +29,7 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
 - Color-coded status indicators (Normal/Alarm)
 - 24-hour change tracking with positive/negative indicators
 - Server connection status monitoring
+- **Email Management Interface**: Add/remove email recipients for daily and monthly reports
 - Mobile-friendly responsive design
 
 ## Installation
@@ -81,6 +83,8 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
   - `alarm_log.txt`: Alarm notifications
   - `server_log.txt`: Server events and status
   - `monthly_report_YYYY-MM.csv`: Monthly CSV reports with tank data grouped by location
+  - `daily_emails.txt`: List of daily email recipients (managed via web interface)
+  - `monthly_emails.txt`: List of monthly email recipients (managed via web interface)
 
 ## Data Format
 
@@ -105,7 +109,8 @@ Once the server is running and connected to your network:
 
 1. **Find the IP Address**: Check the Serial Monitor for the assigned IP address
 2. **Access Dashboard**: Open a web browser and navigate to `http://[IP_ADDRESS]`
-3. **Monitor Status**: The page auto-refreshes every 30 seconds
+3. **Email Management**: Navigate to `http://[IP_ADDRESS]/emails` to manage email recipients
+4. **Monitor Status**: The dashboard page auto-refreshes every 30 seconds
 
 ### Dashboard Features
 - **Tank Cards**: Each monitored tank displays:
@@ -119,6 +124,37 @@ Once the server is running and connected to your network:
   - Hologram network connection status
   - Ethernet connection status
   - Total reports received count
+  - Email recipient counts for daily and monthly reports
+
+## Email Management
+
+The server provides a web-based interface for managing email recipients:
+
+### Accessing Email Management
+- Navigate to `http://[SERVER_IP]/emails` in your web browser
+- Interface allows adding/removing recipients for daily and monthly reports
+- Changes are automatically saved to SD card
+
+### Email Recipient Lists
+- **Daily Recipients**: Receive daily tank level summaries
+- **Monthly Recipients**: Receive monthly CSV reports
+- **Maximum**: 10 recipients per list
+- **Storage**: Lists stored in `daily_emails.txt` and `monthly_emails.txt` on SD card
+
+### Adding Recipients
+1. Navigate to the Email Management page
+2. Enter email address in the appropriate form (Daily or Monthly)
+3. Click "Add Daily Recipient" or "Add Monthly Recipient"
+4. Email is validated and added to the list
+
+### Removing Recipients
+1. Click the "Remove" button next to any email address
+2. Confirm the removal in the popup dialog
+3. Recipient is immediately removed from the list
+
+### Default Recipients
+- On first startup, the configured `HOLOGRAM_EMAIL_RECIPIENT` is added as default recipient for both daily and monthly reports
+- Lists are automatically created if they don't exist
 
 ## Daily Email Reports
 
