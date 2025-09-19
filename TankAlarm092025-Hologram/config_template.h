@@ -72,6 +72,10 @@
 // Power Management
 #define ENABLE_LOW_POWER_MODE true     // Enable low power sleep modes
 #define WAKE_CHECK_DURATION_MS 5000    // How long to stay awake for each check
+#define SHORT_SLEEP_MINUTES 10         // Short sleep duration for active monitoring (minutes)
+#define NORMAL_SLEEP_HOURS 1           // Normal sleep duration between readings (hours)
+#define ENABLE_WAKE_ON_PING true       // Enable wake-on-ping functionality
+#define DEEP_SLEEP_MODE false          // Use deep sleep mode for maximum power savings
 
 // Tank Configuration for Inches/Feet Measurements
 #define TANK_NUMBER 1                  // Tank number identifier (1-99)

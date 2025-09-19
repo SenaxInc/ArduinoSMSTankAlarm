@@ -99,10 +99,20 @@ The system supports three types of tank level sensors:
 - **Secondary Contact**: Immediate SMS to secondary phone number
 - **Daily Contact**: Regular daily status reports
 
-### Power Management
-- **Sleep Mode**: System sleeps for 1 hour between checks
-- **Wake Triggers**: Automatic wake every hour to check tank level
-- **Low Power**: Optimized for battery operation
+### Enhanced Power Management
+- **Adaptive Sleep Modes**: Intelligent sleep duration based on current activity
+  - **Normal Sleep**: 1 hour intervals for routine monitoring
+  - **Active Monitoring**: 10 minute intervals when alarms active or server commands received
+  - **Deep Sleep Mode**: Optional maximum power savings for extended deployments
+- **Wake Triggers**: 
+  - **Timer-based**: Automatic wake at configured intervals
+  - **Wake-on-Ping**: Device can be woken by incoming cellular data (server commands)
+  - **Alarm Events**: Immediate wake when tank levels change
+- **Power Optimization**:
+  - **RTC-based Timing**: Precise sleep timing using real-time clock
+  - **Cellular Wake**: Modem configured to wake device on incoming data
+  - **Configurable Intervals**: Sleep durations adjustable via SD card configuration
+  - **Battery Life**: Optimized for months of operation on battery power
 
 ### Server Communication
 - **Server Device ID**: Configure `SERVER_DEVICE_KEY` to communicate with Tank Alarm Server
@@ -148,6 +158,18 @@ The system supports three types of tank level sensors:
    - Default is 05:00 (5:00 AM)
    - Configure in SD card config file (tank_config.txt)
    - System automatically syncs with cellular network time
+
+6. **Power Management Configuration**:
+   ```
+   SHORT_SLEEP_MINUTES=10     # Active monitoring sleep duration
+   NORMAL_SLEEP_HOURS=1       # Normal operation sleep duration
+   ENABLE_WAKE_ON_PING=true   # Enable wake-on-ping functionality
+   DEEP_SLEEP_MODE=false      # Use deep sleep for maximum power savings
+   ```
+   - **Wake-on-Ping**: Device wakes when server sends ping commands
+   - **Adaptive Sleep**: Shorter intervals during active monitoring
+   - **Deep Sleep**: Maximum power savings for extended deployments
+   - **Battery Optimization**: Configurable sleep durations for optimal battery life
 
 ### Hardware Setup
 

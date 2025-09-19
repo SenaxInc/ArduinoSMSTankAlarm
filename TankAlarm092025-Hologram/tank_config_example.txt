@@ -47,6 +47,12 @@ LARGE_DECREASE_WAIT_HOURS=2
 # CONNECTION_TIMEOUT_MS=30000
 # SMS_RETRY_ATTEMPTS=3
 
+# Power Management Configuration (optional overrides)
+# SHORT_SLEEP_MINUTES=10
+# NORMAL_SLEEP_HOURS=1
+# DEEP_SLEEP_MODE=false
+# ENABLE_WAKE_ON_PING=true
+
 # Log File Names (optional - will use defaults if not specified)
 # HOURLY_LOG_FILE=hourly_log.txt
 # DAILY_LOG_FILE=daily_log.txt

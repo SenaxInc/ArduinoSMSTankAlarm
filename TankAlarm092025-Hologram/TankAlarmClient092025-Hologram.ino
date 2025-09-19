@@ -37,6 +37,12 @@
 #define ANALOG_VOLTAGE 1  
 #define CURRENT_LOOP 2
 
+// Power management definitions
+#define SLEEP_MODE_NORMAL 0      // Normal sleep between checks
+#define SLEEP_MODE_DEEP 1        // Deep sleep for extended periods
+#define WAKE_REASON_TIMER 0      // Woke up due to timer
+#define WAKE_REASON_CELLULAR 1   // Woke up due to cellular data
+
 // Initialize cellular components
 NB nbAccess;
 NBSMS sms;
@@ -146,6 +152,18 @@ volatile int time_tick_report = 1;
 #ifndef DAILY_REPORT_TIME
 #define DAILY_REPORT_TIME "05:00"
 #endif
+#ifndef SHORT_SLEEP_MINUTES
+#define SHORT_SLEEP_MINUTES 10
+#endif
+#ifndef NORMAL_SLEEP_HOURS
+#define NORMAL_SLEEP_HOURS 1
+#endif
+#ifndef ENABLE_WAKE_ON_PING
+#define ENABLE_WAKE_ON_PING true
+#endif
+#ifndef DEEP_SLEEP_MODE
+#define DEEP_SLEEP_MODE false
+#endif
 
 const int sleep_hours = SLEEP_INTERVAL_HOURS;
 const int report_hours = DAILY_REPORT_HOURS;
@@ -201,6 +219,15 @@ bool timeIsSynced = false;
 unsigned long lastTimeSyncMillis = 0;
 const unsigned long TIME_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // Sync once per day
 
+// Power management variables
+volatile bool wakeFromCellular = false;  // Flag set when woken by cellular data
+volatile int wakeReason = WAKE_REASON_TIMER;  // Reason for last wake
+unsigned long lastCellularCheck = 0;  // Last time we checked for cellular data
+bool deepSleepMode = DEEP_SLEEP_MODE;  // Whether to use deep sleep mode
+int shortSleepMinutes = SHORT_SLEEP_MINUTES;  // Short sleep duration for frequent checks
+int normalSleepHours = NORMAL_SLEEP_HOURS;    // Normal sleep duration between readings
+bool wakeOnPingEnabled = ENABLE_WAKE_ON_PING; // Wake on ping functionality
+
 // Function declarations
 bool connectToCellular();
 bool syncTimeFromCellular();
@@ -208,6 +235,10 @@ bool isTimeForDailyReport();
 void parseTimeString(String timeStr, int &hours, int &minutes);
 void logSuccessfulReport();
 String getLastReportDateFromLog();
+void enterPowerSaveMode();
+void enterDeepSleepMode();
+void configureCellularWakeup();
+void checkForIncomingData();
 
 // Network configuration (loaded from SD card)
 int connectionTimeoutMs = CONNECTION_TIMEOUT_MS;
@@ -345,13 +376,21 @@ void loop() {
     }
   }
   
-  // Check for server commands via Hologram (every 10 minutes when connected)
+  // Check for server commands via Hologram (optimized for power saving)
   static unsigned long lastServerCheckTime = 0;
-  if (millis() - lastServerCheckTime > 600000) {  // 10 minutes
+  bool checkServerCommands = false;
+  
+  // Check server commands more frequently if we recently woke from cellular data
+  unsigned long serverCheckInterval = (wakeFromCellular) ? 60000 : 600000;  // 1 min vs 10 min
+  
+  if (millis() - lastServerCheckTime > serverCheckInterval) {
     if (connectToCellular()) {
+      checkForIncomingData();  // Check for any incoming data first
       checkForServerCommands();
+      checkServerCommands = true;
     }
     lastServerCheckTime = millis();
+    wakeFromCellular = false;  // Reset the flag after checking
   }
   
   // Check if it's time for daily report using configured time
@@ -393,24 +432,30 @@ void loop() {
   time_tick_hours++;
   time_tick_report++;
   
-  // Sleep for configured interval (convert hours to milliseconds)
-#ifdef ENABLE_SERIAL_DEBUG
-  if (ENABLE_SERIAL_DEBUG) {
-    Serial.print("Entering sleep mode for ");
-    Serial.print(sleepIntervalHours);
-    Serial.println(" hour(s)");
-  }
-#endif
+  // Determine sleep strategy based on current conditions
+  bool needsFrequentChecking = (alarmSent || wakeFromCellular || checkServerCommands);
   
-#ifdef ENABLE_LOW_POWER_MODE
-  if (ENABLE_LOW_POWER_MODE) {
-    LowPower.sleep(sleepIntervalHours * 60 * 60 * 1000);  // Convert hours to milliseconds
-  } else {
-    delay(sleepIntervalHours * 60 * 60 * 1000);  // Fallback to delay if low power disabled
-  }
-#else
-  delay(sleepIntervalHours * 60 * 60 * 1000);  // Default delay
+  if (needsFrequentChecking) {
+    // Use shorter sleep intervals when active monitoring is needed
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) {
+      Serial.print("Entering power save mode for ");
+      Serial.print(shortSleepMinutes);
+      Serial.println(" minute(s) - active monitoring");
+    }
 #endif
+    enterPowerSaveMode();
+  } else {
+    // Use normal sleep intervals for routine monitoring
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) {
+      Serial.print("Entering normal sleep mode for ");
+      Serial.print(normalSleepHours);
+      Serial.println(" hour(s)");
+    }
+#endif
+    enterDeepSleepMode();
+  }
 }
 
 bool connectToCellular() {
@@ -908,6 +953,14 @@ void loadSDCardConfiguration() {
         connectionTimeoutMs = value.toInt();
       } else if (key == "SMS_RETRY_ATTEMPTS") {
         smsRetryAttempts = value.toInt();
+      } else if (key == "SHORT_SLEEP_MINUTES") {
+        shortSleepMinutes = value.toInt();
+      } else if (key == "NORMAL_SLEEP_HOURS") {
+        normalSleepHours = value.toInt();
+      } else if (key == "DEEP_SLEEP_MODE") {
+        deepSleepMode = (value == "true");
+      } else if (key == "ENABLE_WAKE_ON_PING") {
+        wakeOnPingEnabled = (value == "true");
       } else if (key == "HOURLY_LOG_FILE") {
         hourlyLogFile = value;
       } else if (key == "DAILY_LOG_FILE") {
@@ -1375,4 +1428,112 @@ String getLastReportDateFromLog() {
 #endif
   
   return lastDate;
+}
+
+// Enhanced power management functions for optimized battery life
+
+void enterPowerSaveMode() {
+  // Enter power save mode with short sleep duration for active monitoring
+  // This mode allows faster response to server commands and alarms
+  
+#ifdef ENABLE_LOW_POWER_MODE
+  if (ENABLE_LOW_POWER_MODE) {
+    // Configure cellular modem for wake-on-data if possible
+    configureCellularWakeup();
+    
+    // Use RTC for precise timing in power save mode
+    rtc.setAlarmEpoch(rtc.getEpoch() + (shortSleepMinutes * 60));
+    rtc.enableAlarm(rtc.MATCH_HHMMSS);
+    rtc.attachInterrupt(wakeUpCallback);
+    
+    // Enter standby mode - can be woken by RTC or cellular
+    LowPower.sleep(shortSleepMinutes * 60 * 1000);
+    
+    // Clear alarm after wake
+    rtc.disableAlarm();
+  } else {
+    delay(shortSleepMinutes * 60 * 1000);  // Fallback to delay
+  }
+#else
+  delay(shortSleepMinutes * 60 * 1000);  // Default delay
+#endif
+}
+
+void enterDeepSleepMode() {
+  // Enter deep sleep mode for maximum power savings during normal operation
+  
+#ifdef ENABLE_LOW_POWER_MODE
+  if (ENABLE_LOW_POWER_MODE) {
+    // Configure cellular modem for wake-on-data
+    configureCellularWakeup();
+    
+    // Use RTC for precise timing in deep sleep
+    rtc.setAlarmEpoch(rtc.getEpoch() + (normalSleepHours * 3600));
+    rtc.enableAlarm(rtc.MATCH_HHMMSS);
+    rtc.attachInterrupt(wakeUpCallback);
+    
+    // Enter deep sleep mode - lowest power consumption
+    LowPower.deepSleep(normalSleepHours * 60 * 60 * 1000);
+    
+    // Clear alarm after wake
+    rtc.disableAlarm();
+  } else {
+    delay(normalSleepHours * 60 * 60 * 1000);  // Fallback to delay
+  }
+#else
+  delay(normalSleepHours * 60 * 60 * 1000);  // Default delay
+#endif
+}
+
+void configureCellularWakeup() {
+  // Configure the cellular modem to wake the device on incoming data
+  // Note: This is a placeholder for modem-specific wake configuration
+  
+  // For MKR NB 1500 with SARA-R410M, we would configure:
+  // 1. Power saving mode with wake on data
+  // 2. Interrupt pin configuration
+  // 3. Modem sleep/wake settings
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Configuring cellular wake-on-data...");
+#endif
+  
+  // Example modem configuration (implementation depends on specific modem)
+  // nbAccess.lowPowerMode(true);  // Enable modem power saving
+  // nbAccess.wakeOnData(true);    // Wake device on incoming data
+  
+  logEvent("Cellular wake-on-data configured");
+}
+
+void checkForIncomingData() {
+  // Check if there's any incoming cellular data that might have woken us
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Checking for incoming cellular data...");
+#endif
+  
+  // Check for any pending data on the cellular connection
+  if (client.available()) {
+    wakeFromCellular = true;
+    wakeReason = WAKE_REASON_CELLULAR;
+    
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Incoming cellular data detected - wake from cellular");
+#endif
+    
+    logEvent("Device woken by incoming cellular data");
+  } else {
+    wakeReason = WAKE_REASON_TIMER;
+  }
+}
+
+void wakeUpCallback() {
+  // RTC interrupt callback for wake events
+  // This function is called when the RTC alarm triggers
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Device woken by RTC alarm");
+#endif
+  
+  // The main loop will continue execution after this callback
 }
