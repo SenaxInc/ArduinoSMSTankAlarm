@@ -66,6 +66,7 @@ struct TankReport {
 bool networkConnected = false;
 bool ethernetConnected = false;
 String lastEmailSentDate = "";
+String lastMonthlyReportDate = "";
 const int MAX_TANK_REPORTS = 50;  // Maximum number of reports to store in memory
 TankReport tankReports[MAX_TANK_REPORTS];
 int reportCount = 0;
@@ -129,6 +130,11 @@ void loop() {
   // Check if it's time to send daily email
   if (isTimeForDailyEmail()) {
     sendDailyEmail();
+  }
+  
+  // Check if it's time to generate monthly report
+  if (isTimeForMonthlyReport()) {
+    generateMonthlyReport();
   }
   
   // Maintain network connections
@@ -386,6 +392,23 @@ void sendWebPage(EthernetClient &client) {
   client.println(ethernetConnected ? "<span style='color: green;'>Ethernet Connected</span>" : "<span style='color: red;'>Ethernet Disconnected</span>");
   client.println("</p>");
   client.println("<p>Total Reports Received: " + String(reportCount) + "</p>");
+  
+#ifdef USE_HOLOGRAM_EMAIL
+  if (USE_HOLOGRAM_EMAIL) {
+    client.println("<p>Email Delivery: <span style='color: blue;'>Hologram API (default)</span></p>");
+  } else {
+    client.println("<p>Email Delivery: <span style='color: orange;'>SMS Gateway</span></p>");
+  }
+#else
+  client.println("<p>Email Delivery: <span style='color: orange;'>SMS Gateway</span></p>");
+#endif
+
+#ifdef MONTHLY_REPORT_ENABLED
+  if (MONTHLY_REPORT_ENABLED) {
+    client.println("<p>Monthly Reports: <span style='color: green;'>Enabled</span> (Day " + String(MONTHLY_REPORT_DAY) + " at " + String(MONTHLY_REPORT_HOUR) + ":00)</p>");
+  }
+#endif
+  
   client.println("<p>Tank Alarm Server 092025 - Hologram Version</p>");
   client.println("</div>");
   
@@ -415,18 +438,44 @@ void sendDailyEmail() {
   
   String emailContent = composeDailyEmailContent();
   
-  // Send email via SMS to configured email-to-SMS gateway
-  if (sms.beginSMS(DAILY_EMAIL_SMS_GATEWAY)) {
-    sms.print(emailContent);
-    sms.endSMS();
-    
-    lastEmailSentDate = getDateString();
-    Serial.println("Daily email sent successfully");
-    logEvent("Daily email sent");
+#ifdef USE_HOLOGRAM_EMAIL
+  if (USE_HOLOGRAM_EMAIL) {
+    // Send email via Hologram API (default method)
+    if (sendHologramEmail(HOLOGRAM_EMAIL_RECIPIENT, "Tank Alarm Daily Report", emailContent)) {
+      lastEmailSentDate = getDateString();
+      Serial.println("Daily email sent successfully via Hologram API");
+      logEvent("Daily email sent via Hologram API");
+    } else {
+      Serial.println("Failed to send daily email via Hologram API, trying SMS fallback");
+      // Fallback to SMS gateway
+      if (sms.beginSMS(DAILY_EMAIL_SMS_GATEWAY)) {
+        sms.print(emailContent);
+        sms.endSMS();
+        lastEmailSentDate = getDateString();
+        Serial.println("Daily email sent successfully via SMS fallback");
+        logEvent("Daily email sent via SMS fallback");
+      } else {
+        Serial.println("Failed to send daily email via both methods");
+        logEvent("Failed to send daily email - all methods failed");
+      }
+    }
   } else {
-    Serial.println("Failed to send daily email");
-    logEvent("Failed to send daily email");
+#endif
+    // Send email via SMS to configured email-to-SMS gateway (fallback method)
+    if (sms.beginSMS(DAILY_EMAIL_SMS_GATEWAY)) {
+      sms.print(emailContent);
+      sms.endSMS();
+      
+      lastEmailSentDate = getDateString();
+      Serial.println("Daily email sent successfully via SMS");
+      logEvent("Daily email sent via SMS");
+    } else {
+      Serial.println("Failed to send daily email via SMS");
+      logEvent("Failed to send daily email via SMS");
+    }
+#ifdef USE_HOLOGRAM_EMAIL
   }
+#endif
 }
 
 String composeDailyEmailContent() {
@@ -479,6 +528,163 @@ void periodicCheck() {
   Serial.println("Periodic check triggered");
 }
 
+bool sendHologramEmail(String recipient, String subject, String body) {
+  // Send email via Hologram API
+  if (!networkConnected) return false;
+  
+  // Create JSON payload for Hologram email API
+  String jsonPayload = "{\"k\":\"" + String(HOLOGRAM_DEVICE_KEY) + "\",";
+  jsonPayload += "\"d\":{";
+  jsonPayload += "\"to\":\"" + recipient + "\",";
+  jsonPayload += "\"subject\":\"" + subject + "\",";
+  jsonPayload += "\"body\":\"" + body + "\"";
+  jsonPayload += "},";
+  jsonPayload += "\"t\":[\"EMAIL\"]}";
+  
+  // Replace newlines with \\n for JSON
+  jsonPayload.replace("\n", "\\n");
+  jsonPayload.replace("\r", "");
+  
+  // Connect to Hologram server
+  if (hologramClient.connect(HOLOGRAM_URL, HOLOGRAM_PORT)) {
+    Serial.println("Connected to Hologram for email delivery");
+    
+    // Send the email data
+    hologramClient.print(jsonPayload);
+    hologramClient.stop();
+    
+    Serial.println("Email sent via Hologram API");
+    logEvent("Email sent via Hologram API to: " + recipient);
+    return true;
+  } else {
+    Serial.println("Failed to connect to Hologram for email");
+    logEvent("Failed to connect to Hologram for email delivery");
+    return false;
+  }
+}
+
+bool isTimeForMonthlyReport() {
+#ifdef MONTHLY_REPORT_ENABLED
+  if (!MONTHLY_REPORT_ENABLED) return false;
+  
+  String currentDate = getDateString();
+  
+  if (lastMonthlyReportDate != currentDate) {
+    int currentDay = rtc.getDay();
+    int currentHour = rtc.getHours();
+    
+    // Generate report on configured day of month at configured hour
+    if (currentDay == MONTHLY_REPORT_DAY && currentHour == MONTHLY_REPORT_HOUR) {
+      return true;
+    }
+  }
+#endif
+  
+  return false;
+}
+
+void generateMonthlyReport() {
+  Serial.println("Generating monthly CSV report...");
+  
+  String monthlyReportContent = composeMonthlyCSVReport();
+  String filename = "monthly_report_" + getMonthString() + ".csv";
+  
+  // Save to SD card
+  appendToFile(filename, monthlyReportContent);
+  
+  // Send via email if enabled
+  String subject = "Tank Alarm Monthly Report - " + getMonthString();
+  
+#ifdef USE_HOLOGRAM_EMAIL
+  if (USE_HOLOGRAM_EMAIL) {
+    if (sendHologramEmail(HOLOGRAM_EMAIL_RECIPIENT, subject, monthlyReportContent)) {
+      Serial.println("Monthly report sent successfully via Hologram API");
+      logEvent("Monthly report sent via Hologram API");
+    } else {
+      Serial.println("Failed to send monthly report via Hologram API");
+      logEvent("Failed to send monthly report via Hologram API");
+    }
+  }
+#endif
+  
+  lastMonthlyReportDate = getDateString();
+  logEvent("Monthly report generated: " + filename);
+}
+
+String composeMonthlyCSVReport() {
+  String csvContent = "Tank Alarm Monthly Report - " + getMonthString() + "\n\n";
+  csvContent += "Date,Site Location,Tank Number,Current Level,Daily Change,Major Decrease\n";
+  
+  // Group data by site location and tank number
+  String sites[10]; // Support up to 10 different sites
+  int siteCount = 0;
+  
+  // First pass: identify unique sites
+  for (int i = 0; i < reportCount; i++) {
+    TankReport report = tankReports[i];
+    String siteKey = report.siteLocation + "_Tank" + String(report.tankNumber);
+    
+    bool siteExists = false;
+    for (int j = 0; j < siteCount; j++) {
+      if (sites[j] == siteKey) {
+        siteExists = true;
+        break;
+      }
+    }
+    
+    if (!siteExists && siteCount < 10) {
+      sites[siteCount] = siteKey;
+      siteCount++;
+    }
+  }
+  
+  // Second pass: generate CSV data for each site
+  for (int s = 0; s < siteCount; s++) {
+    String currentSite = sites[s];
+    
+    // Extract site name and tank number
+    int underscorePos = currentSite.indexOf("_Tank");
+    String siteName = currentSite.substring(0, underscorePos);
+    String tankNum = currentSite.substring(underscorePos + 5);
+    
+    csvContent += "\n// " + siteName + " Tank #" + tankNum + "\n";
+    
+    // Add reports for this site/tank combination
+    for (int i = 0; i < reportCount; i++) {
+      TankReport report = tankReports[i];
+      String reportSiteKey = report.siteLocation + "_Tank" + String(report.tankNumber);
+      
+      if (reportSiteKey == currentSite) {
+        // Check if this is a major decrease
+        String majorDecrease = "No";
+        if (report.change24hr.startsWith("-")) {
+          // Extract numeric value to check if it's major
+          String changeStr = report.change24hr.substring(1); // Remove minus sign
+          // Simple check for major decrease (more than 1 foot or 12 inches)
+          if (changeStr.indexOf("FT") > 0 && changeStr.charAt(0) != '0') {
+            majorDecrease = "Yes";
+          }
+        }
+        
+        csvContent += report.timestamp.substring(0, 10) + ","; // Date only
+        csvContent += report.siteLocation + ",";
+        csvContent += String(report.tankNumber) + ",";
+        csvContent += report.currentLevel + ",";
+        csvContent += report.change24hr + ",";
+        csvContent += majorDecrease + "\n";
+      }
+    }
+  }
+  
+  // Add summary section
+  csvContent += "\n// Summary\n";
+  csvContent += "Total Sites," + String(siteCount) + "\n";
+  csvContent += "Total Reports," + String(reportCount) + "\n";
+  csvContent += "Report Period," + getMonthString() + "\n";
+  
+  return csvContent;
+}
+
 // Utility functions
 String getCurrentTimestamp() {
   char timestamp[20];
@@ -493,6 +699,13 @@ String getDateString() {
   sprintf(dateStr, "%04d%02d%02d", 
           rtc.getYear() + 2000, rtc.getMonth(), rtc.getDay());
   return String(dateStr);
+}
+
+String getMonthString() {
+  char monthStr[8];
+  sprintf(monthStr, "%04d-%02d", 
+          rtc.getYear() + 2000, rtc.getMonth());
+  return String(monthStr);
 }
 
 void logEvent(String event) {

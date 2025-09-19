@@ -18,7 +18,8 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
 - **Receives Daily Reports**: Listens for daily tank reports sent via Hologram.io network from client Arduinos
 - **Data Logging**: Stores all received tank reports to SD card with timestamps
 - **Web Dashboard**: Hosts a web server accessible on the local network via Ethernet
-- **Daily Email Summaries**: Composes and sends daily email summaries of tank level changes
+- **Daily Email Summaries**: Composes and sends daily email summaries of tank level changes via Hologram API (default) or SMS gateway (fallback)
+- **Monthly CSV Reports**: Generates comprehensive monthly reports grouped by tank location with daily changes and major decreases
 - **Real-time Monitoring**: Displays current tank levels and 24-hour changes
 
 ### Web Interface Features
@@ -43,7 +44,10 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
 2. Edit `server_config.h` with your specific settings:
    ```cpp
    #define HOLOGRAM_DEVICE_KEY "your_actual_device_key"
-   #define DAILY_EMAIL_RECIPIENT "+15551234567@vtext.com"
+   #define USE_HOLOGRAM_EMAIL true  // Use Hologram API for email (default)
+   #define HOLOGRAM_EMAIL_RECIPIENT "user@example.com"
+   #define DAILY_EMAIL_SMS_GATEWAY "+15551234567@vtext.com"  // Fallback method
+   #define MONTHLY_REPORT_ENABLED true  // Enable monthly CSV reports
    ```
 
 ### 3. Upload Code
@@ -59,9 +63,16 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
 - **Web Server Port**: Default 80 (HTTP)
 
 ### Email/Notification Settings
+- **USE_HOLOGRAM_EMAIL**: Enable Hologram API for email delivery (default: true)
+- **HOLOGRAM_EMAIL_RECIPIENT**: Email address for Hologram API delivery
 - **DAILY_EMAIL_HOUR**: Hour to send daily summary (default: 6 AM)
-- **DAILY_EMAIL_RECIPIENT**: Email-to-SMS gateway address
+- **DAILY_EMAIL_SMS_GATEWAY**: SMS-to-email gateway (fallback method)
 - **ALARM_EMAIL_RECIPIENT**: Email for alarm notifications
+
+### Monthly Report Settings
+- **MONTHLY_REPORT_ENABLED**: Enable monthly CSV report generation (default: true)
+- **MONTHLY_REPORT_DAY**: Day of month to generate report (default: 1st)
+- **MONTHLY_REPORT_HOUR**: Hour to generate monthly report (default: 8 AM)
 
 ### Data Storage
 - **MAX_REPORTS_IN_MEMORY**: Maximum reports stored in RAM (default: 50)
@@ -69,6 +80,7 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
   - `daily_reports.txt`: Tank level reports
   - `alarm_log.txt`: Alarm notifications
   - `server_log.txt`: Server events and status
+  - `monthly_report_YYYY-MM.csv`: Monthly CSV reports with tank data grouped by location
 
 ## Data Format
 
@@ -110,16 +122,48 @@ Once the server is running and connected to your network:
 
 ## Daily Email Reports
 
-The server automatically sends daily email summaries:
+The server automatically sends daily email summaries with two delivery methods:
+
+### Primary Method: Hologram API (Default)
 - **Time**: Configurable (default 6:00 AM)
+- **Delivery**: Direct email via Hologram.io API
 - **Content**: All tank level changes from the previous 24 hours
+- **Configuration**: Set `USE_HOLOGRAM_EMAIL = true` and configure `HOLOGRAM_EMAIL_RECIPIENT`
+
+### Fallback Method: SMS-to-Email Gateway
+- **Activation**: Automatic fallback if Hologram API fails
 - **Delivery**: Via SMS-to-email gateway services
+- **Configuration**: Configure `DAILY_EMAIL_SMS_GATEWAY`
 
 ### Supported Email-to-SMS Gateways
 - **Verizon**: `+1##########@vtext.com`
 - **AT&T**: `+1##########@txt.att.net`
 - **T-Mobile**: `+1##########@tmomail.net`
 - **Sprint**: `+1##########@messaging.sprintpcs.com`
+
+## Monthly CSV Reports
+
+The server generates comprehensive monthly reports automatically:
+
+### Report Content
+- **Grouping**: Data organized by tank location and tank number
+- **Daily Data**: Each day's tank level and 24-hour changes
+- **Major Decreases**: Flagged entries for significant level drops (>1 foot)
+- **Summary Statistics**: Total sites, reports, and time period
+
+### CSV Format Example
+```csv
+Date,Site Location,Tank Number,Current Level,Daily Change,Major Decrease
+20250901,North Site Tank Farm,1,8FT,6.2IN,+0FT,2.1IN,No
+20250901,North Site Tank Farm,1,8FT,4.1IN,-0FT,2.1IN,No
+20250902,North Site Tank Farm,1,7FT,2.0IN,-1FT,2.1IN,Yes
+```
+
+### Report Generation
+- **Schedule**: 1st day of each month at 8:00 AM (configurable)
+- **Storage**: Saved to SD card as `monthly_report_YYYY-MM.csv`
+- **Email Delivery**: Automatically sent via configured email method
+- **Configuration**: Enable with `MONTHLY_REPORT_ENABLED = true`
 
 ## Troubleshooting
 
@@ -157,6 +201,7 @@ The server creates several log files on the SD card:
 - **`daily_reports.txt`**: All received tank reports
 - **`alarm_log.txt`**: Alarm notifications and critical events
 - **`server_log.txt`**: Server status, connections, and operational events
+- **`monthly_report_YYYY-MM.csv`**: Monthly CSV reports with tank data grouped by location and major decrease tracking
 
 ## Maintenance
 

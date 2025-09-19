@@ -13,7 +13,9 @@
 // Daily Email Configuration
 #define DAILY_EMAIL_HOUR 6                         // Hour to send daily email (24-hour format)
 #define DAILY_EMAIL_MINUTE 0                       // Minute to send daily email
-#define DAILY_EMAIL_SMS_GATEWAY "+19995551234"     // SMS gateway for email delivery
+#define USE_HOLOGRAM_EMAIL true                    // Use Hologram API for email delivery (default)
+#define DAILY_EMAIL_SMS_GATEWAY "+19995551234"     // SMS gateway for email delivery (fallback)
+#define HOLOGRAM_EMAIL_RECIPIENT "user@example.com" // Email address for Hologram API delivery
 
 // Pin Configuration
 #define SD_CARD_CS_PIN 4                           // SD card chip select pin
@@ -67,5 +69,10 @@
 // Alarm Notification Settings
 #define FORWARD_ALARMS_TO_EMAIL true              // Forward alarm messages to email
 #define ALARM_EMAIL_RECIPIENT "+15551234567@vtext.com"  // Email for alarm notifications
+
+// Monthly Report Settings
+#define MONTHLY_REPORT_ENABLED true               // Enable monthly CSV reports
+#define MONTHLY_REPORT_DAY 1                      // Day of month to generate report (1-28)
+#define MONTHLY_REPORT_HOUR 8                     // Hour to generate monthly report
 
 #endif // SERVER_CONFIG_H
