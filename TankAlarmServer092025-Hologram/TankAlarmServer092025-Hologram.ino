@@ -74,6 +74,12 @@ bool networkConnected = false;
 bool ethernetConnected = false;
 String lastEmailSentDate = "";
 String lastMonthlyReportDate = "";
+
+// Daily email retry tracking
+String dailyEmailAttemptDate = "";
+bool dailyEmailPending = false;
+unsigned long lastDailyEmailRetry = 0;
+const unsigned long DAILY_EMAIL_RETRY_INTERVAL = 1800000; // 30 minutes in milliseconds
 const int MAX_TANK_REPORTS = 50;  // Maximum number of reports to store in memory
 TankReport tankReports[MAX_TANK_REPORTS];
 int reportCount = 0;
@@ -167,6 +173,21 @@ void loop() {
   
   // Check if it's time to send daily email
   if (isTimeForDailyEmail()) {
+    sendDailyEmail();
+  }
+  
+  // Check for pending daily email retries
+  if (dailyEmailPending && (millis() - lastDailyEmailRetry > DAILY_EMAIL_RETRY_INTERVAL)) {
+    // Check if we've moved to a new day since the last attempt
+    String currentDate = getDateString();
+    if (dailyEmailAttemptDate != currentDate) {
+      Serial.println("New day detected, resetting daily email attempt for " + currentDate);
+      dailyEmailAttemptDate = currentDate;
+      logEvent("New day detected, resetting daily email attempt for " + currentDate);
+    }
+    
+    Serial.println("Retrying daily email delivery...");
+    logEvent("Retrying daily email delivery");
     sendDailyEmail();
   }
   
@@ -540,6 +561,11 @@ bool isTimeForDailyEmail() {
     
     // Send email at configured time (default 6:00 AM)
     if (currentHour == DAILY_EMAIL_HOUR && currentMinute >= DAILY_EMAIL_MINUTE && currentMinute < DAILY_EMAIL_MINUTE + 5) {
+      // Mark that we should attempt daily email for this date
+      if (dailyEmailAttemptDate != currentDate) {
+        dailyEmailAttemptDate = currentDate;
+        dailyEmailPending = true;
+      }
       return true;
     }
   }
@@ -549,6 +575,18 @@ bool isTimeForDailyEmail() {
 
 void sendDailyEmail() {
   Serial.println("Sending daily email summary...");
+  
+  // Attempt to establish cellular connection if not connected
+  if (!networkConnected) {
+    Serial.println("Network not connected, attempting to establish connection for daily email...");
+    logEvent("Attempting cellular connection for daily email");
+    if (!connectToHologram()) {
+      Serial.println("Failed to establish connection for daily email, will retry later");
+      logEvent("Daily email failed: no cellular connection, will retry");
+      lastDailyEmailRetry = millis();
+      return; // Exit early, retry will happen later
+    }
+  }
   
   String emailContent = composeDailyEmailContent();
   bool emailSent = false;
@@ -596,9 +634,14 @@ void sendDailyEmail() {
   
   if (emailSent) {
     lastEmailSentDate = getDateString();
+    dailyEmailPending = false;  // Clear pending flag on success
+    Serial.println("Daily email sent successfully, clearing pending flag");
+    logEvent("Daily email sent successfully");
   } else {
     Serial.println("Failed to send daily email to any recipients");
-    logEvent("Failed to send daily email - all methods failed");
+    logEvent("Failed to send daily email - all methods failed, will retry");
+    lastDailyEmailRetry = millis();
+    // dailyEmailPending remains true for retry attempts
   }
 }
 
@@ -773,16 +816,30 @@ void checkPowerFailureRecovery() {
 void restoreSystemState() {
   Serial.println("Restoring system state...");
   
-  // Restore last email sent dates
+  // Restore last email sent dates and retry state
   File dateFile = SD.open("email_dates.txt", FILE_READ);
   if (dateFile) {
     lastEmailSentDate = dateFile.readStringUntil('\n');
     lastEmailSentDate.trim();
     lastMonthlyReportDate = dateFile.readStringUntil('\n');
     lastMonthlyReportDate.trim();
+    
+    // Try to restore daily email retry state (may not exist in older backups)
+    if (dateFile.available()) {
+      dailyEmailAttemptDate = dateFile.readStringUntil('\n');
+      dailyEmailAttemptDate.trim();
+      String pendingStr = dateFile.readStringUntil('\n');
+      pendingStr.trim();
+      dailyEmailPending = (pendingStr == "1");
+    }
+    
     dateFile.close();
     
     Serial.println("Restored email dates - Daily: " + lastEmailSentDate + ", Monthly: " + lastMonthlyReportDate);
+    if (dailyEmailPending) {
+      Serial.println("Restored daily email retry state - Attempt date: " + dailyEmailAttemptDate + ", Pending: true");
+      logEvent("Daily email retry state restored - pending email for " + dailyEmailAttemptDate);
+    }
     logEvent("Email dates restored");
   }
   
@@ -889,11 +946,13 @@ void saveSystemState(String reason) {
     stateFile.close();
   }
   
-  // Save email dates
+  // Save email dates and retry state
   File dateFile = SD.open("email_dates.txt", FILE_WRITE);
   if (dateFile) {
     dateFile.println(lastEmailSentDate);
     dateFile.println(lastMonthlyReportDate);
+    dateFile.println(dailyEmailAttemptDate);
+    dateFile.println(dailyEmailPending ? "1" : "0");
     dateFile.close();
   }
   
