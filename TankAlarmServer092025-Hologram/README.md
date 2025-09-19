@@ -329,6 +329,7 @@ For technical support or questions:
 1. Check the Serial Monitor output for detailed status information
 2. Review log files on the SD card for error details
 3. Verify all configuration settings in `server_config.h`
+4. See [SD Card Shield Compatibility Guide](../SD_CARD_SHIELD_COMPATIBILITY.md) for questions about different shield configurations
 
 ## Version Information
 

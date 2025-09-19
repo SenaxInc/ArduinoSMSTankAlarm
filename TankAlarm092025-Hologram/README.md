@@ -330,3 +330,4 @@ For technical support or questions:
 - Check Arduino MKR NB 1500 documentation
 - Contact Hologram.io support for cellular connectivity issues
 - Refer to shield documentation for hardware-specific questions
+- See [SD Card Shield Compatibility Guide](../SD_CARD_SHIELD_COMPATIBILITY.md) for questions about different shield configurations
