@@ -178,6 +178,14 @@ void loop() {
   
   // Check for pending daily email retries
   if (dailyEmailPending && (millis() - lastDailyEmailRetry > DAILY_EMAIL_RETRY_INTERVAL)) {
+    // Check if we've moved to a new day since the last attempt
+    String currentDate = getDateString();
+    if (dailyEmailAttemptDate != currentDate) {
+      Serial.println("New day detected, resetting daily email attempt for " + currentDate);
+      dailyEmailAttemptDate = currentDate;
+      logEvent("New day detected, resetting daily email attempt for " + currentDate);
+    }
+    
     Serial.println("Retrying daily email delivery...");
     logEvent("Retrying daily email delivery");
     sendDailyEmail();
