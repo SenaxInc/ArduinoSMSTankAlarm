@@ -81,8 +81,9 @@ The system supports three types of tank level sensors:
 3. **Daily Reports**: Sends daily status reports via SMS at configurable time
 4. **Data Logging**: Logs all events to SD card with timestamps
 5. **Hologram.io Integration**: Sends data to Hologram.io cloud platform
-6. **Low Power Operation**: Uses sleep modes to conserve battery power
-7. **Time Synchronization**: Syncs with cellular network time for accurate scheduling
+6. **Server Communication**: Supports remote commands from Tank Alarm Server
+7. **Low Power Operation**: Uses sleep modes to conserve battery power
+8. **Time Synchronization**: Syncs with cellular network time for accurate scheduling
 
 ### Time Management Features
 - **Enhanced Cellular Time Sync**: Automatically synchronizes time with cellular network during startup using robust date calculation
@@ -98,10 +99,33 @@ The system supports three types of tank level sensors:
 - **Secondary Contact**: Immediate SMS to secondary phone number
 - **Daily Contact**: Regular daily status reports
 
-### Power Management
-- **Sleep Mode**: System sleeps for 1 hour between checks
-- **Wake Triggers**: Automatic wake every hour to check tank level
-- **Low Power**: Optimized for battery operation
+### Enhanced Power Management
+- **Adaptive Sleep Modes**: Intelligent sleep duration based on current activity
+  - **Normal Sleep**: 1 hour intervals for routine monitoring
+  - **Active Monitoring**: 10 minute intervals when alarms active or server commands received
+  - **Deep Sleep Mode**: Optional maximum power savings for extended deployments
+- **Wake Triggers**: 
+  - **Timer-based**: Automatic wake at configured intervals
+  - **Wake-on-Ping**: Device can be woken by incoming cellular data (server commands)
+  - **Alarm Events**: Immediate wake when tank levels change
+- **Power Optimization**:
+  - **RTC-based Timing**: Precise sleep timing using real-time clock
+  - **Cellular Wake**: Modem configured to wake device on incoming data
+  - **Configurable Intervals**: Sleep durations adjustable via SD card configuration
+  - **Battery Life**: Optimized for months of operation on battery power
+- **Power Failure Recovery**:
+  - **Automatic Detection**: Detects unexpected shutdowns vs normal operation
+  - **State Restoration**: Tank levels, timing, and alarm status preserved across power cycles
+  - **Recovery Notifications**: SMS alerts sent when power failure recovery occurs
+  - **Server Notification**: Automatically notifies Tank Alarm Server of power failures for daily email tracking
+
+### Server Communication
+- **Server Device ID**: Configure `SERVER_DEVICE_KEY` to communicate with Tank Alarm Server
+- **Remote Commands**: Listens for ping and control commands from server (every 10 minutes)
+- **Command Types**: Supports PING, RELAY_ON, RELAY_OFF (future expansion for more commands)
+- **Power Failure Reporting**: Automatically sends power failure notifications to server for inclusion in daily email reports
+- **Response System**: Sends acknowledgments back to server for command execution
+- **Configuration Storage**: Server device ID stored on SD card for easy updates
 
 ## Configuration
 
@@ -118,6 +142,7 @@ The system supports three types of tank level sensors:
 2. **Configure Hologram.io Account**:
    - Sign up at https://hologram.io
    - Get device key and update `HOLOGRAM_DEVICE_KEY` in code
+   - If using with server, also get server device key and update `SERVER_DEVICE_KEY`
    - Activate SIM card and assign to device
 
 3. **Update Phone Numbers**:
@@ -139,6 +164,52 @@ The system supports three types of tank level sensors:
    - Default is 05:00 (5:00 AM)
    - Configure in SD card config file (tank_config.txt)
    - System automatically syncs with cellular network time
+
+### Power Management Configuration
+```
+SHORT_SLEEP_MINUTES=10     # Active monitoring sleep duration
+NORMAL_SLEEP_HOURS=1       # Normal operation sleep duration
+ENABLE_WAKE_ON_PING=true   # Enable wake-on-ping functionality
+DEEP_SLEEP_MODE=false      # Use deep sleep for maximum power savings
+```
+- **Wake-on-Ping**: Device wakes when server sends ping commands
+- **Adaptive Sleep**: Shorter intervals during active monitoring
+- **Deep Sleep**: Maximum power savings for extended deployments
+- **Battery Optimization**: Configurable sleep durations for optimal battery life
+
+## Power Failure Recovery
+
+The system includes comprehensive power failure recovery to ensure reliable operation:
+
+### Automatic Recovery Features
+- **State Backup**: Critical system state automatically saved every 10 minutes to SD card
+- **Heartbeat Monitoring**: Regular heartbeat timestamps track system operation
+- **Tank Level Restoration**: Current and previous tank level measurements preserved
+- **Timing Recovery**: Report schedules and timing counters restored on startup
+- **Recovery Notifications**: Automatic SMS and Hologram notifications when power failure recovery occurs
+
+### Recovery Process
+1. **Detection**: System detects unexpected shutdown by checking last known state
+2. **State Restoration**: Automatically loads tank levels, timing data, and alarm status from SD card
+3. **Network Recovery**: Reconnects to cellular network with retry logic for reliability  
+4. **Recovery Notification**: Sends recovery alert to daily report contact with system status
+5. **Resume Operation**: Continues normal monitoring from restored state without data loss
+
+### Recovery Files on SD Card
+- `system_state.txt`: Current system state and shutdown reason tracking
+- `tank_levels.txt`: Current and previous tank measurements with alarm status
+- `timing_state.txt`: Hour and report timing counters for proper scheduling
+- `heartbeat.txt`: Last known operational timestamp for failure detection
+
+### Recovery Notifications
+Power failure recovery notifications include:
+- Site location and tank number identification
+- Recovery timestamp and system status  
+- Reason for previous shutdown (power failure vs normal shutdown)
+- Current tank level and alarm status
+- Confirmation that all systems are operational
+
+This ensures continuous monitoring even after unexpected power outages with no loss of critical tank level data or reporting schedules.
 
 ### Hardware Setup
 

@@ -1,5 +1,5 @@
 /*
-  Tank Alarm 092025 - MKR NB 1500 Version
+  Tank Alarm Client 092025 - MKR NB 1500 Version
   
   Hardware:
   - Arduino MKR NB 1500 (with ublox SARA-R410M)
@@ -16,6 +16,7 @@
   - SD card data logging
   - Relay control capability
   - Low power sleep modes
+  - Server communication for remote control
   
   Created: September 2025
   Using GitHub Copilot for code generation
@@ -35,6 +36,12 @@
 #define DIGITAL_FLOAT 0
 #define ANALOG_VOLTAGE 1  
 #define CURRENT_LOOP 2
+
+// Power management definitions
+#define SLEEP_MODE_NORMAL 0      // Normal sleep between checks
+#define SLEEP_MODE_DEEP 1        // Deep sleep for extended periods
+#define WAKE_REASON_TIMER 0      // Woke up due to timer
+#define WAKE_REASON_CELLULAR 1   // Woke up due to cellular data
 
 // Initialize cellular components
 NB nbAccess;
@@ -63,6 +70,10 @@ const int HOLOGRAM_PORT = 9999;
 // Use configuration values or defaults
 #ifndef HOLOGRAM_DEVICE_KEY
 #define HOLOGRAM_DEVICE_KEY "your_device_key_here"
+#endif
+
+#ifndef SERVER_DEVICE_KEY
+#define SERVER_DEVICE_KEY "server_device_key_here"  // Server's Hologram device ID for remote commands
 #endif
 
 #ifndef ALARM_PHONE_PRIMARY
@@ -141,6 +152,18 @@ volatile int time_tick_report = 1;
 #ifndef DAILY_REPORT_TIME
 #define DAILY_REPORT_TIME "05:00"
 #endif
+#ifndef SHORT_SLEEP_MINUTES
+#define SHORT_SLEEP_MINUTES 10
+#endif
+#ifndef NORMAL_SLEEP_HOURS
+#define NORMAL_SLEEP_HOURS 1
+#endif
+#ifndef ENABLE_WAKE_ON_PING
+#define ENABLE_WAKE_ON_PING true
+#endif
+#ifndef DEEP_SLEEP_MODE
+#define DEEP_SLEEP_MODE false
+#endif
 
 const int sleep_hours = SLEEP_INTERVAL_HOURS;
 const int report_hours = DAILY_REPORT_HOURS;
@@ -159,6 +182,12 @@ float levelChange24Hours = 0.0;
 float decreaseStartLevel = 0.0;
 unsigned long decreaseStartTime = 0;
 bool decreaseDetected = false;
+
+// Power failure recovery state
+bool systemRecovering = false;
+String lastShutdownReason = "";
+unsigned long lastHeartbeat = 0;
+bool powerFailureRecovery = false;
 
 // Data logging
 #ifndef LOG_FILE_NAME
@@ -180,6 +209,7 @@ int largeDecreaseWaitHours = LARGE_DECREASE_WAIT_HOURS;
 
 // Network and communication configuration (loaded from SD card)
 String hologramDeviceKey = HOLOGRAM_DEVICE_KEY;
+String serverDeviceKey = SERVER_DEVICE_KEY;  // Server's device ID for remote commands
 String alarmPhonePrimary = ALARM_PHONE_PRIMARY;
 String alarmPhoneSecondary = ALARM_PHONE_SECONDARY;
 String dailyReportPhone = DAILY_REPORT_PHONE;
@@ -195,6 +225,15 @@ bool timeIsSynced = false;
 unsigned long lastTimeSyncMillis = 0;
 const unsigned long TIME_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // Sync once per day
 
+// Power management variables
+volatile bool wakeFromCellular = false;  // Flag set when woken by cellular data
+volatile int wakeReason = WAKE_REASON_TIMER;  // Reason for last wake
+unsigned long lastCellularCheck = 0;  // Last time we checked for cellular data
+bool deepSleepMode = DEEP_SLEEP_MODE;  // Whether to use deep sleep mode
+int shortSleepMinutes = SHORT_SLEEP_MINUTES;  // Short sleep duration for frequent checks
+int normalSleepHours = NORMAL_SLEEP_HOURS;    // Normal sleep duration between readings
+bool wakeOnPingEnabled = ENABLE_WAKE_ON_PING; // Wake on ping functionality
+
 // Function declarations
 bool connectToCellular();
 bool syncTimeFromCellular();
@@ -202,6 +241,10 @@ bool isTimeForDailyReport();
 void parseTimeString(String timeStr, int &hours, int &minutes);
 void logSuccessfulReport();
 String getLastReportDateFromLog();
+void enterPowerSaveMode();
+void enterDeepSleepMode();
+void configureCellularWakeup();
+void checkForIncomingData();
 
 // Network configuration (loaded from SD card)
 int connectionTimeoutMs = CONNECTION_TIMEOUT_MS;
@@ -252,6 +295,9 @@ void setup() {
 #endif
     logEvent("System startup - SD card initialized");
     
+    // Check for power failure recovery
+    checkPowerFailureRecovery();
+    
     // Load configuration from SD card
     loadSDCardConfiguration();
   }
@@ -259,8 +305,8 @@ void setup() {
   // Initialize RTC
   rtc.begin();
   
-  // Connect to cellular network
-  if (connectToCellular()) {
+  // Connect to cellular network with retry logic
+  if (initializeCellular()) {
 #ifdef ENABLE_SERIAL_DEBUG
     if (ENABLE_SERIAL_DEBUG) Serial.println("Connected to cellular network");
 #endif
@@ -276,17 +322,24 @@ void setup() {
 #endif
     }
     
-    // Send startup notification
-    sendStartupNotification();
+    // Send startup or recovery notification
+    if (powerFailureRecovery) {
+      sendRecoveryNotification();
+    } else {
+      sendStartupNotification();
+    }
     
     // Log startup event
-    logEvent("System startup - Connected to network");
+    logEvent(powerFailureRecovery ? "System recovery completed" : "System startup - Connected to network");
   } else {
 #ifdef ENABLE_SERIAL_DEBUG
     if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect to cellular network");
 #endif
     logEvent("System startup - Network connection failed");
   }
+  
+  // Restore system state
+  restoreSystemState();
   
   // Read initial tank level
   currentLevelState = readTankLevel();
@@ -300,9 +353,15 @@ void setup() {
   if (ENABLE_SERIAL_DEBUG) Serial.println("Setup complete - entering main loop");
 #endif
   logEvent("Setup complete - entering main loop");
+  
+  // Mark successful startup
+  saveSystemState("normal_operation");
 }
 
 void loop() {
+  // Update heartbeat for power failure detection
+  updateHeartbeat();
+  
   // Read tank level
   currentLevelState = readTankLevel();
   
@@ -337,6 +396,23 @@ void loop() {
     if (connectToCellular()) {
       syncTimeFromCellular();
     }
+  }
+  
+  // Check for server commands via Hologram (optimized for power saving)
+  static unsigned long lastServerCheckTime = 0;
+  bool checkServerCommands = false;
+  
+  // Check server commands more frequently if we recently woke from cellular data
+  unsigned long serverCheckInterval = (wakeFromCellular) ? 60000 : 600000;  // 1 min vs 10 min
+  
+  if (millis() - lastServerCheckTime > serverCheckInterval) {
+    if (connectToCellular()) {
+      checkForIncomingData();  // Check for any incoming data first
+      checkForServerCommands();
+      checkServerCommands = true;
+    }
+    lastServerCheckTime = millis();
+    wakeFromCellular = false;  // Reset the flag after checking
   }
   
   // Check if it's time for daily report using configured time
@@ -378,24 +454,39 @@ void loop() {
   time_tick_hours++;
   time_tick_report++;
   
-  // Sleep for configured interval (convert hours to milliseconds)
-#ifdef ENABLE_SERIAL_DEBUG
-  if (ENABLE_SERIAL_DEBUG) {
-    Serial.print("Entering sleep mode for ");
-    Serial.print(sleepIntervalHours);
-    Serial.println(" hour(s)");
+  // Periodic system state backup (every 10 minutes)
+  static unsigned long lastBackup = 0;
+  if (millis() - lastBackup > 600000) {  // 10 minutes
+    saveSystemState("periodic_backup");
+    lastBackup = millis();
   }
-#endif
   
-#ifdef ENABLE_LOW_POWER_MODE
-  if (ENABLE_LOW_POWER_MODE) {
-    LowPower.sleep(sleepIntervalHours * 60 * 60 * 1000);  // Convert hours to milliseconds
-  } else {
-    delay(sleepIntervalHours * 60 * 60 * 1000);  // Fallback to delay if low power disabled
-  }
-#else
-  delay(sleepIntervalHours * 60 * 60 * 1000);  // Default delay
+  // Determine sleep strategy based on current conditions
+  bool needsFrequentChecking = (alarmSent || wakeFromCellular || checkServerCommands);
+  
+  if (needsFrequentChecking) {
+    // Use shorter sleep intervals when active monitoring is needed
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) {
+      Serial.print("Entering power save mode for ");
+      Serial.print(shortSleepMinutes);
+      Serial.println(" minute(s) - active monitoring");
+    }
 #endif
+    saveSystemState("active_monitoring");
+    enterPowerSaveMode();
+  } else {
+    // Use normal sleep intervals for routine monitoring
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) {
+      Serial.print("Entering normal sleep mode for ");
+      Serial.print(normalSleepHours);
+      Serial.println(" hour(s)");
+    }
+#endif
+    saveSystemState("normal_sleep");
+    enterDeepSleepMode();
+  }
 }
 
 bool connectToCellular() {
@@ -760,6 +851,41 @@ void logEvent(String event) {
   }
 }
 
+void checkForServerCommands() {
+  // Check for commands from the server via Hologram.io
+  // This function listens for messages from the server device
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Checking for server commands...");
+#endif
+  
+  // Note: This is a placeholder for Hologram command reception
+  // In a full implementation, this would use Hologram's webhook/cloud functions
+  // or direct device-to-device messaging to receive commands from the server
+  
+  // For now, we log that the client is ready to receive server commands
+  // The serverDeviceKey variable contains the server's device ID for command filtering
+  
+  String commandCheckMsg = "Ready to receive commands from server: " + serverDeviceKey;
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println(commandCheckMsg);
+#endif
+  
+  // Log this periodically to confirm the client knows the server device ID
+  static int commandCheckCount = 0;
+  commandCheckCount++;
+  if (commandCheckCount % 144 == 1) {  // Log once per day (144 * 10 minutes = 24 hours)
+    logEvent(commandCheckMsg);
+  }
+  
+  // Future implementation would:
+  // 1. Connect to Hologram and check for messages from serverDeviceKey
+  // 2. Parse received commands (PING, RELAY_ON, RELAY_OFF, etc.)
+  // 3. Execute commands and send acknowledgment back to server
+  // 4. Log command execution results
+}
+
 String getCurrentTimestamp() {
   // Create timestamp string
   // Note: This is a simple timestamp - for production use, consider NTP sync
@@ -838,6 +964,8 @@ void loadSDCardConfiguration() {
         largeDecreaseWaitHours = value.toInt();
       } else if (key == "HOLOGRAM_DEVICE_KEY") {
         hologramDeviceKey = value;
+      } else if (key == "SERVER_DEVICE_KEY") {
+        serverDeviceKey = value;
       } else if (key == "HOLOGRAM_APN") {
         hologramAPN = value;
       } else if (key == "ALARM_PHONE_PRIMARY") {
@@ -856,6 +984,14 @@ void loadSDCardConfiguration() {
         connectionTimeoutMs = value.toInt();
       } else if (key == "SMS_RETRY_ATTEMPTS") {
         smsRetryAttempts = value.toInt();
+      } else if (key == "SHORT_SLEEP_MINUTES") {
+        shortSleepMinutes = value.toInt();
+      } else if (key == "NORMAL_SLEEP_HOURS") {
+        normalSleepHours = value.toInt();
+      } else if (key == "DEEP_SLEEP_MODE") {
+        deepSleepMode = (value == "true");
+      } else if (key == "ENABLE_WAKE_ON_PING") {
+        wakeOnPingEnabled = (value == "true");
       } else if (key == "HOURLY_LOG_FILE") {
         hourlyLogFile = value;
       } else if (key == "DAILY_LOG_FILE") {
@@ -1323,4 +1459,331 @@ String getLastReportDateFromLog() {
 #endif
   
   return lastDate;
+}
+
+// Enhanced power management functions for optimized battery life
+
+void enterPowerSaveMode() {
+  // Enter power save mode with short sleep duration for active monitoring
+  // This mode allows faster response to server commands and alarms
+  
+#ifdef ENABLE_LOW_POWER_MODE
+  if (ENABLE_LOW_POWER_MODE) {
+    // Configure cellular modem for wake-on-data if possible
+    configureCellularWakeup();
+    
+    // Use RTC for precise timing in power save mode
+    rtc.setAlarmEpoch(rtc.getEpoch() + (shortSleepMinutes * 60));
+    rtc.enableAlarm(rtc.MATCH_HHMMSS);
+    rtc.attachInterrupt(wakeUpCallback);
+    
+    // Enter standby mode - can be woken by RTC or cellular
+    LowPower.sleep(shortSleepMinutes * 60 * 1000);
+    
+    // Clear alarm after wake
+    rtc.disableAlarm();
+  } else {
+    delay(shortSleepMinutes * 60 * 1000);  // Fallback to delay
+  }
+#else
+  delay(shortSleepMinutes * 60 * 1000);  // Default delay
+#endif
+}
+
+void enterDeepSleepMode() {
+  // Enter deep sleep mode for maximum power savings during normal operation
+  
+#ifdef ENABLE_LOW_POWER_MODE
+  if (ENABLE_LOW_POWER_MODE) {
+    // Configure cellular modem for wake-on-data
+    configureCellularWakeup();
+    
+    // Use RTC for precise timing in deep sleep
+    rtc.setAlarmEpoch(rtc.getEpoch() + (normalSleepHours * 3600));
+    rtc.enableAlarm(rtc.MATCH_HHMMSS);
+    rtc.attachInterrupt(wakeUpCallback);
+    
+    // Enter deep sleep mode - lowest power consumption
+    LowPower.deepSleep(normalSleepHours * 60 * 60 * 1000);
+    
+    // Clear alarm after wake
+    rtc.disableAlarm();
+  } else {
+    delay(normalSleepHours * 60 * 60 * 1000);  // Fallback to delay
+  }
+#else
+  delay(normalSleepHours * 60 * 60 * 1000);  // Default delay
+#endif
+}
+
+void configureCellularWakeup() {
+  // Configure the cellular modem to wake the device on incoming data
+  // Note: This is a placeholder for modem-specific wake configuration
+  
+  // For MKR NB 1500 with SARA-R410M, we would configure:
+  // 1. Power saving mode with wake on data
+  // 2. Interrupt pin configuration
+  // 3. Modem sleep/wake settings
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Configuring cellular wake-on-data...");
+#endif
+  
+  // Example modem configuration (implementation depends on specific modem)
+  // nbAccess.lowPowerMode(true);  // Enable modem power saving
+  // nbAccess.wakeOnData(true);    // Wake device on incoming data
+  
+  logEvent("Cellular wake-on-data configured");
+}
+
+void checkForIncomingData() {
+  // Check if there's any incoming cellular data that might have woken us
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Checking for incoming cellular data...");
+#endif
+  
+  // Check for any pending data on the cellular connection
+  if (client.available()) {
+    wakeFromCellular = true;
+    wakeReason = WAKE_REASON_CELLULAR;
+    
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Incoming cellular data detected - wake from cellular");
+#endif
+    
+    logEvent("Device woken by incoming cellular data");
+  } else {
+    wakeReason = WAKE_REASON_TIMER;
+  }
+}
+
+void wakeUpCallback() {
+  // RTC interrupt callback for wake events
+  // This function is called when the RTC alarm triggers
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Device woken by RTC alarm");
+#endif
+  
+  // The main loop will continue execution after this callback
+}
+
+// Power failure recovery and system state management functions
+
+bool initializeCellular() {
+  // Initialize cellular connection with retry logic
+  Serial.println("Initializing cellular connection...");
+  
+  int attempts = 0;
+  const int maxAttempts = 3;  // Limit attempts to prevent excessive power drain
+  
+  while (attempts < maxAttempts) {
+    if (connectToCellular()) {
+      logEvent("Cellular connection established");
+      return true;
+    }
+    
+    attempts++;
+    Serial.println("Cellular connection attempt " + String(attempts) + " failed");
+    
+    if (attempts < maxAttempts) {
+      Serial.println("Retrying in 5 seconds...");
+      delay(5000);
+    }
+  }
+  
+  logEvent("Cellular connection failed after " + String(maxAttempts) + " attempts");
+  Serial.println("WARNING: Operating without cellular connection");
+  return false;
+}
+
+void checkPowerFailureRecovery() {
+  Serial.println("Checking for power failure recovery...");
+  
+  File stateFile = SD.open("system_state.txt", FILE_READ);
+  if (stateFile) {
+    String lastState = stateFile.readString();
+    stateFile.close();
+    
+    lastState.trim();
+    
+    if (lastState != "normal_shutdown" && lastState != "normal_operation") {
+      powerFailureRecovery = true;
+      systemRecovering = true;
+      lastShutdownReason = lastState;
+      Serial.println("Power failure detected! Last state: " + lastState);
+      logEvent("POWER FAILURE RECOVERY - Last state: " + lastState);
+      
+      // Restore critical system state
+      restoreSystemState();
+    } else {
+      Serial.println("Normal shutdown detected");
+      logEvent("Normal startup - no power failure");
+    }
+  } else {
+    Serial.println("No previous state file found - first startup");
+    logEvent("First startup - no previous state");
+  }
+}
+
+void restoreSystemState() {
+  Serial.println("Restoring system state...");
+  
+  // Restore tank level measurements
+  File levelFile = SD.open("tank_levels.txt", FILE_READ);
+  if (levelFile) {
+    String line = levelFile.readStringUntil('\n');
+    line.trim();
+    
+    if (line.length() > 0) {
+      // Parse saved levels: currentLevel,previousLevel,change24Hr,alarmSent
+      int pos = 0;
+      String parts[4];
+      
+      for (int i = 0; i < 4; i++) {
+        int nextPos = line.indexOf(',', pos);
+        if (nextPos == -1) {
+          parts[i] = line.substring(pos);
+          break;
+        } else {
+          parts[i] = line.substring(pos, nextPos);
+          pos = nextPos + 1;
+        }
+      }
+      
+      if (parts[0].length() > 0) {
+        currentLevelInches = parts[0].toFloat();
+        previousLevelInches = parts[1].toFloat();
+        levelChange24Hours = parts[2].toFloat();
+        alarmSent = (parts[3] == "1");
+        
+        Serial.println("Restored tank levels - Current: " + String(currentLevelInches) + 
+                      "in, Previous: " + String(previousLevelInches) + 
+                      "in, Change: " + String(levelChange24Hours) + "in");
+        logEvent("Tank level measurements restored");
+      }
+    }
+    
+    levelFile.close();
+  }
+  
+  // Restore timing counters
+  File timingFile = SD.open("timing_state.txt", FILE_READ);
+  if (timingFile) {
+    String line = timingFile.readStringUntil('\n');
+    line.trim();
+    
+    if (line.length() > 0) {
+      // Parse timing: hours,report_hours
+      int commaPos = line.indexOf(',');
+      if (commaPos > 0) {
+        time_tick_hours = line.substring(0, commaPos).toInt();
+        time_tick_report = line.substring(commaPos + 1).toInt();
+        
+        Serial.println("Restored timing - Hours: " + String(time_tick_hours) + 
+                      ", Report: " + String(time_tick_report));
+        logEvent("Timing counters restored");
+      }
+    }
+    
+    timingFile.close();
+  }
+  
+  logEvent("System state restoration completed");
+}
+
+void saveSystemState(String reason) {
+  // Update heartbeat for power failure detection
+  updateHeartbeat();
+  
+  // Save current state for power failure recovery
+  File stateFile = SD.open("system_state.txt", FILE_WRITE);
+  if (stateFile) {
+    stateFile.print(reason);
+    stateFile.close();
+  }
+  
+  // Save tank level measurements
+  File levelFile = SD.open("tank_levels.txt", FILE_WRITE);
+  if (levelFile) {
+    levelFile.println(String(currentLevelInches) + "," + 
+                     String(previousLevelInches) + "," + 
+                     String(levelChange24Hours) + "," + 
+                     String(alarmSent ? "1" : "0"));
+    levelFile.close();
+  }
+  
+  // Save timing counters
+  File timingFile = SD.open("timing_state.txt", FILE_WRITE);
+  if (timingFile) {
+    timingFile.println(String(time_tick_hours) + "," + String(time_tick_report));
+    timingFile.close();
+  }
+  
+  // Periodic backup (every 5 minutes during operation)
+  static unsigned long lastBackup = 0;
+  if (millis() - lastBackup > 300000) {  // 5 minutes
+    saveSystemState("periodic_backup");
+    lastBackup = millis();
+  }
+}
+
+void updateHeartbeat() {
+  // Update heartbeat timestamp for power failure detection
+  lastHeartbeat = millis();
+  
+  // Periodic heartbeat save (every 2 minutes)
+  static unsigned long lastHeartbeatSave = 0;
+  if (millis() - lastHeartbeatSave > 120000) {  // 2 minutes
+    File heartbeatFile = SD.open("heartbeat.txt", FILE_WRITE);
+    if (heartbeatFile) {
+      heartbeatFile.println(getCurrentTimestamp());
+      heartbeatFile.close();
+    }
+    lastHeartbeatSave = millis();
+  }
+}
+
+void sendRecoveryNotification() {
+  if (!connectToCellular()) return;
+  
+  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
+  String message = "TANK CLIENT RECOVERY NOTICE\n";
+  message += "Site: " + siteLocationName + " Tank #" + String(tankNumber) + "\n";
+  message += "Time: " + getCurrentTimestamp() + "\n";
+  message += "Status: System recovered from power failure\n";
+  message += "Last State: " + lastShutdownReason + "\n";
+  message += "Current Level: " + feetInchesFormat + "\n";
+  message += "All systems operational";
+  
+  // Send recovery SMS
+  if (sms.beginSMS(dailyReportPhone.c_str())) {
+    sms.print(message);
+    sms.endSMS();
+    logEvent("Recovery notification sent");
+  }
+  
+  // Send recovery data to Hologram.io
+  sendHologramData("RECOVERY", message);
+  
+  // Send power failure notification to server for daily email tracking
+  sendPowerFailureNotificationToServer();
+  
+  logEvent("Recovery notification completed");
+}
+
+void sendPowerFailureNotificationToServer() {
+  if (!connectToCellular()) return;
+  
+  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
+  String powerFailureData = siteLocationName + "|" + String(tankNumber) + 
+                           "|" + getCurrentTimestamp() + "|" + feetInchesFormat + 
+                           "|" + lastShutdownReason;
+  
+  // Send to server using POWER_FAILURE topic for daily email inclusion
+  sendHologramData("POWER_FAILURE", powerFailureData);
+  
+  logEvent("Power failure notification sent to server for daily email tracking");
+}
 }

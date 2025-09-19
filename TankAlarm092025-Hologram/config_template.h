@@ -8,6 +8,7 @@
 
 // Hologram.io Configuration
 #define HOLOGRAM_DEVICE_KEY "your_device_key_here"  // Replace with your actual device key
+#define SERVER_DEVICE_KEY "server_device_key_here"  // Server's Hologram device ID for remote commands
 #define HOLOGRAM_APN "hologram"                     // Hologram.io APN (usually stays "hologram")
 
 // Phone Numbers for Notifications (include country code, e.g., +1 for US)
@@ -71,6 +72,10 @@
 // Power Management
 #define ENABLE_LOW_POWER_MODE true     // Enable low power sleep modes
 #define WAKE_CHECK_DURATION_MS 5000    // How long to stay awake for each check
+#define SHORT_SLEEP_MINUTES 10         // Short sleep duration for active monitoring (minutes)
+#define NORMAL_SLEEP_HOURS 1           // Normal sleep duration between readings (hours)
+#define ENABLE_WAKE_ON_PING true       // Enable wake-on-ping functionality
+#define DEEP_SLEEP_MODE false          // Use deep sleep mode for maximum power savings
 
 // Tank Configuration for Inches/Feet Measurements
 #define TANK_NUMBER 1                  // Tank number identifier (1-99)
