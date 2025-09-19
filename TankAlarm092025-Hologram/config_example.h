@@ -25,7 +25,7 @@
 // Pin Configuration (use defaults unless you've modified hardware)
 #define TANK_LEVEL_PIN 7               // Tank level sensor input pin
 #define RELAY_CONTROL_PIN 5            // Relay output control pin
-#define SD_CARD_CS_PIN 4               // SD card chip select pin
+#define SD_CARD_CS_PIN 4               // SD card chip select pin (works for both MKR SD PROTO and MKR ETH shields)
 
 // Tank Level Sensor Configuration
 // Sensor Types: DIGITAL_FLOAT, ANALOG_VOLTAGE, CURRENT_LOOP

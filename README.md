@@ -45,6 +45,11 @@ Arduino will check sensor data on a schedualed basis. If sensor data is over a s
 
 <a href="https://github.com/dorkmo/ArduinoSMSTankAlarm/blob/master/BillOfMaterials.md">Bill Of Materials</a>
 
+## Hardware Compatibility
+
+For questions about SD card shield compatibility between MKR SD PROTO and MKR ETH shields, see:
+[SD Card Shield Compatibility Guide](SD_CARD_SHIELD_COMPATIBILITY.md)
+
 ## Wiring Diagram
 
 

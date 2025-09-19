@@ -18,7 +18,7 @@
 #define HOLOGRAM_EMAIL_RECIPIENT "user@example.com" // Email address for Hologram API delivery
 
 // Pin Configuration
-#define SD_CARD_CS_PIN 4                           // SD card chip select pin
+#define SD_CARD_CS_PIN 4                           // SD card chip select pin (works for both MKR SD PROTO and MKR ETH shields)
 
 // Network Configuration
 #define CONNECTION_TIMEOUT_MS 30000                // Network connection timeout (30 seconds)
