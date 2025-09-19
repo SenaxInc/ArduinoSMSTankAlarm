@@ -18,6 +18,7 @@ DAILY_REPORT_PHONE=+15555551234
 # Timing Configuration (in hours)
 SLEEP_INTERVAL_HOURS=1
 DAILY_REPORT_HOURS=24
+DAILY_REPORT_TIME=05:00
 
 # Tank Physical Specifications
 TANK_HEIGHT_INCHES=120
@@ -50,3 +51,4 @@ LARGE_DECREASE_WAIT_HOURS=2
 # DAILY_LOG_FILE=daily_log.txt
 # ALARM_LOG_FILE=alarm_log.txt
 # DECREASE_LOG_FILE=decrease_log.txt
+# REPORT_LOG_FILE=report_log.txt

@@ -124,6 +124,9 @@ const int HOLOGRAM_PORT = 9999;
 #ifndef SD_DECREASE_LOG_FILE
 #define SD_DECREASE_LOG_FILE "decrease_log.txt"
 #endif
+#ifndef SD_REPORT_LOG_FILE
+#define SD_REPORT_LOG_FILE "report_log.txt"
+#endif
 
 // Timing variables
 volatile int time_tick_hours = 1;
@@ -134,6 +137,9 @@ volatile int time_tick_report = 1;
 #endif
 #ifndef DAILY_REPORT_HOURS
 #define DAILY_REPORT_HOURS 24
+#endif
+#ifndef DAILY_REPORT_TIME
+#define DAILY_REPORT_TIME "05:00"
 #endif
 
 const int sleep_hours = SLEEP_INTERVAL_HOURS;
@@ -182,6 +188,20 @@ String hologramAPN = HOLOGRAM_APN;
 // Timing configuration (loaded from SD card)
 int sleepIntervalHours = SLEEP_INTERVAL_HOURS;
 int dailyReportHours = DAILY_REPORT_HOURS;
+String dailyReportTime = DAILY_REPORT_TIME;
+
+// Time synchronization variables
+bool timeIsSynced = false;
+unsigned long lastTimeSyncMillis = 0;
+const unsigned long TIME_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // Sync once per day
+
+// Function declarations
+bool connectToCellular();
+bool syncTimeFromCellular();
+bool isTimeForDailyReport();
+void parseTimeString(String timeStr, int &hours, int &minutes);
+void logSuccessfulReport();
+String getLastReportDateFromLog();
 
 // Network configuration (loaded from SD card)
 int connectionTimeoutMs = CONNECTION_TIMEOUT_MS;
@@ -192,6 +212,7 @@ String hourlyLogFile = SD_HOURLY_LOG_FILE;
 String dailyLogFile = SD_DAILY_LOG_FILE;
 String alarmLogFile = SD_ALARM_LOG_FILE;
 String decreaseLogFile = SD_DECREASE_LOG_FILE;
+String reportLogFile = SD_REPORT_LOG_FILE;
 
 void setup() {
   // Initialize serial communication for debugging
@@ -243,6 +264,17 @@ void setup() {
 #ifdef ENABLE_SERIAL_DEBUG
     if (ENABLE_SERIAL_DEBUG) Serial.println("Connected to cellular network");
 #endif
+    
+    // Sync time from cellular network
+    if (syncTimeFromCellular()) {
+#ifdef ENABLE_SERIAL_DEBUG
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Time synchronized from cellular network");
+#endif
+    } else {
+#ifdef ENABLE_SERIAL_DEBUG
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to sync time from network");
+#endif
+    }
     
     // Send startup notification
     sendStartupNotification();
@@ -300,11 +332,18 @@ void loop() {
   // Check if it's time for hourly log entry
   logHourlyData();
   
-  // Check if it's time for daily report
-  if (time_tick_report >= dailyReportHours) {
+  // Check for periodic time sync (once per day)
+  if (timeIsSynced && (millis() - lastTimeSyncMillis > TIME_SYNC_INTERVAL_MS)) {
+    if (connectToCellular()) {
+      syncTimeFromCellular();
+    }
+  }
+  
+  // Check if it's time for daily report using configured time
+  if (isTimeForDailyReport()) {
     sendDailyReport();
     logDailyData();
-    time_tick_report = 0;  // Reset daily counter
+    time_tick_report = 0;  // Reset daily counter for fallback compatibility
     
     // Update 24-hour change tracking
     levelChange24Hours = currentLevelInches - previousLevelInches;
@@ -316,6 +355,12 @@ void loop() {
   statusMsg += " (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
   statusMsg += ", Hours: " + String(time_tick_hours);
   statusMsg += ", Report hours: " + String(time_tick_report);
+  if (timeIsSynced) {
+    statusMsg += ", Time: " + getCurrentTimestamp();
+    statusMsg += ", Next report: " + dailyReportTime;
+  } else {
+    statusMsg += ", Time: NOT SYNCED";
+  }
   
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) Serial.println("Status: " + statusMsg);
@@ -631,6 +676,17 @@ void sendDailyReport() {
 #ifdef ENABLE_SERIAL_DEBUG
     if (ENABLE_SERIAL_DEBUG) Serial.println("Daily report SMS sent");
 #endif
+    
+    // Log successful daily report transmission
+    logSuccessfulReport();
+    
+  } else {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to send daily report SMS");
+#endif
+    logEvent("Daily report: Failed to send SMS");
+    return;
+  }
     logEvent("Daily report SMS sent");
   }
   
@@ -794,6 +850,8 @@ void loadSDCardConfiguration() {
         sleepIntervalHours = value.toInt();
       } else if (key == "DAILY_REPORT_HOURS") {
         dailyReportHours = value.toInt();
+      } else if (key == "DAILY_REPORT_TIME") {
+        dailyReportTime = value;
       } else if (key == "CONNECTION_TIMEOUT_MS") {
         connectionTimeoutMs = value.toInt();
       } else if (key == "SMS_RETRY_ATTEMPTS") {
@@ -806,6 +864,8 @@ void loadSDCardConfiguration() {
         alarmLogFile = value;
       } else if (key == "DECREASE_LOG_FILE") {
         decreaseLogFile = value;
+      } else if (key == "REPORT_LOG_FILE") {
+        reportLogFile = value;
       }
     }
   }
@@ -814,7 +874,8 @@ void loadSDCardConfiguration() {
   
   String configMsg = "Configuration loaded - Site: " + siteLocationName + 
                     ", Tank: " + String(tankNumber) + 
-                    ", Height: " + String(tankHeightInches) + "in";
+                    ", Height: " + String(tankHeightInches) + "in" +
+                    ", Daily Report: " + dailyReportTime;
   logEvent(configMsg);
   
 #ifdef ENABLE_SERIAL_DEBUG
@@ -1025,4 +1086,241 @@ void logLargeDecrease(float totalDecrease) {
   String eventMsg = "Large decrease logged: " + String(totalDecrease, 1) + " inches over " + 
                    String(largeDecreaseWaitHours) + " hours";
   logEvent(eventMsg);
+}
+
+// Synchronize time from cellular network
+bool syncTimeFromCellular() {
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Attempting to sync time from cellular network...");
+#endif
+
+  // Ensure we're connected to cellular
+  if (!connectToCellular()) {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect for time sync");
+#endif
+    return false;
+  }
+
+  // Get network time (Unix timestamp)
+  unsigned long networkTime = nbAccess.getTime();
+  
+  if (networkTime == 0) {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to get network time");
+#endif
+    return false;
+  }
+
+  // Convert Unix timestamp to date/time components
+  // Note: This is a simplified conversion assuming UTC
+  // For production, consider timezone adjustments
+  unsigned long epochTime = networkTime;
+  unsigned long hours = (epochTime % 86400) / 3600;
+  unsigned long minutes = (epochTime % 3600) / 60;
+  unsigned long seconds = epochTime % 60;
+  
+  // Calculate date from days since Unix epoch (1970-01-01)
+  unsigned long daysSinceEpoch = epochTime / 86400;
+  
+  // Helper function to check if a year is a leap year
+  auto isLeapYear = [](int year) -> bool {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+  };
+  
+  // Helper function to get days in a month
+  auto getDaysInMonth = [&](int month, int year) -> int {
+    int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month == 2 && isLeapYear(year)) {
+      return 29;
+    }
+    return daysInMonth[month - 1];
+  };
+  
+  // Start from Unix epoch: January 1, 1970
+  int year = 1970;
+  int month = 1;
+  int day = 1;
+  
+  // Calculate the year
+  while (true) {
+    int daysInCurrentYear = isLeapYear(year) ? 366 : 365;
+    if (daysSinceEpoch >= daysInCurrentYear) {
+      daysSinceEpoch -= daysInCurrentYear;
+      year++;
+    } else {
+      break;
+    }
+  }
+  
+  // Calculate the month
+  while (true) {
+    int daysInCurrentMonth = getDaysInMonth(month, year);
+    if (daysSinceEpoch >= daysInCurrentMonth) {
+      daysSinceEpoch -= daysInCurrentMonth;
+      month++;
+      if (month > 12) {
+        month = 1;
+        year++;
+      }
+    } else {
+      break;
+    }
+  }
+  
+  // Calculate the day (add 1 because daysSinceEpoch is 0-based, but days are 1-based)
+  day = daysSinceEpoch + 1;
+  
+  // Validate the calculated date
+  if (day < 1 || day > getDaysInMonth(month, year)) {
+    // Fallback to a safe date if calculation is invalid
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Date calculation error, using fallback");
+#endif
+    year = 2025;
+    month = 1;
+    day = 1;
+  }
+
+  // Set the RTC with the network time
+  rtc.setTime(hours, minutes, seconds);
+  rtc.setDate(day, month, year - 2000); // RTCZero expects year as offset from 2000
+
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) {
+    Serial.println("Time synchronized from network:");
+    Serial.println("Unix timestamp: " + String(networkTime));
+    Serial.println("Days since epoch: " + String(epochTime / 86400));
+    Serial.println("Date: " + String(year) + "-" + String(month) + "-" + String(day));
+    Serial.println("Time: " + String(hours) + ":" + String(minutes) + ":" + String(seconds));
+    Serial.println("Is leap year: " + String(isLeapYear(year) ? "Yes" : "No"));
+  }
+#endif
+
+  timeIsSynced = true;
+  lastTimeSyncMillis = millis();
+  logEvent("Time synchronized from cellular network");
+  
+  return true;
+}
+
+// Parse time string in HH:MM format
+void parseTimeString(String timeStr, int &hours, int &minutes) {
+  int colonPos = timeStr.indexOf(':');
+  if (colonPos > 0 && colonPos < timeStr.length() - 1) {
+    hours = timeStr.substring(0, colonPos).toInt();
+    minutes = timeStr.substring(colonPos + 1).toInt();
+  } else {
+    // Default to 5:00 AM if parsing fails
+    hours = 5;
+    minutes = 0;
+  }
+  
+  // Validate values
+  if (hours < 0 || hours > 23) hours = 5;
+  if (minutes < 0 || minutes > 59) minutes = 0;
+}
+
+// Check if it's time for the daily report based on configured time
+bool isTimeForDailyReport() {
+  if (!timeIsSynced) {
+    // Fall back to the old tick-based system if time isn't synced
+    return (time_tick_report >= dailyReportHours);
+  }
+  
+  int reportHours, reportMinutes;
+  parseTimeString(dailyReportTime, reportHours, reportMinutes);
+  
+  int currentHours = rtc.getHours();
+  int currentMinutes = rtc.getMinutes();
+  
+  // Check if current time matches the configured report time (within 1 hour tolerance)
+  if (currentHours == reportHours) {
+    
+    // Check if we've already sent a report today using the log file
+    String lastReportDate = getLastReportDateFromLog();
+    String currentDate = String(rtc.getYear() + 2000);
+    if (rtc.getMonth() < 10) currentDate = currentDate + "0";
+    currentDate = currentDate + String(rtc.getMonth());
+    if (rtc.getDay() < 10) currentDate = currentDate + "0";
+    currentDate = currentDate + String(rtc.getDay());
+    
+    // Only send report if we haven't sent one today
+    if (lastReportDate != currentDate) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+// Log successful daily report transmission to dedicated log file
+void logSuccessfulReport() {
+  if (!SD.begin(SD_CARD_CS_PIN)) {
+    logEvent("Failed to log successful report - SD card error");
+    return;
+  }
+  
+  String timestamp = getDateTimestamp();
+  String currentDate = String(rtc.getYear() + 2000);
+  if (rtc.getMonth() < 10) currentDate = currentDate + "0";
+  currentDate = currentDate + String(rtc.getMonth());
+  if (rtc.getDay() < 10) currentDate = currentDate + "0";
+  currentDate = currentDate + String(rtc.getDay());
+  
+  String logEntry = currentDate + "," + timestamp + ",SUCCESS,Daily report sent successfully";
+  
+  File reportFile = SD.open(reportLogFile.c_str(), FILE_WRITE);
+  if (reportFile) {
+    reportFile.println(logEntry);
+    reportFile.close();
+    
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Logged successful report: " + logEntry);
+#endif
+    logEvent("Daily report transmission logged successfully");
+  } else {
+    logEvent("Failed to open report log file for writing");
+  }
+}
+
+// Get the date of the last successful report from the log file
+String getLastReportDateFromLog() {
+  if (!SD.begin(SD_CARD_CS_PIN)) {
+    return ""; // Return empty string if SD card error
+  }
+  
+  File reportFile = SD.open(reportLogFile.c_str());
+  if (!reportFile) {
+    // No report log file exists yet
+    return "";
+  }
+  
+  String lastDate = "";
+  String line;
+  
+  // Read through all lines to find the last successful report
+  while (reportFile.available()) {
+    line = reportFile.readStringUntil('\n');
+    line.trim();
+    
+    // Check if this line indicates a successful report
+    if (line.indexOf("SUCCESS") >= 0) {
+      // Extract the date (first part before first comma)
+      int firstComma = line.indexOf(',');
+      if (firstComma > 0) {
+        lastDate = line.substring(0, firstComma);
+      }
+    }
+  }
+  
+  reportFile.close();
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG && lastDate.length() > 0) {
+    Serial.println("Last successful report date from log: " + lastDate);
+  }
+#endif
+  
+  return lastDate;
 }
