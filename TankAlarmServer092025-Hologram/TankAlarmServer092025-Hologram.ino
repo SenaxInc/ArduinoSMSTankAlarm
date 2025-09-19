@@ -626,8 +626,6 @@ String composeDailyEmailContent() {
   
   // Include power failure events from the last 24 hours
   if (powerFailureEventCount > 0) {
-    content += "\nPOWER FAILURE EVENTS:\n";
-    
     String today = getDateString();
     bool hasPowerFailures = false;
     
@@ -637,6 +635,7 @@ String composeDailyEmailContent() {
       // Only include power failures from today
       if (event.timestamp.substring(0, 10) == today) {
         if (!hasPowerFailures) {
+          content += "\nPOWER FAILURE EVENTS:\n";
           hasPowerFailures = true;
         }
         content += "\n" + event.siteLocation + " Tank #" + String(event.tankNumber) + ":\n";
@@ -645,12 +644,6 @@ String composeDailyEmailContent() {
         content += "  Shutdown Reason: " + event.shutdownReason + "\n";
       }
     }
-    
-    if (!hasPowerFailures) {
-      content += "\nNo power failures reported in the last 24 hours.\n";
-    }
-  } else {
-    content += "\nNo power failures reported in the last 24 hours.\n";
   }
   
   content += "\n--- Tank Alarm Server 092025 ---";
