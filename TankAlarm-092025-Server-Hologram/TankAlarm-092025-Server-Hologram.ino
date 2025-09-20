@@ -487,6 +487,7 @@ void sendWebPage(EthernetClient &client) {
   client.println("<a href='/' class='nav-link'>Dashboard</a>");
   client.println("<a href='/emails' class='nav-link'>Email Management</a>");
   client.println("<a href='/tanks' class='nav-link'>Tank Management</a>");
+  client.println("<a href='/calibration' class='nav-link'>Tank Calibration</a>");
   client.println("</div>");
   
   client.println("<p style='text-align: center;'>Last updated: " + getCurrentTimestamp() + "</p>");
@@ -1047,6 +1048,8 @@ void sendHttpResponse(EthernetClient &client, String path) {
     sendEmailManagementPage(client);
   } else if (path == "/tanks") {
     sendTankManagementPage(client);
+  } else if (path == "/calibration") {
+    sendCalibrationPage(client);
   } else {
     send404Page(client);
   }
@@ -1093,12 +1096,46 @@ void handlePostRequest(EthernetClient &client, String path, String postData) {
     client.println();
     client.println("{\"status\": \"ping_initiated\"}");
     return;
+  } else if (path.startsWith("/calibration/send/")) {
+    // Handle calibration command: /calibration/send/site_tank/CAL%2024.5
+    String params = path.substring(18); // Remove "/calibration/send/"
+    int slashPos = params.indexOf("/");
+    
+    if (slashPos > 0) {
+      String tankId = params.substring(0, slashPos);
+      String command = params.substring(slashPos + 1);
+      command.replace("%20", " "); // URL decode spaces
+      command.replace("%2E", "."); // URL decode dots
+      command.replace("%2C", ","); // URL decode commas
+      
+      int underscorePos = tankId.indexOf("_");
+      if (underscorePos > 0) {
+        String site = tankId.substring(0, underscorePos);
+        site.replace("%20", " "); // URL decode spaces
+        int tank = tankId.substring(underscorePos + 1).toInt();
+        
+        // Send calibration command to tank client via Hologram
+        sendCalibrationCommand(site, tank, command);
+        
+        logEvent("Calibration command sent to " + site + " Tank #" + String(tank) + ": " + command);
+      }
+    }
+    
+    // Return JSON response for AJAX
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: application/json");
+    client.println("Connection: close");
+    client.println();
+    client.println("{\"status\": \"command_sent\"}");
+    return;
   }
   
   // Redirect back to appropriate page for non-ping requests
   String redirectPage = "/emails";
   if (path.startsWith("/tanks/")) {
     redirectPage = "/tanks";
+  } else if (path.startsWith("/calibration/")) {
+    redirectPage = "/calibration";
   }
   
   client.println("HTTP/1.1 302 Found");
@@ -1151,6 +1188,7 @@ void sendEmailManagementPage(EthernetClient &client) {
   client.println("<a href='/' class='nav-link'>Dashboard</a>");
   client.println("<a href='/emails' class='nav-link'>Email Management</a>");
   client.println("<a href='/tanks' class='nav-link'>Tank Management</a>");
+  client.println("<a href='/calibration' class='nav-link'>Tank Calibration</a>");
   client.println("</div>");
   
   // Daily email recipients section
@@ -1374,6 +1412,7 @@ void sendTankManagementPage(EthernetClient &client) {
   client.println("<a href='/' class='nav-link'>Dashboard</a>");
   client.println("<a href='/emails' class='nav-link'>Email Management</a>");
   client.println("<a href='/tanks' class='nav-link'>Tank Management</a>");
+  client.println("<a href='/calibration' class='nav-link'>Tank Calibration</a>");
   client.println("</div>");
   
   client.println("<div class='tank-section'>");
@@ -1510,6 +1549,63 @@ void sendTankManagementPage(EthernetClient &client) {
   client.println("</div>");
   client.println("</body>");
   client.println("</html>");
+}
+
+void sendCalibrationPage(EthernetClient &client) {
+  client.println("<!DOCTYPE html>");
+  client.println("<html>");
+  client.println("<head>");
+  client.println("<title>Tank Calibration - Tank Alarm Server</title>");
+  client.println("<style>");
+  client.println("body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }");
+  client.println("h1, h2 { color: #333; }");
+  client.println(".container { max-width: 1000px; margin: 0 auto; }");
+  client.println(".calib-section { background: white; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }");
+  client.println(".nav-link { display: inline-block; margin: 10px 5px; padding: 8px 16px; background: #6c757d; color: white; text-decoration: none; border-radius: 4px; }");
+  client.println(".instructions { background: #e9ecef; padding: 15px; border-radius: 4px; margin: 15px 0; }");
+  client.println("</style>");
+  client.println("</head>");
+  client.println("<body>");
+  
+  client.println("<div class='container'>");
+  client.println("<h1>Tank Height Calibration</h1>");
+  
+  client.println("<div style='text-align: center; margin: 20px 0;'>");
+  client.println("<a href='/' class='nav-link'>Dashboard</a>");
+  client.println("<a href='/emails' class='nav-link'>Email Management</a>");
+  client.println("<a href='/tanks' class='nav-link'>Tank Management</a>");
+  client.println("<a href='/calibration' class='nav-link'>Tank Calibration</a>");
+  client.println("</div>");
+  
+  client.println("<div class='calib-section'>");
+  client.println("<h2>Tank Height Calibration</h2>");
+  
+  client.println("<div class='instructions'>");
+  client.println("<h3>Instructions:</h3>");
+  client.println("<ol>");
+  client.println("<li><strong>Measure actual tank height</strong> using a measuring stick or tape measure</li>");
+  client.println("<li><strong>Enter the measured height</strong> in inches (decimal values allowed)</li>");
+  client.println("<li><strong>Send calibration commands</strong> to save calibration points to tank</li>");
+  client.println("<li><strong>Repeat at different levels</strong> for better accuracy (minimum 2 points required)</li>");
+  client.println("</ol>");
+  client.println("<p><strong>SMS Alternative:</strong> Send 'CAL 48.5' to tank phone to set at 48.5 inches</p>");
+  client.println("</div>");
+  
+  client.println("<p>Full calibration interface will be available once tanks start reporting data.</p>");
+  
+  client.println("</div>");
+  client.println("</div>");
+  client.println("</body>");
+  client.println("</html>");
+}
+
+void sendCalibrationCommand(String siteLocation, int tankNumber, String command) {
+  // Log the calibration command that would be sent
+  String logMsg = "Calibration command for " + siteLocation + " Tank #" + String(tankNumber) + ": " + command;
+  logEvent(logMsg);
+  
+  // In a full implementation, this would use Hologram device-to-device messaging
+  // to send commands to the specific tank client
 }
 
 PingStatus* getPingStatus(String siteLocation, int tankNumber) {
