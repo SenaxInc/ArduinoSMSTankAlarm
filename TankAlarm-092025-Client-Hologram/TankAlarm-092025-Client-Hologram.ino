@@ -869,17 +869,12 @@ void sendHologramData(String topic, String message) {
   jsonPayload += "\"t\":[\"" + topic + "\"]}";
   
   // Retry logic for sending data to Hologram.io
-  int attempts = 0;
-  const int maxAttempts = smsRetryAttempts;  // Use configured retry attempts
   bool dataSent = false;
-  
-  while (attempts < maxAttempts && !dataSent) {
-    attempts++;
-    
+  for (int attempt = 1; attempt <= smsRetryAttempts && !dataSent; attempt++) {
     // Connect to Hologram.io server
     if (client.connect(HOLOGRAM_URL, HOLOGRAM_PORT)) {
 #ifdef ENABLE_SERIAL_DEBUG
-      if (ENABLE_SERIAL_DEBUG) Serial.println("Connected to Hologram.io (attempt " + String(attempts) + ")");
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Connected to Hologram.io (attempt " + String(attempt) + ")");
 #endif
       
       // Send the data
@@ -891,13 +886,13 @@ void sendHologramData(String topic, String message) {
 #ifdef ENABLE_SERIAL_DEBUG
       if (ENABLE_SERIAL_DEBUG) Serial.println("Data sent to Hologram.io: " + topic);
 #endif
-      logEvent("Data sent to Hologram.io: " + topic + " (attempt " + String(attempts) + ")");
+      logEvent("Data sent to Hologram.io: " + topic + " (attempt " + String(attempt) + ")");
     } else {
 #ifdef ENABLE_SERIAL_DEBUG
-      if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect to Hologram.io (attempt " + String(attempts) + ")");
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect to Hologram.io (attempt " + String(attempt) + ")");
 #endif
       
-      if (attempts < maxAttempts) {
+      if (attempt < smsRetryAttempts) {
 #ifdef ENABLE_SERIAL_DEBUG
         if (ENABLE_SERIAL_DEBUG) Serial.println("Retrying in 5 seconds...");
 #endif
@@ -907,7 +902,7 @@ void sendHologramData(String topic, String message) {
   }
   
   if (!dataSent) {
-    logEvent("Failed to send data to Hologram.io after " + String(maxAttempts) + " attempts: " + topic);
+    logEvent("Failed to send data to Hologram.io after " + String(smsRetryAttempts) + " attempts: " + topic);
 #ifdef ENABLE_SERIAL_DEBUG
     if (ENABLE_SERIAL_DEBUG) Serial.println("All retry attempts failed for topic: " + topic);
 #endif
