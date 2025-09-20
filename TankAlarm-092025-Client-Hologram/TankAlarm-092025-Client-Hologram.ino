@@ -803,7 +803,6 @@ void sendDailyReport() {
       
       // Log successful daily report transmission
       logSuccessfulReport();
-      logEvent("Daily report SMS sent (attempt " + String(attempt) + ")");
       
     } else {
 #ifdef ENABLE_SERIAL_DEBUG
