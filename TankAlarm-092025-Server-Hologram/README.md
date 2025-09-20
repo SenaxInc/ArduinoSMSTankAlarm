@@ -56,7 +56,7 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
    ```
 
 ### 3. Upload Code
-1. Open `TankAlarmServer092025-Hologram.ino` in Arduino IDE
+1. Open `TankAlarm-092025-Server-Hologram.ino` in Arduino IDE
 2. Select "Arduino MKR NB 1500" as the board
 3. Upload the code to your device
 

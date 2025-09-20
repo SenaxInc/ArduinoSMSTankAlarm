@@ -80,8 +80,8 @@ Install these libraries via **Tools → Manage Libraries**:
 
 ### Download Server Code
 1. Clone or download the repository
-2. Navigate to `TankAlarmServer092025-Hologram/` folder
-3. Open `TankAlarmServer092025-Hologram.ino` in Arduino IDE
+2. Navigate to `TankAlarm-092025-Server-Hologram/` folder
+3. Open `TankAlarm-092025-Server-Hologram.ino` in Arduino IDE
 
 ### Configure Settings
 1. **Copy Configuration Template**:
