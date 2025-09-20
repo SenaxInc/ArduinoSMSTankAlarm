@@ -37,6 +37,14 @@ DIGITAL_LOW_ALARM=false
 LARGE_DECREASE_THRESHOLD_INCHES=24
 LARGE_DECREASE_WAIT_HOURS=2
 
+# Height Calibration System
+# Calibration data is stored in calibration.txt file
+# Use SMS commands or web interface to add calibration points:
+# SMS: Send "CAL 48.5" to set tank at 48.5 inches
+# SMS: Send "STATUS" to get current sensor reading and height
+# SMS: Send "CALSHOW" to see current calibration points
+# Web: Use /calibration page on server to send calibration commands
+
 # Sensor Calibration (for analog sensors)
 # These values can override config.h settings if present
 # TANK_EMPTY_VOLTAGE=0.5

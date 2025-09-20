@@ -234,6 +234,20 @@ int shortSleepMinutes = SHORT_SLEEP_MINUTES;  // Short sleep duration for freque
 int normalSleepHours = NORMAL_SLEEP_HOURS;    // Normal sleep duration between readings
 bool wakeOnPingEnabled = ENABLE_WAKE_ON_PING; // Wake on ping functionality
 
+// Height calibration system
+#define MAX_CALIBRATION_POINTS 10
+#define CALIBRATION_FILE_NAME "calibration.txt"
+
+struct CalibrationPoint {
+  float sensorValue;    // Raw sensor reading (voltage, current, or digital state)
+  float actualHeight;   // Actual measured height in inches
+  String timestamp;     // When this calibration was recorded
+};
+
+CalibrationPoint calibrationPoints[MAX_CALIBRATION_POINTS];
+int numCalibrationPoints = 0;
+bool calibrationDataLoaded = false;
+
 // Function declarations
 bool connectToCellular();
 bool syncTimeFromCellular();
@@ -245,6 +259,16 @@ void enterPowerSaveMode();
 void enterDeepSleepMode();
 void configureCellularWakeup();
 void checkForIncomingData();
+
+// Calibration function declarations
+void loadCalibrationData();
+void saveCalibrationData();
+void addCalibrationPoint(float sensorValue, float actualHeight);
+float interpolateHeight(float sensorValue);
+void processIncomingSMS();
+void processSMSCommand(String command, String phoneNumber);
+void sendCalibrationSMS(String phoneNumber);
+float getCurrentSensorReading();
 
 // Network configuration (loaded from SD card)
 int connectionTimeoutMs = CONNECTION_TIMEOUT_MS;
@@ -300,6 +324,9 @@ void setup() {
     
     // Load configuration from SD card
     loadSDCardConfiguration();
+    
+    // Load calibration data from SD card
+    loadCalibrationData();
   }
   
   // Initialize RTC
@@ -409,6 +436,7 @@ void loop() {
     if (connectToCellular()) {
       checkForIncomingData();  // Check for any incoming data first
       checkForServerCommands();
+      processIncomingSMS();    // Check for incoming SMS commands
       checkServerCommands = true;
     }
     lastServerCheckTime = millis();
@@ -1094,6 +1122,12 @@ void loadSDCardConfiguration() {
 
 // Convert sensor reading to inches
 float convertToInches(float sensorValue) {
+  // Use calibration data if available
+  if (calibrationDataLoaded && numCalibrationPoints >= 2) {
+    return interpolateHeight(sensorValue);
+  }
+  
+  // Fallback to original calculation methods
 #if SENSOR_TYPE == DIGITAL_FLOAT
   // For digital sensors, return full tank height if HIGH, 0 if LOW
   return (sensorValue == HIGH) ? tankHeightInches : 0.0;
@@ -1858,5 +1892,320 @@ void sendPowerFailureNotificationToServer() {
   sendHologramData("POWER_FAILURE", powerFailureData);
   
   logEvent("Power failure notification sent to server for daily email tracking");
+}
+
+// ========== HEIGHT CALIBRATION FUNCTIONS ==========
+
+// Load calibration data from SD card
+void loadCalibrationData() {
+  calibrationDataLoaded = false;
+  numCalibrationPoints = 0;
+  
+  File calibFile = SD.open(CALIBRATION_FILE_NAME);
+  if (!calibFile) {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("No calibration file found, using default conversion");
+#endif
+    logEvent("No calibration file found - using default sensor conversion");
+    return;
+  }
+  
+  int pointCount = 0;
+  while (calibFile.available() && pointCount < MAX_CALIBRATION_POINTS) {
+    String line = calibFile.readStringUntil('\n');
+    line.trim();
+    
+    // Skip comments and empty lines
+    if (line.length() == 0 || line.startsWith("#")) continue;
+    
+    // Parse line: sensorValue,actualHeight,timestamp
+    int firstComma = line.indexOf(',');
+    int secondComma = line.indexOf(',', firstComma + 1);
+    
+    if (firstComma > 0 && secondComma > firstComma) {
+      float sensorVal = line.substring(0, firstComma).toFloat();
+      float height = line.substring(firstComma + 1, secondComma).toFloat();
+      String timestamp = line.substring(secondComma + 1);
+      
+      calibrationPoints[pointCount].sensorValue = sensorVal;
+      calibrationPoints[pointCount].actualHeight = height;
+      calibrationPoints[pointCount].timestamp = timestamp;
+      pointCount++;
+    }
+  }
+  
+  calibFile.close();
+  numCalibrationPoints = pointCount;
+  
+  if (numCalibrationPoints >= 2) {
+    calibrationDataLoaded = true;
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) {
+      Serial.println("Loaded " + String(numCalibrationPoints) + " calibration points");
+    }
+#endif
+    logEvent("Calibration data loaded: " + String(numCalibrationPoints) + " points");
+  } else {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Insufficient calibration points, using default conversion");
+#endif
+    logEvent("Insufficient calibration points - using default sensor conversion");
+  }
+}
+
+// Save calibration data to SD card
+void saveCalibrationData() {
+  File calibFile = SD.open(CALIBRATION_FILE_NAME, FILE_WRITE);
+  if (!calibFile) {
+    logEvent("Error: Could not open calibration file for writing");
+    return;
+  }
+  
+  // Remove existing content
+  calibFile.seek(0);
+  
+  // Write header
+  calibFile.println("# Tank Height Calibration Data");
+  calibFile.println("# Format: sensor_value,actual_height_inches,timestamp");
+  
+  // Write calibration points
+  for (int i = 0; i < numCalibrationPoints; i++) {
+    calibFile.print(calibrationPoints[i].sensorValue, 4);
+    calibFile.print(",");
+    calibFile.print(calibrationPoints[i].actualHeight, 2);
+    calibFile.print(",");
+    calibFile.println(calibrationPoints[i].timestamp);
+  }
+  
+  calibFile.close();
+  logEvent("Calibration data saved: " + String(numCalibrationPoints) + " points");
+}
+
+// Add a new calibration point
+void addCalibrationPoint(float sensorValue, float actualHeight) {
+  if (numCalibrationPoints >= MAX_CALIBRATION_POINTS) {
+    // Remove oldest point to make room
+    for (int i = 0; i < MAX_CALIBRATION_POINTS - 1; i++) {
+      calibrationPoints[i] = calibrationPoints[i + 1];
+    }
+    numCalibrationPoints = MAX_CALIBRATION_POINTS - 1;
+  }
+  
+  // Add new point
+  calibrationPoints[numCalibrationPoints].sensorValue = sensorValue;
+  calibrationPoints[numCalibrationPoints].actualHeight = actualHeight;
+  calibrationPoints[numCalibrationPoints].timestamp = getCurrentTimestamp();
+  numCalibrationPoints++;
+  
+  // Sort points by sensor value for interpolation
+  for (int i = 0; i < numCalibrationPoints - 1; i++) {
+    for (int j = i + 1; j < numCalibrationPoints; j++) {
+      if (calibrationPoints[i].sensorValue > calibrationPoints[j].sensorValue) {
+        CalibrationPoint temp = calibrationPoints[i];
+        calibrationPoints[i] = calibrationPoints[j];
+        calibrationPoints[j] = temp;
+      }
+    }
+  }
+  
+  calibrationDataLoaded = (numCalibrationPoints >= 2);
+  saveCalibrationData();
+  
+  String logMsg = "Added calibration point: sensor=" + String(sensorValue, 4) + 
+                  ", height=" + String(actualHeight, 2) + " inches";
+  logEvent(logMsg);
+}
+
+// Interpolate height from sensor value using calibration points
+float interpolateHeight(float sensorValue) {
+  if (numCalibrationPoints < 2) return 0.0;
+  
+  // Find the two closest calibration points
+  int lowerIndex = -1;
+  int upperIndex = -1;
+  
+  for (int i = 0; i < numCalibrationPoints; i++) {
+    if (calibrationPoints[i].sensorValue <= sensorValue) {
+      lowerIndex = i;
+    }
+    if (calibrationPoints[i].sensorValue >= sensorValue && upperIndex == -1) {
+      upperIndex = i;
+      break;
+    }
+  }
+  
+  // Handle edge cases
+  if (lowerIndex == -1) {
+    // Below all calibration points
+    return calibrationPoints[0].actualHeight;
+  }
+  if (upperIndex == -1) {
+    // Above all calibration points
+    return calibrationPoints[numCalibrationPoints - 1].actualHeight;
+  }
+  if (lowerIndex == upperIndex) {
+    // Exact match
+    return calibrationPoints[lowerIndex].actualHeight;
+  }
+  
+  // Linear interpolation
+  float x1 = calibrationPoints[lowerIndex].sensorValue;
+  float y1 = calibrationPoints[lowerIndex].actualHeight;
+  float x2 = calibrationPoints[upperIndex].sensorValue;
+  float y2 = calibrationPoints[upperIndex].actualHeight;
+  
+  float interpolatedHeight = y1 + (sensorValue - x1) * (y2 - y1) / (x2 - x1);
+  
+  return interpolatedHeight;
+}
+
+// Get current raw sensor reading
+float getCurrentSensorReading() {
+#if SENSOR_TYPE == DIGITAL_FLOAT
+  return digitalRead(TANK_LEVEL_PIN);
+  
+#elif SENSOR_TYPE == ANALOG_VOLTAGE
+  // Take average of multiple readings
+  float totalVoltage = 0;
+  const int numReadings = 5;
+  
+  for (int i = 0; i < numReadings; i++) {
+    int adcValue = analogRead(ANALOG_SENSOR_PIN);
+    float voltage = (adcValue / 4095.0) * 3.3;
+    totalVoltage += voltage;
+    delay(5);
+  }
+  
+  return totalVoltage / numReadings;
+  
+#elif SENSOR_TYPE == CURRENT_LOOP
+  return readCurrentLoopValue();
+  
+#else
+  return 0.0;
+#endif
+}
+
+// Process incoming SMS messages for calibration commands
+void processIncomingSMS() {
+  if (!sms.available()) return;
+  
+  char smsBuffer[160];
+  sms.remoteNumber(smsBuffer, 20);
+  String phoneNumber = String(smsBuffer);
+  
+  String message = "";
+  while (sms.available()) {
+    message += (char)sms.read();
+  }
+  message.trim();
+  message.toUpperCase();
+  
+  // Delete the message after reading
+  sms.flush();
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) {
+    Serial.println("SMS received from: " + phoneNumber);
+    Serial.println("Message: " + message);
+  }
+#endif
+  
+  logEvent("SMS received from " + phoneNumber + ": " + message);
+  
+  // Process the command
+  processSMSCommand(message, phoneNumber);
+}
+
+// Process SMS calibration commands
+void processSMSCommand(String command, String phoneNumber) {
+  command.trim();
+  command.toUpperCase();
+  
+  // Check if phone number is authorized (matches any configured number)
+  bool authorized = (phoneNumber == alarmPhonePrimary || 
+                    phoneNumber == alarmPhoneSecondary || 
+                    phoneNumber == dailyReportPhone);
+  
+  if (!authorized) {
+    logEvent("SMS command ignored - unauthorized phone number: " + phoneNumber);
+    return;
+  }
+  
+  if (command.startsWith("CAL ")) {
+    // Calibration command: "CAL 48.5" means tank is at 48.5 inches
+    String heightStr = command.substring(4);
+    float actualHeight = heightStr.toFloat();
+    
+    if (actualHeight > 0 && actualHeight <= tankHeightInches) {
+      float currentSensor = getCurrentSensorReading();
+      addCalibrationPoint(currentSensor, actualHeight);
+      
+      String feetInches = formatInchesToFeetInches(actualHeight);
+      String response = "Calibration point added: Tank at " + feetInches + 
+                       " with sensor reading " + String(currentSensor, 4);
+      
+      // Send confirmation SMS
+      if (sms.beginSMS(phoneNumber.c_str())) {
+        sms.print(response);
+        sms.endSMS();
+#ifdef ENABLE_SERIAL_DEBUG
+        if (ENABLE_SERIAL_DEBUG) Serial.println("Calibration confirmation sent");
+#endif
+      }
+      
+      logEvent("Calibration: " + response);
+    } else {
+      logEvent("Invalid calibration height: " + String(actualHeight));
+    }
+    
+  } else if (command == "CALSHOW") {
+    // Show current calibration data
+    sendCalibrationSMS(phoneNumber);
+    
+  } else if (command == "STATUS") {
+    // Send current tank status
+    String feetInches = formatInchesToFeetInches(currentLevelInches);
+    String statusMsg = "Tank #" + String(tankNumber) + " at " + siteLocationName + 
+                      ": Level " + feetInches + ", Sensor " + String(getCurrentSensorReading(), 4);
+    
+    if (sms.beginSMS(phoneNumber.c_str())) {
+      sms.print(statusMsg);
+      sms.endSMS();
+    }
+    
+    logEvent("Status request served to " + phoneNumber);
+  }
+}
+
+// Send calibration data via SMS
+void sendCalibrationSMS(String phoneNumber) {
+  String calibMsg = "Tank #" + String(tankNumber) + " Calibration:\n";
+  
+  if (numCalibrationPoints == 0) {
+    calibMsg += "No calibration points";
+  } else {
+    calibMsg += String(numCalibrationPoints) + " points:\n";
+    
+    for (int i = 0; i < numCalibrationPoints && i < 3; i++) { // Limit to 3 points due to SMS length
+      String feetInches = formatInchesToFeetInches(calibrationPoints[i].actualHeight);
+      calibMsg += "S:" + String(calibrationPoints[i].sensorValue, 2) + 
+                 " H:" + feetInches + "\n";
+    }
+    
+    if (numCalibrationPoints > 3) {
+      calibMsg += "+" + String(numCalibrationPoints - 3) + " more points";
+    }
+  }
+  
+  if (sms.beginSMS(phoneNumber.c_str())) {
+    sms.print(calibMsg);
+    sms.endSMS();
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Calibration data sent to " + phoneNumber);
+#endif
+  }
+  
+  logEvent("Calibration data sent to " + phoneNumber);
 }
 }

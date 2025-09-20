@@ -213,3 +213,15 @@ For issues with this implementation, check:
 4. Sensor wiring and connections
 
 Common configuration errors are logged to the main log file with timestamps for debugging.
+
+## Height Calibration
+
+After installation, calibrate the tank height sensor for accurate readings:
+
+1. **Read CALIBRATION_GUIDE.md** for detailed instructions
+2. **Use SMS commands** to add calibration points: `CAL 48.5`
+3. **Use web interface** at `http://[server-ip]/calibration`
+4. **Add multiple points** at different tank levels for best accuracy
+5. **Verify calibration** with `STATUS` SMS command
+
+The calibration system replaces fixed sensor ranges with precise user-defined measurements for improved accuracy.
