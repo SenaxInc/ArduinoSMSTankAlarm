@@ -2089,9 +2089,9 @@ float getCurrentSensorReading() {
 void processIncomingSMS() {
   if (!sms.available()) return;
   
-  char smsBuffer[160];
-  sms.remoteNumber(smsBuffer, 20);
-  String phoneNumber = String(smsBuffer);
+  char phoneNumberBuffer[20];
+  sms.remoteNumber(phoneNumberBuffer, 20);
+  String phoneNumber = String(phoneNumberBuffer);
   
   String message = "";
   while (sms.available()) {
