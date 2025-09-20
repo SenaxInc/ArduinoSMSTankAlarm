@@ -1955,14 +1955,13 @@ void loadCalibrationData() {
 
 // Save calibration data to SD card
 void saveCalibrationData() {
+  // Remove existing file to ensure truncation
+  SD.remove(CALIBRATION_FILE_NAME);
   File calibFile = SD.open(CALIBRATION_FILE_NAME, FILE_WRITE);
   if (!calibFile) {
     logEvent("Error: Could not open calibration file for writing");
     return;
   }
-  
-  // Remove existing content
-  calibFile.seek(0);
   
   // Write header
   calibFile.println("# Tank Height Calibration Data");
