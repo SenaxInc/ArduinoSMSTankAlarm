@@ -111,7 +111,7 @@ File: TankAlarm092025-Test.ino
    #define VOLTAGE_MAX 4.5              // Maximum sensor voltage
    #define TANK_EMPTY_VOLTAGE 0.5       // Voltage when tank empty
    #define TANK_FULL_VOLTAGE 4.5        // Voltage when tank full
-   #define ALARM_THRESHOLD_PERCENT 80   // Alarm at 80% full
+   // Alarm thresholds now configured in inches (see tank configuration section)
    ```
    **Note**: Use A1-A4 screw terminals on MKR RELAY shield for easy sensor connections.
 
@@ -123,7 +123,7 @@ File: TankAlarm092025-Test.ino
    #define CURRENT_MAX 20.0               // Maximum current (20mA)
    #define TANK_EMPTY_CURRENT 4.0         // Current when tank empty
    #define TANK_FULL_CURRENT 20.0         // Current when tank full
-   #define ALARM_THRESHOLD_CURRENT_PERCENT 80  // Alarm at 80% full
+   // Alarm thresholds now configured in inches (see tank configuration section)
    ```
 
 5. **Adjust Timing (Optional)**:

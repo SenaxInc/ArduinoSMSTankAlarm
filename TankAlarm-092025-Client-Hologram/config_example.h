@@ -43,7 +43,8 @@
 #define VOLTAGE_MAX 4.5                // Maximum sensor voltage (V)
 #define TANK_EMPTY_VOLTAGE 0.5         // Voltage when tank is empty (V)
 #define TANK_FULL_VOLTAGE 4.5          // Voltage when tank is full (V)
-#define ALARM_THRESHOLD_PERCENT 80     // Alarm when tank is X% full
+// Alarm thresholds are now configured in inches using HIGH_ALARM_INCHES and LOW_ALARM_INCHES
+// See tank configuration section above for inches-based alarm settings
 
 // Multiple Analog Sensor Support (Optional - for multiple tank monitoring)
 // Uncomment and configure additional sensors if needed
@@ -60,7 +61,8 @@
 #define CURRENT_MAX 20.0               // Maximum current (mA)
 #define TANK_EMPTY_CURRENT 4.0         // Current when tank is empty (mA)
 #define TANK_FULL_CURRENT 20.0         // Current when tank is full (mA)
-#define ALARM_THRESHOLD_CURRENT_PERCENT 80  // Alarm when tank is X% full
+// Alarm thresholds are now configured in inches using HIGH_ALARM_INCHES and LOW_ALARM_INCHES
+// See tank configuration section above for inches-based alarm settings
 
 // Logging Configuration
 #define LOG_FILE_NAME "tanklog.txt"    // SD card log file name

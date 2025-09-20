@@ -65,7 +65,7 @@ The system supports three types of tank level sensors:
 2. **Analog Voltage Sensors (ANALOG_VOLTAGE)**
    - Ratiometric 0.5-4.5V pressure sensors (e.g., Dwyer 626 series)
    - Provides continuous level measurement
-   - Configurable alarm thresholds as percentage
+   - Configurable alarm thresholds in inches and feet
    - Higher accuracy for level monitoring
    - **Convenient screw terminals**: Use A1-A4 pins on MKR RELAY shield for easy wiring
 
