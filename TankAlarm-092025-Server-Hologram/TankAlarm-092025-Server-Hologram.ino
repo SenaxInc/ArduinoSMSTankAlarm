@@ -26,8 +26,148 @@
 #include <SD.h>             // SD card functionality
 #include <RTCZero.h>        // Real-time clock
 
-// Include configuration file
-#include "server_config.h"
+// Include configuration file if available, otherwise use defaults
+#if __has_include("server_config.h")
+  #include "server_config.h"
+  #define CONFIG_FILE_LOADED 1
+#else
+  #define CONFIG_FILE_LOADED 0
+  // Default configuration values when server_config.h is not available
+  
+  // Hologram.io Configuration
+  #ifndef HOLOGRAM_DEVICE_KEY
+    #define HOLOGRAM_DEVICE_KEY "your_device_key_here"  // Replace with your actual device key
+  #endif
+  #ifndef HOLOGRAM_APN
+    #define HOLOGRAM_APN "hologram"                     // Hologram.io APN (usually stays "hologram")
+  #endif
+  
+  // Daily Email Configuration
+  #ifndef DAILY_EMAIL_HOUR
+    #define DAILY_EMAIL_HOUR 6                         // Hour to send daily email (24-hour format)
+  #endif
+  #ifndef DAILY_EMAIL_MINUTE
+    #define DAILY_EMAIL_MINUTE 0                       // Minute to send daily email
+  #endif
+  #ifndef USE_HOLOGRAM_EMAIL
+    #define USE_HOLOGRAM_EMAIL true                    // Use Hologram API for email delivery (default)
+  #endif
+  #ifndef DAILY_EMAIL_SMS_GATEWAY
+    #define DAILY_EMAIL_SMS_GATEWAY "+19995551234"     // SMS gateway for email delivery (fallback)
+  #endif
+  #ifndef HOLOGRAM_EMAIL_RECIPIENT
+    #define HOLOGRAM_EMAIL_RECIPIENT "user@example.com" // Email address for Hologram API delivery
+  #endif
+  
+  // Pin Configuration
+  #ifndef SD_CARD_CS_PIN
+    #define SD_CARD_CS_PIN 4                           // SD card chip select pin (works for both MKR SD PROTO and MKR ETH shields)
+  #endif
+  
+  // Network Configuration
+  #ifndef CONNECTION_TIMEOUT_MS
+    #define CONNECTION_TIMEOUT_MS 30000                // Network connection timeout (30 seconds)
+  #endif
+  #ifndef ETHERNET_RETRY_DELAY_MS
+    #define ETHERNET_RETRY_DELAY_MS 5000              // Delay between Ethernet connection attempts
+  #endif
+  
+  // Logging Configuration
+  #ifndef ENABLE_SERIAL_DEBUG
+    #define ENABLE_SERIAL_DEBUG true                  // Enable/disable serial output for debugging
+  #endif
+  #ifndef MAX_LOG_FILE_SIZE
+    #define MAX_LOG_FILE_SIZE 1000000                 // Maximum log file size in bytes (1MB)
+  #endif
+  
+  // Web Server Configuration
+  #ifndef WEB_SERVER_PORT
+    #define WEB_SERVER_PORT 80                        // Port for web server
+  #endif
+  #ifndef WEB_PAGE_REFRESH_SECONDS
+    #define WEB_PAGE_REFRESH_SECONDS 30               // Auto refresh interval for web page
+  #endif
+  
+  // Email/SMS Configuration for Daily Reports
+  #ifndef DAILY_EMAIL_RECIPIENT
+    #define DAILY_EMAIL_RECIPIENT "+15551234567@vtext.com"  // Email-to-SMS gateway address
+  #endif
+  
+  // Server Identification
+  #ifndef SERVER_NAME
+    #define SERVER_NAME "Tank Alarm Server 092025"
+  #endif
+  #ifndef SERVER_LOCATION
+    #define SERVER_LOCATION "Main Office"              // Location description for server
+  #endif
+  
+  // Data Retention Settings
+  #ifndef MAX_REPORTS_IN_MEMORY
+    #define MAX_REPORTS_IN_MEMORY 50                  // Maximum tank reports to keep in memory
+  #endif
+  #ifndef DAYS_TO_KEEP_LOGS
+    #define DAYS_TO_KEEP_LOGS 30                      // Days to keep log files before rotation
+  #endif
+  
+  // Ethernet MAC Address (change if needed to avoid conflicts)
+  #ifndef ETHERNET_MAC_BYTE_1
+    #define ETHERNET_MAC_BYTE_1 0x90
+  #endif
+  #ifndef ETHERNET_MAC_BYTE_2
+    #define ETHERNET_MAC_BYTE_2 0xA2  
+  #endif
+  #ifndef ETHERNET_MAC_BYTE_3
+    #define ETHERNET_MAC_BYTE_3 0xDA
+  #endif
+  #ifndef ETHERNET_MAC_BYTE_4
+    #define ETHERNET_MAC_BYTE_4 0x10
+  #endif
+  #ifndef ETHERNET_MAC_BYTE_5
+    #define ETHERNET_MAC_BYTE_5 0xD1
+  #endif
+  #ifndef ETHERNET_MAC_BYTE_6
+    #define ETHERNET_MAC_BYTE_6 0x72
+  #endif
+  
+  // Static IP Configuration (used as fallback if DHCP fails)
+  #ifndef STATIC_IP_ADDRESS
+    #define STATIC_IP_ADDRESS {192, 168, 1, 100}
+  #endif
+  #ifndef STATIC_GATEWAY
+    #define STATIC_GATEWAY {192, 168, 1, 1}
+  #endif
+  #ifndef STATIC_SUBNET
+    #define STATIC_SUBNET {255, 255, 255, 0}
+  #endif
+  
+  // Hologram Data Reception Settings
+  #ifndef HOLOGRAM_CHECK_INTERVAL_MS
+    #define HOLOGRAM_CHECK_INTERVAL_MS 5000           // How often to check for new messages
+  #endif
+  #ifndef MESSAGE_BUFFER_SIZE
+    #define MESSAGE_BUFFER_SIZE 1024                  // Size of message buffer for parsing
+  #endif
+  
+  // Alarm Notification Settings
+  #ifndef FORWARD_ALARMS_TO_EMAIL
+    #define FORWARD_ALARMS_TO_EMAIL true              // Forward alarm messages to email
+  #endif
+  #ifndef ALARM_EMAIL_RECIPIENT
+    #define ALARM_EMAIL_RECIPIENT "+15551234567@vtext.com"  // Email for alarm notifications
+  #endif
+  
+  // Monthly Report Settings
+  #ifndef MONTHLY_REPORT_ENABLED
+    #define MONTHLY_REPORT_ENABLED true               // Enable monthly CSV reports
+  #endif
+  #ifndef MONTHLY_REPORT_DAY
+    #define MONTHLY_REPORT_DAY 1                      // Day of month to generate report (1-28)
+  #endif
+  #ifndef MONTHLY_REPORT_HOUR
+    #define MONTHLY_REPORT_HOUR 8                     // Hour to generate monthly report
+  #endif
+  
+#endif
 
 // Network components
 NB nbAccess;
@@ -35,8 +175,9 @@ NBClient hologramClient;
 NBSMS sms;
 
 // Ethernet components
-byte mac[] = { 0x90, 0xA2, 0xDA, 0x10, 0xD1, 0x72 };  // MAC address for Ethernet shield
-EthernetServer webServer(80);                            // Web server on port 80
+byte mac[] = { ETHERNET_MAC_BYTE_1, ETHERNET_MAC_BYTE_2, ETHERNET_MAC_BYTE_3, 
+               ETHERNET_MAC_BYTE_4, ETHERNET_MAC_BYTE_5, ETHERNET_MAC_BYTE_6 };  // MAC address for Ethernet shield
+EthernetServer webServer(WEB_SERVER_PORT);                  // Web server on configured port
 
 // Initialize RTC for timing
 RTCZero rtc;
@@ -123,6 +264,13 @@ void setup() {
   }
   
   Serial.println("Tank Alarm Server 092025 - Hologram Starting...");
+  
+  // Display configuration status
+  #if CONFIG_FILE_LOADED
+    Serial.println("Configuration: Using server_config.h");
+  #else
+    Serial.println("Configuration: Using default values (server_config.h not found)");
+  #endif
   
   // Initialize RTC
   rtc.begin();
@@ -727,9 +875,9 @@ void initializeEthernet() {
     logEvent("DHCP failed - using static IP fallback");
     
     // Try to configure using static IP fallback
-    IPAddress ip(192, 168, 1, 100);
-    IPAddress gateway(192, 168, 1, 1);
-    IPAddress subnet(255, 255, 255, 0);
+    IPAddress ip STATIC_IP_ADDRESS;
+    IPAddress gateway STATIC_GATEWAY;
+    IPAddress subnet STATIC_SUBNET;
     Ethernet.begin(mac, ip, gateway, subnet);
   }
   
