@@ -74,26 +74,46 @@ File: TankAlarm092025-Test.ino
 
 ## Software Configuration
 
-### Step 1: Configure the Code
+### Step 1: Configure SD Card (REQUIRED)
+1. **Create SD Card Configuration**:
+   - Copy `tank_config_example.txt` to SD card as `tank_config.txt`
+   - Edit `tank_config.txt` with your specific settings
+
+2. **Critical Settings (REQUIRED)**:
+   ```
+   # Update these values for your setup - ALL SETTINGS REQUIRED
+   SITE_NAME=Your Tank Farm Name
+   TANK_NUMBER=1
+   HOLOGRAM_DEVICE_KEY=your_actual_device_key_here
+   ALARM_PHONE_PRIMARY=+15551234567
+   ALARM_PHONE_SECONDARY=+15559876543
+   DAILY_REPORT_PHONE=+15555551234
+   ```
+
+3. **Tank Physical Configuration**:
+   ```
+   TANK_HEIGHT_INCHES=120
+   HIGH_ALARM_INCHES=100
+   LOW_ALARM_INCHES=12
+   ```
+
+4. **Insert SD Card**: Place configured SD card in device before powering on
+
+**IMPORTANT**: The device will not start without a properly configured `tank_config.txt` file on the SD card. The device will halt with error messages if:
+- SD card is not inserted
+- `tank_config.txt` file is missing
+- HOLOGRAM_DEVICE_KEY is not set
+- ALARM_PHONE_PRIMARY is not set
+
+### Step 2: Hardware Configuration (config.h)
 1. **Copy Configuration Template**:
-   - Copy `config_template.h` to `config.h`
-   - Edit `config.h` with your specific settings
+   - Copy `config_template.h` to `config.h` (only if missing)
+   - This file now only contains hardware-specific constants
 
 2. **Select Tank Level Sensor Type**:
    ```cpp
    // Choose sensor type: DIGITAL_FLOAT, ANALOG_VOLTAGE, or CURRENT_LOOP
    #define SENSOR_TYPE DIGITAL_FLOAT
-   ```
-
-3. **Update Configuration Values**:
-   ```cpp
-   // Replace with your actual Hologram.io device key
-   #define HOLOGRAM_DEVICE_KEY "your_device_key_here"
-   
-   // Update with your phone numbers (include country code)
-   #define ALARM_PHONE_PRIMARY "+12223334444"
-   #define ALARM_PHONE_SECONDARY "+15556667777"
-   #define DAILY_REPORT_PHONE "+18889990000"
    ```
 
 4. **Configure Sensor-Specific Settings**:
@@ -146,8 +166,8 @@ File: TankAlarm092025-Test.ino
    #define DAILY_REPORT_HOURS 24
    ```
 
-### Step 2: Update Main Code
-1. In `TankAlarm092025-Hologram.ino`, change this line:
+### Step 3: Update Main Code
+1. In `TankAlarm-092025-Client-Hologram.ino`, change this line:
    ```cpp
    // Change from:
    #include "config_template.h"
@@ -155,7 +175,7 @@ File: TankAlarm092025-Test.ino
    #include "config.h"
    ```
 
-### Step 3: Upload Code
+### Step 4: Upload Code
 1. Connect MKR NB 1500 to computer via USB
 2. Select correct board: Tools → Board → Arduino MKR NB 1500
 3. Select correct port: Tools → Port → (your port)
@@ -260,10 +280,14 @@ File: TankAlarm092025-Test.ino
 - **Annually**: Clean enclosure, inspect connections
 
 ### Updating Configuration
-1. Connect to computer via USB
-2. Modify config.h as needed
-3. Re-upload sketch
-4. Test new configuration
+**NEW APPROACH - Field Configurable:**
+1. Power off device
+2. Remove SD card from device
+3. Edit `tank_config.txt` on computer
+4. Insert SD card back into device
+5. Power on device - new configuration will be loaded and validated
+
+**CRITICAL**: Device will not start without valid SD card configuration.
 
 ### Data Retrieval
 1. Remove SD card from system

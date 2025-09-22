@@ -195,44 +195,44 @@ bool powerFailureRecovery = false;
 #endif
 String logFileName = LOG_FILE_NAME;
 
-// SD Card configuration variables (loaded from SD card config file)
-String siteLocationName = SITE_LOCATION_NAME;
-int tankNumber = TANK_NUMBER;
-float inchesPerUnit = INCHES_PER_UNIT;
-float tankHeightInches = TANK_HEIGHT_INCHES;
-float highAlarmInches = HIGH_ALARM_INCHES;
-float lowAlarmInches = LOW_ALARM_INCHES;
-bool digitalHighAlarm = DIGITAL_HIGH_ALARM;
-bool digitalLowAlarm = DIGITAL_LOW_ALARM;
-float largeDecreaseThreshold = LARGE_DECREASE_THRESHOLD_INCHES;
-int largeDecreaseWaitHours = LARGE_DECREASE_WAIT_HOURS;
+// SD Card configuration variables (loaded from SD card config file - REQUIRED)
+String siteLocationName = "Unknown Site";
+int tankNumber = 1;
+float inchesPerUnit = 1.0;
+float tankHeightInches = 120.0;
+float highAlarmInches = 100.0;
+float lowAlarmInches = 12.0;
+bool digitalHighAlarm = true;
+bool digitalLowAlarm = false;
+float largeDecreaseThreshold = 24.0;
+int largeDecreaseWaitHours = 2;
 
-// Network and communication configuration (loaded from SD card)
-String hologramDeviceKey = HOLOGRAM_DEVICE_KEY;
-String serverDeviceKey = SERVER_DEVICE_KEY;  // Server's device ID for remote commands
-String alarmPhonePrimary = ALARM_PHONE_PRIMARY;
-String alarmPhoneSecondary = ALARM_PHONE_SECONDARY;
-String dailyReportPhone = DAILY_REPORT_PHONE;
-String hologramAPN = HOLOGRAM_APN;
+// Network and communication configuration (loaded from SD card - REQUIRED)
+String hologramDeviceKey = "";
+String serverDeviceKey = "";  // Server's device ID for remote commands
+String alarmPhonePrimary = "";
+String alarmPhoneSecondary = "";
+String dailyReportPhone = "";
+String hologramAPN = "hologram";
 
-// Timing configuration (loaded from SD card)
-int sleepIntervalHours = SLEEP_INTERVAL_HOURS;
-int dailyReportHours = DAILY_REPORT_HOURS;
-String dailyReportTime = DAILY_REPORT_TIME;
+// Timing configuration (loaded from SD card - REQUIRED)
+int sleepIntervalHours = 1;
+int dailyReportHours = 24;
+String dailyReportTime = "05:00";
 
 // Time synchronization variables
 bool timeIsSynced = false;
 unsigned long lastTimeSyncMillis = 0;
 const unsigned long TIME_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // Sync once per day
 
-// Power management variables
+// Power management variables (loaded from SD card - REQUIRED)
 volatile bool wakeFromCellular = false;  // Flag set when woken by cellular data
 volatile int wakeReason = WAKE_REASON_TIMER;  // Reason for last wake
 unsigned long lastCellularCheck = 0;  // Last time we checked for cellular data
-bool deepSleepMode = DEEP_SLEEP_MODE;  // Whether to use deep sleep mode
-int shortSleepMinutes = SHORT_SLEEP_MINUTES;  // Short sleep duration for frequent checks
-int normalSleepHours = NORMAL_SLEEP_HOURS;    // Normal sleep duration between readings
-bool wakeOnPingEnabled = ENABLE_WAKE_ON_PING; // Wake on ping functionality
+bool deepSleepMode = false;  // Whether to use deep sleep mode
+int shortSleepMinutes = 10;  // Short sleep duration for frequent checks
+int normalSleepHours = 1;    // Normal sleep duration between readings
+bool wakeOnPingEnabled = true; // Wake on ping functionality
 
 // Height calibration system
 #define MAX_CALIBRATION_POINTS 10
@@ -270,16 +270,16 @@ void processSMSCommand(String command, String phoneNumber);
 void sendCalibrationSMS(String phoneNumber);
 float getCurrentSensorReading();
 
-// Network configuration (loaded from SD card)
-int connectionTimeoutMs = CONNECTION_TIMEOUT_MS;
-int smsRetryAttempts = SMS_RETRY_ATTEMPTS;
+// Network configuration (loaded from SD card - REQUIRED)
+int connectionTimeoutMs = 30000;
+int smsRetryAttempts = 3;
 
 // Log file names (loaded from SD card)
-String hourlyLogFile = SD_HOURLY_LOG_FILE;
-String dailyLogFile = SD_DAILY_LOG_FILE;
-String alarmLogFile = SD_ALARM_LOG_FILE;
-String decreaseLogFile = SD_DECREASE_LOG_FILE;
-String reportLogFile = SD_REPORT_LOG_FILE;
+String hourlyLogFile = "hourly_log.txt";
+String dailyLogFile = "daily_log.txt";
+String alarmLogFile = "alarm_log.txt";
+String decreaseLogFile = "decrease_log.txt";
+String reportLogFile = "report_log.txt";
 
 void setup() {
   // Initialize serial communication for debugging
@@ -1008,22 +1008,27 @@ String getCurrentTimestamp() {
 // Load configuration from SD card
 void loadSDCardConfiguration() {
   if (!SD.begin(SD_CARD_CS_PIN)) {
-    logEvent("Failed to initialize SD card for configuration loading");
-    return;
+    Serial.println("CRITICAL ERROR: Failed to initialize SD card for client configuration loading");
+    Serial.println("SD card configuration is REQUIRED for operation");
+    while (true) {
+      // Halt execution - SD card config is required
+      delay(5000);
+      Serial.println("Please insert SD card with tank_config.txt and restart");
+    }
   }
   
   File configFile = SD.open(SD_CONFIG_FILE);
   if (!configFile) {
-#ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Config file not found, using defaults");
-#endif
-    logEvent("Config file not found, using defaults from config.h");
-    return;
+    Serial.println("CRITICAL ERROR: Client config file not found on SD card");
+    Serial.println("tank_config.txt is REQUIRED for operation");
+    while (true) {
+      // Halt execution - SD card config is required
+      delay(5000);
+      Serial.println("Please create tank_config.txt on SD card and restart");
+    }
   }
   
-#ifdef ENABLE_SERIAL_DEBUG
-  if (ENABLE_SERIAL_DEBUG) Serial.println("Loading configuration from SD card...");
-#endif
+  Serial.println("Loading client configuration from SD card...");
   
   while (configFile.available()) {
     String line = configFile.readStringUntil('\n');
@@ -1109,15 +1114,28 @@ void loadSDCardConfiguration() {
   
   configFile.close();
   
-  String configMsg = "Configuration loaded - Site: " + siteLocationName + 
+  // Validate critical configuration
+  if (hologramDeviceKey.length() == 0 || hologramDeviceKey == "your_device_key_here") {
+    Serial.println("CRITICAL ERROR: HOLOGRAM_DEVICE_KEY not configured in tank_config.txt");
+    while (true) {
+      delay(5000);
+      Serial.println("Please set HOLOGRAM_DEVICE_KEY in tank_config.txt and restart");
+    }
+  }
+  
+  if (alarmPhonePrimary.length() == 0 || alarmPhonePrimary == "+12223334444") {
+    Serial.println("CRITICAL ERROR: ALARM_PHONE_PRIMARY not configured in tank_config.txt");
+    while (true) {
+      delay(5000);
+      Serial.println("Please set ALARM_PHONE_PRIMARY in tank_config.txt and restart");
+    }
+  }
+  
+  String configMsg = "Client configuration loaded successfully - Site: " + siteLocationName + 
                     ", Tank: " + String(tankNumber) + 
                     ", Height: " + String(tankHeightInches) + "in" +
                     ", Daily Report: " + dailyReportTime;
-  logEvent(configMsg);
-  
-#ifdef ENABLE_SERIAL_DEBUG
-  if (ENABLE_SERIAL_DEBUG) Serial.println(configMsg);
-#endif
+  Serial.println(configMsg);
 }
 
 // Convert sensor reading to inches
