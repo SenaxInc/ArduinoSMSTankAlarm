@@ -1,72 +1,57 @@
 //
 // Configuration file for Tank Alarm Server 092025
-// This is the active configuration file used by the server
+// This file now contains only essential compile-time constants
+// Most configuration is now loaded from server_config.txt on SD card
 //
 
 #ifndef SERVER_CONFIG_H
 #define SERVER_CONFIG_H
 
-// Hologram.io Configuration
-#define HOLOGRAM_DEVICE_KEY "your_device_key_here"  // Replace with your actual device key
-#define HOLOGRAM_APN "hologram"                     // Hologram.io APN (usually stays "hologram")
-
-// Daily Email Configuration
-#define DAILY_EMAIL_HOUR 6                         // Hour to send daily email (24-hour format)
-#define DAILY_EMAIL_MINUTE 0                       // Minute to send daily email
-#define USE_HOLOGRAM_EMAIL true                    // Use Hologram API for email delivery (default)
-#define DAILY_EMAIL_SMS_GATEWAY "+19995551234"     // SMS gateway for email delivery (fallback)
-#define HOLOGRAM_EMAIL_RECIPIENT "user@example.com" // Email address for Hologram API delivery
-
-// Pin Configuration
+// Pin Configuration (hardware specific - cannot be changed at runtime)
 #define SD_CARD_CS_PIN 4                           // SD card chip select pin (works for both MKR SD PROTO and MKR ETH shields)
 
-// Network Configuration
+// Network Configuration (timeouts and hardware limits)
 #define CONNECTION_TIMEOUT_MS 30000                // Network connection timeout (30 seconds)
 #define ETHERNET_RETRY_DELAY_MS 5000              // Delay between Ethernet connection attempts
 
-// Logging Configuration
-#define ENABLE_SERIAL_DEBUG true                  // Enable/disable serial output for debugging
+// Logging Configuration (system limits)
 #define MAX_LOG_FILE_SIZE 1000000                 // Maximum log file size in bytes (1MB)
 
-// Web Server Configuration
+// Web Server Configuration (port must be compile-time for security)
 #define WEB_SERVER_PORT 80                        // Port for web server
-#define WEB_PAGE_REFRESH_SECONDS 30               // Auto refresh interval for web page
 
-// Email/SMS Configuration for Daily Reports
-#define DAILY_EMAIL_RECIPIENT "+15551234567@vtext.com"  // Email-to-SMS gateway address
+// System Buffer Sizes (memory allocation at compile time)
+#define MESSAGE_BUFFER_SIZE 1024                  // Size of message buffer for parsing
 
-// Server Identification
+// Default values used when SD card config is not available
+// These are fallback values loaded into variables at startup
+#define HOLOGRAM_DEVICE_KEY "your_device_key_here"
+#define DAILY_EMAIL_HOUR 6
+#define DAILY_EMAIL_MINUTE 0
+#define USE_HOLOGRAM_EMAIL true
+#define DAILY_EMAIL_SMS_GATEWAY "+19995551234"
+#define HOLOGRAM_EMAIL_RECIPIENT "user@example.com"
+#define DAILY_EMAIL_RECIPIENT "+15551234567@vtext.com"
 #define SERVER_NAME "Tank Alarm Server 092025"
-#define SERVER_LOCATION "Main Office"              // Location description for server
-
-// Data Retention Settings
-#define MAX_REPORTS_IN_MEMORY 50                  // Maximum tank reports to keep in memory
-#define DAYS_TO_KEEP_LOGS 30                      // Days to keep log files before rotation
-
-// Ethernet MAC Address (change if needed to avoid conflicts)
+#define SERVER_LOCATION "Main Office"
+#define ENABLE_SERIAL_DEBUG true
+#define WEB_PAGE_REFRESH_SECONDS 30
+#define MAX_REPORTS_IN_MEMORY 50
+#define DAYS_TO_KEEP_LOGS 30
 #define ETHERNET_MAC_BYTE_1 0x90
-#define ETHERNET_MAC_BYTE_2 0xA2  
+#define ETHERNET_MAC_BYTE_2 0xA2
 #define ETHERNET_MAC_BYTE_3 0xDA
 #define ETHERNET_MAC_BYTE_4 0x10
 #define ETHERNET_MAC_BYTE_5 0xD1
 #define ETHERNET_MAC_BYTE_6 0x72
-
-// Static IP Configuration (used as fallback if DHCP fails)
 #define STATIC_IP_ADDRESS {192, 168, 1, 100}
 #define STATIC_GATEWAY {192, 168, 1, 1}
 #define STATIC_SUBNET {255, 255, 255, 0}
-
-// Hologram Data Reception Settings
-#define HOLOGRAM_CHECK_INTERVAL_MS 5000           // How often to check for new messages
-#define MESSAGE_BUFFER_SIZE 1024                  // Size of message buffer for parsing
-
-// Alarm Notification Settings
-#define FORWARD_ALARMS_TO_EMAIL true              // Forward alarm messages to email
-#define ALARM_EMAIL_RECIPIENT "+15551234567@vtext.com"  // Email for alarm notifications
-
-// Monthly Report Settings
-#define MONTHLY_REPORT_ENABLED true               // Enable monthly CSV reports
-#define MONTHLY_REPORT_DAY 1                      // Day of month to generate report (1-28)
-#define MONTHLY_REPORT_HOUR 8                     // Hour to generate monthly report
+#define HOLOGRAM_CHECK_INTERVAL_MS 5000
+#define FORWARD_ALARMS_TO_EMAIL true
+#define ALARM_EMAIL_RECIPIENT "+15551234567@vtext.com"
+#define MONTHLY_REPORT_ENABLED true
+#define MONTHLY_REPORT_DAY 1
+#define MONTHLY_REPORT_HOUR 8
 
 #endif // SERVER_CONFIG_H

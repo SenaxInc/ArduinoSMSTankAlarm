@@ -80,7 +80,7 @@ String dailyEmailAttemptDate = "";
 bool dailyEmailPending = false;
 unsigned long lastDailyEmailRetry = 0;
 const unsigned long DAILY_EMAIL_RETRY_INTERVAL = 1800000; // 30 minutes in milliseconds
-const int MAX_TANK_REPORTS = 50;  // Maximum number of reports to store in memory
+const int MAX_TANK_REPORTS = 100;  // Maximum array size (actual limit from configuration)
 TankReport tankReports[MAX_TANK_REPORTS];
 int reportCount = 0;
 
@@ -115,6 +115,39 @@ const int MAX_POWER_FAILURE_EVENTS = 50;
 PowerFailureEvent powerFailureEvents[MAX_POWER_FAILURE_EVENTS];
 int powerFailureEventCount = 0;
 
+// Server configuration variables (loaded from SD card config file)
+String hologramDeviceKey = HOLOGRAM_DEVICE_KEY;
+int dailyEmailHour = DAILY_EMAIL_HOUR;
+int dailyEmailMinute = DAILY_EMAIL_MINUTE;
+bool useHologramEmail = USE_HOLOGRAM_EMAIL;
+String dailyEmailSmsGateway = DAILY_EMAIL_SMS_GATEWAY;
+String hologramEmailRecipient = HOLOGRAM_EMAIL_RECIPIENT;
+String dailyEmailRecipient = DAILY_EMAIL_RECIPIENT;
+String serverName = SERVER_NAME;
+String serverLocation = SERVER_LOCATION;
+bool enableSerialDebug = ENABLE_SERIAL_DEBUG;
+int webPageRefreshSeconds = WEB_PAGE_REFRESH_SECONDS;
+int maxReportsInMemory = MAX_REPORTS_IN_MEMORY;
+int daysToKeepLogs = DAYS_TO_KEEP_LOGS;
+int staticIpAddress[4] = STATIC_IP_ADDRESS;
+int staticGateway[4] = STATIC_GATEWAY;
+int staticSubnet[4] = STATIC_SUBNET;
+int hologramCheckIntervalMs = HOLOGRAM_CHECK_INTERVAL_MS;
+bool forwardAlarmsToEmail = FORWARD_ALARMS_TO_EMAIL;
+String alarmEmailRecipient = ALARM_EMAIL_RECIPIENT;
+bool monthlyReportEnabled = MONTHLY_REPORT_ENABLED;
+int monthlyReportDay = MONTHLY_REPORT_DAY;
+int monthlyReportHour = MONTHLY_REPORT_HOUR;
+int ethernetMacByte1 = ETHERNET_MAC_BYTE_1;
+int ethernetMacByte2 = ETHERNET_MAC_BYTE_2;
+int ethernetMacByte3 = ETHERNET_MAC_BYTE_3;
+int ethernetMacByte4 = ETHERNET_MAC_BYTE_4;
+int ethernetMacByte5 = ETHERNET_MAC_BYTE_5;
+int ethernetMacByte6 = ETHERNET_MAC_BYTE_6;
+
+// SD card configuration file
+#define SERVER_CONFIG_FILE "server_config.txt"
+
 void setup() {
   // Initialize serial communication for debugging
   Serial.begin(9600);
@@ -133,9 +166,20 @@ void setup() {
   } else {
     Serial.println("SD card initialized successfully");
     
+    // Load server configuration from SD card
+    loadServerConfigurationFromSD();
+    
     // Check for power failure recovery
     checkPowerFailureRecovery();
   }
+  
+  // Update MAC address with loaded configuration
+  mac[0] = ethernetMacByte1;
+  mac[1] = ethernetMacByte2;
+  mac[2] = ethernetMacByte3;
+  mac[3] = ethernetMacByte4;
+  mac[4] = ethernetMacByte5;
+  mac[5] = ethernetMacByte6;
   
   // Initialize Ethernet connection with retry logic
   initializeEthernet();
@@ -316,7 +360,7 @@ void processDailyReport(String reportData) {
   }
   
   // Store report in memory
-  if (reportCount < MAX_TANK_REPORTS) {
+  if (reportCount < maxReportsInMemory && reportCount < MAX_TANK_REPORTS) {
     tankReports[reportCount] = report;
     reportCount++;
   }
@@ -461,7 +505,7 @@ void sendWebPage(EthernetClient &client) {
   client.println("<html>");
   client.println("<head>");
   client.println("<title>Tank Alarm Server - Dashboard</title>");
-  client.println("<meta http-equiv='refresh' content='30'>");  // Auto refresh every 30 seconds
+  client.println("<meta http-equiv='refresh' content='" + String(webPageRefreshSeconds) + "'>");  // Auto refresh based on configuration
   client.println("<style>");
   client.println("body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }");
   client.println("h1 { color: #333; text-align: center; }");
@@ -541,7 +585,7 @@ void sendWebPage(EthernetClient &client) {
 
 #ifdef MONTHLY_REPORT_ENABLED
   if (MONTHLY_REPORT_ENABLED) {
-    client.println("<p>Monthly Reports: <span style='color: green;'>Enabled</span> (Day " + String(MONTHLY_REPORT_DAY) + " at " + String(MONTHLY_REPORT_HOUR) + ":00)</p>");
+    client.println("<p>Monthly Reports: <span style='color: green;'>Enabled</span> (Day " + String(monthlyReportDay) + " at " + String(monthlyReportHour) + ":00)</p>");
   }
 #endif
   
@@ -561,7 +605,7 @@ bool isTimeForDailyEmail() {
     int currentMinute = rtc.getMinutes();
     
     // Send email at configured time (default 6:00 AM)
-    if (currentHour == DAILY_EMAIL_HOUR && currentMinute >= DAILY_EMAIL_MINUTE && currentMinute < DAILY_EMAIL_MINUTE + 5) {
+    if (currentHour == dailyEmailHour && currentMinute >= dailyEmailMinute && currentMinute < dailyEmailMinute + 5) {
       // Mark that we should attempt daily email for this date
       if (dailyEmailAttemptDate != currentDate) {
         dailyEmailAttemptDate = currentDate;
@@ -727,9 +771,9 @@ void initializeEthernet() {
     logEvent("DHCP failed - using static IP fallback");
     
     // Try to configure using static IP fallback
-    IPAddress ip(192, 168, 1, 100);
-    IPAddress gateway(192, 168, 1, 1);
-    IPAddress subnet(255, 255, 255, 0);
+    IPAddress ip(staticIpAddress[0], staticIpAddress[1], staticIpAddress[2], staticIpAddress[3]);
+    IPAddress gateway(staticGateway[0], staticGateway[1], staticGateway[2], staticGateway[3]);
+    IPAddress subnet(staticSubnet[0], staticSubnet[1], staticSubnet[2], staticSubnet[3]);
     Ethernet.begin(mac, ip, gateway, subnet);
   }
   
@@ -862,7 +906,7 @@ void restoreTankReportsFromSD() {
   if (reportsFile) {
     reportCount = 0;
     
-    while (reportsFile.available() && reportCount < MAX_TANK_REPORTS) {
+    while (reportsFile.available() && reportCount < maxReportsInMemory && reportCount < MAX_TANK_REPORTS) {
       String line = reportsFile.readStringUntil('\n');
       line.trim();
       
@@ -1013,7 +1057,7 @@ void sendRecoveryNotification() {
   if (!networkConnected) return;
   
   String message = "TANK ALARM SERVER RECOVERY NOTICE\n";
-  message += "Server: " + String(SERVER_LOCATION) + "\n";
+  message += "Server: " + serverLocation + "\n";
   message += "Time: " + getCurrentTimestamp() + "\n";
   message += "Status: System recovered from power failure\n";
   message += "Last State: " + lastShutdownReason + "\n";
@@ -1350,6 +1394,130 @@ void saveEmailRecipients() {
   }
 }
 
+void loadServerConfigurationFromSD() {
+  if (!SD.begin(SD_CARD_CS_PIN)) {
+    if (enableSerialDebug) Serial.println("Failed to initialize SD card for server configuration loading");
+    return;
+  }
+  
+  File configFile = SD.open(SERVER_CONFIG_FILE);
+  if (!configFile) {
+    if (enableSerialDebug) Serial.println("Server config file not found, using defaults from server_config.h");
+    return;
+  }
+  
+  if (enableSerialDebug) Serial.println("Loading server configuration from SD card...");
+  
+  while (configFile.available()) {
+    String line = configFile.readStringUntil('\n');
+    line.trim();
+    
+    // Skip comments and empty lines
+    if (line.startsWith("#") || line.length() == 0) {
+      continue;
+    }
+    
+    // Parse key=value pairs
+    int equalPos = line.indexOf('=');
+    if (equalPos > 0) {
+      String key = line.substring(0, equalPos);
+      String value = line.substring(equalPos + 1);
+      key.trim();
+      value.trim();
+      
+      // Update configuration variables
+      if (key == "HOLOGRAM_DEVICE_KEY") {
+        hologramDeviceKey = value;
+      } else if (key == "DAILY_EMAIL_HOUR") {
+        dailyEmailHour = value.toInt();
+      } else if (key == "DAILY_EMAIL_MINUTE") {
+        dailyEmailMinute = value.toInt();
+      } else if (key == "USE_HOLOGRAM_EMAIL") {
+        useHologramEmail = (value == "true");
+      } else if (key == "DAILY_EMAIL_SMS_GATEWAY") {
+        dailyEmailSmsGateway = value;
+      } else if (key == "HOLOGRAM_EMAIL_RECIPIENT") {
+        hologramEmailRecipient = value;
+      } else if (key == "DAILY_EMAIL_RECIPIENT") {
+        dailyEmailRecipient = value;
+      } else if (key == "SERVER_NAME") {
+        serverName = value;
+      } else if (key == "SERVER_LOCATION") {
+        serverLocation = value;
+      } else if (key == "ENABLE_SERIAL_DEBUG") {
+        enableSerialDebug = (value == "true");
+      } else if (key == "WEB_PAGE_REFRESH_SECONDS") {
+        webPageRefreshSeconds = value.toInt();
+      } else if (key == "MAX_REPORTS_IN_MEMORY") {
+        maxReportsInMemory = value.toInt();
+      } else if (key == "DAYS_TO_KEEP_LOGS") {
+        daysToKeepLogs = value.toInt();
+      } else if (key == "STATIC_IP_ADDRESS") {
+        // Parse comma-separated IP address like "192,168,1,100"
+        int pos = 0;
+        for (int i = 0; i < 4; i++) {
+          int nextPos = value.indexOf(',', pos);
+          if (nextPos == -1 && i < 3) break;
+          String octet = (nextPos == -1) ? value.substring(pos) : value.substring(pos, nextPos);
+          staticIpAddress[i] = octet.toInt();
+          pos = nextPos + 1;
+        }
+      } else if (key == "STATIC_GATEWAY") {
+        // Parse comma-separated gateway address
+        int pos = 0;
+        for (int i = 0; i < 4; i++) {
+          int nextPos = value.indexOf(',', pos);
+          if (nextPos == -1 && i < 3) break;
+          String octet = (nextPos == -1) ? value.substring(pos) : value.substring(pos, nextPos);
+          staticGateway[i] = octet.toInt();
+          pos = nextPos + 1;
+        }
+      } else if (key == "STATIC_SUBNET") {
+        // Parse comma-separated subnet mask
+        int pos = 0;
+        for (int i = 0; i < 4; i++) {
+          int nextPos = value.indexOf(',', pos);
+          if (nextPos == -1 && i < 3) break;
+          String octet = (nextPos == -1) ? value.substring(pos) : value.substring(pos, nextPos);
+          staticSubnet[i] = octet.toInt();
+          pos = nextPos + 1;
+        }
+      } else if (key == "HOLOGRAM_CHECK_INTERVAL_MS") {
+        hologramCheckIntervalMs = value.toInt();
+      } else if (key == "FORWARD_ALARMS_TO_EMAIL") {
+        forwardAlarmsToEmail = (value == "true");
+      } else if (key == "ALARM_EMAIL_RECIPIENT") {
+        alarmEmailRecipient = value;
+      } else if (key == "MONTHLY_REPORT_ENABLED") {
+        monthlyReportEnabled = (value == "true");
+      } else if (key == "MONTHLY_REPORT_DAY") {
+        monthlyReportDay = value.toInt();
+      } else if (key == "MONTHLY_REPORT_HOUR") {
+        monthlyReportHour = value.toInt();
+      } else if (key == "ETHERNET_MAC_BYTE_1") {
+        ethernetMacByte1 = value.toInt();
+      } else if (key == "ETHERNET_MAC_BYTE_2") {
+        ethernetMacByte2 = value.toInt();
+      } else if (key == "ETHERNET_MAC_BYTE_3") {
+        ethernetMacByte3 = value.toInt();
+      } else if (key == "ETHERNET_MAC_BYTE_4") {
+        ethernetMacByte4 = value.toInt();
+      } else if (key == "ETHERNET_MAC_BYTE_5") {
+        ethernetMacByte5 = value.toInt();
+      } else if (key == "ETHERNET_MAC_BYTE_6") {
+        ethernetMacByte6 = value.toInt();
+      }
+    }
+  }
+  
+  configFile.close();
+  
+  String configMsg = "Server configuration loaded - Location: " + serverLocation + 
+                    ", Daily email: " + String(dailyEmailHour) + ":" + String(dailyEmailMinute) +
+                    ", Debug: " + String(enableSerialDebug ? "ON" : "OFF");
+  if (enableSerialDebug) Serial.println(configMsg);
+}
+
 void removeDailyEmailRecipient(int index) {
   if (index >= 0 && index < dailyRecipientCount) {
     String removedEmail = dailyEmailRecipients[index];
@@ -1660,7 +1828,7 @@ bool sendHologramPing(String pingMessage) {
   if (!networkConnected) return false;
   
   // Create JSON payload for ping
-  String jsonPayload = "{\"k\":\"" + String(HOLOGRAM_DEVICE_KEY) + "\",";
+  String jsonPayload = "{\"k\":\"" + hologramDeviceKey + "\",";
   jsonPayload += "\"d\":\"" + pingMessage + "\",";
   jsonPayload += "\"t\":[\"PING\"]}";
   
@@ -1689,7 +1857,7 @@ bool sendHologramEmail(String recipient, String subject, String body) {
   if (!networkConnected) return false;
   
   // Create JSON payload for Hologram email API
-  String jsonPayload = "{\"k\":\"" + String(HOLOGRAM_DEVICE_KEY) + "\",";
+  String jsonPayload = "{\"k\":\"" + hologramDeviceKey + "\",";
   jsonPayload += "\"d\":{";
   jsonPayload += "\"to\":\"" + recipient + "\",";
   jsonPayload += "\"subject\":\"" + subject + "\",";
@@ -1730,7 +1898,7 @@ bool isTimeForMonthlyReport() {
     int currentHour = rtc.getHours();
     
     // Generate report on configured day of month at configured hour
-    if (currentDay == MONTHLY_REPORT_DAY && currentHour == MONTHLY_REPORT_HOUR) {
+    if (currentDay == monthlyReportDay && currentHour == monthlyReportHour) {
       return true;
     }
   }
