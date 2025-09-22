@@ -1,43 +1,74 @@
-# Tank Alarm Configuration File
+# Tank Alarm Configuration File - Complete Setup
 # Copy this file to SD card as tank_config.txt and modify values as needed
 # Lines starting with # are comments and will be ignored
+#
+# IMPORTANT: This file should contain ALL your operational settings.
+# The config.h file now only contains essential hardware settings and fallback defaults.
 
-# Site Information
+# === SITE INFORMATION ===
 SITE_NAME=Example Tank Farm
 TANK_NUMBER=1
 
-# Hologram.io Configuration
+# === HOLOGRAM.IO CONFIGURATION ===
+# Get your device keys from https://dashboard.hologram.io
 HOLOGRAM_DEVICE_KEY=abc123def456ghi789
 SERVER_DEVICE_KEY=xyz987uvw654rst321
 HOLOGRAM_APN=hologram
 
-# Phone Numbers for Notifications (include country code)
+# === PHONE NUMBERS FOR NOTIFICATIONS ===
+# Include country code (e.g., +1 for US, +44 for UK)
 ALARM_PHONE_PRIMARY=+15551234567
 ALARM_PHONE_SECONDARY=+15559876543
 DAILY_REPORT_PHONE=+15555551234
 
-# Timing Configuration (in hours)
+# === TIMING CONFIGURATION ===
 SLEEP_INTERVAL_HOURS=1
 DAILY_REPORT_HOURS=24
 DAILY_REPORT_TIME=05:00
 
-# Tank Physical Specifications
+# === TANK PHYSICAL SPECIFICATIONS ===
 TANK_HEIGHT_INCHES=120
 INCHES_PER_UNIT=1.0
 
-# Alarm Thresholds (in inches from bottom of tank)
+# === ALARM THRESHOLDS ===
+# Thresholds in inches from bottom of tank
 HIGH_ALARM_INCHES=100
 LOW_ALARM_INCHES=12
 
-# Digital Float Switch Settings (if using DIGITAL_FLOAT sensor type)
+# === DIGITAL FLOAT SWITCH SETTINGS ===
+# Only applies if using DIGITAL_FLOAT sensor type
 DIGITAL_HIGH_ALARM=true
 DIGITAL_LOW_ALARM=false
 
-# Large Decrease Detection
+# === LARGE DECREASE DETECTION ===
 LARGE_DECREASE_THRESHOLD_INCHES=24
 LARGE_DECREASE_WAIT_HOURS=2
 
-# Height Calibration System
+# === NETWORK CONFIGURATION ===
+CONNECTION_TIMEOUT_MS=30000
+SMS_RETRY_ATTEMPTS=3
+
+# === POWER MANAGEMENT CONFIGURATION ===
+SHORT_SLEEP_MINUTES=10
+NORMAL_SLEEP_HOURS=1
+DEEP_SLEEP_MODE=false
+ENABLE_WAKE_ON_PING=true
+
+# === LOG FILE NAMES ===
+# Optional - will use defaults if not specified
+HOURLY_LOG_FILE=hourly_log.txt
+DAILY_LOG_FILE=daily_log.txt
+ALARM_LOG_FILE=alarm_log.txt
+DECREASE_LOG_FILE=decrease_log.txt
+REPORT_LOG_FILE=report_log.txt
+
+# === SENSOR CALIBRATION (OPTIONAL) ===
+# These settings can override hardware defaults if needed
+# Uncomment and modify as needed for your specific sensor setup
+# TANK_EMPTY_VOLTAGE=0.5
+# TANK_FULL_VOLTAGE=4.5
+
+# === HEIGHT CALIBRATION SYSTEM ===
 # Calibration data is stored in calibration.txt file
 # Use SMS commands or web interface to add calibration points:
 # SMS: Send "CAL 48.5" to set tank at 48.5 inches
@@ -45,25 +76,9 @@ LARGE_DECREASE_WAIT_HOURS=2
 # SMS: Send "CALSHOW" to see current calibration points
 # Web: Use /calibration page on server to send calibration commands
 
-# Sensor Calibration (for analog sensors)
-# These values can override config.h settings if present
-# TANK_EMPTY_VOLTAGE=0.5
-# TANK_FULL_VOLTAGE=4.5
-# ANALOG_SENSOR_PIN=A1
-
-# Network Configuration (optional overrides)
-# CONNECTION_TIMEOUT_MS=30000
-# SMS_RETRY_ATTEMPTS=3
-
-# Power Management Configuration (optional overrides)
-# SHORT_SLEEP_MINUTES=10
-# NORMAL_SLEEP_HOURS=1
-# DEEP_SLEEP_MODE=false
-# ENABLE_WAKE_ON_PING=true
-
-# Log File Names (optional - will use defaults if not specified)
-# HOURLY_LOG_FILE=hourly_log.txt
-# DAILY_LOG_FILE=daily_log.txt
-# ALARM_LOG_FILE=alarm_log.txt
-# DECREASE_LOG_FILE=decrease_log.txt
-# REPORT_LOG_FILE=report_log.txt
+# === CONFIGURATION NOTES ===
+# - All phone numbers must include country code
+# - Times should be in 24-hour format (HH:MM)  
+# - Boolean values should be "true" or "false" (lowercase)
+# - Measurements are in inches from bottom of tank
+# - File changes take effect after device restart or power cycle

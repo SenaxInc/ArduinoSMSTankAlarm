@@ -131,14 +131,22 @@ The system supports three types of tank level sensors:
 
 ### Required Setup Steps
 
-1. **Create Configuration File**:
+1. **Create Essential Hardware Configuration**:
    ```bash
-   # Copy the template to create your configuration file
+   # Copy the template to create your hardware configuration file
    cp config_template.h config.h
    ```
-   Then edit `config.h` with your specific settings.
+   Edit `config.h` to set only your hardware-specific settings (sensor type, pin assignments).
 
-2. **Install Required Libraries**:
+2. **Create Operational Configuration**:
+   ```bash
+   # Copy the example to create your operational configuration file
+   cp tank_config_example.txt tank_config.txt
+   ```
+   Edit `tank_config.txt` with ALL your operational settings (device keys, phone numbers, etc.).
+   Copy this file to your SD card.
+
+3. **Install Required Libraries**:
    ```
    - MKRNB (Arduino official)
    - ArduinoLowPower
@@ -146,59 +154,57 @@ The system supports three types of tank level sensors:
    - SD (Arduino official)
    ```
 
-2. **Install Required Libraries**:
-   ```
-   - MKRNB (Arduino official)
-   - ArduinoLowPower
-   - RTCZero
-   - SD (Arduino official)
-   ```
-
-3. **Configure Hologram.io Account**:
+4. **Configure Hologram.io Account**:
    - Sign up at https://hologram.io
-   - Get device key and update `HOLOGRAM_DEVICE_KEY` in code
+   - Get device key and update `HOLOGRAM_DEVICE_KEY` in tank_config.txt
    - If using with server, also get server device key and update `SERVER_DEVICE_KEY`
    - Activate SIM card and assign to device
 
-4. **Update Phone Numbers**:
-   ```cpp
-   String ALARM_PHONE_1 = "12223334444";    // Primary alarm contact
-   String ALARM_PHONE_2 = "15556667777";    // Secondary alarm contact
-   String DAILY_PHONE = "18889990000";      // Daily report recipient
+5. **Update Phone Numbers in tank_config.txt**:
+   ```
+   ALARM_PHONE_PRIMARY=+12223334444
+   ALARM_PHONE_SECONDARY=+15556667777
+   DAILY_REPORT_PHONE=+18889990000
    ```
 
-5. **Network Configuration**:
+6. **Network Configuration**:
    - APN is pre-configured for Hologram.io ("hologram")
    - No additional network setup required
 
-6. **Daily Report Time Configuration**:
+7. **Set Daily Report Time in tank_config.txt**:
    ```
    DAILY_REPORT_TIME=05:00
    ```
    - Set specific time for daily reports in HH:MM format (24-hour)
    - Default is 05:00 (5:00 AM)
-   - Configure in SD card config file (tank_config.txt)
    - System automatically syncs with cellular network time
 
 ### Configuration File Types
 
-This project uses two types of configuration files:
+This project uses a streamlined configuration approach with minimal compile-time settings:
 
-1. **Compile-time Configuration (.h files)**:
-   - `config.h` - Main configuration file compiled into firmware
-   - Contains hardware settings, pin assignments, and basic parameters
+1. **Essential Hardware Configuration (.h files)**:
+   - `config.h` - Contains ONLY essential hardware settings and emergency fallbacks
+   - Pin assignments, sensor types, I2C addresses (hardware-dependent)
+   - Emergency contact numbers and basic defaults (used only if SD card fails)
    - Must be present for compilation to succeed
-   - Copy from `config_template.h` and customize for your setup
-   - Changes require recompiling and uploading new firmware
+   - Copy from `config_template.h` and customize for your hardware setup
 
-2. **Runtime Configuration (.txt files on SD card)**:
-   - `tank_config.txt` - Runtime settings loaded from SD card
+2. **Primary Operational Configuration (.txt files on SD card)**:
+   - `tank_config.txt` - Contains ALL your operational settings
+   - Device keys, phone numbers, alarm thresholds, timing settings
+   - Tank specifications, calibration data, power management
    - Can be changed without recompiling firmware
    - Allows field updates and remote configuration changes
-   - Optional - uses defaults from config.h if not present
-   - See `tank_config_example.txt` for format and available options
+   - See `tank_config_example.txt` for complete format and all available options
 
-**Important**: Always use .h extensions for header files and .txt extensions for SD card configuration files. The .h files are C++ headers that must be compiled into the firmware, while .txt files are data files read at runtime.
+**Important**: The system now prioritizes SD card configuration. ALL operational settings should be configured in `tank_config.txt`. The .h file provides only emergency fallbacks and hardware essentials.
+
+### Recommended Configuration Workflow
+
+1. **Hardware Setup**: Configure `config.h` with your hardware-specific pin assignments and sensor type
+2. **Operational Setup**: Configure ALL operational settings in `tank_config.txt` on SD card
+3. **Field Updates**: Update `tank_config.txt` for any operational changes (no firmware recompilation needed)
 
 ### Power Management Configuration
 ```
