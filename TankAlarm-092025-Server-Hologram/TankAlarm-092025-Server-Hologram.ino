@@ -115,35 +115,35 @@ const int MAX_POWER_FAILURE_EVENTS = 50;
 PowerFailureEvent powerFailureEvents[MAX_POWER_FAILURE_EVENTS];
 int powerFailureEventCount = 0;
 
-// Server configuration variables (loaded from SD card config file)
-String hologramDeviceKey = HOLOGRAM_DEVICE_KEY;
-int dailyEmailHour = DAILY_EMAIL_HOUR;
-int dailyEmailMinute = DAILY_EMAIL_MINUTE;
-bool useHologramEmail = USE_HOLOGRAM_EMAIL;
-String dailyEmailSmsGateway = DAILY_EMAIL_SMS_GATEWAY;
-String hologramEmailRecipient = HOLOGRAM_EMAIL_RECIPIENT;
-String dailyEmailRecipient = DAILY_EMAIL_RECIPIENT;
-String serverName = SERVER_NAME;
-String serverLocation = SERVER_LOCATION;
-bool enableSerialDebug = ENABLE_SERIAL_DEBUG;
-int webPageRefreshSeconds = WEB_PAGE_REFRESH_SECONDS;
-int maxReportsInMemory = MAX_REPORTS_IN_MEMORY;
-int daysToKeepLogs = DAYS_TO_KEEP_LOGS;
-int staticIpAddress[4] = STATIC_IP_ADDRESS;
-int staticGateway[4] = STATIC_GATEWAY;
-int staticSubnet[4] = STATIC_SUBNET;
-int hologramCheckIntervalMs = HOLOGRAM_CHECK_INTERVAL_MS;
-bool forwardAlarmsToEmail = FORWARD_ALARMS_TO_EMAIL;
-String alarmEmailRecipient = ALARM_EMAIL_RECIPIENT;
-bool monthlyReportEnabled = MONTHLY_REPORT_ENABLED;
-int monthlyReportDay = MONTHLY_REPORT_DAY;
-int monthlyReportHour = MONTHLY_REPORT_HOUR;
-int ethernetMacByte1 = ETHERNET_MAC_BYTE_1;
-int ethernetMacByte2 = ETHERNET_MAC_BYTE_2;
-int ethernetMacByte3 = ETHERNET_MAC_BYTE_3;
-int ethernetMacByte4 = ETHERNET_MAC_BYTE_4;
-int ethernetMacByte5 = ETHERNET_MAC_BYTE_5;
-int ethernetMacByte6 = ETHERNET_MAC_BYTE_6;
+// Server configuration variables (loaded from SD card config file - REQUIRED)
+String hologramDeviceKey = "";
+int dailyEmailHour = 6;
+int dailyEmailMinute = 0;
+bool useHologramEmail = true;
+String dailyEmailSmsGateway = "";
+String hologramEmailRecipient = "";
+String dailyEmailRecipient = "";
+String serverName = "Tank Alarm Server";
+String serverLocation = "Unknown Location";
+bool enableSerialDebug = true;
+int webPageRefreshSeconds = 30;
+int maxReportsInMemory = 50;
+int daysToKeepLogs = 30;
+int staticIpAddress[4] = {192, 168, 1, 100};
+int staticGateway[4] = {192, 168, 1, 1};
+int staticSubnet[4] = {255, 255, 255, 0};
+int hologramCheckIntervalMs = 5000;
+bool forwardAlarmsToEmail = true;
+String alarmEmailRecipient = "";
+bool monthlyReportEnabled = true;
+int monthlyReportDay = 1;
+int monthlyReportHour = 8;
+int ethernetMacByte1 = 0x90;
+int ethernetMacByte2 = 0xA2;
+int ethernetMacByte3 = 0xDA;
+int ethernetMacByte4 = 0x10;
+int ethernetMacByte5 = 0xD1;
+int ethernetMacByte6 = 0x72;
 
 // SD card configuration file
 #define SERVER_CONFIG_FILE "server_config.txt"
@@ -1396,17 +1396,27 @@ void saveEmailRecipients() {
 
 void loadServerConfigurationFromSD() {
   if (!SD.begin(SD_CARD_CS_PIN)) {
-    if (enableSerialDebug) Serial.println("Failed to initialize SD card for server configuration loading");
-    return;
+    Serial.println("CRITICAL ERROR: Failed to initialize SD card for server configuration loading");
+    Serial.println("SD card configuration is REQUIRED for operation");
+    while (true) {
+      // Halt execution - SD card config is required
+      delay(5000);
+      Serial.println("Please insert SD card with server_config.txt and restart");
+    }
   }
   
   File configFile = SD.open(SERVER_CONFIG_FILE);
   if (!configFile) {
-    if (enableSerialDebug) Serial.println("Server config file not found, using defaults from server_config.h");
-    return;
+    Serial.println("CRITICAL ERROR: Server config file not found on SD card");
+    Serial.println("server_config.txt is REQUIRED for operation");
+    while (true) {
+      // Halt execution - SD card config is required
+      delay(5000);
+      Serial.println("Please create server_config.txt on SD card and restart");
+    }
   }
   
-  if (enableSerialDebug) Serial.println("Loading server configuration from SD card...");
+  Serial.println("Loading server configuration from SD card...");
   
   while (configFile.available()) {
     String line = configFile.readStringUntil('\n');
@@ -1512,10 +1522,19 @@ void loadServerConfigurationFromSD() {
   
   configFile.close();
   
-  String configMsg = "Server configuration loaded - Location: " + serverLocation + 
+  // Validate critical configuration
+  if (hologramDeviceKey.length() == 0 || hologramDeviceKey == "your_device_key_here") {
+    Serial.println("CRITICAL ERROR: HOLOGRAM_DEVICE_KEY not configured in server_config.txt");
+    while (true) {
+      delay(5000);
+      Serial.println("Please set HOLOGRAM_DEVICE_KEY in server_config.txt and restart");
+    }
+  }
+  
+  String configMsg = "Server configuration loaded successfully - Location: " + serverLocation + 
                     ", Daily email: " + String(dailyEmailHour) + ":" + String(dailyEmailMinute) +
                     ", Debug: " + String(enableSerialDebug ? "ON" : "OFF");
-  if (enableSerialDebug) Serial.println(configMsg);
+  Serial.println(configMsg);
 }
 
 void removeDailyEmailRecipient(int index) {

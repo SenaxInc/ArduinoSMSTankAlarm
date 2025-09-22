@@ -1,12 +1,14 @@
-# SD Card Configuration for Tank Alarm Server
+# SD Card Configuration for Tank Alarm Server (REQUIRED)
 
-The Tank Alarm Server now supports configuration via SD card, allowing field updates without recompiling code.
+The Tank Alarm Server requires configuration via SD card. The server will not start without a properly configured SD card.
 
 ## Quick Start
 
 1. Copy `server_config.txt` to the root of your SD card
 2. Edit the configuration values as needed
 3. Insert SD card into server and power on
+
+**CRITICAL**: The server will halt with error messages if the SD card or configuration file is missing.
 
 ## Configuration File Format
 
@@ -61,18 +63,22 @@ To update configuration in the field:
 
 ## Fallback Behavior
 
-If `server_config.txt` is not found on the SD card, the server will:
-- Use default values from `server_config.h`
-- Log a message about using defaults
-- Continue normal operation
+**NO FALLBACK**: If `server_config.txt` is not found on the SD card, the server will:
+- Display critical error messages on serial console
+- Halt execution and refuse to start
+- Require operator intervention to insert SD card with proper configuration
+
+The server assumes SD card configuration will always be available and does not fall back to compile-time defaults.
 
 ## Troubleshooting
 
 ### Configuration not loading
-- Check that file is named exactly `server_config.txt`
-- Verify SD card is properly inserted
-- Check serial output for error messages
+- **CRITICAL**: Check that SD card is properly inserted and detected
+- **CRITICAL**: Check that file is named exactly `server_config.txt`
+- **CRITICAL**: Verify HOLOGRAM_DEVICE_KEY is set and not the default placeholder
+- Check serial output for specific error messages
 - Ensure no extra spaces around `=` in config file
+- Server will halt execution if configuration is missing or invalid
 
 ### Invalid values
 - Boolean values must be exactly `true` or `false`

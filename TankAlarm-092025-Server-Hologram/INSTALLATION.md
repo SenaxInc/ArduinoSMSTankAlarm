@@ -85,7 +85,9 @@ Install these libraries via **Tools → Manage Libraries**:
 
 ### Configure Settings
 
-#### Option 1: SD Card Configuration (Recommended - Field Configurable)
+#### SD Card Configuration (REQUIRED)
+The server now requires configuration via SD card. Fallback to compile-time defaults has been removed.
+
 1. **Copy Configuration Template to SD Card**:
    ```bash
    cp server_config.txt /path/to/sd/card/server_config.txt
@@ -93,7 +95,7 @@ Install these libraries via **Tools → Manage Libraries**:
 
 2. **Edit SD Card Configuration** (`server_config.txt` on SD card):
    ```
-   # Update these values for your setup
+   # Update these values for your setup - ALL SETTINGS REQUIRED
    HOLOGRAM_DEVICE_KEY=your_actual_device_key_here
    DAILY_EMAIL_RECIPIENT=+15551234567@vtext.com
    DAILY_EMAIL_HOUR=6
@@ -102,22 +104,13 @@ Install these libraries via **Tools → Manage Libraries**:
 
 3. **Insert SD Card**: Place configured SD card in server before powering on
 
-#### Option 2: Compile-Time Configuration (Legacy)
-1. **Edit Configuration** (`server_config.h`) for fallback defaults:
-   ```cpp
-   // These are used only if SD card config is not available
-   #define HOLOGRAM_DEVICE_KEY "your_actual_device_key_here"
-   #define DAILY_EMAIL_RECIPIENT "+15551234567@vtext.com" 
-   #define DAILY_EMAIL_HOUR 6  // 6 AM for daily reports
-   ```
+**IMPORTANT**: The server will not start without a properly configured `server_config.txt` file on the SD card. The device will halt with error messages if:
+- SD card is not inserted
+- `server_config.txt` file is missing
+- HOLOGRAM_DEVICE_KEY is not set or is still the default value
 
-2. **Network Configuration** (optional - can also be set in SD card config):
-   ```
-   # In server_config.txt on SD card:
-   STATIC_IP_ADDRESS=192,168,1,100
-   STATIC_GATEWAY=192,168,1,1
-   STATIC_SUBNET=255,255,255,0
-   ```
+#### Legacy Compile-Time Configuration (No Longer Used)
+The `server_config.h` file now only contains essential hardware constants. Configuration values are no longer read from this file.
 
 ### Upload Code to Device
 1. **Connect Hardware**:
@@ -275,9 +268,9 @@ Enable detailed logging by setting in `server_config.h`:
 
 ### Common Configuration Files
 
-#### Example server_config.txt (SD Card Configuration)
+#### Example server_config.txt (SD Card Configuration - REQUIRED)
 ```
-# Tank Alarm Server SD Card Configuration
+# Tank Alarm Server SD Card Configuration - ALL VALUES REQUIRED
 HOLOGRAM_DEVICE_KEY=1234567890abcdef
 DAILY_EMAIL_RECIPIENT=+15551234567@vtext.com
 DAILY_EMAIL_HOUR=6
@@ -289,23 +282,26 @@ STATIC_GATEWAY=192,168,1,1
 STATIC_SUBNET=255,255,255,0
 ```
 
-#### Example server_config.h (Fallback Defaults)
+#### server_config.h (Hardware Constants Only)
 ```cpp
-// These are only used if server_config.txt is not found on SD card
-#define HOLOGRAM_DEVICE_KEY "1234567890abcdef"
-#define DAILY_EMAIL_RECIPIENT "+15551234567@vtext.com"
-#define DAILY_EMAIL_HOUR 6
-#define DAILY_EMAIL_MINUTE 0
-#define STATIC_IP_ADDRESS {192, 168, 1, 100}
-#define ENABLE_SERIAL_DEBUG true
+// Only hardware-specific constants remain
+#define SD_CARD_CS_PIN 4
+#define CONNECTION_TIMEOUT_MS 30000
+#define WEB_SERVER_PORT 80
+#define MESSAGE_BUFFER_SIZE 1024
+// No fallback defaults - SD card configuration is required
 ```
 
-#### Field Configuration Updates
+#### Field Configuration Updates (CRITICAL)
 To update configuration in the field:
-1. Remove SD card from server
-2. Edit `server_config.txt` on computer
-3. Insert SD card back into server
-4. Restart server to load new configuration
+1. **Power off** the server (REQUIRED)
+2. **Remove SD card** from server
+3. **Edit** `server_config.txt` on a computer
+4. **Verify** all required settings are present
+5. **Insert SD card** back into server
+6. **Power on** server - configuration will be validated and loaded
+
+**WARNING**: Server will not start without valid SD card configuration.
 
 #### Hologram Device Key Location
 Find your device key in the Hologram.io dashboard:
