@@ -131,7 +131,14 @@ The system supports three types of tank level sensors:
 
 ### Required Setup Steps
 
-1. **Install Required Libraries**:
+1. **Create Configuration File**:
+   ```bash
+   # Copy the template to create your configuration file
+   cp config_template.h config.h
+   ```
+   Then edit `config.h` with your specific settings.
+
+2. **Install Required Libraries**:
    ```
    - MKRNB (Arduino official)
    - ArduinoLowPower
@@ -139,24 +146,32 @@ The system supports three types of tank level sensors:
    - SD (Arduino official)
    ```
 
-2. **Configure Hologram.io Account**:
+2. **Install Required Libraries**:
+   ```
+   - MKRNB (Arduino official)
+   - ArduinoLowPower
+   - RTCZero
+   - SD (Arduino official)
+   ```
+
+3. **Configure Hologram.io Account**:
    - Sign up at https://hologram.io
    - Get device key and update `HOLOGRAM_DEVICE_KEY` in code
    - If using with server, also get server device key and update `SERVER_DEVICE_KEY`
    - Activate SIM card and assign to device
 
-3. **Update Phone Numbers**:
+4. **Update Phone Numbers**:
    ```cpp
    String ALARM_PHONE_1 = "12223334444";    // Primary alarm contact
    String ALARM_PHONE_2 = "15556667777";    // Secondary alarm contact
    String DAILY_PHONE = "18889990000";      // Daily report recipient
    ```
 
-4. **Network Configuration**:
+5. **Network Configuration**:
    - APN is pre-configured for Hologram.io ("hologram")
    - No additional network setup required
 
-5. **Daily Report Time Configuration**:
+6. **Daily Report Time Configuration**:
    ```
    DAILY_REPORT_TIME=05:00
    ```
@@ -164,6 +179,26 @@ The system supports three types of tank level sensors:
    - Default is 05:00 (5:00 AM)
    - Configure in SD card config file (tank_config.txt)
    - System automatically syncs with cellular network time
+
+### Configuration File Types
+
+This project uses two types of configuration files:
+
+1. **Compile-time Configuration (.h files)**:
+   - `config.h` - Main configuration file compiled into firmware
+   - Contains hardware settings, pin assignments, and basic parameters
+   - Must be present for compilation to succeed
+   - Copy from `config_template.h` and customize for your setup
+   - Changes require recompiling and uploading new firmware
+
+2. **Runtime Configuration (.txt files on SD card)**:
+   - `tank_config.txt` - Runtime settings loaded from SD card
+   - Can be changed without recompiling firmware
+   - Allows field updates and remote configuration changes
+   - Optional - uses defaults from config.h if not present
+   - See `tank_config_example.txt` for format and available options
+
+**Important**: Always use .h extensions for header files and .txt extensions for SD card configuration files. The .h files are C++ headers that must be compiled into the firmware, while .txt files are data files read at runtime.
 
 ### Power Management Configuration
 ```

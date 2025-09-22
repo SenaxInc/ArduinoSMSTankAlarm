@@ -30,7 +30,7 @@
 #include <Wire.h>         // I2C communication for current loop sensors
 
 // Include configuration file (copy config_template.h to config.h and customize)
-#include "config_template.h"  // Change to "config.h" after setup
+#include "config.h"  // Configuration file with your specific settings
 
 // Sensor type definitions
 #define DIGITAL_FLOAT 0
