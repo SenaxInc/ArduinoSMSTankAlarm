@@ -1,17 +1,18 @@
-# Tank Alarm Configuration File
+# Tank Alarm Configuration File (REQUIRED)
 # Copy this file to SD card as tank_config.txt and modify values as needed
 # Lines starting with # are comments and will be ignored
+# ALL SETTINGS ARE REQUIRED - Tank will not start without valid configuration
 
-# Site Information
+# Site Information (REQUIRED)
 SITE_NAME=Example Tank Farm
 TANK_NUMBER=1
 
-# Hologram.io Configuration
+# Hologram.io Configuration (REQUIRED)
 HOLOGRAM_DEVICE_KEY=abc123def456ghi789
 SERVER_DEVICE_KEY=xyz987uvw654rst321
 HOLOGRAM_APN=hologram
 
-# Phone Numbers for Notifications (include country code)
+# Phone Numbers for Notifications (REQUIRED - include country code)
 ALARM_PHONE_PRIMARY=+15551234567
 ALARM_PHONE_SECONDARY=+15559876543
 DAILY_REPORT_PHONE=+15555551234
