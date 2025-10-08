@@ -1464,33 +1464,93 @@ void loadServerConfigurationFromSD() {
         daysToKeepLogs = value.toInt();
       } else if (key == "STATIC_IP_ADDRESS") {
         // Parse comma-separated IP address like "192,168,1,100"
-        int pos = 0;
+        int octetCount = 0;
+        int lastPos = 0;
+        int commaPos = -1;
+        byte tempIp[4];
+        bool validIp = true;
         for (int i = 0; i < 4; i++) {
-          int nextPos = value.indexOf(',', pos);
-          if (nextPos == -1 && i < 3) break;
-          String octet = (nextPos == -1) ? value.substring(pos) : value.substring(pos, nextPos);
-          staticIpAddress[i] = octet.toInt();
-          pos = nextPos + 1;
+          commaPos = value.indexOf(',', lastPos);
+          String octetStr;
+          if (i < 3) {
+            if (commaPos == -1) {
+              validIp = false;
+              break;
+            }
+            octetStr = value.substring(lastPos, commaPos);
+            lastPos = commaPos + 1;
+          } else {
+            octetStr = value.substring(lastPos);
+          }
+          int octet = octetStr.toInt();
+          if (octet < 0 || octet > 255) {
+            validIp = false;
+            break;
+          }
+          tempIp[i] = (byte)octet;
+        }
+        if (validIp) {
+          for (int i = 0; i < 4; i++) staticIpAddress[i] = tempIp[i];
         }
       } else if (key == "STATIC_GATEWAY") {
         // Parse comma-separated gateway address
-        int pos = 0;
+        int octetCount = 0;
+        int lastPos = 0;
+        int commaPos = -1;
+        byte tempGateway[4];
+        bool validGateway = true;
         for (int i = 0; i < 4; i++) {
-          int nextPos = value.indexOf(',', pos);
-          if (nextPos == -1 && i < 3) break;
-          String octet = (nextPos == -1) ? value.substring(pos) : value.substring(pos, nextPos);
-          staticGateway[i] = octet.toInt();
-          pos = nextPos + 1;
+          commaPos = value.indexOf(',', lastPos);
+          String octetStr;
+          if (i < 3) {
+            if (commaPos == -1) {
+              validGateway = false;
+              break;
+            }
+            octetStr = value.substring(lastPos, commaPos);
+            lastPos = commaPos + 1;
+          } else {
+            octetStr = value.substring(lastPos);
+          }
+          int octet = octetStr.toInt();
+          if (octet < 0 || octet > 255) {
+            validGateway = false;
+            break;
+          }
+          tempGateway[i] = (byte)octet;
+        }
+        if (validGateway) {
+          for (int i = 0; i < 4; i++) staticGateway[i] = tempGateway[i];
         }
       } else if (key == "STATIC_SUBNET") {
         // Parse comma-separated subnet mask
-        int pos = 0;
+        int octetCount = 0;
+        int lastPos = 0;
+        int commaPos = -1;
+        byte tempSubnet[4];
+        bool validSubnet = true;
         for (int i = 0; i < 4; i++) {
-          int nextPos = value.indexOf(',', pos);
-          if (nextPos == -1 && i < 3) break;
-          String octet = (nextPos == -1) ? value.substring(pos) : value.substring(pos, nextPos);
-          staticSubnet[i] = octet.toInt();
-          pos = nextPos + 1;
+          commaPos = value.indexOf(',', lastPos);
+          String octetStr;
+          if (i < 3) {
+            if (commaPos == -1) {
+              validSubnet = false;
+              break;
+            }
+            octetStr = value.substring(lastPos, commaPos);
+            lastPos = commaPos + 1;
+          } else {
+            octetStr = value.substring(lastPos);
+          }
+          int octet = octetStr.toInt();
+          if (octet < 0 || octet > 255) {
+            validSubnet = false;
+            break;
+          }
+          tempSubnet[i] = (byte)octet;
+        }
+        if (validSubnet) {
+          for (int i = 0; i < 4; i++) staticSubnet[i] = tempSubnet[i];
         }
       } else if (key == "HOLOGRAM_CHECK_INTERVAL_MS") {
         hologramCheckIntervalMs = value.toInt();
