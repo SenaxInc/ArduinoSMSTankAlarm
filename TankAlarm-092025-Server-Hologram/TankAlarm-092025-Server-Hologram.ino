@@ -1460,6 +1460,13 @@ void loadServerConfigurationFromSD() {
         webPageRefreshSeconds = value.toInt();
       } else if (key == "MAX_REPORTS_IN_MEMORY") {
         maxReportsInMemory = value.toInt();
+        // Validate that maxReportsInMemory doesn't exceed array size
+        if (maxReportsInMemory > MAX_TANK_REPORTS) {
+          Serial.println("WARNING: MAX_REPORTS_IN_MEMORY (" + String(maxReportsInMemory) + 
+                        ") exceeds MAX_TANK_REPORTS (" + String(MAX_TANK_REPORTS) + ")");
+          Serial.println("Capping maxReportsInMemory to " + String(MAX_TANK_REPORTS));
+          maxReportsInMemory = MAX_TANK_REPORTS;
+        }
       } else if (key == "DAYS_TO_KEEP_LOGS") {
         daysToKeepLogs = value.toInt();
       } else if (key == "STATIC_IP_ADDRESS") {

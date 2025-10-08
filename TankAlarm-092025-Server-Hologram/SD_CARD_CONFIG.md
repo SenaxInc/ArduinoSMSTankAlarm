@@ -43,7 +43,7 @@ SERVER_LOCATION=Main Office
 ### System Settings
 - `ENABLE_SERIAL_DEBUG`: Enable debug output (true/false)
 - `WEB_PAGE_REFRESH_SECONDS`: Web page auto-refresh interval
-- `MAX_REPORTS_IN_MEMORY`: Maximum reports to store in memory
+- `MAX_REPORTS_IN_MEMORY`: Maximum reports to store in memory (maximum: 100, will be capped if exceeded)
 - `DAYS_TO_KEEP_LOGS`: Days to retain log files
 
 ### Monthly Reports

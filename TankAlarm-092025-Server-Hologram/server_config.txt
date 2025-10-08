@@ -21,7 +21,7 @@ SERVER_LOCATION=Main Office
 # System Configuration
 ENABLE_SERIAL_DEBUG=true
 WEB_PAGE_REFRESH_SECONDS=30
-MAX_REPORTS_IN_MEMORY=50
+MAX_REPORTS_IN_MEMORY=50  # Maximum: 100 (will be capped if exceeded)
 DAYS_TO_KEEP_LOGS=30
 
 # Network Configuration (Static IP fallback)
