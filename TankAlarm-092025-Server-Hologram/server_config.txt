@@ -1,0 +1,51 @@
+# Tank Alarm Server Configuration File
+# Place this file on the SD card to configure server settings
+# Lines starting with # are comments and will be ignored
+# Format: KEY=VALUE (no spaces around =)
+
+# Hologram.io Configuration
+HOLOGRAM_DEVICE_KEY=your_device_key_here
+
+# Daily Email Configuration
+DAILY_EMAIL_HOUR=6
+DAILY_EMAIL_MINUTE=0
+USE_HOLOGRAM_EMAIL=true
+DAILY_EMAIL_SMS_GATEWAY=+19995551234
+HOLOGRAM_EMAIL_RECIPIENT=user@example.com
+DAILY_EMAIL_RECIPIENT=+15551234567@vtext.com
+
+# Server Identification
+SERVER_NAME=Tank Alarm Server 092025
+SERVER_LOCATION=Main Office
+
+# System Configuration
+ENABLE_SERIAL_DEBUG=true
+WEB_PAGE_REFRESH_SECONDS=30
+MAX_REPORTS_IN_MEMORY=50  # Maximum: 100 (will be capped if exceeded)
+DAYS_TO_KEEP_LOGS=30
+
+# Network Configuration (Static IP fallback)
+# Format: comma-separated octets like 192,168,1,100
+STATIC_IP_ADDRESS=192,168,1,100
+STATIC_GATEWAY=192,168,1,1
+STATIC_SUBNET=255,255,255,0
+
+# Ethernet MAC Address (each byte as decimal)
+ETHERNET_MAC_BYTE_1=144
+ETHERNET_MAC_BYTE_2=162
+ETHERNET_MAC_BYTE_3=218
+ETHERNET_MAC_BYTE_4=16
+ETHERNET_MAC_BYTE_5=209
+ETHERNET_MAC_BYTE_6=114
+
+# Hologram Settings
+HOLOGRAM_CHECK_INTERVAL_MS=5000
+
+# Alarm Notification Settings
+FORWARD_ALARMS_TO_EMAIL=true
+ALARM_EMAIL_RECIPIENT=+15551234567@vtext.com
+
+# Monthly Report Settings
+MONTHLY_REPORT_ENABLED=true
+MONTHLY_REPORT_DAY=1
+MONTHLY_REPORT_HOUR=8
