@@ -43,6 +43,11 @@
 #define WAKE_REASON_TIMER 0      // Woke up due to timer
 #define WAKE_REASON_CELLULAR 1   // Woke up due to cellular data
 
+// Physical constants
+#define INCHES_PER_FOOT 12
+#define ADC_MAX_VALUE 4095.0     // 12-bit ADC resolution
+#define ADC_REFERENCE_VOLTAGE 3.3 // MKR board reference voltage
+
 // Initialize cellular components
 NB nbAccess;
 NBSMS sms;
@@ -591,7 +596,7 @@ int readAnalogVoltageSensor() {
   for (int i = 0; i < numReadings; i++) {
     int adcValue = analogRead(ANALOG_SENSOR_PIN);
     // Convert ADC value to voltage (MKR NB 1500 has 3.3V reference, 12-bit ADC)
-    float voltage = (adcValue / 4095.0) * 3.3;
+    float voltage = (adcValue / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE;
     totalVoltage += voltage;
     delay(10);
   }
@@ -937,9 +942,32 @@ void sendHologramData(String topic, String message) {
   }
 }
 
+// SD card health monitoring and recovery
+bool ensureSDCardReady() {
+  static unsigned long lastAttempt = 0;
+  static bool lastState = false;
+  
+  // Don't spam retry attempts - wait at least 10 seconds between attempts
+  unsigned long now = millis();
+  if (now - lastAttempt < 10000 && !lastState) {
+    return false;
+  }
+  
+  lastAttempt = now;
+  lastState = SD.begin(SD_CARD_CS_PIN);
+  
+  if (!lastState) {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("SD card initialization failed, will retry");
+#endif
+  }
+  
+  return lastState;
+}
+
 void logEvent(String event) {
   // Log events to SD card with timestamp
-  if (SD.begin(SD_CARD_CS_PIN)) {
+  if (ensureSDCardReady()) {
     File logFile = SD.open(logFileName, FILE_WRITE);
     if (logFile) {
       String logEntry = getCurrentTimestamp() + " - " + event;
@@ -1115,19 +1143,50 @@ void loadSDCardConfiguration() {
   configFile.close();
   
   // Validate critical configuration
+  bool configValid = true;
+  
   if (hologramDeviceKey.length() == 0 || hologramDeviceKey == "your_device_key_here") {
     Serial.println("CRITICAL ERROR: HOLOGRAM_DEVICE_KEY not configured in tank_config.txt");
-    while (true) {
-      delay(5000);
-      Serial.println("Please set HOLOGRAM_DEVICE_KEY in tank_config.txt and restart");
-    }
+    configValid = false;
   }
   
   if (alarmPhonePrimary.length() == 0 || alarmPhonePrimary == "+12223334444") {
     Serial.println("CRITICAL ERROR: ALARM_PHONE_PRIMARY not configured in tank_config.txt");
+    configValid = false;
+  }
+  
+  // Validate sensor configuration ranges to prevent division by zero
+  #if SENSOR_TYPE == ANALOG_VOLTAGE
+  if (abs(TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE) < 0.001) {
+    Serial.println("CRITICAL ERROR: TANK_FULL_VOLTAGE and TANK_EMPTY_VOLTAGE must be different");
+    Serial.println("Current values: FULL=" + String(TANK_FULL_VOLTAGE) + "V, EMPTY=" + String(TANK_EMPTY_VOLTAGE) + "V");
+    configValid = false;
+  }
+  #endif
+  
+  #if SENSOR_TYPE == CURRENT_LOOP
+  if (abs(TANK_FULL_CURRENT - TANK_EMPTY_CURRENT) < 0.001) {
+    Serial.println("CRITICAL ERROR: TANK_FULL_CURRENT and TANK_EMPTY_CURRENT must be different");
+    Serial.println("Current values: FULL=" + String(TANK_FULL_CURRENT) + "mA, EMPTY=" + String(TANK_EMPTY_CURRENT) + "mA");
+    configValid = false;
+  }
+  #endif
+  
+  // Validate tank height is positive
+  if (tankHeightInches <= 0) {
+    Serial.println("CRITICAL ERROR: TANK_HEIGHT_INCHES must be greater than 0");
+    Serial.println("Current value: " + String(tankHeightInches) + " inches");
+    configValid = false;
+  }
+  
+  // If configuration is invalid, halt execution
+  if (!configValid) {
+    Serial.println("========================================");
+    Serial.println("Configuration validation FAILED!");
+    Serial.println("Please fix errors in tank_config.txt and restart");
+    Serial.println("========================================");
     while (true) {
       delay(5000);
-      Serial.println("Please set ALARM_PHONE_PRIMARY in tank_config.txt and restart");
     }
   }
   
@@ -1153,14 +1212,30 @@ float convertToInches(float sensorValue) {
 #elif SENSOR_TYPE == ANALOG_VOLTAGE
   // Calculate percentage first, then convert to inches
   float voltage = sensorValue;
-  float tankPercent = ((voltage - TANK_EMPTY_VOLTAGE) / (TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE)) * 100.0;
+  float voltageRange = TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE;
+  
+  // Prevent division by zero with invalid configuration
+  if (abs(voltageRange) < 0.001) {
+    logEvent("ERROR: Invalid voltage range configuration (TANK_FULL_VOLTAGE == TANK_EMPTY_VOLTAGE)");
+    return 0.0;
+  }
+  
+  float tankPercent = ((voltage - TANK_EMPTY_VOLTAGE) / voltageRange) * 100.0;
   tankPercent = constrain(tankPercent, 0.0, 100.0);
   return (tankPercent / 100.0) * tankHeightInches;
   
 #elif SENSOR_TYPE == CURRENT_LOOP
   // Calculate percentage first, then convert to inches
   float current = sensorValue;
-  float tankPercent = ((current - TANK_EMPTY_CURRENT) / (TANK_FULL_CURRENT - TANK_EMPTY_CURRENT)) * 100.0;
+  float currentRange = TANK_FULL_CURRENT - TANK_EMPTY_CURRENT;
+  
+  // Prevent division by zero with invalid configuration
+  if (abs(currentRange) < 0.001) {
+    logEvent("ERROR: Invalid current range configuration (TANK_FULL_CURRENT == TANK_EMPTY_CURRENT)");
+    return 0.0;
+  }
+  
+  float tankPercent = ((current - TANK_EMPTY_CURRENT) / currentRange) * 100.0;
   tankPercent = constrain(tankPercent, 0.0, 100.0);
   return (tankPercent / 100.0) * tankHeightInches;
   
@@ -1181,7 +1256,7 @@ float getTankLevelInches() {
   
   for (int i = 0; i < numReadings; i++) {
     int adcValue = analogRead(ANALOG_SENSOR_PIN);
-    float voltage = (adcValue / 4095.0) * 3.3;
+    float voltage = (adcValue / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE;
     totalVoltage += voltage;
     delay(5);
   }
@@ -1203,8 +1278,8 @@ float getTankLevelInches() {
 
 // Convert inches to feet and inches format
 String formatInchesToFeetInches(float totalInches) {
-  int feet = (int)(totalInches / 12);
-  float inches = totalInches - (feet * 12);
+  int feet = (int)(totalInches / INCHES_PER_FOOT);
+  float inches = totalInches - (feet * INCHES_PER_FOOT);
   
   String result = String(feet) + "FT," + String(inches, 1) + "IN";
   return result;
@@ -1228,7 +1303,7 @@ String getDateTimestamp() {
 // Log hourly data in required format
 // YYYYMMDD00:00,H,(Tank Number),(Number of Feet)FT,(Number of Inches)IN,+(Number of feet added in last 24hrs)FT,(Number of inches added in last 24hrs)IN,
 void logHourlyData() {
-  if (!SD.begin(SD_CARD_CS_PIN)) return;
+  if (!ensureSDCardReady()) return;
   
   String timestamp = getDateTimestamp();
   String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
@@ -1252,7 +1327,7 @@ void logHourlyData() {
 // Log daily data in required format
 // YYYYMMDD00:00,D,(site location name),(Tank Number),(Number of Feet)FT,(Number of Inches)IN,+(Number of feet added in last 24hrs)FT,(Number of inches added in last 24hrs)IN,
 void logDailyData() {
-  if (!SD.begin(SD_CARD_CS_PIN)) return;
+  if (!ensureSDCardReady()) return;
   
   String timestamp = getDateTimestamp();
   String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
@@ -1276,7 +1351,7 @@ void logDailyData() {
 // Log alarm events in required format
 // YYYYMMDD00:00,A,(site location name),(Tank Number),(alarm state, high or low or change)
 void logAlarmEvent(String alarmState) {
-  if (!SD.begin(SD_CARD_CS_PIN)) return;
+  if (!ensureSDCardReady()) return;
   
   String timestamp = getDateTimestamp();
   String logEntry = timestamp + ",A," + siteLocationName + "," + String(tankNumber) + "," + alarmState;
@@ -1326,7 +1401,7 @@ void checkLargeDecrease() {
 // Log large decrease in required format
 // YYYYMMDD00:00,S,(Tank Number),(total Number of Feet decreased)FT,(total Number of Inches decreased)IN
 void logLargeDecrease(float totalDecrease) {
-  if (!SD.begin(SD_CARD_CS_PIN)) return;
+  if (!ensureSDCardReady()) return;
   
   String timestamp = getDateTimestamp();
   String decreaseFeetInchesFormat = formatInchesToFeetInches(totalDecrease);
@@ -1517,8 +1592,8 @@ bool isTimeForDailyReport() {
 
 // Log successful daily report transmission to dedicated log file
 void logSuccessfulReport() {
-  if (!SD.begin(SD_CARD_CS_PIN)) {
-    logEvent("Failed to log successful report - SD card error");
+  if (!ensureSDCardReady()) {
+    // Note: Can't use logEvent here as it might also fail
     return;
   }
   
@@ -2071,6 +2146,12 @@ float interpolateHeight(float sensorValue) {
   float x2 = calibrationPoints[upperIndex].sensorValue;
   float y2 = calibrationPoints[upperIndex].actualHeight;
   
+  // Prevent division by zero if calibration points have same sensor value
+  if (abs(x2 - x1) < 0.0001) {
+    logEvent("WARNING: Duplicate calibration sensor values detected");
+    return y1;  // Return the known value
+  }
+  
   float interpolatedHeight = y1 + (sensorValue - x1) * (y2 - y1) / (x2 - x1);
   
   return interpolatedHeight;
@@ -2088,7 +2169,7 @@ float getCurrentSensorReading() {
   
   for (int i = 0; i < numReadings; i++) {
     int adcValue = analogRead(ANALOG_SENSOR_PIN);
-    float voltage = (adcValue / 4095.0) * 3.3;
+    float voltage = (adcValue / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE;
     totalVoltage += voltage;
     delay(5);
   }

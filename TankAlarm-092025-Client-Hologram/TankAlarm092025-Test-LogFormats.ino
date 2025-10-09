@@ -10,10 +10,13 @@ float tankHeightInches = 120.0;
 String siteLocationName = "Test Site";
 int tankNumber = 1;
 
+// Physical constants
+#define INCHES_PER_FOOT 12
+
 // Convert inches to feet and inches format
 String formatInchesToFeetInches(float totalInches) {
-  int feet = (int)(totalInches / 12);
-  float inches = totalInches - (feet * 12);
+  int feet = (int)(totalInches / INCHES_PER_FOOT);
+  float inches = totalInches - (feet * INCHES_PER_FOOT);
   
   String result = String(feet) + "FT," + String(inches, 1) + "IN";
   return result;
