@@ -1,0 +1,49 @@
+# Arduino specific files
+*.hex
+*.elf
+*.bin
+*.map
+
+# Configuration files with actual credentials (keep templates only)
+**/config.h
+**/server_config.h
+
+# Build directories
+build/
+.build/
+
+# IDE specific files
+.vscode/
+.idea/
+*.code-workspace
+
+# OS specific files
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+# Log files (keep templates, ignore actual log files from testing)
+*.log
+
+# Compiled Python files (if any test scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node modules (if any web interface)
+node_modules/
+
+# SD card test files (generated during testing)
+test_logs/
+*.csv
+HOURLY_LOG.TXT
+DAILY_LOG.TXT
+ALARM_LOG.TXT
+REPORT_LOG.TXT
