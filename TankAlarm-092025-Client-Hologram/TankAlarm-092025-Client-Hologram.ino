@@ -43,6 +43,11 @@
 #define WAKE_REASON_TIMER 0      // Woke up due to timer
 #define WAKE_REASON_CELLULAR 1   // Woke up due to cellular data
 
+// Physical constants
+#define INCHES_PER_FOOT 12
+#define ADC_MAX_VALUE 4095.0     // 12-bit ADC resolution
+#define ADC_REFERENCE_VOLTAGE 3.3 // MKR board reference voltage
+
 // Initialize cellular components
 NB nbAccess;
 NBSMS sms;
@@ -591,7 +596,7 @@ int readAnalogVoltageSensor() {
   for (int i = 0; i < numReadings; i++) {
     int adcValue = analogRead(ANALOG_SENSOR_PIN);
     // Convert ADC value to voltage (MKR NB 1500 has 3.3V reference, 12-bit ADC)
-    float voltage = (adcValue / 4095.0) * 3.3;
+    float voltage = (adcValue / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE;
     totalVoltage += voltage;
     delay(10);
   }
@@ -1153,14 +1158,30 @@ float convertToInches(float sensorValue) {
 #elif SENSOR_TYPE == ANALOG_VOLTAGE
   // Calculate percentage first, then convert to inches
   float voltage = sensorValue;
-  float tankPercent = ((voltage - TANK_EMPTY_VOLTAGE) / (TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE)) * 100.0;
+  float voltageRange = TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE;
+  
+  // Prevent division by zero with invalid configuration
+  if (abs(voltageRange) < 0.001) {
+    logEvent("ERROR: Invalid voltage range configuration (TANK_FULL_VOLTAGE == TANK_EMPTY_VOLTAGE)");
+    return 0.0;
+  }
+  
+  float tankPercent = ((voltage - TANK_EMPTY_VOLTAGE) / voltageRange) * 100.0;
   tankPercent = constrain(tankPercent, 0.0, 100.0);
   return (tankPercent / 100.0) * tankHeightInches;
   
 #elif SENSOR_TYPE == CURRENT_LOOP
   // Calculate percentage first, then convert to inches
   float current = sensorValue;
-  float tankPercent = ((current - TANK_EMPTY_CURRENT) / (TANK_FULL_CURRENT - TANK_EMPTY_CURRENT)) * 100.0;
+  float currentRange = TANK_FULL_CURRENT - TANK_EMPTY_CURRENT;
+  
+  // Prevent division by zero with invalid configuration
+  if (abs(currentRange) < 0.001) {
+    logEvent("ERROR: Invalid current range configuration (TANK_FULL_CURRENT == TANK_EMPTY_CURRENT)");
+    return 0.0;
+  }
+  
+  float tankPercent = ((current - TANK_EMPTY_CURRENT) / currentRange) * 100.0;
   tankPercent = constrain(tankPercent, 0.0, 100.0);
   return (tankPercent / 100.0) * tankHeightInches;
   
@@ -1181,7 +1202,7 @@ float getTankLevelInches() {
   
   for (int i = 0; i < numReadings; i++) {
     int adcValue = analogRead(ANALOG_SENSOR_PIN);
-    float voltage = (adcValue / 4095.0) * 3.3;
+    float voltage = (adcValue / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE;
     totalVoltage += voltage;
     delay(5);
   }
@@ -1203,8 +1224,8 @@ float getTankLevelInches() {
 
 // Convert inches to feet and inches format
 String formatInchesToFeetInches(float totalInches) {
-  int feet = (int)(totalInches / 12);
-  float inches = totalInches - (feet * 12);
+  int feet = (int)(totalInches / INCHES_PER_FOOT);
+  float inches = totalInches - (feet * INCHES_PER_FOOT);
   
   String result = String(feet) + "FT," + String(inches, 1) + "IN";
   return result;
@@ -2071,6 +2092,12 @@ float interpolateHeight(float sensorValue) {
   float x2 = calibrationPoints[upperIndex].sensorValue;
   float y2 = calibrationPoints[upperIndex].actualHeight;
   
+  // Prevent division by zero if calibration points have same sensor value
+  if (abs(x2 - x1) < 0.0001) {
+    logEvent("WARNING: Duplicate calibration sensor values detected");
+    return y1;  // Return the known value
+  }
+  
   float interpolatedHeight = y1 + (sensorValue - x1) * (y2 - y1) / (x2 - x1);
   
   return interpolatedHeight;
@@ -2088,7 +2115,7 @@ float getCurrentSensorReading() {
   
   for (int i = 0; i < numReadings; i++) {
     int adcValue = analogRead(ANALOG_SENSOR_PIN);
-    float voltage = (adcValue / 4095.0) * 3.3;
+    float voltage = (adcValue / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE;
     totalVoltage += voltage;
     delay(5);
   }
