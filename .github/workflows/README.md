@@ -37,8 +37,9 @@ The workflow runs on:
 
 4. **Handles compilation failures**
    - If compilation fails, automatically creates a GitHub issue
-   - Assigns the issue to @copilot
+   - Assigns the issue to the copilot user
    - Labels the issue with: `arduino`, `compilation-error`, `bug`
+   - Mentions @copilot in the issue body for notifications
    - Prevents duplicate issues by checking for existing open issues
    - Adds comments to existing issues if they're already open
 
@@ -47,12 +48,13 @@ The workflow runs on:
 When a compilation error occurs, the workflow:
 - **Creates a new issue** if no similar open issue exists
 - **Updates existing issue** if a similar issue is already open
+- **Issue is automatically assigned** to the copilot user
 - **Issue content includes**:
   - Link to the failed workflow run
   - Commit SHA and branch information
   - Details about the sketch and board
   - Next steps for resolution
-  - Mentions @copilot for automatic assignment
+  - Mentions @copilot in the body for notifications
 
 ### Viewing Results
 
