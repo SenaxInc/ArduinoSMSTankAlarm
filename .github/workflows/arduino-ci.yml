@@ -155,8 +155,7 @@ jobs:
                 repo: context.repo.repo,
                 title: issueTitle,
                 body: issueBody,
-                labels: ['arduino', 'compilation-error', 'bug'],
-                assignees: ['copilot']
+                labels: ['arduino', 'compilation-error', 'bug']
               });
               console.log(`Created issue #${issue.data.number}`);
             }
