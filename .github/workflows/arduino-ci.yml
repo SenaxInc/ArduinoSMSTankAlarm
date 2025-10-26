@@ -1,7 +1,7 @@
 ---
 name: Arduino CI - TankAlarm 092025
 
-'on':
+on:
   push:
     branches: [main, master]
     paths:
