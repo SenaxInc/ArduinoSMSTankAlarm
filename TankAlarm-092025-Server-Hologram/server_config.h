@@ -23,6 +23,15 @@
 // System Buffer Sizes (memory allocation at compile time)
 #define MESSAGE_BUFFER_SIZE 1024                  // Size of message buffer for parsing
 
+// Email Configuration (compile-time defaults, can be overridden by SD card config)
+#ifndef USE_HOLOGRAM_EMAIL
+#define USE_HOLOGRAM_EMAIL false                  // Default: do not use Hologram email (can be configured via SD card)
+#endif
+
+#ifndef HOLOGRAM_EMAIL_RECIPIENT
+#define HOLOGRAM_EMAIL_RECIPIENT ""               // Default: empty (should be configured via SD card)
+#endif
+
 // No fallback defaults - SD card configuration is required
 
 #endif // SERVER_CONFIG_H

@@ -51,7 +51,7 @@
 
 // Initialize cellular components
 NB nbAccess;
-NBSMS sms;
+NB_SMS sms;
 NBClient client;
 
 // Initialize RTC for timing

@@ -32,7 +32,7 @@
 // Network components
 NB nbAccess;
 NBClient hologramClient;
-NBSMS sms;
+NB_SMS sms;
 
 // Ethernet components
 byte mac[] = { 0x90, 0xA2, 0xDA, 0x10, 0xD1, 0x72 };  // MAC address for Ethernet shield
