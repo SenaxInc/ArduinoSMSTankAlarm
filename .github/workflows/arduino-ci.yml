@@ -35,9 +35,10 @@ jobs:
 
       - name: Install required libraries
         run: |
+          arduino-cli lib update-index
           arduino-cli lib install "MKRNB"
           arduino-cli lib install "SD"
-          arduino-cli lib install "ArduinoLowPower"
+          arduino-cli lib install "Arduino Low Power"
           arduino-cli lib install "RTCZero"
           arduino-cli lib install "Ethernet"
 
@@ -104,21 +105,21 @@ jobs:
             detailsSection += `- **Triggered by:** ${{ github.event_name }}`;
 
             const issueBody = `## Arduino Compilation Failed
-
-The Arduino code compilation failed in the CI workflow.
-
-**Workflow Run:** ${workflowUrl}
-**Commit:** ${{ github.sha }}
-**Branch:** ${{ github.ref_name }}
-
-${detailsSection}
-
-### Next Steps
-1. Review the workflow logs for detailed error messages
-2. Fix compilation errors in the Arduino code
-3. Re-run the workflow to verify the fix
-
-/cc @copilot`;
+            
+            The Arduino code compilation failed in the CI workflow.
+            
+            **Workflow Run:** ${workflowUrl}
+            **Commit:** ${{ github.sha }}
+            **Branch:** ${{ github.ref_name }}
+            
+            ${detailsSection}
+            
+            ### Next Steps
+            1. Review the workflow logs for detailed error messages
+            2. Fix compilation errors in the Arduino code
+            3. Re-run the workflow to verify the fix
+            
+            /cc @copilot`;
 
             // Check if a similar open issue already exists
             const existingIssues = await github.rest.issues.listForRepo({
@@ -154,8 +155,7 @@ ${detailsSection}
                 repo: context.repo.repo,
                 title: issueTitle,
                 body: issueBody,
-                labels: ['arduino', 'compilation-error', 'bug'],
-                assignees: ['copilot']
+                labels: ['arduino', 'compilation-error', 'bug']
               });
               console.log(`Created issue #${issue.data.number}`);
             }
