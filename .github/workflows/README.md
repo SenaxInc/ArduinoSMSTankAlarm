@@ -7,13 +7,14 @@ This directory contains automated CI/CD workflows for the ArduinoSMSTankAlarm pr
 **File:** `arduino-ci.yml`
 
 ### Purpose
-Automatically compiles the Arduino code for the TankAlarm-092025-Client-Hologram project
-to ensure code quality and catch compilation errors early.
+Automatically compiles the Arduino code for the TankAlarm-092025 projects
+(both Client and Server) to ensure code quality and catch compilation errors early.
 
 ### Triggers
 The workflow runs on:
 - **Push events** to `main` or `master` branches when changes are made to:
   - `TankAlarm-092025-Client-Hologram/` directory
+  - `TankAlarm-092025-Server-Hologram/` directory
   - The workflow file itself
 - **Pull requests** targeting `main` or `master` branches
 - **Manual trigger** via workflow_dispatch
@@ -30,16 +31,19 @@ The workflow runs on:
    - SD (SD card operations)
    - ArduinoLowPower (power management)
    - RTCZero (real-time clock)
+   - Ethernet (network connectivity for server)
 
-3. **Compiles the sketch**
+3. **Compiles the sketches**
    - Compiles `TankAlarm-092025-Client-Hologram.ino`
+   - Compiles `TankAlarm-092025-Server-Hologram.ino`
    - Target board: Arduino MKR NB 1500 (`arduino:samd:mkrnb1500`)
 
 4. **Handles compilation failures**
-   - If compilation fails, automatically creates a GitHub issue
+   - If either compilation fails, automatically creates a GitHub issue
    - Assigns the issue to the copilot user
    - Labels the issue with: `arduino`, `compilation-error`, `bug`
    - Mentions @copilot in the issue body for notifications
+   - Shows which sketch(es) failed with ❌ and which passed with ✅
    - Prevents duplicate issues by checking for existing open issues
    - Adds comments to existing issues if they're already open
 
@@ -80,10 +84,15 @@ arduino-cli lib install "MKRNB"
 arduino-cli lib install "SD"
 arduino-cli lib install "ArduinoLowPower"
 arduino-cli lib install "RTCZero"
+arduino-cli lib install "Ethernet"
 
-# Compile the sketch
+# Compile the client sketch
 arduino-cli compile --fqbn arduino:samd:mkrnb1500 \
   TankAlarm-092025-Client-Hologram/TankAlarm-092025-Client-Hologram.ino
+
+# Compile the server sketch
+arduino-cli compile --fqbn arduino:samd:mkrnb1500 \
+  TankAlarm-092025-Server-Hologram/TankAlarm-092025-Server-Hologram.ino
 ```
 
 ### Troubleshooting
