@@ -38,7 +38,7 @@ jobs:
           arduino-cli lib update-index
           arduino-cli lib install "MKRNB"
           arduino-cli lib install "SD"
-          arduino-cli lib install "ArduinoLowPower"
+          arduino-cli lib install "Arduino Low Power"
           arduino-cli lib install "RTCZero"
           arduino-cli lib install "Ethernet"
 
