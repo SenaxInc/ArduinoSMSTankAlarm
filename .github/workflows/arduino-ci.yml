@@ -17,6 +17,9 @@ name: Arduino CI - TankAlarm 092025
 jobs:
   compile-arduino:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
