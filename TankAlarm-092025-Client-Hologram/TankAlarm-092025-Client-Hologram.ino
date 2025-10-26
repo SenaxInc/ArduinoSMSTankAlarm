@@ -20,6 +20,7 @@
   
   Created: September 2025
   Using GitHub Copilot for code generation
+  
 */
 
 // Core Arduino MKR libraries
