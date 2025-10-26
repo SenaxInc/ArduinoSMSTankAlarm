@@ -35,6 +35,7 @@ jobs:
 
       - name: Install required libraries
         run: |
+          arduino-cli lib update-index
           arduino-cli lib install "MKRNB"
           arduino-cli lib install "SD"
           arduino-cli lib install "ArduinoLowPower"
