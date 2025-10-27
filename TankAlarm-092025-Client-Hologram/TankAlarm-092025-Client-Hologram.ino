@@ -2307,4 +2307,3 @@ void sendCalibrationSMS(String phoneNumber) {
   
   logEvent("Calibration data sent to " + phoneNumber);
 }
-}
