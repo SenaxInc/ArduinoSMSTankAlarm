@@ -36,7 +36,7 @@ SERVER_LOCATION=Main Office
   - **Important**: This is a locally-administered unicast MAC address (not a hardware burned-in address)
   - Must be unique on your network
   - Default is `02:00:00:00:00:01` (decimal: 2,0,0,0,0,1)
-  - For locally-administered addresses, bit 1 of the first byte must be 1 (e.g., 0x02, 0x06, 0x0A, 0x0E)
+  - For locally-administered addresses, the second-least-significant bit (the "locally administered" bit) of the first byte must be 1 (e.g., 0x02, 0x06, 0x0A, 0x0E)
   - For unicast addresses, the least-significant bit of the first byte must be 0
   - Examples of valid first bytes: 2, 6, 10, 14 (0x02, 0x06, 0x0A, 0x0E in hex)
 
