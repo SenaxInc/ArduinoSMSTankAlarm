@@ -110,7 +110,18 @@ Install these libraries via **Tools → Manage Libraries**:
    DAILY_EMAIL_RECIPIENT=+15551234567@vtext.com
    DAILY_EMAIL_HOUR=6
    SERVER_LOCATION=Your Location Name
+   
+   # MAC Address Configuration (locally-administered, not burned-in)
+   # Default is 02:00:00:00:00:01 - must be unique on your network
+   ETHERNET_MAC_BYTE_1=2
+   ETHERNET_MAC_BYTE_2=0
+   ETHERNET_MAC_BYTE_3=0
+   ETHERNET_MAC_BYTE_4=0
+   ETHERNET_MAC_BYTE_5=0
+   ETHERNET_MAC_BYTE_6=1
    ```
+   
+   **Note about MAC Address**: The Ethernet MAC address is software-defined (locally-administered), not a hardware burned-in address. The default simple pattern `02:00:00:00:00:01` ensures proper network operation. If you have multiple devices on the same network, increment the last byte for each device (e.g., `02:00:00:00:00:02`, `02:00:00:00:00:03`).
 
 2. **Copy to SD Card**:
    - Copy the edited `server_config.txt` to the root of your FAT32-formatted SD card
@@ -184,6 +195,8 @@ LOG: 20250919 10:30:15 - Server startup completed
    - Access router admin interface
    - Find DHCP reservation settings
    - Reserve the assigned IP for server's MAC address
+   - Note: The MAC address is software-defined (locally-administered), not burned-in hardware
+   - Default MAC: `02:00:00:00:00:01` (can be customized in `server_config.txt`)
 
 2. **Port Forwarding** (optional):
    - Forward external port to internal port 80
@@ -293,6 +306,14 @@ ENABLE_SERIAL_DEBUG=true
 STATIC_IP_ADDRESS=192,168,1,100
 STATIC_GATEWAY=192,168,1,1
 STATIC_SUBNET=255,255,255,0
+
+# Ethernet MAC Address (locally-administered, not burned-in hardware address)
+ETHERNET_MAC_BYTE_1=2
+ETHERNET_MAC_BYTE_2=0
+ETHERNET_MAC_BYTE_3=0
+ETHERNET_MAC_BYTE_4=0
+ETHERNET_MAC_BYTE_5=0
+ETHERNET_MAC_BYTE_6=1
 ```
 
 #### server_config.h (Hardware Constants Only)

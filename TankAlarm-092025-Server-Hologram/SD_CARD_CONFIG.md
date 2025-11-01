@@ -32,7 +32,13 @@ SERVER_LOCATION=Main Office
 - `STATIC_IP_ADDRESS`: Static IP (format: 192,168,1,100)
 - `STATIC_GATEWAY`: Gateway IP (format: 192,168,1,1)  
 - `STATIC_SUBNET`: Subnet mask (format: 255,255,255,0)
-- `ETHERNET_MAC_BYTE_1` through `ETHERNET_MAC_BYTE_6`: MAC address bytes
+- `ETHERNET_MAC_BYTE_1` through `ETHERNET_MAC_BYTE_6`: MAC address bytes (decimal)
+  - **Important**: This is a locally-administered unicast MAC address (not a hardware burned-in address)
+  - Must be unique on your network
+  - Default is `02:00:00:00:00:01` (decimal: 2,0,0,0,0,1)
+  - For locally-administered addresses, the second-least-significant bit of the first byte must be 1
+  - For unicast addresses, the least-significant bit of the first byte must be 0
+  - Examples of valid first bytes: 2, 6, 10, 14 (0x02, 0x06, 0x0A, 0x0E in hex)
 
 ### Email/Notification Settings
 - `DAILY_EMAIL_HOUR`: Hour to send daily report (0-23)
