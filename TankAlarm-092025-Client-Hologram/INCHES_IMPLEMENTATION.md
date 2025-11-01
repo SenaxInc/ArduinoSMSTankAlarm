@@ -34,7 +34,7 @@ Example: `2025010100:00,S,1,2FT,6.0IN`
 
 ### SD Card Configuration
 
-Copy `tank_config_example.txt` to your SD card as `tank_config.txt` and modify the values:
+Download `tank_config.txt`, edit with your values, and copy to your SD card:
 
 ```
 # Tank Alarm Configuration File
@@ -101,7 +101,7 @@ Next report in 24 hours
 
 ## Installation
 
-1. Download `tank_config_example.txt`, rename to `tank_config.txt`, and configure with your specific values
+1. Download `tank_config.txt` and configure with your specific values
 2. Copy configured `tank_config.txt` to the root of your SD card
 3. Upload the firmware to your Arduino MKR NB 1500
 4. Insert configured SD card

@@ -333,7 +333,7 @@ The TankAlarm-092025 codebase is well-structured and feature-rich. The critical 
 - `TankAlarm-092025-Server-Hologram/TankAlarm-092025-Server-Hologram.ino` (2,140 lines)
 - `TankAlarm-092025-Client-Hologram/config_template.h`
 - `TankAlarm-092025-Server-Hologram/server_config.h`
-- `TankAlarm-092025-Client-Hologram/tank_config_example.txt`
+- `TankAlarm-092025-Client-Hologram/tank_config.txt`
 - `TankAlarm-092025-Server-Hologram/server_config.txt`
 - `TankAlarm-092025-Client-Hologram/TankAlarm092025-Test-LogFormats.ino`
 - `TankAlarm-092025-Client-Hologram/TankAlarm092025-Test.ino`

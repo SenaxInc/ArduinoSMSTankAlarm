@@ -26,8 +26,8 @@ The Tank Alarm 092025 is the latest version of the Arduino SMS Tank Alarm system
 TankAlarm-092025-Client-Hologram/
 ├── TankAlarm-092025-Client-Hologram.ino  # Main Arduino sketch
 ├── config_template.h                      # Hardware configuration (compile-time)
-├── tank_config_example.txt                # User configuration template (SD card)
-├── calibration_example.txt                # Calibration data template (SD card)
+├── tank_config.txt                        # User configuration template (SD card)
+├── calibration.txt                        # Calibration data template (SD card)
 ├── README.md                              # Main documentation
 ├── INSTALLATION.md                        # Step-by-step setup guide
 ├── INSTALLATION_GUIDE.md                  # Detailed installation guide
@@ -46,7 +46,7 @@ TankAlarm-092025-Client-Hologram/
 
 ### 2. Software Setup
 1. Install Arduino IDE and required libraries (MKRNB, ArduinoLowPower, RTCZero)
-2. Download `tank_config_example.txt`, rename to `tank_config.txt`, and edit with your settings
+2. Download `tank_config.txt` and edit with your settings
 3. Copy `tank_config.txt` to SD card root
 4. Upload code to MKR NB 1500
 

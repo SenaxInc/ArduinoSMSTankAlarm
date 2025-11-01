@@ -18,8 +18,7 @@ Only edit `config_template.h` if you need to:
 
 **Download and prepare configuration file:**
 ```bash
-# Download tank_config_example.txt and rename
-cp tank_config_example.txt tank_config.txt
+# Download tank_config.txt
 # Edit tank_config.txt with your settings
 # Copy to SD card root
 ```

@@ -14,9 +14,9 @@ The 092025 version is the latest implementation using Arduino MKR NB 1500 with H
 - **[Client README](TankAlarm-092025-Client-Hologram/README.md)** - Full documentation
 - **[Installation Guide](TankAlarm-092025-Client-Hologram/INSTALLATION.md)** - Step-by-step setup
 - **Configuration Files:**
-  - [`tank_config_example.txt`](TankAlarm-092025-Client-Hologram/tank_config_example.txt) - SD card configuration template
+  - [`tank_config.txt`](TankAlarm-092025-Client-Hologram/tank_config.txt) - SD card configuration template
   - [`config_template.h`](TankAlarm-092025-Client-Hologram/config_template.h) - Hardware constants
-  - [`calibration_example.txt`](TankAlarm-092025-Client-Hologram/calibration_example.txt) - Calibration template
+  - [`calibration.txt`](TankAlarm-092025-Client-Hologram/calibration.txt) - Calibration template
 
 ### Quick Links - Server (Data Aggregation)
 - **[Server README](TankAlarm-092025-Server-Hologram/README.md)** - Full documentation

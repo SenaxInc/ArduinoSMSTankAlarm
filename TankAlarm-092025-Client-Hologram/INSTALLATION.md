@@ -78,8 +78,8 @@ File: TankAlarm092025-Test.ino
 
 **Download these files to get started:**
 
-1. **SD Card Configuration** (REQUIRED): [`tank_config_example.txt`](tank_config_example.txt)
-   - [Download tank_config_example.txt](tank_config_example.txt)
+1. **SD Card Configuration** (REQUIRED): [`tank_config.txt`](tank_config.txt)
+   - [Download tank_config.txt](tank_config.txt)
    - Runtime configuration stored on SD card
    - Contains all user-configurable settings
 
@@ -88,16 +88,15 @@ File: TankAlarm092025-Test.ino
    - Contains compile-time hardware constants only
    - No user changes required
 
-3. **Calibration Data** (Optional): [`calibration_example.txt`](calibration_example.txt)
-   - [Download calibration_example.txt](calibration_example.txt)
+3. **Calibration Data** (Optional): [`calibration.txt`](calibration.txt)
+   - [Download calibration.txt](calibration.txt)
    - Tank height calibration for analog sensors
    - Created automatically by calibration system
 
 ### Step 1: Configure SD Card (REQUIRED)
 
 1. **Download and Edit Configuration**:
-   - Download [`tank_config_example.txt`](tank_config_example.txt) to your computer
-   - Rename to `tank_config.txt`
+   - Download [`tank_config.txt`](tank_config.txt) to your computer
    - Edit with your specific settings:
    ```
    # Update these values for your setup - ALL SETTINGS REQUIRED

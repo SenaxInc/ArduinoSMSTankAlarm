@@ -133,16 +133,16 @@ The system supports three types of tank level sensors:
 
 **Download these files to get started:**
 
-1. **SD Card Configuration** (REQUIRED): [`tank_config_example.txt`](tank_config_example.txt)
+1. **SD Card Configuration** (REQUIRED): [`tank_config.txt`](tank_config.txt)
    - Runtime configuration stored on SD card
    - Contains Hologram device keys, phone numbers, tank settings, alarm thresholds
-   - Rename to `tank_config.txt` and place on SD card before starting
+   - Download, edit, and place on SD card before starting
 
 2. **Hardware Configuration**: [`config_template.h`](config_template.h)
    - Compile-time hardware constants
    - Already included in repository - no changes needed unless customizing hardware
 
-3. **Calibration Data** (Optional): [`calibration_example.txt`](calibration_example.txt)
+3. **Calibration Data** (Optional): [`calibration.txt`](calibration.txt)
    - Tank height calibration points for analog sensors
    - Automatically created by calibration system
    - Can be pre-populated if calibration data is known
@@ -163,8 +163,7 @@ The system supports three types of tank level sensors:
    - If using with server, also get server device key from server setup
 
 3. **SD Card Configuration** (REQUIRED):
-   - **Download** [`tank_config_example.txt`](tank_config_example.txt) to your computer
-   - **Rename** to `tank_config.txt`
+   - **Download** [`tank_config.txt`](tank_config.txt) to your computer
    - **Edit** the file with your specific settings:
      ```
      # Update these required values
