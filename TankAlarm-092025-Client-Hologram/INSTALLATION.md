@@ -74,12 +74,30 @@ File: TankAlarm092025-Test.ino
 
 ## Software Configuration
 
-### Step 1: Configure SD Card (REQUIRED)
-1. **Create SD Card Configuration**:
-   - Copy `tank_config_example.txt` to SD card as `tank_config.txt`
-   - Edit `tank_config.txt` with your specific settings
+### Required Configuration Files
 
-2. **Critical Settings (REQUIRED)**:
+**Download these files to get started:**
+
+1. **SD Card Configuration** (REQUIRED): [`tank_config.txt`](tank_config.txt)
+   - [Download tank_config.txt](tank_config.txt)
+   - Runtime configuration stored on SD card
+   - Contains all user-configurable settings
+
+2. **Hardware Configuration**: [`config_template.h`](config_template.h)
+   - Already in repository - no download needed
+   - Contains compile-time hardware constants only
+   - No user changes required
+
+3. **Calibration Data** (Optional): [`calibration.txt`](calibration.txt)
+   - [Download calibration.txt](calibration.txt)
+   - Tank height calibration for analog sensors
+   - Created automatically by calibration system
+
+### Step 1: Configure SD Card (REQUIRED)
+
+1. **Download and Edit Configuration**:
+   - Download [`tank_config.txt`](tank_config.txt) to your computer
+   - Edit with your specific settings:
    ```
    # Update these values for your setup - ALL SETTINGS REQUIRED
    SITE_NAME=Your Tank Farm Name
@@ -88,16 +106,15 @@ File: TankAlarm092025-Test.ino
    ALARM_PHONE_PRIMARY=+15551234567
    ALARM_PHONE_SECONDARY=+15559876543
    DAILY_REPORT_PHONE=+15555551234
-   ```
-
-3. **Tank Physical Configuration**:
-   ```
    TANK_HEIGHT_INCHES=120
    HIGH_ALARM_INCHES=100
    LOW_ALARM_INCHES=12
    ```
 
-4. **Insert SD Card**: Place configured SD card in device before powering on
+2. **Copy to SD Card**:
+   - Copy the edited `tank_config.txt` to the root of your FAT32-formatted SD card
+
+3. **Insert SD Card**: Place configured SD card in device before powering on
 
 **IMPORTANT**: The device will not start without a properly configured `tank_config.txt` file on the SD card. The device will halt with error messages if:
 - SD card is not inserted
@@ -105,77 +122,20 @@ File: TankAlarm092025-Test.ino
 - HOLOGRAM_DEVICE_KEY is not set
 - ALARM_PHONE_PRIMARY is not set
 
-### Step 2: Hardware Configuration (config.h)
-1. **Copy Configuration Template**:
-   - Copy `config_template.h` to `config.h` (only if missing)
-   - This file now only contains hardware-specific constants
+### Step 2: Hardware Configuration (config_template.h)
 
-2. **Select Tank Level Sensor Type**:
-   ```cpp
-   // Choose sensor type: DIGITAL_FLOAT, ANALOG_VOLTAGE, or CURRENT_LOOP
-   #define SENSOR_TYPE DIGITAL_FLOAT
-   ```
+The `config_template.h` file contains only essential hardware constants (pin assignments, sensor types, buffer sizes). No user changes are required unless customizing hardware.
 
-4. **Configure Sensor-Specific Settings**:
+**Sensor Type Selection** (only if using different sensor):
+If you need to change the sensor type from the default DIGITAL_FLOAT, edit `config_template.h`:
+```cpp
+// Choose sensor type: DIGITAL_FLOAT, ANALOG_VOLTAGE, or CURRENT_LOOP
+#define SENSOR_TYPE DIGITAL_FLOAT
+```
 
-   **For Digital Float Switch (SENSOR_TYPE = DIGITAL_FLOAT)**:
-   ```cpp
-   #define TANK_ALARM_STATE HIGH        // HIGH when float switch closes
-   #define SENSOR_DEBOUNCE_MS 100       // Debounce delay
-   ```
+**Note**: Most sensor-specific settings (pins, voltage ranges, current ranges) are pre-configured with sensible defaults and don't need changes unless you have custom hardware.
 
-   **For Analog Voltage Sensor (SENSOR_TYPE = ANALOG_VOLTAGE)**:
-   ```cpp
-   #define ANALOG_SENSOR_PIN A1         // Analog input pin (A1, A2, A3, or A4)
-   #define VOLTAGE_MIN 0.5              // Minimum sensor voltage
-   #define VOLTAGE_MAX 4.5              // Maximum sensor voltage
-   #define TANK_EMPTY_VOLTAGE 0.5       // Voltage when tank empty
-   #define TANK_FULL_VOLTAGE 4.5        // Voltage when tank full
-   // Alarm thresholds now configured in inches (see tank configuration section)
-   ```
-   **Note**: Use A1-A4 screw terminals on MKR RELAY shield for easy sensor connections.
-
-   **For Current Loop Sensor (SENSOR_TYPE = CURRENT_LOOP)**:
-   ```cpp
-   #define I2C_CURRENT_LOOP_ADDRESS 0x48  // I2C address of NCD.io module
-   #define CURRENT_LOOP_CHANNEL 0         // Channel on NCD.io module (0-3)
-   #define CURRENT_MIN 4.0                // Minimum current (4mA)
-   #define CURRENT_MAX 20.0               // Maximum current (20mA)
-   #define TANK_EMPTY_CURRENT 4.0         // Current when tank empty
-   #define TANK_FULL_CURRENT 20.0         // Current when tank full
-   // Alarm thresholds now configured in inches (see tank configuration section)
-   ```
-
-5. **Adjust Timing (Optional)**:
-   ```cpp
-   // Replace with your actual Hologram.io device key
-   #define HOLOGRAM_DEVICE_KEY "your_device_key_here"
-   
-   // Update with your phone numbers (include country code)
-   #define ALARM_PHONE_PRIMARY "+12223334444"
-   #define ALARM_PHONE_SECONDARY "+15556667777"
-   #define DAILY_REPORT_PHONE "+18889990000"
-   ```
-
-3. **Adjust Timing (Optional)**:
-   ```cpp
-   // How often to check tank level (default: 1 hour)
-   #define SLEEP_INTERVAL_HOURS 1
-   
-   // How often to send daily report (default: 24 hours)
-   #define DAILY_REPORT_HOURS 24
-   ```
-
-### Step 3: Update Main Code
-1. In `TankAlarm-092025-Client-Hologram.ino`, change this line:
-   ```cpp
-   // Change from:
-   #include "config_template.h"
-   // To:
-   #include "config.h"
-   ```
-
-### Step 4: Upload Code
+### Step 3: Upload Code
 1. Connect MKR NB 1500 to computer via USB
 2. Select correct board: Tools → Board → Arduino MKR NB 1500
 3. Select correct port: Tools → Port → (your port)

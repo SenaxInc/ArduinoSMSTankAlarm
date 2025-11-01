@@ -111,9 +111,9 @@ Keep resource usage reasonable:
 
 ### Server Configuration  
 
-- **Template:** `TankAlarm-092025-Server-Hologram/server_config_template.h`
-- **Active:** `TankAlarm-092025-Server-Hologram/server_config.h` (minimal compile-time defaults)
-- **Tracked:** Both template and minimal config.h are in git
+- **Hardware Config:** `TankAlarm-092025-Server-Hologram/server_config.h` (compile-time hardware constants)
+- **SD Card Config:** `TankAlarm-092025-Server-Hologram/server_config.txt` (runtime user configuration)
+- **Tracked:** Hardware config.h is in git; SD card .txt template is tracked
 
 ## Troubleshooting
 

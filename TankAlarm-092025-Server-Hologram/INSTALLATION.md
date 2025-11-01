@@ -85,22 +85,46 @@ Install these libraries via **Tools → Manage Libraries**:
 
 ### Configure Settings
 
+#### Required Configuration Files
+
+**Download these files:**
+
+1. **SD Card Configuration** (REQUIRED): `server_config.txt`
+   - [Download server_config.txt](server_config.txt)
+   - Runtime configuration stored on SD card
+   - Contains all user-configurable settings
+
+2. **Hardware Configuration**: `server_config.h`
+   - Already in repository - no download needed
+   - Contains compile-time hardware constants only
+   - No user changes required
+
 #### SD Card Configuration (REQUIRED)
-The server now requires configuration via SD card. Fallback to compile-time defaults has been removed.
 
-1. **Copy Configuration Template to SD Card**:
-   ```bash
-   cp server_config.txt /path/to/sd/card/server_config.txt
-   ```
-
-2. **Edit SD Card Configuration** (`server_config.txt` on SD card):
+1. **Download and Edit Configuration**:
+   - Download [`server_config.txt`](server_config.txt) to your computer
+   - Edit with your specific settings:
    ```
    # Update these values for your setup - ALL SETTINGS REQUIRED
    HOLOGRAM_DEVICE_KEY=your_actual_device_key_here
    DAILY_EMAIL_RECIPIENT=+15551234567@vtext.com
    DAILY_EMAIL_HOUR=6
    SERVER_LOCATION=Your Location Name
+   
+   # MAC Address Configuration (locally-administered, not burned-in)
+   # Default is 02:00:00:00:00:01 - must be unique on your network
+   ETHERNET_MAC_BYTE_1=2
+   ETHERNET_MAC_BYTE_2=0
+   ETHERNET_MAC_BYTE_3=0
+   ETHERNET_MAC_BYTE_4=0
+   ETHERNET_MAC_BYTE_5=0
+   ETHERNET_MAC_BYTE_6=1
    ```
+   
+   **Note about MAC Address**: The Ethernet MAC address is software-defined (locally-administered), not a hardware burned-in address. The default simple pattern `02:00:00:00:00:01` ensures proper network operation. If you have multiple devices on the same network, increment the last byte for each device (e.g., `02:00:00:00:00:02`, `02:00:00:00:00:03`).
+
+2. **Copy to SD Card**:
+   - Copy the edited `server_config.txt` to the root of your FAT32-formatted SD card
 
 3. **Insert SD Card**: Place configured SD card in server before powering on
 
@@ -109,8 +133,8 @@ The server now requires configuration via SD card. Fallback to compile-time defa
 - `server_config.txt` file is missing
 - HOLOGRAM_DEVICE_KEY is not set or is still the default value
 
-#### Legacy Compile-Time Configuration (No Longer Used)
-The `server_config.h` file now only contains essential hardware constants. Configuration values are no longer read from this file.
+#### Hardware Configuration
+The `server_config.h` file contains only essential hardware constants (pin assignments, timeouts, buffer sizes). No user changes are required unless customizing hardware.
 
 ### Upload Code to Device
 1. **Connect Hardware**:
@@ -171,6 +195,8 @@ LOG: 20250919 10:30:15 - Server startup completed
    - Access router admin interface
    - Find DHCP reservation settings
    - Reserve the assigned IP for server's MAC address
+   - Note: The MAC address is software-defined (locally-administered), not burned-in hardware
+   - Default MAC: `02:00:00:00:00:01` (can be customized in `server_config.txt`)
 
 2. **Port Forwarding** (optional):
    - Forward external port to internal port 80
@@ -280,6 +306,14 @@ ENABLE_SERIAL_DEBUG=true
 STATIC_IP_ADDRESS=192,168,1,100
 STATIC_GATEWAY=192,168,1,1
 STATIC_SUBNET=255,255,255,0
+
+# Ethernet MAC Address (locally-administered, not burned-in hardware address)
+ETHERNET_MAC_BYTE_1=2
+ETHERNET_MAC_BYTE_2=0
+ETHERNET_MAC_BYTE_3=0
+ETHERNET_MAC_BYTE_4=0
+ETHERNET_MAC_BYTE_5=0
+ETHERNET_MAC_BYTE_6=1
 ```
 
 #### server_config.h (Hardware Constants Only)

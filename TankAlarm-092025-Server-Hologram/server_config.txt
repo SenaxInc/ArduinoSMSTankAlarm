@@ -31,12 +31,16 @@ STATIC_GATEWAY=192,168,1,1
 STATIC_SUBNET=255,255,255,0
 
 # Ethernet MAC Address (each byte as decimal)
-ETHERNET_MAC_BYTE_1=144
-ETHERNET_MAC_BYTE_2=162
-ETHERNET_MAC_BYTE_3=218
-ETHERNET_MAC_BYTE_4=16
-ETHERNET_MAC_BYTE_5=209
-ETHERNET_MAC_BYTE_6=114
+# This is a locally-administered unicast MAC address (not burned-in hardware address)
+# Must be unique on your network. Default is simple pattern: 02:00:00:00:00:01
+# Locally-administered addresses have bit 1 of the first byte set to 1 (0x02 in the simplest case)
+# For unicast, the least-significant bit must be 0
+ETHERNET_MAC_BYTE_1=2
+ETHERNET_MAC_BYTE_2=0
+ETHERNET_MAC_BYTE_3=0
+ETHERNET_MAC_BYTE_4=0
+ETHERNET_MAC_BYTE_5=0
+ETHERNET_MAC_BYTE_6=1
 
 # Hologram Settings
 HOLOGRAM_CHECK_INTERVAL_MS=5000
