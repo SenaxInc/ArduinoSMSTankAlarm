@@ -101,10 +101,12 @@ Next report in 24 hours
 
 ## Installation
 
-1. Copy `config_template.h` to `config.h` and configure your settings
-2. Create `tank_config.txt` on SD card with your specific values
-3. Upload the updated firmware to your Arduino MKR NB 1500
+1. Download `tank_config_example.txt`, rename to `tank_config.txt`, and configure with your specific values
+2. Copy configured `tank_config.txt` to the root of your SD card
+3. Upload the firmware to your Arduino MKR NB 1500
 4. Insert configured SD card
+
+**Note:** The `config_template.h` file contains hardware constants and doesn't need to be modified for typical installations.
 
 ## Compatibility
 
