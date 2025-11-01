@@ -36,7 +36,7 @@ NB_SMS sms;
 
 // Ethernet components
 // Default locally-administered unicast MAC address (not burned-in, can be customized via SD card config)
-// Note: This is a software-defined MAC address. Locally-administered addresses have bit 1 of the first byte set to 1.
+// Note: This is a software-defined MAC address. Locally-administered addresses have the second-least-significant bit of the first byte set to 1.
 byte mac[] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };  // MAC address for Ethernet shield
 EthernetServer webServer(80);                            // Web server on port 80
 
