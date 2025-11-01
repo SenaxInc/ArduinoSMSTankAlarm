@@ -37,28 +37,47 @@ The Tank Alarm Server is designed to receive daily tank reports from client Ardu
 
 ## Installation
 
+### Required Configuration Files
+
+**Download these files to get started:**
+
+1. **SD Card Configuration** (REQUIRED): [`server_config.txt`](server_config.txt)
+   - Runtime configuration stored on SD card
+   - Contains Hologram device key, email settings, network configuration
+   - Place on SD card before starting server
+
+2. **Hardware Configuration**: [`server_config.h`](server_config.h)
+   - Compile-time hardware constants
+   - Already included in repository - no changes needed unless customizing hardware
+
 ### 1. Hardware Setup
 1. Install the MKR NB 1500 board
 2. Attach the MKR ETH Shield
 3. Insert the Hologram.io SIM card
-4. Insert SD card for data logging
+4. Format SD card as FAT32 and insert into ETH Shield
 5. Connect Ethernet cable to your local network
 
-### 2. Software Configuration
-1. Copy `server_config_template.h` to `server_config.h`
-2. Edit `server_config.h` with your specific settings:
-   ```cpp
-   #define HOLOGRAM_DEVICE_KEY "your_actual_device_key"
-   #define USE_HOLOGRAM_EMAIL true  // Use Hologram API for email (default)
-   #define HOLOGRAM_EMAIL_RECIPIENT "user@example.com"
-   #define DAILY_EMAIL_SMS_GATEWAY "+15551234567@vtext.com"  // Fallback method
-   #define MONTHLY_REPORT_ENABLED true  // Enable monthly CSV reports
+### 2. SD Card Configuration (REQUIRED)
+1. **Download** [`server_config.txt`](server_config.txt) to your computer
+2. **Edit** the file with your specific settings:
    ```
+   # Update these required values
+   HOLOGRAM_DEVICE_KEY=your_actual_device_key
+   SERVER_LOCATION=Your Location Name
+   DAILY_EMAIL_RECIPIENT=user@example.com
+   DAILY_EMAIL_HOUR=6
+   USE_HOLOGRAM_EMAIL=true
+   ```
+3. **Copy** the edited `server_config.txt` to the root of your SD card
+4. **Insert** SD card into server
+
+**IMPORTANT**: The server will not start without a properly configured SD card. See [SD Card Configuration Guide](SD_CARD_CONFIG.md) for details.
 
 ### 3. Upload Code
 1. Open `TankAlarm-092025-Server-Hologram.ino` in Arduino IDE
 2. Select "Arduino MKR NB 1500" as the board
-3. Upload the code to your device
+3. Select the correct COM port
+4. Upload the code to your device
 
 ## Configuration Options
 

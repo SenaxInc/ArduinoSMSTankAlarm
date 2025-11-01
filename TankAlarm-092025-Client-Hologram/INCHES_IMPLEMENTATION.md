@@ -81,9 +81,9 @@ Next report in 24 hours
 
 ## Configuration Parameters
 
-### In config.h or config_example.h:
+### In tank_config.txt (SD card configuration):
 - `TANK_NUMBER` - Tank identifier (1-99)
-- `SITE_LOCATION_NAME` - Site location for reports
+- `SITE_NAME` - Site location for reports
 - `INCHES_PER_UNIT` - Calibration factor for sensor readings
 - `TANK_HEIGHT_INCHES` - Total tank height in inches
 - `HIGH_ALARM_INCHES` - High alarm threshold in inches

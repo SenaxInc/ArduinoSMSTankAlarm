@@ -85,15 +85,25 @@ Install these libraries via **Tools → Manage Libraries**:
 
 ### Configure Settings
 
+#### Required Configuration Files
+
+**Download these files:**
+
+1. **SD Card Configuration** (REQUIRED): `server_config.txt`
+   - [Download server_config.txt](server_config.txt)
+   - Runtime configuration stored on SD card
+   - Contains all user-configurable settings
+
+2. **Hardware Configuration**: `server_config.h`
+   - Already in repository - no download needed
+   - Contains compile-time hardware constants only
+   - No user changes required
+
 #### SD Card Configuration (REQUIRED)
-The server now requires configuration via SD card. Fallback to compile-time defaults has been removed.
 
-1. **Copy Configuration Template to SD Card**:
-   ```bash
-   cp server_config.txt /path/to/sd/card/server_config.txt
-   ```
-
-2. **Edit SD Card Configuration** (`server_config.txt` on SD card):
+1. **Download and Edit Configuration**:
+   - Download [`server_config.txt`](server_config.txt) to your computer
+   - Edit with your specific settings:
    ```
    # Update these values for your setup - ALL SETTINGS REQUIRED
    HOLOGRAM_DEVICE_KEY=your_actual_device_key_here
@@ -102,6 +112,9 @@ The server now requires configuration via SD card. Fallback to compile-time defa
    SERVER_LOCATION=Your Location Name
    ```
 
+2. **Copy to SD Card**:
+   - Copy the edited `server_config.txt` to the root of your FAT32-formatted SD card
+
 3. **Insert SD Card**: Place configured SD card in server before powering on
 
 **IMPORTANT**: The server will not start without a properly configured `server_config.txt` file on the SD card. The device will halt with error messages if:
@@ -109,8 +122,8 @@ The server now requires configuration via SD card. Fallback to compile-time defa
 - `server_config.txt` file is missing
 - HOLOGRAM_DEVICE_KEY is not set or is still the default value
 
-#### Legacy Compile-Time Configuration (No Longer Used)
-The `server_config.h` file now only contains essential hardware constants. Configuration values are no longer read from this file.
+#### Hardware Configuration
+The `server_config.h` file contains only essential hardware constants (pin assignments, timeouts, buffer sizes). No user changes are required unless customizing hardware.
 
 ### Upload Code to Device
 1. **Connect Hardware**:
