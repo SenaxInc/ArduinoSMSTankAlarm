@@ -2,26 +2,25 @@
 
 ## Quick Start
 
-### 1. Prepare Configuration Files
+### 1. Hardware Configuration (Optional)
 
-**Copy template to config.h:**
+**The `config_template.h` file is already configured with sensible defaults.**
+
+Only edit `config_template.h` if you need to:
+- Change hardware pin configurations
+- Select a different sensor type (`SENSOR_TYPE`)
+- Modify sensor calibration ranges
+- Enable debug options
+
+**Most settings are configured on the SD card, not in the .h file**
+
+### 2. Prepare SD Card (REQUIRED)
+
+**Download and prepare configuration file:**
 ```bash
-cp config_template.h config.h
-```
-
-**Edit config.h with your specific values (minimal configuration now required):**
-- Hardware pin configurations (if different from defaults)
-- Sensor type selection (`SENSOR_TYPE`)
-- Sensor calibration ranges (if needed)
-- Debug options
-
-**Most settings are now configured on the SD card instead of in config.h**
-
-### 2. Prepare SD Card
-
-**Copy configuration template:**
-```bash
-cp tank_config_example.txt [SD_CARD]/tank_config.txt
+# Download tank_config.txt
+# Edit tank_config.txt with your settings
+# Copy to SD card root
 ```
 
 **Edit tank_config.txt on SD card with your specific values:**

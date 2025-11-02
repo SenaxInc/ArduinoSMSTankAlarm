@@ -34,7 +34,7 @@ Example: `2025010100:00,S,1,2FT,6.0IN`
 
 ### SD Card Configuration
 
-Copy `tank_config_example.txt` to your SD card as `tank_config.txt` and modify the values:
+Download `tank_config.txt`, edit with your values, and copy to your SD card:
 
 ```
 # Tank Alarm Configuration File
@@ -81,9 +81,9 @@ Next report in 24 hours
 
 ## Configuration Parameters
 
-### In config.h or config_example.h:
+### In tank_config.txt (SD card configuration):
 - `TANK_NUMBER` - Tank identifier (1-99)
-- `SITE_LOCATION_NAME` - Site location for reports
+- `SITE_NAME` - Site location for reports
 - `INCHES_PER_UNIT` - Calibration factor for sensor readings
 - `TANK_HEIGHT_INCHES` - Total tank height in inches
 - `HIGH_ALARM_INCHES` - High alarm threshold in inches
@@ -101,10 +101,12 @@ Next report in 24 hours
 
 ## Installation
 
-1. Copy `config_template.h` to `config.h` and configure your settings
-2. Create `tank_config.txt` on SD card with your specific values
-3. Upload the updated firmware to your Arduino MKR NB 1500
+1. Download `tank_config.txt` and configure with your specific values
+2. Copy configured `tank_config.txt` to the root of your SD card
+3. Upload the firmware to your Arduino MKR NB 1500
 4. Insert configured SD card
+
+**Note:** The `config_template.h` file contains hardware constants and doesn't need to be modified for typical installations.
 
 ## Compatibility
 

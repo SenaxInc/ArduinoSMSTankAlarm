@@ -129,6 +129,24 @@ The system supports three types of tank level sensors:
 
 ## Configuration
 
+### Required Configuration Files
+
+**Download these files to get started:**
+
+1. **SD Card Configuration** (REQUIRED): [`tank_config.txt`](tank_config.txt)
+   - Runtime configuration stored on SD card
+   - Contains Hologram device keys, phone numbers, tank settings, alarm thresholds
+   - Download, edit, and place on SD card before starting
+
+2. **Hardware Configuration**: [`config_template.h`](config_template.h)
+   - Compile-time hardware constants
+   - Already included in repository - no changes needed unless customizing hardware
+
+3. **Calibration Data** (Optional): [`calibration.txt`](calibration.txt)
+   - Tank height calibration points for analog sensors
+   - Automatically created by calibration system
+   - Can be pre-populated if calibration data is known
+
 ### Required Setup Steps
 
 1. **Install Required Libraries**:
@@ -141,29 +159,33 @@ The system supports three types of tank level sensors:
 
 2. **Configure Hologram.io Account**:
    - Sign up at https://hologram.io
-   - Get device key and update `HOLOGRAM_DEVICE_KEY` in code
-   - If using with server, also get server device key and update `SERVER_DEVICE_KEY`
-   - Activate SIM card and assign to device
+   - Activate SIM card and create device to get device key
+   - If using with server, also get server device key from server setup
 
-3. **Update Phone Numbers**:
-   ```cpp
-   String ALARM_PHONE_1 = "12223334444";    // Primary alarm contact
-   String ALARM_PHONE_2 = "15556667777";    // Secondary alarm contact
-   String DAILY_PHONE = "18889990000";      // Daily report recipient
-   ```
+3. **SD Card Configuration** (REQUIRED):
+   - **Download** [`tank_config.txt`](tank_config.txt) to your computer
+   - **Edit** the file with your specific settings:
+     ```
+     # Update these required values
+     SITE_NAME=Your Tank Farm Name
+     TANK_NUMBER=1
+     HOLOGRAM_DEVICE_KEY=your_actual_device_key
+     ALARM_PHONE_PRIMARY=+15551234567
+     ALARM_PHONE_SECONDARY=+15559876543
+     DAILY_REPORT_PHONE=+15555551234
+     TANK_HEIGHT_INCHES=120
+     HIGH_ALARM_INCHES=100
+     LOW_ALARM_INCHES=12
+     DAILY_REPORT_TIME=05:00
+     ```
+   - **Copy** the edited `tank_config.txt` to the root of your SD card
+   - **Insert** SD card into device
+
+   **IMPORTANT**: The device will not start without a properly configured SD card.
 
 4. **Network Configuration**:
    - APN is pre-configured for Hologram.io ("hologram")
    - No additional network setup required
-
-5. **Daily Report Time Configuration**:
-   ```
-   DAILY_REPORT_TIME=05:00
-   ```
-   - Set specific time for daily reports in HH:MM format (24-hour)
-   - Default is 05:00 (5:00 AM)
-   - Configure in SD card config file (tank_config.txt)
-   - System automatically syncs with cellular network time
 
 ### Power Management Configuration
 ```

@@ -35,7 +35,9 @@ NBClient hologramClient;
 NB_SMS sms;
 
 // Ethernet components
-byte mac[] = { 0x90, 0xA2, 0xDA, 0x10, 0xD1, 0x72 };  // MAC address for Ethernet shield
+// Default locally-administered unicast MAC address (not burned-in, can be customized via SD card config)
+// Note: This is a software-defined MAC address. Locally-administered addresses have the second-least-significant bit of the first byte set to 1.
+byte mac[] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };  // MAC address for Ethernet shield
 EthernetServer webServer(80);                            // Web server on port 80
 
 // Initialize RTC for timing

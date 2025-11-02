@@ -1,10 +1,45 @@
 # Arduino SMS Tank Alarm
 
-***In Process of Switching to LTE***
+***Latest Version: 092025 - Now Using LTE via Hologram.io***
 
-Arduino GSM code that will send SMS alert of high tank sensor data.
+Arduino LTE cellular system that monitors tank levels and sends SMS alerts when thresholds are exceeded. Includes both client (tank monitoring) and server (data aggregation) components.
 
-Arduino will check sensor data on a schedualed basis. If sensor data is over a set number the arduino will send an SMS text message to a defined phone number. It will also send a daily reading of the sensor data at a set time of day.
+Arduino will check sensor data on a scheduled basis. If sensor data is over a set threshold, the arduino will send an SMS text message to defined phone numbers. It will also send a daily reading of the sensor data at a set time of day.
+
+## Version 092025 (Current - Recommended)
+
+The 092025 version is the latest implementation using Arduino MKR NB 1500 with Hologram.io cellular connectivity.
+
+### Quick Links - Client (Tank Monitor)
+- **[Client README](TankAlarm-092025-Client-Hologram/README.md)** - Full documentation
+- **[Installation Guide](TankAlarm-092025-Client-Hologram/INSTALLATION.md)** - Step-by-step setup
+- **Configuration Files:**
+  - [`tank_config.txt`](TankAlarm-092025-Client-Hologram/tank_config.txt) - SD card configuration template
+  - [`config_template.h`](TankAlarm-092025-Client-Hologram/config_template.h) - Hardware constants
+  - [`calibration.txt`](TankAlarm-092025-Client-Hologram/calibration.txt) - Calibration template
+
+### Quick Links - Server (Data Aggregation)
+- **[Server README](TankAlarm-092025-Server-Hologram/README.md)** - Full documentation
+- **[Installation Guide](TankAlarm-092025-Server-Hologram/INSTALLATION.md)** - Step-by-step setup
+- **Configuration Files:**
+  - [`server_config.txt`](TankAlarm-092025-Server-Hologram/server_config.txt) - SD card configuration template
+  - [`server_config.h`](TankAlarm-092025-Server-Hologram/server_config.h) - Hardware constants
+
+### Configuration Approach (Streamlined for 092025)
+
+Both client and server use a **two-file configuration system**:
+
+1. **SD Card Configuration (.txt files)** - User settings stored on SD card
+   - Easy field updates without recompiling
+   - Contains device keys, phone numbers, thresholds, network settings
+   - **REQUIRED** - devices will not start without valid SD card config
+
+2. **Hardware Configuration (.h files)** - Compile-time constants
+   - Pin assignments, sensor types, buffer sizes
+   - Already configured with sensible defaults
+   - Only modify if customizing hardware
+
+This approach keeps setup simple and consistent between client and server.
 
 # General Logic
 
