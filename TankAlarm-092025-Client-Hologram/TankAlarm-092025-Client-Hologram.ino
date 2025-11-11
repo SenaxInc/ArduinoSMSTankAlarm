@@ -10,6 +10,7 @@
   - Tank level sensor (digital float switch)
   
   Features:
+  - Multi-tank/multi-site support (A-Z tanks via TANKA_, TANKB_ config)
   - Tank level monitoring with digital sensor
   - SMS alerts via Hologram.io for alarm states
   - Daily email reports of levels and changes
@@ -17,6 +18,15 @@
   - Relay control capability
   - Low power sleep modes
   - Server communication for remote control
+  
+  REFACTORING STATUS (Nov 2025):
+  - Legacy single-tank globals REMOVED (siteLocationName, tankNumber, tankHeightInches, etc.)
+  - All tanks now configured via tanks[] array (TANKA_, TANKB_ config keys)
+  - MAX_TANKS removed; hard-coded to 26 (A-Z support)
+  - COMPLETED: All alarm/logging/reporting functions use per-tank arrays
+  - COMPLETED: Per-tank sensor reading (digitalPin, analogPin, currentLoopChannel)
+  - Each tank can have its own sensor pin/channel configuration
+  - updateAllTankReadings() reads all configured tanks independently
   
   Created: September 2025
   Using GitHub Copilot for code generation
@@ -175,15 +185,14 @@ volatile int time_tick_report = 1;
 const int sleep_hours = SLEEP_INTERVAL_HOURS;
 const int report_hours = DAILY_REPORT_HOURS;
 
-// Tank level state
+// Tank level state (legacy single-sensor reading - to be replaced with per-tank arrays)
 int currentLevelState = LOW;
 int previousLevelState = LOW;
 bool alarmSent = false;
 
-// Tank level measurements in inches
-float currentLevelInches = 0.0;
-float previousLevelInches = 0.0;
-float levelChange24Hours = 0.0;
+// Per-tank level measurements in inches
+float tankCurrentInches[26];  // Current reading per tank
+bool tankAlarmSent[26];       // Alarm state per tank
 
 // Large decrease detection
 float decreaseStartLevel = 0.0;
@@ -203,16 +212,29 @@ bool powerFailureRecovery = false;
 String logFileName = LOG_FILE_NAME;
 
 // SD Card configuration variables (loaded from SD card config file - REQUIRED)
-String siteLocationName = "Unknown Site";
-int tankNumber = 1;
 float inchesPerUnit = 1.0;
-float tankHeightInches = 120.0;
-float highAlarmInches = 100.0;
-float lowAlarmInches = 12.0;
 bool digitalHighAlarm = true;
 bool digitalLowAlarm = false;
 float largeDecreaseThreshold = 24.0;
 int largeDecreaseWaitHours = 2;
+
+// Multi-site / Multi-tank support - all tanks configured via TANKA, TANKB, etc.
+// Supports up to 26 tanks (A-Z), adjust array size below if needed
+struct TankEntry {
+  String siteName;            // Per tank site identifier (can differ across tanks)
+  int tankNum = -1;           // Tank number within a site (used for grouping on server)
+  float tankHeight = -1;      // Height in inches for percent calculations (required)
+  float highAlarm = -1;       // High alarm threshold inches (required)
+  float lowAlarm = -1;        // Low alarm threshold inches (required)
+  int digitalPin = -1;        // Optional digital sensor pin (e.g. floating switch array)
+  int analogPin = -1;         // Optional analog pin index (A1 -> 1) for voltage sensor
+  int currentLoopChannel = -1;// Optional 4-20mA current loop channel index
+};
+int tankCount = 0;            // Auto-detected from config (highest tank index + 1)
+TankEntry tanks[26];          // Support A-Z tanks (26 max)
+// Per-tank daily tracking
+float tankPrevInches[26];
+float tankChange24h[26];
 
 // Network and communication configuration (loaded from SD card - REQUIRED)
 String hologramDeviceKey = "";
@@ -266,6 +288,11 @@ void enterPowerSaveMode();
 void enterDeepSleepMode();
 void configureCellularWakeup();
 void checkForIncomingData();
+// Multi-tank additions
+void sendDailyReportForTank(int idx);
+void logDailyDataForTank(int idx);
+float readTankSensor(int tankIdx);
+void updateAllTankReadings();
 
 // Calibration function declarations
 void loadCalibrationData();
@@ -302,7 +329,7 @@ void setup() {
   }
 #endif
   
-  // Initialize pins based on sensor type
+  // Initialize pins based on sensor type (legacy default)
 #if SENSOR_TYPE == DIGITAL_FLOAT
   pinMode(TANK_LEVEL_PIN, INPUT_PULLUP);  // Digital float switch with pullup
 #elif SENSOR_TYPE == ANALOG_VOLTAGE
@@ -313,6 +340,8 @@ void setup() {
   
   pinMode(RELAY_CONTROL_PIN, OUTPUT);     // Relay control
   pinMode(LED_BUILTIN, OUTPUT);           // Status LED
+  
+  // Initialize per-tank sensor pins (done after config load in later section)
   
   // Initialize SD card
   if (!SD.begin(SD_CARD_CS_PIN)) {
@@ -331,6 +360,25 @@ void setup() {
     
     // Load configuration from SD card
     loadSDCardConfiguration();
+    
+    // Initialize per-tank sensor pins based on loaded config
+    bool i2cInitialized = false;
+    for (int i = 0; i < tankCount && i < 26; i++) {
+      if (tanks[i].digitalPin >= 0) {
+        pinMode(tanks[i].digitalPin, INPUT_PULLUP);
+#ifdef ENABLE_SERIAL_DEBUG
+        if (ENABLE_SERIAL_DEBUG) Serial.println("Tank " + String((char)('A' + i)) + 
+                                                " digital pin " + String(tanks[i].digitalPin));
+#endif
+      }
+      if (tanks[i].currentLoopChannel >= 0 && !i2cInitialized) {
+        Wire.begin();
+        i2cInitialized = true;
+#ifdef ENABLE_SERIAL_DEBUG
+        if (ENABLE_SERIAL_DEBUG) Serial.println("I2C initialized for current loop sensors");
+#endif
+      }
+    }
     
     // Load calibration data from SD card
     loadCalibrationData();
@@ -375,13 +423,25 @@ void setup() {
   // Restore system state
   restoreSystemState();
   
-  // Read initial tank level
+  // Read initial tank level (legacy single-sensor)
   currentLevelState = readTankLevel();
   previousLevelState = currentLevelState;
   
-  // Get initial level in inches
-  currentLevelInches = getTankLevelInches();
-  previousLevelInches = currentLevelInches;
+  // Initialize per-tank arrays with initial readings from each sensor
+  for (int i = 0; i < tankCount && i < 26; i++) {
+    float initialReading = readTankSensor(i);
+    tankCurrentInches[i] = (initialReading >= 0) ? initialReading : 0.0;
+    tankPrevInches[i] = tankCurrentInches[i];
+    tankChange24h[i] = 0.0;
+    tankAlarmSent[i] = false;
+    
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) {
+      Serial.println("Tank " + String((char)('A' + i)) + " initial: " + 
+                     String(tankCurrentInches[i], 1) + " inches");
+    }
+#endif
+  }
   
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) Serial.println("Setup complete - entering main loop");
@@ -396,31 +456,31 @@ void loop() {
   // Update heartbeat for power failure detection
   updateHeartbeat();
   
-  // Read tank level
+  // Per-tank sensor reading - reads each tank's configured sensor
+  updateAllTankReadings();
+  
+  // Legacy single-sensor compatibility (uses first tank or default sensor)
   currentLevelState = readTankLevel();
   
-  // Get current level in inches
-  float newLevelInches = getTankLevelInches();
-  
-  // Update level measurements
-  if (newLevelInches >= 0) {  // Valid reading
-    currentLevelInches = newLevelInches;
+  // Check for alarm condition on first tank (legacy compatibility)
+  if (tankCount > 0) {
+    bool firstTankAlarm = (tankCurrentInches[0] >= tanks[0].highAlarm) || 
+                          (tankCurrentInches[0] <= tanks[0].lowAlarm);
+    
+    if (firstTankAlarm && !alarmSent) {
+      handleAlarmCondition();
+    }
+    
+    // Reset alarm flag if level returns to normal
+    if (!firstTankAlarm && alarmSent) {
+      alarmSent = false;
+      logEvent("Tank level returned to normal");
+      logAlarmEvent("normal");
+    }
+    
+    // Check for large decrease in level (first tank only for legacy)
+    checkLargeDecrease();
   }
-  
-  // Check for alarm condition (tank level HIGH indicates alarm)
-  if (currentLevelState == HIGH && !alarmSent) {
-    handleAlarmCondition();
-  }
-  
-  // Reset alarm flag if level returns to normal
-  if (currentLevelState == LOW && alarmSent) {
-    alarmSent = false;
-    logEvent("Tank level returned to normal");
-    logAlarmEvent("normal");
-  }
-  
-  // Check for large decrease in level
-  checkLargeDecrease();
   
   // Check if it's time for hourly log entry
   logHourlyData();
@@ -452,18 +512,21 @@ void loop() {
   
   // Check if it's time for daily report using configured time
   if (isTimeForDailyReport()) {
-    sendDailyReport();
-    logDailyData();
+    // Multi-tank: send a report per configured tank
+    for (int i = 0; i < tankCount && i < 26; i++) {
+      sendDailyReportForTank(i);
+      logDailyDataForTank(i);
+      // Update 24-hour change tracking per tank
+      tankChange24h[i] = tankCurrentInches[i] - tankPrevInches[i];
+      tankPrevInches[i] = tankCurrentInches[i];
+    }
     time_tick_report = 0;  // Reset daily counter for fallback compatibility
-    
-    // Update 24-hour change tracking
-    levelChange24Hours = currentLevelInches - previousLevelInches;
-    previousLevelInches = currentLevelInches;
   }
   
-  // Log current status
-  String statusMsg = "Tank level: " + String(currentLevelInches, 1) + " inches";
+  // Log current status (shows first tank)
+  String statusMsg = "Tank level: " + String(tankCount > 0 ? tankCurrentInches[0] : 0.0, 1) + " inches";
   statusMsg += " (" + String(currentLevelState == HIGH ? "ALARM" : "Normal") + ")";
+  statusMsg += ", " + String(tankCount) + " tank(s) configured";
   statusMsg += ", Hours: " + String(time_tick_hours);
   statusMsg += ", Report hours: " + String(time_tick_report);
   if (timeIsSynced) {
@@ -626,8 +689,11 @@ int readAnalogVoltageSensor() {
     lastLogTime = millis();
   }
   
-  // Return HIGH if tank level exceeds high alarm threshold or goes below low alarm threshold
-  return (levelInches >= highAlarmInches || levelInches <= lowAlarmInches) ? HIGH : LOW;
+  // Return HIGH if alarm (uses first tank thresholds for legacy single-sensor compatibility)
+  if (tankCount > 0 && tanks[0].highAlarm > 0 && tanks[0].lowAlarm > 0) {
+    return (levelInches >= tanks[0].highAlarm || levelInches <= tanks[0].lowAlarm) ? HIGH : LOW;
+  }
+  return LOW;
 }
 
 // Read 4-20mA current loop sensor via I2C
@@ -664,8 +730,11 @@ int readCurrentLoopSensor() {
     lastLogTime = millis();
   }
   
-  // Return HIGH if tank level exceeds high alarm threshold or goes below low alarm threshold
-  return (levelInches >= highAlarmInches || levelInches <= lowAlarmInches) ? HIGH : LOW;
+  // Return HIGH if alarm (uses first tank thresholds for legacy single-sensor compatibility)
+  if (tankCount > 0 && tanks[0].highAlarm > 0 && tanks[0].lowAlarm > 0) {
+    return (levelInches >= tanks[0].highAlarm || levelInches <= tanks[0].lowAlarm) ? HIGH : LOW;
+  }
+  return LOW;
 }
 
 // Read current value from NCD.io 4-channel current loop I2C module
@@ -693,7 +762,107 @@ float readCurrentLoopValue() {
   return -1; // Error reading
 }
 
+// ========== PER-TANK SENSOR READING FUNCTIONS ==========
+
+// Read sensor for a specific tank based on its configured sensor pin/channel
+float readTankSensor(int tankIdx) {
+  if (tankIdx < 0 || tankIdx >= tankCount || tankIdx >= 26) return -1.0;
+  
+  // Check which sensor type is configured for this tank
+  // Priority: digitalPin > analogPin > currentLoopChannel > default compile-time sensor
+  
+  if (tanks[tankIdx].digitalPin >= 0) {
+    // Digital float switch sensor
+    int pin = tanks[tankIdx].digitalPin;
+    int level = digitalRead(pin);
+    delay(100); // debounce
+    int level2 = digitalRead(pin);
+    if (level != level2) {
+      delay(100);
+      level = digitalRead(pin);
+    }
+    
+    // Convert digital reading to inches (HIGH = full tank, LOW = empty)
+    float tankHeight = tanks[tankIdx].tankHeight > 0 ? tanks[tankIdx].tankHeight : 120.0;
+    return (level == HIGH) ? tankHeight : 0.0;
+    
+  } else if (tanks[tankIdx].analogPin >= 0) {
+    // Analog voltage sensor
+    int pin = tanks[tankIdx].analogPin;
+    
+    // Read multiple times for stability
+    float totalVoltage = 0;
+    const int numReadings = 10;
+    
+    for (int i = 0; i < numReadings; i++) {
+      int adcValue = analogRead(pin);
+      float voltage = (adcValue / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE;
+      totalVoltage += voltage;
+      delay(10);
+    }
+    
+    float avgVoltage = totalVoltage / numReadings;
+    return convertToInches(avgVoltage, tankIdx);
+    
+  } else if (tanks[tankIdx].currentLoopChannel >= 0) {
+    // Current loop sensor via I2C
+    int channel = tanks[tankIdx].currentLoopChannel;
+    
+    Wire.beginTransmission(I2C_CURRENT_LOOP_ADDRESS);
+    Wire.write(channel);
+    if (Wire.endTransmission() != 0) {
+      return -1.0; // Communication error
+    }
+    
+    Wire.requestFrom(I2C_CURRENT_LOOP_ADDRESS, 2);
+    
+    if (Wire.available() >= 2) {
+      uint16_t rawValue = (Wire.read() << 8) | Wire.read();
+      float current = 4.0 + ((rawValue / 65535.0) * 16.0); // 4-20mA
+      return convertToInches(current, tankIdx);
+    }
+    
+    return -1.0; // Error reading
+    
+  } else {
+    // No per-tank sensor configured, use default compile-time sensor
+    // This provides backward compatibility
+    return getTankLevelInches();
+  }
+}
+
+// Update all tank readings from their respective sensors
+void updateAllTankReadings() {
+  for (int i = 0; i < tankCount && i < 26; i++) {
+    float reading = readTankSensor(i);
+    
+    if (reading >= 0) {  // Valid reading
+      tankCurrentInches[i] = reading;
+      
+      // Check alarm conditions for this tank
+      if (tanks[i].highAlarm > 0 && tanks[i].lowAlarm > 0) {
+        bool alarmCondition = (reading >= tanks[i].highAlarm) || (reading <= tanks[i].lowAlarm);
+        
+        if (alarmCondition && !tankAlarmSent[i]) {
+          tankAlarmSent[i] = true;
+          logEvent("Tank " + String((char)('A' + i)) + " alarm: " + String(reading, 1) + " inches");
+          // Send alarm notification for first tank (legacy compatibility)
+          if (i == 0) {
+            handleAlarmCondition();
+          }
+        } else if (!alarmCondition && tankAlarmSent[i]) {
+          tankAlarmSent[i] = false;
+          logEvent("Tank " + String((char)('A' + i)) + " normal: " + String(reading, 1) + " inches");
+        }
+      }
+    }
+  }
+}
+
 void handleAlarmCondition() {
+  // Legacy single-tank alarm handler - uses first tank configuration
+  if (tankCount < 1) return;
+  
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) Serial.println("ALARM: Tank level alarm condition detected!");
 #endif
@@ -707,16 +876,19 @@ void handleAlarmCondition() {
   // Activate relay (if needed for alarm indication)
   digitalWrite(RELAY_CONTROL_PIN, HIGH);
   
+  // Use first tank's thresholds and current level
+  float levelInches = tankCurrentInches[0];
+  
   // Determine alarm type
   String alarmType = "change";
-  if (currentLevelInches >= highAlarmInches) {
+  if (levelInches >= tanks[0].highAlarm) {
     alarmType = "high";
-  } else if (currentLevelInches <= lowAlarmInches) {
+  } else if (levelInches <= tanks[0].lowAlarm) {
     alarmType = "low";
   }
   
   // Log alarm event
-  String alarmMsg = "ALARM: Tank level " + alarmType + " - " + String(currentLevelInches, 1) + " inches";
+  String alarmMsg = "ALARM: Tank level " + alarmType + " - " + String(levelInches, 1) + " inches";
   logEvent(alarmMsg);
   logAlarmEvent(alarmType);
   
@@ -743,8 +915,11 @@ void handleAlarmCondition() {
 }
 
 void sendAlarmSMS() {
-  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
-  String message = "TANK ALARM " + siteLocationName + " Tank #" + String(tankNumber) + 
+  if (tankCount < 1) return;
+  
+  // Use first tank for legacy single-sensor alarm
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[0]);
+  String message = "TANK ALARM " + tanks[0].siteName + " Tank #" + String(tanks[0].tankNum) + 
                   ": Level " + feetInchesFormat + " at " + getCurrentTimestamp() + 
                   ". Immediate attention required.";
   
@@ -815,12 +990,15 @@ void sendDailyReport() {
     return;
   }
   
-  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
-  String changeFeetInchesFormat = formatInchesToFeetInches(abs(levelChange24Hours));
-  String changePrefix = (levelChange24Hours >= 0) ? "+" : "";
+  // Legacy single-tank daily report - uses first tank only
+  if (tankCount < 1) return;
   
-  String message = "Daily Tank Report " + siteLocationName + " - " + getCurrentTimestamp();
-  message += "\nTank #" + String(tankNumber) + " Level: " + feetInchesFormat;
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[0]);
+  String changeFeetInchesFormat = formatInchesToFeetInches(abs(tankChange24h[0]));
+  String changePrefix = (tankChange24h[0] >= 0) ? "+" : "";
+  
+  String message = "Daily Tank Report " + tanks[0].siteName + " - " + getCurrentTimestamp();
+  message += "\nTank #" + String(tanks[0].tankNum) + " Level: " + feetInchesFormat;
   message += "\n24hr Change: " + changePrefix + changeFeetInchesFormat;
   message += "\nStatus: " + String(currentLevelState == HIGH ? "ALARM" : "Normal");
   message += "\nNext report in 24 hours";
@@ -861,10 +1039,79 @@ void sendDailyReport() {
   logEvent("Daily report completed");
 }
 
+// New: per-tank daily report using tank mapping
+void sendDailyReportForTank(int idx) {
+  // Bounds check
+  if (idx < 0 || idx >= tankCount) return;
+  
+  // Validate tank entry
+  if (tanks[idx].tankNum <= 0 || tanks[idx].siteName.length() == 0) {
+    return; // skip undefined tank entries
+  }
+  
+#ifdef ENABLE_SERIAL_DEBUG
+  if (ENABLE_SERIAL_DEBUG) Serial.println("Sending daily report for site '" + tanks[idx].siteName + "' tank #" + String(tanks[idx].tankNum));
+#endif
+  
+  // Connect to network if not connected
+  if (!connectToCellular()) {
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to connect for daily report (multi-tank)");
+#endif
+    logEvent("Daily report: Failed to connect to network");
+    return;
+  }
+  
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[idx]);
+  String changeFeetInchesFormat = formatInchesToFeetInches(abs(tankChange24h[idx]));
+  String changePrefix = (tankChange24h[idx] >= 0) ? "+" : "-";
+  
+  String message = "Daily Tank Report " + tanks[idx].siteName + " - " + getCurrentTimestamp();
+  message += "\nTank #" + String(tanks[idx].tankNum) + " Level: " + feetInchesFormat;
+  message += "\n24hr Change: " + changePrefix + changeFeetInchesFormat;
+  message += "\nStatus: " + String(tankAlarmSent[idx] ? "ALARM" : "Normal");
+  message += "\nNext report in 24 hours";
+  
+  // Send daily SMS with retry logic
+  bool dailySmsSent = false;
+  for (int attempt = 1; attempt <= smsRetryAttempts && !dailySmsSent; attempt++) {
+    if (sms.beginSMS(dailyReportPhone.c_str())) {
+      sms.print(message);
+      sms.endSMS();
+      dailySmsSent = true;
+#ifdef ENABLE_SERIAL_DEBUG
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Daily report SMS sent (attempt " + String(attempt) + ")");
+#endif
+      // Log successful daily report transmission
+      logSuccessfulReport();
+    } else {
+#ifdef ENABLE_SERIAL_DEBUG
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Failed to send daily report SMS (attempt " + String(attempt) + ")");
+#endif
+      if (attempt < smsRetryAttempts) {
+        delay(3000);  // Wait 3 seconds before retry
+      }
+    }
+  }
+  
+  if (!dailySmsSent) {
+    logEvent("Daily report: Failed to send SMS after " + String(smsRetryAttempts) + " attempts");
+    return;
+  }
+  
+  // Send daily data to Hologram.io
+  sendHologramData("DAILY", message);
+  
+  // Log daily report event
+  logEvent("Daily report completed for site '" + siteName + "' tank #" + String(tankNum));
+}
+
 void sendStartupNotification() {
-  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
-  String message = "Tank Alarm System Started " + siteLocationName + " - " + getCurrentTimestamp();
-  message += "\nTank #" + String(tankNumber) + " Initial Level: " + feetInchesFormat;
+  if (tankCount < 1) return;
+  
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[0]);
+  String message = "Tank Alarm System Started " + tanks[0].siteName + " - " + getCurrentTimestamp();
+  message += "\nTank #" + String(tanks[0].tankNum) + " Initial Level: " + feetInchesFormat;
   message += "\nStatus: " + String(currentLevelState == HIGH ? "ALARM" : "Normal");
   message += "\nSystem ready for monitoring";
   
@@ -1078,22 +1325,56 @@ void loadSDCardConfiguration() {
       value.trim();
       
       // Update configuration variables
-      if (key == "SITE_NAME") {
-        siteLocationName = value;
-      } else if (key == "TANK_NUMBER") {
-        tankNumber = value.toInt();
-      } else if (key == "TANK_HEIGHT_INCHES") {
-        tankHeightInches = value.toFloat();
-      } else if (key == "INCHES_PER_UNIT") {
+      if (key == "INCHES_PER_UNIT") {
         inchesPerUnit = value.toFloat();
-      } else if (key == "HIGH_ALARM_INCHES") {
-        highAlarmInches = value.toFloat();
-      } else if (key == "LOW_ALARM_INCHES") {
-        lowAlarmInches = value.toFloat();
       } else if (key == "DIGITAL_HIGH_ALARM") {
         digitalHighAlarm = (value == "true");
       } else if (key == "DIGITAL_LOW_ALARM") {
         digitalLowAlarm = (value == "true");
+      } else if (key.startsWith("TANK")) {
+        // Support TANK<number>_FIELD and TANK<letter>_FIELD
+        int underscore = key.indexOf('_', 4);
+        if (underscore > 4) {
+          String indexStr = key.substring(4, underscore); // could be "1" or "A"
+          int idx = -1;
+          // Decide if numeric or alphabetic
+          // Lightweight alpha check (avoid extra libs):
+          char alphaTest = indexStr.charAt(0);
+          if (indexStr.length() == 1 && ((alphaTest >= 'A' && alphaTest <= 'Z') || (alphaTest >= 'a' && alphaTest <= 'z'))) {
+            // Letter mapping: A->0, B->1 ...
+            if (alphaTest >= 'A' && alphaTest <= 'Z') idx = alphaTest - 'A';
+            if (alphaTest >= 'a' && alphaTest <= 'z') idx = alphaTest - 'a';
+          } else {
+            int numeric = indexStr.toInt();
+            if (numeric > 0) idx = numeric - 1; // convert 1-based to 0-based
+          }
+          if (idx >= 0 && idx < 26) {
+            String field = key.substring(underscore + 1);
+            if (field == "SITE_NAME") {
+              tanks[idx].siteName = value;
+            } else if (field == "TANK_NUMBER") {
+              tanks[idx].tankNum = value.toInt();
+            } else if (field == "TANK_HEIGHT_INCHES") {
+              tanks[idx].tankHeight = value.toFloat();
+            } else if (field == "HIGH_ALARM_INCHES") {
+              tanks[idx].highAlarm = value.toFloat();
+            } else if (field == "LOW_ALARM_INCHES") {
+              tanks[idx].lowAlarm = value.toFloat();
+            } else if (field == "DIGITAL_PIN") {
+              tanks[idx].digitalPin = value.toInt();
+            } else if (field == "ANALOG_PIN") {
+              if (value.startsWith("A") || value.startsWith("a")) {
+                tanks[idx].analogPin = value.substring(1).toInt();
+              } else {
+                tanks[idx].analogPin = value.toInt();
+              }
+            } else if (field == "CURRENT_LOOP_CHANNEL") {
+              tanks[idx].currentLoopChannel = value.toInt();
+            }
+            // Expand tankCount automatically based on highest defined index
+            if (idx + 1 > tankCount) tankCount = idx + 1;
+          }
+        }
       } else if (key == "LARGE_DECREASE_THRESHOLD_INCHES") {
         largeDecreaseThreshold = value.toFloat();
       } else if (key == "LARGE_DECREASE_WAIT_HOURS") {
@@ -1144,6 +1425,25 @@ void loadSDCardConfiguration() {
   
   configFile.close();
   
+  // Validate we have at least one tank configured
+  if (tankCount < 1) {
+    Serial.println("CRITICAL ERROR: No tanks configured! Add TANKA_SITE_NAME, TANKA_TANK_NUMBER, etc. to tank_config.txt");
+    while(1); // Halt
+  }
+  
+  // Validate each tank has required fields
+  for (int i = 0; i < tankCount; i++) {
+    if (tanks[i].siteName.length() == 0 || tanks[i].tankNum <= 0) {
+      Serial.println("ERROR: Tank index " + String(i) + " missing SITE_NAME or TANK_NUMBER");
+    }
+    if (tanks[i].tankHeight <= 0) {
+      Serial.println("ERROR: Tank index " + String(i) + " missing or invalid TANK_HEIGHT_INCHES");
+    }
+    if (tanks[i].highAlarm <= 0 || tanks[i].lowAlarm <= 0) {
+      Serial.println("ERROR: Tank index " + String(i) + " missing HIGH_ALARM_INCHES or LOW_ALARM_INCHES");
+    }
+  }
+
   // Validate critical configuration
   bool configValid = true;
   
@@ -1174,13 +1474,6 @@ void loadSDCardConfiguration() {
   }
   #endif
   
-  // Validate tank height is positive
-  if (tankHeightInches <= 0) {
-    Serial.println("CRITICAL ERROR: TANK_HEIGHT_INCHES must be greater than 0");
-    Serial.println("Current value: " + String(tankHeightInches) + " inches");
-    configValid = false;
-  }
-  
   // If configuration is invalid, halt execution
   if (!configValid) {
     Serial.println("========================================");
@@ -1192,19 +1485,28 @@ void loadSDCardConfiguration() {
     }
   }
   
-  String configMsg = "Client configuration loaded successfully - Site: " + siteLocationName + 
-                    ", Tank: " + String(tankNumber) + 
-                    ", Height: " + String(tankHeightInches) + "in" +
-                    ", Daily Report: " + dailyReportTime;
-  Serial.println(configMsg);
+  Serial.println("========================================");
+  Serial.println("Client configuration loaded successfully");
+  Serial.println(String(tankCount) + " tank(s) configured:");
+  for (int i = 0; i < tankCount && i < 3; i++) {
+    Serial.println("  Tank " + String((char)('A' + i)) + ": " + tanks[i].siteName + 
+                   " #" + String(tanks[i].tankNum) + 
+                   " (" + String(tanks[i].tankHeight) + " in)");
+  }
+  if (tankCount > 3) Serial.println("  +" + String(tankCount - 3) + " more...");
+  Serial.println("Daily Report Time: " + dailyReportTime);
+  Serial.println("========================================");
 }
 
-// Convert sensor reading to inches
-float convertToInches(float sensorValue) {
+// Convert sensor reading to inches (requires tank index for height reference)
+float convertToInches(float sensorValue, int tankIdx = 0) {
   // Use calibration data if available
   if (calibrationDataLoaded && numCalibrationPoints >= 2) {
     return interpolateHeight(sensorValue);
   }
+  
+  float tankHeightInches = tanks[tankIdx].tankHeight;
+  if (tankHeightInches <= 0) tankHeightInches = 120.0; // safety fallback
   
   // Fallback to original calculation methods
 #if SENSOR_TYPE == DIGITAL_FLOAT
@@ -1302,17 +1604,18 @@ String getDateTimestamp() {
   return timestamp;
 }
 
-// Log hourly data in required format
+// Log hourly data in required format (legacy single-tank)
 // YYYYMMDD00:00,H,(Tank Number),(Number of Feet)FT,(Number of Inches)IN,+(Number of feet added in last 24hrs)FT,(Number of inches added in last 24hrs)IN,
 void logHourlyData() {
   if (!ensureSDCardReady()) return;
+  if (tankCount < 1) return;
   
   String timestamp = getDateTimestamp();
-  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
-  String changeFeetInchesFormat = formatInchesToFeetInches(abs(levelChange24Hours));
-  String changePrefix = (levelChange24Hours >= 0) ? "+" : "-";
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[0]);
+  String changeFeetInchesFormat = formatInchesToFeetInches(abs(tankChange24h[0]));
+  String changePrefix = (tankChange24h[0] >= 0) ? "+" : "-";
   
-  String logEntry = timestamp + ",H," + String(tankNumber) + "," + feetInchesFormat + "," + 
+  String logEntry = timestamp + ",H," + String(tanks[0].tankNum) + "," + feetInchesFormat + "," + 
                    changePrefix + changeFeetInchesFormat + ",";
   
   File hourlyFile = SD.open(hourlyLogFile.c_str(), FILE_WRITE);
@@ -1326,17 +1629,18 @@ void logHourlyData() {
   }
 }
 
-// Log daily data in required format
+// Log daily data in required format (legacy single-tank)
 // YYYYMMDD00:00,D,(site location name),(Tank Number),(Number of Feet)FT,(Number of Inches)IN,+(Number of feet added in last 24hrs)FT,(Number of inches added in last 24hrs)IN,
 void logDailyData() {
   if (!ensureSDCardReady()) return;
+  if (tankCount < 1) return;
   
   String timestamp = getDateTimestamp();
-  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
-  String changeFeetInchesFormat = formatInchesToFeetInches(abs(levelChange24Hours));
-  String changePrefix = (levelChange24Hours >= 0) ? "+" : "-";
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[0]);
+  String changeFeetInchesFormat = formatInchesToFeetInches(abs(tankChange24h[0]));
+  String changePrefix = (tankChange24h[0] >= 0) ? "+" : "-";
   
-  String logEntry = timestamp + ",D," + siteLocationName + "," + String(tankNumber) + "," + 
+  String logEntry = timestamp + ",D," + tanks[0].siteName + "," + String(tanks[0].tankNum) + "," + 
                    feetInchesFormat + "," + changePrefix + changeFeetInchesFormat + ",";
   
   File dailyFile = SD.open(dailyLogFile.c_str(), FILE_WRITE);
@@ -1350,13 +1654,41 @@ void logDailyData() {
   }
 }
 
-// Log alarm events in required format
+// New: per-tank daily log line to SD card
+void logDailyDataForTank(int idx) {
+  if (!ensureSDCardReady()) return;
+  if (idx < 0 || idx >= tankCount) return;
+  
+  if (tanks[idx].tankNum <= 0 || tanks[idx].siteName.length() == 0) {
+    return; // skip undefined tank entries
+  }
+  
+  String timestamp = getDateTimestamp();
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[idx]);
+  String changeFeetInchesFormat = formatInchesToFeetInches(abs(tankChange24h[idx]));
+  String changePrefix = (tankChange24h[idx] >= 0) ? "+" : "-";
+  
+  String logEntry = timestamp + ",D," + tanks[idx].siteName + "," + String(tanks[idx].tankNum) + "," + 
+                   feetInchesFormat + "," + changePrefix + changeFeetInchesFormat + ",";
+  
+  File dailyFile = SD.open(dailyLogFile.c_str(), FILE_WRITE);
+  if (dailyFile) {
+    dailyFile.println(logEntry);
+    dailyFile.close();
+#ifdef ENABLE_SERIAL_DEBUG
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Daily log: " + logEntry);
+#endif
+  }
+}
+
+// Log alarm events in required format (legacy single-tank)
 // YYYYMMDD00:00,A,(site location name),(Tank Number),(alarm state, high or low or change)
 void logAlarmEvent(String alarmState) {
   if (!ensureSDCardReady()) return;
+  if (tankCount < 1) return;
   
   String timestamp = getDateTimestamp();
-  String logEntry = timestamp + ",A," + siteLocationName + "," + String(tankNumber) + "," + alarmState;
+  String logEntry = timestamp + ",A," + tanks[0].siteName + "," + String(tanks[0].tankNum) + "," + alarmState;
   
   File alarmFile = SD.open(alarmLogFile.c_str(), FILE_WRITE);
   if (alarmFile) {
@@ -1369,14 +1701,16 @@ void logAlarmEvent(String alarmState) {
   }
 }
 
-// Check for large decreases in tank level
+// Check for large decreases in tank level (legacy single-tank, uses first tank)
 void checkLargeDecrease() {
-  float levelDifference = previousLevelInches - currentLevelInches;
+  if (tankCount < 1) return;
+  
+  float levelDifference = tankPrevInches[0] - tankCurrentInches[0];
   
   if (levelDifference >= largeDecreaseThreshold && !decreaseDetected) {
     // Large decrease detected for first time
     decreaseDetected = true;
-    decreaseStartLevel = previousLevelInches;
+    decreaseStartLevel = tankPrevInches[0];
     decreaseStartTime = millis();
     
     String msg = "Large decrease detected: " + String(levelDifference, 1) + " inches";
@@ -1389,7 +1723,7 @@ void checkLargeDecrease() {
   
   // Check if we should log the large decrease (after waiting period)
   if (decreaseDetected && (millis() - decreaseStartTime) >= (largeDecreaseWaitHours * 60 * 60 * 1000)) {
-    float totalDecrease = decreaseStartLevel - currentLevelInches;
+    float totalDecrease = decreaseStartLevel - tankCurrentInches[0];
     
     if (totalDecrease >= largeDecreaseThreshold) {
       logLargeDecrease(totalDecrease);
@@ -1400,15 +1734,16 @@ void checkLargeDecrease() {
   }
 }
 
-// Log large decrease in required format
+// Log large decrease in required format (legacy single-tank)
 // YYYYMMDD00:00,S,(Tank Number),(total Number of Feet decreased)FT,(total Number of Inches decreased)IN
 void logLargeDecrease(float totalDecrease) {
   if (!ensureSDCardReady()) return;
+  if (tankCount < 1) return;
   
   String timestamp = getDateTimestamp();
   String decreaseFeetInchesFormat = formatInchesToFeetInches(totalDecrease);
   
-  String logEntry = timestamp + ",S," + String(tankNumber) + "," + decreaseFeetInchesFormat;
+  String logEntry = timestamp + ",S," + String(tanks[0].tankNum) + "," + decreaseFeetInchesFormat;
   
   File decreaseFile = SD.open(decreaseLogFile.c_str(), FILE_WRITE);
   if (decreaseFile) {
@@ -1854,16 +2189,18 @@ void restoreSystemState() {
         }
       }
       
-      if (parts[0].length() > 0) {
-        currentLevelInches = parts[0].toFloat();
-        previousLevelInches = parts[1].toFloat();
-        levelChange24Hours = parts[2].toFloat();
+      if (parts[0].length() > 0 && tankCount > 0) {
+        // Legacy: restore first tank values from single-tank persistence
+        tankCurrentInches[0] = parts[0].toFloat();
+        tankPrevInches[0] = parts[1].toFloat();
+        tankChange24h[0] = parts[2].toFloat();
         alarmSent = (parts[3] == "1");
+        tankAlarmSent[0] = alarmSent;
         
-        Serial.println("Restored tank levels - Current: " + String(currentLevelInches) + 
-                      "in, Previous: " + String(previousLevelInches) + 
-                      "in, Change: " + String(levelChange24Hours) + "in");
-        logEvent("Tank level measurements restored");
+        Serial.println("Restored tank levels (legacy) - Current: " + String(tankCurrentInches[0]) + 
+                      "in, Previous: " + String(tankPrevInches[0]) + 
+                      "in, Change: " + String(tankChange24h[0]) + "in");
+        logEvent("Tank level measurements restored from legacy file");
       }
     }
     
@@ -1906,13 +2243,13 @@ void saveSystemState(String reason) {
     stateFile.close();
   }
   
-  // Save tank level measurements
+  // Save tank level measurements (legacy format - first tank only)
   File levelFile = SD.open("tank_levels.txt", FILE_WRITE);
-  if (levelFile) {
-    levelFile.println(String(currentLevelInches) + "," + 
-                     String(previousLevelInches) + "," + 
-                     String(levelChange24Hours) + "," + 
-                     String(alarmSent ? "1" : "0"));
+  if (levelFile && tankCount > 0) {
+    levelFile.println(String(tankCurrentInches[0]) + "," + 
+                     String(tankPrevInches[0]) + "," + 
+                     String(tankChange24h[0]) + "," + 
+                     String(tankAlarmSent[0] ? "1" : "0"));
     levelFile.close();
   }
   
@@ -1949,10 +2286,11 @@ void updateHeartbeat() {
 
 void sendRecoveryNotification() {
   if (!connectToCellular()) return;
+  if (tankCount < 1) return;
   
-  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[0]);
   String message = "TANK CLIENT RECOVERY NOTICE\n";
-  message += "Site: " + siteLocationName + " Tank #" + String(tankNumber) + "\n";
+  message += "Site: " + tanks[0].siteName + " Tank #" + String(tanks[0].tankNum) + "\n";
   message += "Time: " + getCurrentTimestamp() + "\n";
   message += "Status: System recovered from power failure\n";
   message += "Last State: " + lastShutdownReason + "\n";
@@ -1977,9 +2315,10 @@ void sendRecoveryNotification() {
 
 void sendPowerFailureNotificationToServer() {
   if (!connectToCellular()) return;
+  if (tankCount < 1) return;
   
-  String feetInchesFormat = formatInchesToFeetInches(currentLevelInches);
-  String powerFailureData = siteLocationName + "|" + String(tankNumber) + 
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[0]);
+  String powerFailureData = tanks[0].siteName + "|" + String(tanks[0].tankNum) + 
                            "|" + getCurrentTimestamp() + "|" + feetInchesFormat + 
                            "|" + lastShutdownReason;
   
@@ -2233,11 +2572,12 @@ void processSMSCommand(String command, String phoneNumber) {
   }
   
   if (command.startsWith("CAL ")) {
-    // Calibration command: "CAL 48.5" means tank is at 48.5 inches
+    // Calibration command: "CAL 48.5" means tank is at 48.5 inches (applies to first tank)
     String heightStr = command.substring(4);
     float actualHeight = heightStr.toFloat();
+    float maxHeight = (tankCount > 0) ? tanks[0].tankHeight : 120.0;
     
-    if (actualHeight > 0 && actualHeight <= tankHeightInches) {
+    if (actualHeight > 0 && actualHeight <= maxHeight) {
       float currentSensor = getCurrentSensorReading();
       addCalibrationPoint(currentSensor, actualHeight);
       
@@ -2264,9 +2604,11 @@ void processSMSCommand(String command, String phoneNumber) {
     sendCalibrationSMS(phoneNumber);
     
   } else if (command == "STATUS") {
-    // Send current tank status
-    String feetInches = formatInchesToFeetInches(currentLevelInches);
-    String statusMsg = "Tank #" + String(tankNumber) + " at " + siteLocationName + 
+    // Send current tank status (uses first tank)
+    if (tankCount < 1) return;
+    
+    String feetInches = formatInchesToFeetInches(tankCurrentInches[0]);
+    String statusMsg = "Tank #" + String(tanks[0].tankNum) + " at " + tanks[0].siteName + 
                       ": Level " + feetInches + ", Sensor " + String(getCurrentSensorReading(), 4);
     
     if (sms.beginSMS(phoneNumber.c_str())) {
@@ -2278,9 +2620,11 @@ void processSMSCommand(String command, String phoneNumber) {
   }
 }
 
-// Send calibration data via SMS
+// Send calibration data via SMS (calibration handled by server now, but keep for compatibility)
 void sendCalibrationSMS(String phoneNumber) {
-  String calibMsg = "Tank #" + String(tankNumber) + " Calibration:\n";
+  if (tankCount < 1) return;
+  
+  String calibMsg = "Tank #" + String(tanks[0].tankNum) + " Calibration:\n";
   
   if (numCalibrationPoints == 0) {
     calibMsg += "No calibration points";

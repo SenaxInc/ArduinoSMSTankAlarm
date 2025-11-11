@@ -21,18 +21,67 @@ This is the September 2025 version of the Arduino SMS Tank Alarm system, designe
 
 ## Pin Assignments
 
-### MKR NB 1500 Pin Usage
-- **Pin 4**: SD Card Chip Select (CS)
-- **Pin 5**: Relay Control Output
-- **Pin 7**: Digital Tank Level Sensor Input (float switch with internal pullup)
-- **Pin A1**: Analog Tank Level Sensor Input (0.5-4.5V pressure sensor)
-- **Pins A1-A4**: Available analog inputs with screw terminals on MKR RELAY shield
-- **SDA/SCL**: I2C communication for 4-20mA current loop sensors
-- **LED_BUILTIN**: Status indication LED
+### MKR NB 1500 Available Pins
+
+**Digital I/O Pins (0-14):**
+- Pins 0-14 available for digital sensors (float switches)
+- All support INPUT_PULLUP mode for float switches
+- Default tank sensor: Pin 7
+- Reserved: Pin 4 (SD CS), Pin 5 (Relay)
+
+**Analog Input Pins (A0-A6):**
+- A0-A6 (mapped as 0-6 in code)
+- 12-bit resolution (0-4095 counts)
+- 3.3V reference voltage
+- Default analog sensor: A1
+- **MKR RELAY Shield provides convenient screw terminals for A1-A4**
+
+**I2C Pins (SDA/SCL):**
+- Shared bus for multiple current loop sensors
+- NCD.io 4-channel current loop module supports channels 0-3
+- Each channel can monitor a separate tank
+
+**Reserved Pins:**
+- Pin 4: SD Card Chip Select (CS) - DO NOT USE
+- Pin 5: Relay Control Output - DO NOT USE unless relay not needed
+
+### Multi-Tank Pin Configuration
+
+Configure different sensor types per tank in `tank_config.txt`:
+
+```
+# Tank A - Digital float switch on pin 7
+TANKA_SITE_NAME=North Farm
+TANKA_TANK_NUMBER=1
+TANKA_DIGITAL_PIN=7
+
+# Tank B - Analog voltage sensor on A1
+TANKB_SITE_NAME=North Farm
+TANKB_TANK_NUMBER=2
+TANKB_ANALOG_PIN=A1
+
+# Tank C - Current loop on I2C channel 0
+TANKC_SITE_NAME=South Yard
+TANKC_TANK_NUMBER=1
+TANKC_CURRENT_LOOP_CHANNEL=0
+
+# Tank D - Digital float switch on pin 8
+TANKD_SITE_NAME=South Yard
+TANKD_TANK_NUMBER=2
+TANKD_DIGITAL_PIN=8
+```
+
+**Available Pins by Type:**
+
+| Pin Type | Available Pins | Notes |
+|----------|---------------|-------|
+| Digital | 0-3, 6-14 | Pins 4,5 reserved. Use with DIGITAL_PIN config |
+| Analog | A0-A6 (0-6) | Use format "A1" or "1" in ANALOG_PIN config |
+| Current Loop | 0-3 | Channels on I2C module, use CURRENT_LOOP_CHANNEL |
 
 ### Shield Connections
 - **MKR SD PROTO**: Stacked on MKR NB 1500, provides SD card interface
-- **MKR RELAY**: Stacked on MKR SD PROTO, provides relay control
+- **MKR RELAY**: Stacked on MKR SD PROTO, provides relay control and convenient screw terminals for A1-A4
 
 ## Wiring Diagram
 
@@ -133,7 +182,7 @@ The system supports three types of tank level sensors:
 
 **Download these files to get started:**
 
-1. **SD Card Configuration** (REQUIRED): [`tank_config.txt`](tank_config.txt)
+3. **SD Card Configuration** (REQUIRED): [`tank_config.txt`](tank_config.txt)
    - Runtime configuration stored on SD card
    - Contains Hologram device keys, phone numbers, tank settings, alarm thresholds
    - Download, edit, and place on SD card before starting
@@ -186,6 +235,18 @@ The system supports three types of tank level sensors:
 4. **Network Configuration**:
    - APN is pre-configured for Hologram.io ("hologram")
    - No additional network setup required
+
+### Multi-site / Multi-tank Mapping (092025)
+- **NEW**: Full per-tank sensor support - each tank can have its own sensor pin/channel
+- Configure the device to monitor and report multiple tanks with independent sensors
+- Server groups tanks by site name and displays latest reading per tank
+- In `tank_config.txt`, define tanks using alphabet letters (A-Z, up to 26 tanks):
+   - `TANKA_SITE_NAME=...`, `TANKA_TANK_NUMBER=...`, `TANKA_DIGITAL_PIN=...`
+   - `TANKB_SITE_NAME=...`, `TANKB_ANALOG_PIN=A1`, etc.
+- Each tank requires: SITE_NAME, TANK_NUMBER, TANK_HEIGHT_INCHES, HIGH_ALARM_INCHES, LOW_ALARM_INCHES
+- Optional per-tank sensor config: DIGITAL_PIN, ANALOG_PIN, or CURRENT_LOOP_CHANNEL
+- If no sensor pin specified, tank uses default compile-time sensor (backward compatible)
+- System independently monitors each configured tank and checks alarms per tank
 
 ### Power Management Configuration
 ```

@@ -380,6 +380,20 @@ void processAlarmReport(String alarmData) {
   String logEntry = getCurrentTimestamp() + ",ALARM," + alarmData;
   appendToFile("alarm_log.txt", logEntry);
   
+  // Attempt to mirror into per-site alarm log if site can be extracted
+  String siteExtract = "";
+  int sitePos = alarmData.indexOf("TANK ALARM ");
+  if (sitePos >= 0) {
+    int tankHash = alarmData.indexOf(" Tank #", sitePos + 11);
+    if (tankHash > sitePos) {
+      siteExtract = alarmData.substring(sitePos + 10, tankHash);
+      siteExtract.trim();
+    }
+  }
+  if (siteExtract.length() > 0) {
+    appendToSiteFile(siteExtract, "alarm_log.txt", logEntry);
+  }
+  
   logEvent("Alarm received: " + alarmData);
 }
 
@@ -415,6 +429,7 @@ void processPowerFailureReport(String powerFailureData) {
                      "," + String(event.tankNumber) + "," + event.timestamp + "," + 
                      event.currentLevel + "," + event.shutdownReason;
     appendToFile("power_failure_log.txt", logEntry);
+  appendToSiteFile(event.siteLocation, "power_failure_log.txt", logEntry);
     
     logEvent("Power failure reported: " + event.siteLocation + " Tank #" + String(event.tankNumber));
   }
@@ -428,7 +443,49 @@ void logTankReport(TankReport report) {
   
   appendToFile("daily_reports.txt", logEntry);
   
+  // Also mirror logs into per-site folder for grouped logging
+  // sites/<sanitized_site>/daily_reports.txt
+  appendToSiteFile(report.siteLocation, "daily_reports.txt", logEntry);
+  
   Serial.println("Tank report logged: " + logEntry);
+}
+
+// Sanitize a site/location string to a filesystem-safe folder name
+String sanitizeForPath(String name) {
+  String out = "";
+  for (unsigned int i = 0; i < name.length(); i++) {
+    char c = name.charAt(i);
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+      out += c;
+    } else if (c == ' ' || c == '-' || c == '_' ) {
+      out += '_';
+    } else {
+      out += '_';
+    }
+  }
+  if (out.length() == 0) out = "site";
+  return out;
+}
+
+// Ensure the per-site directory exists: sites/<safeSite>
+void ensureSiteDirectory(String safeSite) {
+  if (!SD.begin(SD_CARD_CS_PIN)) return;
+  SD.mkdir("sites");
+  String dir = String("sites/") + safeSite;
+  SD.mkdir(dir.c_str());
+}
+
+// Append content to a file under the site's directory
+void appendToSiteFile(String siteName, String filename, String content) {
+  if (!SD.begin(SD_CARD_CS_PIN)) return;
+  String safeSite = sanitizeForPath(siteName);
+  ensureSiteDirectory(safeSite);
+  String fullPath = String("sites/") + safeSite + "/" + filename;
+  File file = SD.open(fullPath.c_str(), FILE_WRITE);
+  if (file) {
+    file.println(content);
+    file.close();
+  }
 }
 
 void handleWebRequests() {
@@ -541,27 +598,73 @@ void sendWebPage(EthernetClient &client) {
   if (reportCount == 0) {
     client.println("<p style='text-align: center;'>No tank reports received yet.</p>");
   } else {
-    client.println("<div class='tank-container'>");
-    
-    // Display recent tank reports
-    for (int i = 0; i < reportCount && i < 10; i++) {  // Show up to 10 most recent reports
-      TankReport report = tankReports[i];
-      
-      client.println("<div class='tank-card'>");
-      client.println("<div class='tank-header'>" + report.siteLocation + " - Tank #" + String(report.tankNumber) + "</div>");
-      client.println("<div class='tank-level'>Level: " + report.currentLevel + "</div>");
-      
-      String changeClass = report.change24hr.startsWith("+") ? "positive" : (report.change24hr.startsWith("-") ? "negative" : "");
-      client.println("<div class='tank-change " + changeClass + "'>24hr Change: " + report.change24hr + "</div>");
-      
-      String statusClass = report.status == "Normal" ? "status-normal" : "status-alarm";
-      client.println("<div class='status " + statusClass + "'>Status: " + report.status + "</div>");
-      
-      client.println("<div style='font-size: 12px; color: #666; margin-top: 10px;'>Updated: " + report.timestamp + "</div>");
+    // Group reports by site and render sections
+    // Build unique site list (up to MAX_TANK_REPORTS unique)
+    String sites[20];
+    int siteCount = 0;
+    for (int i = 0; i < reportCount && siteCount < 20; i++) {
+      String s = tankReports[i].siteLocation;
+      bool found = false;
+      for (int j = 0; j < siteCount; j++) {
+        if (sites[j] == s) { found = true; break; }
+      }
+      if (!found) { sites[siteCount++] = s; }
+    }
+
+    // For each site, render a header and its latest tank entry per tank, sorted by tank number
+    for (int si = 0; si < siteCount; si++) {
+      String site = sites[si];
+      client.println("<h2>" + site + "</h2>");
+      client.println("<div class='tank-container'>");
+
+      // Build map of tankNumber -> latest index (most recent report for that tank at this site)
+      int tankNums[50];
+      int tankIdxs[50];
+      int uniqueCount = 0;
+      for (int i = 0; i < reportCount && uniqueCount < 50; i++) {
+        if (tankReports[i].siteLocation != site) continue;
+        int tnum = tankReports[i].tankNumber;
+        // Replace existing entry (later in array is newer)
+        bool found = false;
+        for (int k = 0; k < uniqueCount; k++) {
+          if (tankNums[k] == tnum) { tankIdxs[k] = i; found = true; break; }
+        }
+        if (!found) {
+          tankNums[uniqueCount] = tnum;
+          tankIdxs[uniqueCount] = i;
+          uniqueCount++;
+        }
+      }
+
+      // Sort by tank number ascending (simple bubble sort for small N)
+      for (int a = 0; a < uniqueCount - 1; a++) {
+        for (int b = 0; b < uniqueCount - a - 1; b++) {
+          if (tankNums[b] > tankNums[b + 1]) {
+            int tn = tankNums[b]; tankNums[b] = tankNums[b + 1]; tankNums[b + 1] = tn;
+            int ti = tankIdxs[b]; tankIdxs[b] = tankIdxs[b + 1]; tankIdxs[b + 1] = ti;
+          }
+        }
+      }
+
+      // Render all tanks for this site
+      for (int m = 0; m < uniqueCount; m++) {
+        TankReport report = tankReports[tankIdxs[m]];
+        client.println("<div class='tank-card'>");
+        client.println("<div class='tank-header'>Tank #" + String(report.tankNumber) + "</div>");
+        client.println("<div class='tank-level'>Level: " + report.currentLevel + "</div>");
+
+        String changeClass = report.change24hr.startsWith("+") ? "positive" : (report.change24hr.startsWith("-") ? "negative" : "");
+        client.println("<div class='tank-change " + changeClass + "'>24hr Change: " + report.change24hr + "</div>");
+
+        String statusClass = report.status == "Normal" ? "status-normal" : "status-alarm";
+        client.println("<div class='status " + statusClass + "'>Status: " + report.status + "</div>");
+
+        client.println("<div style='font-size: 12px; color: #666; margin-top: 10px;'>Updated: " + report.timestamp + "</div>");
+        client.println("</div>");
+      }
+
       client.println("</div>");
     }
-    
-    client.println("</div>");
   }
   
   // Server status information
