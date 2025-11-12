@@ -1,0 +1,28 @@
+===Nov 2025 Notes===
+
+Tank level monitoring and alerts
+
+==Hardware==
+
+=Client=
+
+ Arduino Opta Lite https://store-usa.arduino.cc/products/opta-lite
+ BLUES Wireless for Opta https://shop.blues.com/collections/accessories/products/wireless-for-opta
+ Arduino Pro Opta Ext A0602 https://store-usa.arduino.cc/products/opta-ext-a0602
+
+=Server=
+
+ Arduino Opta Lite https://store-usa.arduino.cc/products/opta-lite
+ BLUES Wireless for Opta https://shop.blues.com/collections/accessories/products/wireless-for-opta
+ 
+==Software==
+
+ Use version 092025 as a template for using the Opta and blues hardware
+ Utilizing github copilot to write code
+ Send text alerts for alarm states
+ Collect data onto server
+ Send daily email report of levels and changes
+ Host intranet website for reviewing tank levels
+ Allow client config information to be stored on the Opta memory because there is no SD card
+ Allow client config information to be updated from the server web interface
+ When compiling in the Arduino IDE, report in the console the required opta hardware to accommodate the pins required for the configuration of tanks and sensors
