@@ -1103,7 +1103,7 @@ void sendDailyReportForTank(int idx) {
   sendHologramData("DAILY", message);
   
   // Log daily report event
-  logEvent("Daily report completed for site '" + siteName + "' tank #" + String(tankNum));
+  logEvent("Daily report completed for site '" + tanks[idx].siteName + "' tank #" + String(tanks[idx].tankNum));
 }
 
 void sendStartupNotification() {
