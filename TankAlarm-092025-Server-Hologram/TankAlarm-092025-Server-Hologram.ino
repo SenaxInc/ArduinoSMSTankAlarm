@@ -121,7 +121,7 @@ int powerFailureEventCount = 0;
 String hologramDeviceKey = "";
 int dailyEmailHour = 6;
 int dailyEmailMinute = 0;
-bool useHologramEmail = true;
+bool useHologramEmail = USE_HOLOGRAM_EMAIL;
 String dailyEmailSmsGateway = "";
 String hologramEmailRecipient = "";
 String dailyEmailRecipient = "";
@@ -259,12 +259,56 @@ void loop() {
 
 void checkHologramMessages() {
   if (!networkConnected) return;
+  if (hologramDeviceKey.length() == 0) return;
+  
+  const unsigned long handshakeTimeoutMs = 3000;
+  const unsigned long listenWindowMs = 2000;
   
   // Connect to Hologram server to listen for incoming data
   if (hologramClient.connect(HOLOGRAM_URL, HOLOGRAM_LISTEN_PORT)) {
+    String handshake = "{\"k\":\"" + hologramDeviceKey + "\"}\n";
+    hologramClient.print(handshake);
+    hologramClient.flush();
+    bool handshakeAcknowledged = false;
+    unsigned long handshakeDeadline = millis() + handshakeTimeoutMs;
     
-    while (hologramClient.available()) {
-      String message = hologramClient.readString();
+    while (millis() < handshakeDeadline && hologramClient.connected()) {
+      if (!hologramClient.available()) {
+        delay(50);
+        continue;
+      }
+      String message = hologramClient.readStringUntil('\n');
+      message.trim();
+      if (message.length() == 0) {
+        continue;
+      }
+      if (!handshakeAcknowledged && (message.indexOf("connected") >= 0 || message.indexOf("ready") >= 0 || message.indexOf("success") >= 0)) {
+        handshakeAcknowledged = true;
+        continue;
+      }
+      handshakeAcknowledged = true;
+      parseHologramMessage(message);
+    }
+    
+    if (!handshakeAcknowledged) {
+      logEvent("Hologram handshake timed out - no acknowledgement received");
+    }
+    
+    unsigned long listenDeadline = millis() + listenWindowMs;
+    while (millis() < listenDeadline && hologramClient.connected()) {
+      if (!hologramClient.available()) {
+        delay(50);
+        continue;
+      }
+      String message = hologramClient.readStringUntil('\n');
+      message.trim();
+      if (message.length() == 0) {
+        continue;
+      }
+      if (message.indexOf("connected") >= 0 || message.indexOf("ready") >= 0 || message.indexOf("success") >= 0) {
+        continue;
+      }
+      handshakeAcknowledged = true;
       parseHologramMessage(message);
     }
     
@@ -676,23 +720,19 @@ void sendWebPage(EthernetClient &client) {
   client.println("</p>");
   client.println("<p>Total Reports Received: " + String(reportCount) + "</p>");
   
-#ifdef USE_HOLOGRAM_EMAIL
-  if (USE_HOLOGRAM_EMAIL) {
-    client.println("<p>Email Delivery: <span style='color: blue;'>Hologram API (default)</span></p>");
+  if (useHologramEmail) {
+    client.println("<p>Email Delivery: <span style='color: blue;'>Hologram API</span></p>");
   } else {
     client.println("<p>Email Delivery: <span style='color: orange;'>SMS Gateway</span></p>");
   }
-#else
-  client.println("<p>Email Delivery: <span style='color: orange;'>SMS Gateway</span></p>");
-#endif
 
   client.println("<p>Email Recipients: Daily (" + String(dailyRecipientCount) + "), Monthly (" + String(monthlyRecipientCount) + ")</p>");
 
-#ifdef MONTHLY_REPORT_ENABLED
-  if (MONTHLY_REPORT_ENABLED) {
+  if (monthlyReportEnabled) {
     client.println("<p>Monthly Reports: <span style='color: green;'>Enabled</span> (Day " + String(monthlyReportDay) + " at " + String(monthlyReportHour) + ":00)</p>");
+  } else {
+    client.println("<p>Monthly Reports: <span style='color: red;'>Disabled</span></p>");
   }
-#endif
   
   client.println("<p>Tank Alarm Server 092025 - Hologram Version</p>");
   client.println("</div>");
@@ -744,42 +784,37 @@ void sendDailyEmail() {
   // Send to all daily email recipients
   for (int i = 0; i < dailyRecipientCount; i++) {
     String recipient = dailyEmailRecipients[i];
-    
-#ifdef USE_HOLOGRAM_EMAIL
-    if (USE_HOLOGRAM_EMAIL) {
-      // Send email via Hologram API (default method)
+    bool supportsSmsGateway = (recipient.indexOf("@") != -1 && recipient.indexOf(".com") == -1);
+    bool sentThisRecipient = false;
+
+    if (useHologramEmail) {
       if (sendHologramEmail(recipient, "Tank Alarm Daily Report", emailContent)) {
         Serial.println("Daily email sent successfully to " + recipient + " via Hologram API");
         logEvent("Daily email sent to " + recipient + " via Hologram API");
-        emailSent = true;
-      } else {
+        sentThisRecipient = true;
+      } else if (supportsSmsGateway) {
         Serial.println("Failed to send daily email to " + recipient + " via Hologram API, trying SMS fallback");
-        // Fallback to SMS gateway (only for SMS-compatible addresses)
-        if (recipient.indexOf("@") != -1 && recipient.indexOf(".com") == -1) {
-          if (sms.beginSMS(recipient.c_str())) {
-            sms.print(emailContent);
-            sms.endSMS();
-            Serial.println("Daily email sent successfully to " + recipient + " via SMS fallback");
-            logEvent("Daily email sent to " + recipient + " via SMS fallback");
-            emailSent = true;
-          }
-        }
-      }
-    } else {
-#endif
-      // Send email via SMS to SMS-compatible addresses only
-      if (recipient.indexOf("@") != -1 && recipient.indexOf(".com") == -1) {
         if (sms.beginSMS(recipient.c_str())) {
           sms.print(emailContent);
           sms.endSMS();
-          Serial.println("Daily email sent successfully to " + recipient + " via SMS");
-          logEvent("Daily email sent to " + recipient + " via SMS");
-          emailSent = true;
+          Serial.println("Daily email sent successfully to " + recipient + " via SMS fallback");
+          logEvent("Daily email sent to " + recipient + " via SMS fallback");
+          sentThisRecipient = true;
         }
       }
-#ifdef USE_HOLOGRAM_EMAIL
+    } else if (supportsSmsGateway) {
+      if (sms.beginSMS(recipient.c_str())) {
+        sms.print(emailContent);
+        sms.endSMS();
+        Serial.println("Daily email sent successfully to " + recipient + " via SMS");
+        logEvent("Daily email sent to " + recipient + " via SMS");
+        sentThisRecipient = true;
+      }
     }
-#endif
+
+    if (sentThisRecipient) {
+      emailSent = true;
+    }
   }
   
   if (emailSent) {
@@ -1170,7 +1205,7 @@ void sendRecoveryNotification() {
   message += "All systems operational";
   
   // Send via Hologram API email if available
-  if (USE_HOLOGRAM_EMAIL && dailyRecipientCount > 0) {
+  if (useHologramEmail && dailyRecipientCount > 0) {
     for (int i = 0; i < dailyRecipientCount; i++) {
       sendHologramEmail(dailyEmailRecipients[i], "Tank Server Recovery Notice", message);
     }
@@ -2079,8 +2114,7 @@ bool sendHologramEmail(String recipient, String subject, String body) {
 }
 
 bool isTimeForMonthlyReport() {
-#ifdef MONTHLY_REPORT_ENABLED
-  if (!MONTHLY_REPORT_ENABLED) return false;
+  if (!monthlyReportEnabled) return false;
   
   String currentDate = getDateString();
   
@@ -2093,7 +2127,6 @@ bool isTimeForMonthlyReport() {
       return true;
     }
   }
-#endif
   
   return false;
 }
@@ -2113,9 +2146,9 @@ void generateMonthlyReport() {
   
   for (int i = 0; i < monthlyRecipientCount; i++) {
     String recipient = monthlyEmailRecipients[i];
-    
-#ifdef USE_HOLOGRAM_EMAIL
-    if (USE_HOLOGRAM_EMAIL) {
+    bool supportsSmsGateway = (recipient.indexOf("@") != -1 && recipient.indexOf(".com") == -1);
+
+    if (useHologramEmail) {
       if (sendHologramEmail(recipient, subject, monthlyReportContent)) {
         Serial.println("Monthly report sent successfully to " + recipient + " via Hologram API");
         logEvent("Monthly report sent to " + recipient + " via Hologram API");
@@ -2124,8 +2157,15 @@ void generateMonthlyReport() {
         Serial.println("Failed to send monthly report to " + recipient + " via Hologram API");
         logEvent("Failed to send monthly report to " + recipient + " via Hologram API");
       }
+    } else if (supportsSmsGateway) {
+      if (sms.beginSMS(recipient.c_str())) {
+        sms.print(subject + "\n\n" + monthlyReportContent);
+        sms.endSMS();
+        Serial.println("Monthly report sent successfully to " + recipient + " via SMS");
+        logEvent("Monthly report sent to " + recipient + " via SMS");
+        emailSent = true;
+      }
     }
-#endif
   }
   
   lastMonthlyReportDate = getDateString();

@@ -294,6 +294,9 @@ void logDailyDataForTank(int idx);
 float readTankSensor(int tankIdx);
 void updateAllTankReadings();
 float convertToInches(float sensorValue, int tankIdx = 0);
+void handleAlarmCondition(int tankIdx = 0);
+void sendAlarmSMS(int tankIdx);
+void logAlarmEvent(int tankIdx, String alarmState);
 
 // Calibration function declarations
 void loadCalibrationData();
@@ -457,6 +460,8 @@ void loop() {
   // Update heartbeat for power failure detection
   updateHeartbeat();
   
+  bool firstTankWasInAlarm = (tankCount > 0) ? tankAlarmSent[0] : false;
+
   // Per-tank sensor reading - reads each tank's configured sensor
   updateAllTankReadings();
   
@@ -468,15 +473,10 @@ void loop() {
     bool firstTankAlarm = (tankCurrentInches[0] >= tanks[0].highAlarm) || 
                           (tankCurrentInches[0] <= tanks[0].lowAlarm);
     
-    if (firstTankAlarm && !alarmSent) {
-      handleAlarmCondition();
-    }
-    
     // Reset alarm flag if level returns to normal
-    if (!firstTankAlarm && alarmSent) {
-      alarmSent = false;
+    if (!firstTankAlarm && firstTankWasInAlarm) {
       logEvent("Tank level returned to normal");
-      logAlarmEvent("normal");
+      logAlarmEvent(0, "normal");
     }
     
     // Check for large decrease in level (first tank only for legacy)
@@ -560,6 +560,15 @@ void loop() {
     lastBackup = millis();
   }
   
+  bool anyTankInAlarm = false;
+  for (int i = 0; i < tankCount && i < 26; i++) {
+    if (tankAlarmSent[i]) {
+      anyTankInAlarm = true;
+      break;
+    }
+  }
+  alarmSent = anyTankInAlarm;
+
   // Determine sleep strategy based on current conditions
   bool needsFrequentChecking = (alarmSent || wakeFromCellular || checkServerCommands);
   
@@ -847,25 +856,24 @@ void updateAllTankReadings() {
         if (alarmCondition && !tankAlarmSent[i]) {
           tankAlarmSent[i] = true;
           logEvent("Tank " + String((char)('A' + i)) + " alarm: " + String(reading, 1) + " inches");
-          // Send alarm notification for first tank (legacy compatibility)
-          if (i == 0) {
-            handleAlarmCondition();
-          }
+          handleAlarmCondition(i);
         } else if (!alarmCondition && tankAlarmSent[i]) {
           tankAlarmSent[i] = false;
           logEvent("Tank " + String((char)('A' + i)) + " normal: " + String(reading, 1) + " inches");
+          if (i != 0) {
+            logAlarmEvent(i, "normal");
+          }
         }
       }
     }
   }
 }
 
-void handleAlarmCondition() {
-  // Legacy single-tank alarm handler - uses first tank configuration
-  if (tankCount < 1) return;
+void handleAlarmCondition(int tankIdx) {
+  if (tankIdx < 0 || tankIdx >= tankCount) return;
   
 #ifdef ENABLE_SERIAL_DEBUG
-  if (ENABLE_SERIAL_DEBUG) Serial.println("ALARM: Tank level alarm condition detected!");
+  if (ENABLE_SERIAL_DEBUG) Serial.println("ALARM: Tank " + String((char)('A' + tankIdx)) + " alarm condition detected!");
 #endif
   
   // Set alarm flag
@@ -877,21 +885,23 @@ void handleAlarmCondition() {
   // Activate relay (if needed for alarm indication)
   digitalWrite(RELAY_CONTROL_PIN, HIGH);
   
-  // Use first tank's thresholds and current level
-  float levelInches = tankCurrentInches[0];
+  float levelInches = tankCurrentInches[tankIdx];
+  String siteName = tanks[tankIdx].siteName;
+  int tankNumber = tanks[tankIdx].tankNum;
   
   // Determine alarm type
   String alarmType = "change";
-  if (levelInches >= tanks[0].highAlarm) {
+  if (levelInches >= tanks[tankIdx].highAlarm) {
     alarmType = "high";
-  } else if (levelInches <= tanks[0].lowAlarm) {
+  } else if (levelInches <= tanks[tankIdx].lowAlarm) {
     alarmType = "low";
   }
   
   // Log alarm event
-  String alarmMsg = "ALARM: Tank level " + alarmType + " - " + String(levelInches, 1) + " inches";
+  String alarmMsg = "ALARM: " + siteName + " Tank #" + String(tankNumber) + " " + alarmType +
+                    " - " + String(levelInches, 1) + " inches";
   logEvent(alarmMsg);
-  logAlarmEvent(alarmType);
+  logAlarmEvent(tankIdx, alarmType);
   
   // Connect to network if not connected
   if (!connectToCellular()) {
@@ -903,7 +913,7 @@ void handleAlarmCondition() {
   }
   
   // Send alarm SMS messages
-  sendAlarmSMS();
+  sendAlarmSMS(tankIdx);
   
   // Send alarm data to Hologram.io
   sendHologramData("ALARM", alarmMsg);
@@ -915,12 +925,11 @@ void handleAlarmCondition() {
   // digitalWrite(RELAY_CONTROL_PIN, LOW);  // Uncomment to turn off relay immediately
 }
 
-void sendAlarmSMS() {
-  if (tankCount < 1) return;
+void sendAlarmSMS(int tankIdx) {
+  if (tankIdx < 0 || tankIdx >= tankCount) return;
   
-  // Use first tank for legacy single-sensor alarm
-  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[0]);
-  String message = "TANK ALARM " + tanks[0].siteName + " Tank #" + String(tanks[0].tankNum) + 
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[tankIdx]);
+  String message = "TANK ALARM " + tanks[tankIdx].siteName + " Tank #" + String(tanks[tankIdx].tankNum) + 
                   ": Level " + feetInchesFormat + " at " + getCurrentTimestamp() + 
                   ". Immediate attention required.";
   
@@ -1682,14 +1691,17 @@ void logDailyDataForTank(int idx) {
   }
 }
 
-// Log alarm events in required format (legacy single-tank)
+// Log alarm events in required format (per tank)
 // YYYYMMDD00:00,A,(site location name),(Tank Number),(alarm state, high or low or change)
-void logAlarmEvent(String alarmState) {
+void logAlarmEvent(int tankIdx, String alarmState) {
   if (!ensureSDCardReady()) return;
-  if (tankCount < 1) return;
+  if (tankIdx < 0 || tankIdx >= tankCount) return;
+  
+  String siteName = tanks[tankIdx].siteName.length() > 0 ? tanks[tankIdx].siteName : "Tank";
+  int tankNumber = (tanks[tankIdx].tankNum > 0) ? tanks[tankIdx].tankNum : (tankIdx + 1);
   
   String timestamp = getDateTimestamp();
-  String logEntry = timestamp + ",A," + tanks[0].siteName + "," + String(tanks[0].tankNum) + "," + alarmState;
+  String logEntry = timestamp + ",A," + siteName + "," + String(tankNumber) + "," + alarmState;
   
   File alarmFile = SD.open(alarmLogFile.c_str(), FILE_WRITE);
   if (alarmFile) {
