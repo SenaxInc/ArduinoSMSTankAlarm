@@ -1,0 +1,295 @@
+name: HTML Render and Screenshot
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'TankAlarm-092025-Server-Hologram/*.ino'
+      - 'TankAlarm-112025-Server-BluesOpta/*.ino'
+      - '.github/workflows/html-render.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'TankAlarm-092025-Server-Hologram/*.ino'
+      - 'TankAlarm-112025-Server-BluesOpta/*.ino'
+      - '.github/workflows/html-render.yml'
+  workflow_dispatch:
+
+jobs:
+  render-html:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright
+        run: |
+          npm install playwright
+          npx playwright install chromium
+
+      - name: Extract and render HTML for 092025 Server
+        run: |
+          mkdir -p /tmp/html-092025
+          python3 << 'EOF'
+          import re
+          import os
+          
+          ino_file = 'TankAlarm-092025-Server-Hologram/TankAlarm-092025-Server-Hologram.ino'
+          output_dir = '/tmp/html-092025'
+          
+          with open(ino_file, 'r', encoding='utf-8', errors='ignore') as f:
+              content = f.read()
+          
+          # Find functions that generate HTML pages
+          pages = {
+              'dashboard': ('sendWebPage', 'Dashboard'),
+              'email-management': ('sendEmailManagementPage', 'Email Management'),
+              'tank-management': ('sendTankManagementPage', 'Tank Management'),
+              'calibration': ('sendCalibrationPage', 'Calibration'),
+              '404': ('send404Page', '404 Page')
+          }
+          
+          for page_name, (func_name, title) in pages.items():
+              # Find the function more carefully
+              func_pattern = rf'void {func_name}\([^)]*\)\s*\{{'
+              match = re.search(func_pattern, content)
+              
+              if match:
+                  start_pos = match.end()
+                  # Find the matching closing brace
+                  brace_count = 1
+                  pos = start_pos
+                  while pos < len(content) and brace_count > 0:
+                      if content[pos] == '{':
+                          brace_count += 1
+                      elif content[pos] == '}':
+                          brace_count -= 1
+                      pos += 1
+                  
+                  func_body = content[start_pos:pos-1]
+                  
+                  # Extract HTML from client.println statements
+                  html_lines = []
+                  for line in func_body.split('\n'):
+                      line = line.strip()
+                      # Match client.println("...") or client.print("...")
+                      println_match = re.search(r'client\.print(?:ln)?\s*\(\s*[fF]?\s*\(\s*"([^"]*)"\s*\)\s*\)', line)
+                      if not println_match:
+                          println_match = re.search(r'client\.print(?:ln)?\s*\(\s*"([^"]*)"\s*\)', line)
+                      
+                      if println_match:
+                          html_content = println_match.group(1)
+                          # Unescape the string
+                          html_content = html_content.replace(r'\"', '"')
+                          html_content = html_content.replace(r"\'", "'")
+                          html_content = html_content.replace(r'\n', '\n')
+                          html_lines.append(html_content)
+                      # Handle String concatenation with variables
+                      elif 'client.print' in line:
+                          # Check for meta refresh
+                          if 'webPageRefreshSeconds' in line:
+                              html_lines.append("<meta http-equiv='refresh' content='30'>")
+                          # For other dynamic content, extract what we can
+                          elif '"' in line:
+                              parts = re.findall(r'"([^"]*)"', line)
+                              for part in parts:
+                                  html_lines.append(part)
+                  
+                  # Join HTML lines
+                  html_content = '\n'.join(html_lines)
+                  
+                  # Add sample data for dynamic content
+                  if page_name == 'dashboard':
+                      # Add sample tank data at the end before closing body tag
+                      sample_data = '''
+          <div class="tank-container">
+            <div class="tank-card">
+              <div class="tank-header">Site A - Tank #1</div>
+              <div class="tank-level">Level: 75%</div>
+              <div class="tank-change positive">Change: +5%</div>
+              <div class="status-normal">Status: Normal</div>
+            </div>
+            <div class="tank-card">
+              <div class="tank-header">Site B - Tank #2</div>
+              <div class="tank-level">Level: 30%</div>
+              <div class="tank-change negative">Change: -10%</div>
+              <div class="status-alarm">Status: LOW ALARM</div>
+            </div>
+          </div>
+          <div class="footer">Last updated: 2025-11-12 18:00:00 UTC</div>
+          </body>
+          </html>
+          '''
+                      # Insert before closing tags if they don't exist
+                      if '</body>' not in html_content:
+                          html_content += sample_data
+                  
+                  # Make sure we have closing tags
+                  if '</html>' not in html_content:
+                      if '</body>' not in html_content:
+                          html_content += '\n</body>'
+                      html_content += '\n</html>'
+                  
+                  # Write to file
+                  output_file = os.path.join(output_dir, f'{page_name}.html')
+                  with open(output_file, 'w', encoding='utf-8') as out:
+                      out.write(html_content)
+                  
+                  print(f'Extracted {page_name}: {len(html_lines)} lines')
+          EOF
+
+      - name: Extract and render HTML for 112025 Server
+        run: |
+          mkdir -p /tmp/html-112025
+          python3 << 'EOF'
+          import re
+          
+          ino_file = 'TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino'
+          output_dir = '/tmp/html-112025'
+          
+          with open(ino_file, 'r', encoding='utf-8', errors='ignore') as f:
+              content = f.read()
+          
+          # Find the DASHBOARD_HTML constant
+          html_pattern = r'static const char DASHBOARD_HTML\[\] PROGMEM = R"HTML\((.*?)\)HTML"'
+          match = re.search(html_pattern, content, re.DOTALL)
+          
+          if match:
+              html_content = match.group(1)
+              
+              output_file = output_dir + '/dashboard.html'
+              with open(output_file, 'w', encoding='utf-8') as out:
+                  out.write(html_content)
+              
+              print(f'Extracted dashboard HTML: {len(html_content)} bytes')
+          EOF
+
+      - name: Take screenshots with Playwright
+        run: |
+          node << 'EOF'
+          const playwright = require('playwright');
+          const fs = require('fs');
+          const path = require('path');
+          
+          async function takeScreenshots() {
+              const browser = await playwright.chromium.launch();
+              const context = await browser.newContext({
+                  viewport: { width: 1280, height: 720 }
+              });
+              const page = await context.newPage();
+              
+              // Screenshot 092025 pages
+              const dir092025 = '/tmp/html-092025';
+              const output092025 = 'TankAlarm-092025-Server-Hologram/screenshots';
+              
+              if (fs.existsSync(dir092025)) {
+                  fs.mkdirSync(output092025, { recursive: true });
+                  const files = fs.readdirSync(dir092025);
+                  
+                  for (const file of files) {
+                      if (file.endsWith('.html')) {
+                          const htmlPath = path.join(dir092025, file);
+                          const screenshotName = file.replace('.html', '.png');
+                          const screenshotPath = path.join(output092025, screenshotName);
+                          
+                          try {
+                              await page.goto('file://' + htmlPath, { waitUntil: 'networkidle' });
+                              await page.screenshot({ path: screenshotPath, fullPage: true });
+                              console.log(`Screenshot saved: ${screenshotPath}`);
+                          } catch (error) {
+                              console.error(`Error capturing ${file}:`, error.message);
+                          }
+                      }
+                  }
+              }
+              
+              // Screenshot 112025 pages
+              const dir112025 = '/tmp/html-112025';
+              const output112025 = 'TankAlarm-112025-Server-BluesOpta/screenshots';
+              
+              if (fs.existsSync(dir112025)) {
+                  fs.mkdirSync(output112025, { recursive: true });
+                  const files = fs.readdirSync(dir112025);
+                  
+                  for (const file of files) {
+                      if (file.endsWith('.html')) {
+                          const htmlPath = path.join(dir112025, file);
+                          const screenshotName = file.replace('.html', '.png');
+                          const screenshotPath = path.join(output112025, screenshotName);
+                          
+                          try {
+                              await page.goto('file://' + htmlPath, { waitUntil: 'networkidle' });
+                              await page.screenshot({ path: screenshotPath, fullPage: true });
+                              console.log(`Screenshot saved: ${screenshotPath}`);
+                          } catch (error) {
+                              console.error(`Error capturing ${file}:`, error.message);
+                          }
+                      }
+                  }
+              }
+              
+              await browser.close();
+          }
+          
+          takeScreenshots().catch(console.error);
+          EOF
+
+      - name: Generate WEBSITE_PREVIEW.md for 092025
+        run: |
+          cat > TankAlarm-092025-Server-Hologram/WEBSITE_PREVIEW.md << 'EOF'
+          # Website Preview - TankAlarm 092025 Server
+
+          This document contains screenshots of the web interface served by the TankAlarm-092025-Server-Hologram.
+
+          ## Dashboard
+          ![Dashboard](screenshots/dashboard.png)
+
+          ## Email Management
+          ![Email Management](screenshots/email-management.png)
+
+          ## Tank Management
+          ![Tank Management](screenshots/tank-management.png)
+
+          ## Calibration
+          ![Calibration](screenshots/calibration.png)
+
+          ## 404 Page
+          ![404 Page](screenshots/404.png)
+
+          ---
+          *Screenshots automatically generated by GitHub Actions*
+          *Last updated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")*
+          EOF
+
+      - name: Generate WEBSITE_PREVIEW.md for 112025
+        run: |
+          cat > TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md << 'EOF'
+          # Website Preview - TankAlarm 112025 Server
+
+          This document contains screenshots of the web interface served by the TankAlarm-112025-Server-BluesOpta.
+
+          ## Dashboard
+          ![Dashboard](screenshots/dashboard.png)
+
+          ---
+          *Screenshots automatically generated by GitHub Actions*
+          *Last updated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")*
+          EOF
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add TankAlarm-092025-Server-Hologram/WEBSITE_PREVIEW.md TankAlarm-092025-Server-Hologram/screenshots/
+          git add TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md TankAlarm-112025-Server-BluesOpta/screenshots/
+          git diff --staged --quiet || git commit -m "Update website preview screenshots [skip ci]"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
