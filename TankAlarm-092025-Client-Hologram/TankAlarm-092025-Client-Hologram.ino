@@ -293,6 +293,7 @@ void sendDailyReportForTank(int idx);
 void logDailyDataForTank(int idx);
 float readTankSensor(int tankIdx);
 void updateAllTankReadings();
+float convertToInches(float sensorValue, int tankIdx = 0);
 
 // Calibration function declarations
 void loadCalibrationData();
@@ -1499,7 +1500,7 @@ void loadSDCardConfiguration() {
 }
 
 // Convert sensor reading to inches (requires tank index for height reference)
-float convertToInches(float sensorValue, int tankIdx = 0) {
+float convertToInches(float sensorValue, int tankIdx) {
   // Use calibration data if available
   if (calibrationDataLoaded && numCalibrationPoints >= 2) {
     return interpolateHeight(sensorValue);
