@@ -202,6 +202,8 @@ static bool gNotecardAvailable = true;
 #define NOTECARD_FAILURE_THRESHOLD 5
 #define NOTECARD_RETRY_INTERVAL 60000UL  // Retry after 60 seconds
 
+static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
+
 // Forward declarations
 static void initializeStorage();
 static void ensureConfigLoaded();
@@ -225,6 +227,8 @@ static void sendDailyReport();
 static void publishNote(const char *fileName, const JsonDocument &doc, bool syncNow);
 static void ensureTimeSync();
 static void updateDailyScheduleIfNeeded();
+static bool checkNotecardHealth();
+static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit);
 
 void setup() {
   Serial.begin(115200);
@@ -1247,36 +1251,96 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
 }
 
 static void sendDailyReport() {
-  DynamicJsonDocument doc(2048);
-  JsonArray tanks = doc.createNestedArray("tanks");
-
+  uint8_t eligibleIndices[MAX_TANKS];
+  uint8_t eligibleCount = 0;
   for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
-    const TankConfig &cfg = gConfig.tanks[i];
-    TankRuntime &state = gTankState[i];
-    if (!cfg.enableDailyReport) {
-      continue;
+    if (gConfig.tanks[i].enableDailyReport) {
+      eligibleIndices[eligibleCount++] = i;
     }
-    JsonObject t = tanks.createNestedObject();
-    t["label"] = cfg.name;
-    t["tank"] = cfg.tankNumber;
-    t["levelInches"] = state.currentInches;
-    t["percent"] = (cfg.heightInches > 0.1f) ? (state.currentInches / cfg.heightInches * 100.0f) : 0.0f;
-    t["high"] = cfg.highAlarmInches;
-    t["low"] = cfg.lowAlarmInches;
-    state.lastDailySentInches = state.currentInches;
   }
 
-  if (tanks.size() == 0) {
+  if (eligibleCount == 0) {
     return;
   }
 
-  doc["client"] = gDeviceUID;
-  doc["site"] = gConfig.siteName;
-  doc["email"] = gConfig.dailyEmail;
-  doc["time"] = currentEpoch();
+  double reportEpoch = currentEpoch();
+  size_t tankCursor = 0;
+  uint8_t part = 0;
+  bool queuedAny = false;
 
-  publishNote(DAILY_FILE, doc, true);
-  Serial.println(F("Daily report queued"));
+  while (tankCursor < eligibleCount) {
+    DynamicJsonDocument doc(1024);
+    doc["client"] = gDeviceUID;
+    doc["site"] = gConfig.siteName;
+    doc["email"] = gConfig.dailyEmail;
+    doc["time"] = reportEpoch;
+    doc["part"] = static_cast<uint8_t>(part + 1);
+
+    JsonArray tanks = doc.createNestedArray("tanks");
+    bool addedTank = false;
+
+    while (tankCursor < eligibleCount) {
+      uint8_t tankIndex = eligibleIndices[tankCursor];
+      if (appendDailyTank(doc, tanks, tankIndex, DAILY_NOTE_PAYLOAD_LIMIT)) {
+        ++tankCursor;
+        addedTank = true;
+      } else {
+        if (!addedTank) {
+          // Allow a single large entry with minimal headroom so it still publishes.
+          if (appendDailyTank(doc, tanks, tankIndex, DAILY_NOTE_PAYLOAD_LIMIT + 48U)) {
+            ++tankCursor;
+            addedTank = true;
+          } else {
+            Serial.println(F("Daily report entry skipped; payload still exceeds limit"));
+            ++tankCursor;
+          }
+        }
+        break;
+      }
+    }
+
+    if (!addedTank) {
+      continue;
+    }
+
+    doc["more"] = (tankCursor < eligibleCount);
+    bool syncNow = (tankCursor >= eligibleCount);
+    publishNote(DAILY_FILE, doc, syncNow);
+    queuedAny = true;
+    ++part;
+  }
+
+  if (queuedAny) {
+    Serial.println(F("Daily report queued"));
+  }
+}
+
+static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit) {
+  if (tankIndex >= gConfig.tankCount) {
+    return false;
+  }
+
+  const TankConfig &cfg = gConfig.tanks[tankIndex];
+  TankRuntime &state = gTankState[tankIndex];
+
+  JsonObject t = array.createNestedObject();
+  t["label"] = cfg.name;
+  t["tank"] = cfg.tankNumber;
+  t["levelInches"] = state.currentInches;
+  t["percent"] = (cfg.heightInches > 0.1f) ? (state.currentInches / cfg.heightInches * 100.0f) : 0.0f;
+  t["high"] = cfg.highAlarmInches;
+  t["low"] = cfg.lowAlarmInches;
+
+  if (measureJson(doc) > payloadLimit) {
+    size_t currentSize = array.size();
+    if (currentSize > 0) {
+      array.remove(currentSize - 1);
+    }
+    return false;
+  }
+
+  state.lastDailySentInches = state.currentInches;
+  return true;
 }
 
 static void publishNote(const char *fileName, const JsonDocument &doc, bool syncNow) {

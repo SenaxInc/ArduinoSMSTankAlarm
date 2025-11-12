@@ -818,6 +818,7 @@ static void loadClientConfigSnapshots();
 static void saveClientConfigSnapshots();
 static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffer);
 static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
+static bool checkSmsRateLimit(TankRecord *rec);
 
 void setup() {
   Serial.begin(115200);
@@ -1549,9 +1550,13 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
     strlcpy(rec->alarmType, type, sizeof(rec->alarmType));
   }
   rec->levelInches = inches;
-  rec->percent = doc["percent"].as<float>();
   if (doc.containsKey("heightInches")) {
     rec->heightInches = doc["heightInches"].as<float>();
+  }
+  if (doc.containsKey("percent")) {
+    rec->percent = doc["percent"].as<float>();
+  } else if (rec->heightInches > 0.1f) {
+    rec->percent = (inches / rec->heightInches) * 100.0f;
   }
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
 
