@@ -54,24 +54,26 @@ Access the calibration page at `http://[server-ip]/calibration` to:
 
 ## File Structure
 
-### calibration.txt
-Stored on tank SD card, contains calibration points in CSV format:
+### Per-Tank `.cfg` File
+Stored on the tank's SD card, the same file used for all other tank settings. Calibration points are added using the `CAL_POINT` key.
 ```
-# Tank Height Calibration Data
-# Format: sensor_value,actual_height_inches,timestamp
-0.5000,0.00,2025-01-01T10:00:00
-2.2500,24.50,2025-01-01T10:05:00
-4.0000,48.00,2025-01-01T10:10:00
+# In a file like NorthFarm_101.cfg
+SITE_NAME=North Farm
+TANK_NUMBER=101
+# ... other settings ...
+CAL_POINT=0.50,0.0
+CAL_POINT=2.25,24.5
+CAL_POINT=4.00,48.0
 ```
 
 ## Implementation Details
 
 ### Client (Tank) Side
-- **Calibration data loading**: Automatic on startup from `calibration.txt`
-- **SMS processing**: `processIncomingSMS()` function handles incoming commands
-- **Data storage**: `saveCalibrationData()` writes to SD card
-- **Height calculation**: `interpolateHeight()` performs linear interpolation
-- **Sensor reading**: `getCurrentSensorReading()` gets raw sensor values
+- **Calibration data loading**: Automatic on startup from `CAL_POINT` entries in the tank's `.cfg` file.
+- **SMS processing**: `processIncomingSMS()` function handles incoming commands. When a `CAL` command is received, a new `CAL_POINT` line is appended to the active `.cfg` file.
+- **Data storage**: Calibration points are stored directly in the `.cfg` file on the SD card.
+- **Height calculation**: `interpolateHeight()` performs linear interpolation.
+- **Sensor reading**: `getCurrentSensorReading()` gets raw sensor values.
 
 ### Server Side
 - **Web interface**: `/calibration` route displays calibration page

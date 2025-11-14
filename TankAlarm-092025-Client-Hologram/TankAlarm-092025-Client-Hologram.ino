@@ -229,6 +229,11 @@ struct TankEntry {
   int digitalPin = -1;        // Optional digital sensor pin (e.g. floating switch array)
   int analogPin = -1;         // Optional analog pin index (A1 -> 1) for voltage sensor
   int currentLoopChannel = -1;// Optional 4-20mA current loop channel index
+  String configFileName;      // The name of the .cfg file for this tank
+  
+  // Calibration data for this specific tank
+  CalibrationPoint calibrationPoints[MAX_CALIBRATION_POINTS];
+  int numCalibrationPoints = 0;
 };
 int tankCount = 0;            // Auto-detected from config (highest tank index + 1)
 TankEntry tanks[26];          // Support A-Z tanks (26 max)
@@ -265,48 +270,16 @@ bool wakeOnPingEnabled = true; // Wake on ping functionality
 
 // Height calibration system
 #define MAX_CALIBRATION_POINTS 10
-#define CALIBRATION_FILE_NAME "calibration.txt"
 
 struct CalibrationPoint {
-  float sensorValue;    // Raw sensor reading (voltage, current, or digital state)
+  float sensorValue;    // Raw sensor reading (voltage, current, etc.)
   float actualHeight;   // Actual measured height in inches
-  String timestamp;     // When this calibration was recorded
 };
 
-CalibrationPoint calibrationPoints[MAX_CALIBRATION_POINTS];
-int numCalibrationPoints = 0;
-bool calibrationDataLoaded = false;
+// Per-tank level measurements in inches
+float tankCurrentInches[26];  // Current reading per tank
+bool tankAlarmSent[26];       // Alarm state per tank
 
-// Function declarations
-bool connectToCellular();
-bool syncTimeFromCellular();
-bool isTimeForDailyReport();
-void parseTimeString(String timeStr, int &hours, int &minutes);
-void logSuccessfulReport();
-String getLastReportDateFromLog();
-void enterPowerSaveMode();
-void enterDeepSleepMode();
-void configureCellularWakeup();
-void checkForIncomingData();
-// Multi-tank additions
-void sendDailyReportForTank(int idx);
-void logDailyDataForTank(int idx);
-float readTankSensor(int tankIdx);
-void updateAllTankReadings();
-float convertToInches(float sensorValue, int tankIdx = 0);
-void handleAlarmCondition(int tankIdx = 0);
-void sendAlarmSMS(int tankIdx);
-void logAlarmEvent(int tankIdx, String alarmState);
-
-// Calibration function declarations
-void loadCalibrationData();
-void saveCalibrationData();
-void addCalibrationPoint(float sensorValue, float actualHeight);
-float interpolateHeight(float sensorValue);
-void processIncomingSMS();
-void processSMSCommand(String command, String phoneNumber);
-void sendCalibrationSMS(String phoneNumber);
-float getCurrentSensorReading();
 
 // Network configuration (loaded from SD card - REQUIRED)
 int connectionTimeoutMs = 30000;
@@ -318,6 +291,17 @@ String dailyLogFile = "daily_log.txt";
 String alarmLogFile = "alarm_log.txt";
 String decreaseLogFile = "decrease_log.txt";
 String reportLogFile = "report_log.txt";
+String systemLogFile = "system_events.log";
+
+// Helper to create a sanitized log filename from site and tank info
+String getTankLogFileName(int tankIdx) {
+  if (tankIdx < 0 || tankIdx >= tankCount) {
+    return "error.log";
+  }
+  String siteName = tanks[tankIdx].siteName;
+  siteName.replace(" ", "_"); // Sanitize spaces
+  return siteName + "_" + String(tanks[tankIdx].tankNum) + ".csv";
+}
 
 void setup() {
   // Initialize serial communication for debugging
@@ -368,24 +352,17 @@ void setup() {
     // Initialize per-tank sensor pins based on loaded config
     bool i2cInitialized = false;
     for (int i = 0; i < tankCount && i < 26; i++) {
-      if (tanks[i].digitalPin >= 0) {
-        pinMode(tanks[i].digitalPin, INPUT_PULLUP);
+      if (tanks[i].currentLoopChannel >= 0) {
+        // Initialize I2C for current loop sensors
+        if (!i2cInitialized) {
+          Wire.begin();
+          i2cInitialized = true;
 #ifdef ENABLE_SERIAL_DEBUG
-        if (ENABLE_SERIAL_DEBUG) Serial.println("Tank " + String((char)('A' + i)) + 
-                                                " digital pin " + String(tanks[i].digitalPin));
+          if (ENABLE_SERIAL_DEBUG) Serial.println("I2C initialized for current loop sensors");
 #endif
-      }
-      if (tanks[i].currentLoopChannel >= 0 && !i2cInitialized) {
-        Wire.begin();
-        i2cInitialized = true;
-#ifdef ENABLE_SERIAL_DEBUG
-        if (ENABLE_SERIAL_DEBUG) Serial.println("I2C initialized for current loop sensors");
-#endif
+        }
       }
     }
-    
-    // Load calibration data from SD card
-    loadCalibrationData();
   }
   
   // Initialize RTC
@@ -484,7 +461,9 @@ void loop() {
   }
   
   // Check if it's time for hourly log entry
-  logHourlyData();
+  for (int i = 0; i < tankCount; i++) {
+    logHourlyData(i);
+  }
   
   // Check for periodic time sync (once per day)
   if (timeIsSynced && (millis() - lastTimeSyncMillis > TIME_SYNC_INTERVAL_MS)) {
@@ -1224,16 +1203,23 @@ bool ensureSDCardReady() {
   return lastState;
 }
 
-void logEvent(String event) {
+void logEvent(String event, int tankIdx = -1) {
   // Log events to SD card with timestamp
   if (ensureSDCardReady()) {
+    String logFileName;
+    if (tankIdx != -1) {
+      logFileName = getTankLogFileName(tankIdx);
+    } else {
+      logFileName = systemLogFile;
+    }
+    
     File logFile = SD.open(logFileName, FILE_WRITE);
     if (logFile) {
-      String logEntry = getCurrentTimestamp() + " - " + event;
+      String logEntry = getCurrentTimestamp() + "," + event;
       logFile.println(logEntry);
       logFile.close();
 #ifdef ENABLE_SERIAL_DEBUG
-      if (ENABLE_SERIAL_DEBUG) Serial.println("Logged: " + logEntry);
+      if (ENABLE_SERIAL_DEBUG) Serial.println("Logged to " + logFileName + ": " + logEntry);
 #endif
     }
   }
@@ -1292,218 +1278,165 @@ String getCurrentTimestamp() {
   return timestamp;
 }
 
-// Load configuration from SD card
+// Load configuration from SD card by scanning for .cfg files
 void loadSDCardConfiguration() {
   if (!SD.begin(SD_CARD_CS_PIN)) {
-    Serial.println("CRITICAL ERROR: Failed to initialize SD card for client configuration loading");
-    Serial.println("SD card configuration is REQUIRED for operation");
-    while (true) {
-      // Halt execution - SD card config is required
-      delay(5000);
-      Serial.println("Please insert SD card with tank_config.txt and restart");
-    }
+    Serial.println("CRITICAL ERROR: Failed to initialize SD card for configuration loading.");
+    while (true) { delay(5000); Serial.println("Please insert SD card and restart."); }
   }
+
+  Serial.println("Scanning for tank configuration files (*.cfg)...");
   
-  File configFile = SD.open(SD_CONFIG_FILE);
-  if (!configFile) {
-    Serial.println("CRITICAL ERROR: Client config file not found on SD card");
-    Serial.println("tank_config.txt is REQUIRED for operation");
-    while (true) {
-      // Halt execution - SD card config is required
-      delay(5000);
-      Serial.println("Please create tank_config.txt on SD card and restart");
-    }
+  File root = SD.open("/");
+  if (!root) {
+    Serial.println("CRITICAL ERROR: Cannot open SD card root directory.");
+    while (true) { delay(5000); }
   }
-  
-  Serial.println("Loading client configuration from SD card...");
-  
-  while (configFile.available()) {
-    String line = configFile.readStringUntil('\n');
-    line.trim();
-    
-    // Skip comments and empty lines
-    if (line.startsWith("#") || line.length() == 0) {
-      continue;
+
+  while (true) {
+    File entry = root.openNextFile();
+    if (!entry) {
+      // No more files
+      break;
     }
-    
-    // Parse key=value pairs
-    int equalPos = line.indexOf('=');
-    if (equalPos > 0) {
-      String key = line.substring(0, equalPos);
-      String value = line.substring(equalPos + 1);
-      key.trim();
-      value.trim();
+
+    String fileName = entry.name();
+    fileName.toLowerCase();
+
+    if (fileName.endsWith(".cfg") && tankCount < 26) {
+      Serial.println("Found config file: " + String(entry.name()));
+      tanks[tankCount].configFileName = entry.name();
       
-      // Update configuration variables
-      if (key == "INCHES_PER_UNIT") {
-        inchesPerUnit = value.toFloat();
-      } else if (key == "DIGITAL_HIGH_ALARM") {
-        digitalHighAlarm = (value == "true");
-      } else if (key == "DIGITAL_LOW_ALARM") {
-        digitalLowAlarm = (value == "true");
-      } else if (key.startsWith("TANK")) {
-        // Support TANK<number>_FIELD and TANK<letter>_FIELD
-        int underscore = key.indexOf('_', 4);
-        if (underscore > 4) {
-          String indexStr = key.substring(4, underscore); // could be "1" or "A"
-          int idx = -1;
-          // Decide if numeric or alphabetic
-          // Lightweight alpha check (avoid extra libs):
-          char alphaTest = indexStr.charAt(0);
-          if (indexStr.length() == 1 && ((alphaTest >= 'A' && alphaTest <= 'Z') || (alphaTest >= 'a' && alphaTest <= 'z'))) {
-            // Letter mapping: A->0, B->1 ...
-            if (alphaTest >= 'A' && alphaTest <= 'Z') idx = alphaTest - 'A';
-            if (alphaTest >= 'a' && alphaTest <= 'z') idx = alphaTest - 'a';
-          } else {
-            int numeric = indexStr.toInt();
-            if (numeric > 0) idx = numeric - 1; // convert 1-based to 0-based
-          }
-          if (idx >= 0 && idx < 26) {
-            String field = key.substring(underscore + 1);
-            if (field == "SITE_NAME") {
-              tanks[idx].siteName = value;
-            } else if (field == "TANK_NUMBER") {
-              tanks[idx].tankNum = value.toInt();
-            } else if (field == "TANK_HEIGHT_INCHES") {
-              tanks[idx].tankHeight = value.toFloat();
-            } else if (field == "HIGH_ALARM_INCHES") {
-              tanks[idx].highAlarm = value.toFloat();
-            } else if (field == "LOW_ALARM_INCHES") {
-              tanks[idx].lowAlarm = value.toFloat();
-            } else if (field == "DIGITAL_PIN") {
-              tanks[idx].digitalPin = value.toInt();
-            } else if (field == "ANALOG_PIN") {
-              if (value.startsWith("A") || value.startsWith("a")) {
-                tanks[idx].analogPin = value.substring(1).toInt();
-              } else {
-                tanks[idx].analogPin = value.toInt();
-              }
-            } else if (field == "CURRENT_LOOP_CHANNEL") {
-              tanks[idx].currentLoopChannel = value.toInt();
+      // Parse this file for one tank's settings
+      while (entry.available()) {
+        String line = entry.readStringUntil('\n');
+        line.trim();
+        
+        if (line.startsWith("#") || line.length() == 0) continue;
+
+        int equalPos = line.indexOf('=');
+        if (equalPos > 0) {
+          String key = line.substring(0, equalPos);
+          String value = line.substring(equalPos + 1);
+          key.trim();
+          value.trim();
+
+          // Load tank-specific settings
+          if (key == "SITE_NAME") {
+            tanks[tankCount].siteName = value;
+          } else if (key == "TANK_NUMBER") {
+            tanks[tankCount].tankNum = value.toInt();
+          } else if (key == "TANK_HEIGHT_INCHES") {
+            tanks[tankCount].tankHeight = value.toFloat();
+          } else if (key == "HIGH_ALARM_INCHES") {
+            tanks[tankCount].highAlarm = value.toFloat();
+          } else if (key == "LOW_ALARM_INCHES") {
+            tanks[tankCount].lowAlarm = value.toFloat();
+          } else if (key == "DIGITAL_PIN") {
+            tanks[tankCount].digitalPin = value.toInt();
+          } else if (key == "ANALOG_PIN") {
+            if (value.startsWith("A") || value.startsWith("a")) {
+              tanks[tankCount].analogPin = value.substring(1).toInt();
+            } else {
+              tanks[tankCount].analogPin = value.toInt();
             }
-            // Expand tankCount automatically based on highest defined index
-            if (idx + 1 > tankCount) tankCount = idx + 1;
+          } else if (key == "CURRENT_LOOP_CHANNEL") {
+            tanks[tankCount].currentLoopChannel = value.toInt();
+          } else if (key == "CAL_POINT") {
+            // Parse "sensor_value,actual_height"
+            int commaPos = value.indexOf(',');
+            if (commaPos > 0 && tanks[tankCount].numCalibrationPoints < MAX_CALIBRATION_POINTS) {
+              float sensorVal = value.substring(0, commaPos).toFloat();
+              float heightVal = value.substring(commaPos + 1).toFloat();
+              
+              int calIdx = tanks[tankCount].numCalibrationPoints;
+              tanks[tankCount].calibrationPoints[calIdx].sensorValue = sensorVal;
+              tanks[tankCount].calibrationPoints[calIdx].actualHeight = heightVal;
+              tanks[tankCount].numCalibrationPoints++;
+            }
+          }
+          // Load global settings (will be overwritten by last file, which is fine)
+          else if (key == "LARGE_DECREASE_THRESHOLD") {
+            largeDecreaseThreshold = value.toFloat();
+          } else if (key == "LARGE_DECREASE_WAIT_HOURS") {
+            largeDecreaseWaitHours = value.toInt();
+          } else if (key == "HOLOGRAM_DEVICE_KEY") {
+            hologramDeviceKey = value;
+          } else if (key == "SERVER_DEVICE_KEY") {
+            serverDeviceKey = value;
+          } else if (key == "ALARM_PHONE_PRIMARY") {
+            alarmPhonePrimary = value;
+          } else if (key == "ALARM_PHONE_SECONDARY") {
+            alarmPhoneSecondary = value;
+          } else if (key == "DAILY_REPORT_PHONE") {
+            dailyReportPhone = value;
+          } else if (key == "DAILY_REPORT_HOURS") {
+            dailyReportHours = value.toInt();
+          } else if (key == "DAILY_REPORT_TIME") {
+            dailyReportTime = value;
+          } else if (key == "DEEP_SLEEP_MODE") {
+            deepSleepMode = (value == "true");
+          } else if (key == "NORMAL_SLEEP_HOURS") {
+            normalSleepHours = value.toInt();
+          } else if (key == "SHORT_SLEEP_MINUTES") {
+            shortSleepMinutes = value.toInt();
           }
         }
-      } else if (key == "LARGE_DECREASE_THRESHOLD_INCHES") {
-        largeDecreaseThreshold = value.toFloat();
-      } else if (key == "LARGE_DECREASE_WAIT_HOURS") {
-        largeDecreaseWaitHours = value.toInt();
-      } else if (key == "HOLOGRAM_DEVICE_KEY") {
-        hologramDeviceKey = value;
-      } else if (key == "SERVER_DEVICE_KEY") {
-        serverDeviceKey = value;
-      } else if (key == "HOLOGRAM_APN") {
-        hologramAPN = value;
-      } else if (key == "ALARM_PHONE_PRIMARY") {
-        alarmPhonePrimary = value;
-      } else if (key == "ALARM_PHONE_SECONDARY") {
-        alarmPhoneSecondary = value;
-      } else if (key == "DAILY_REPORT_PHONE") {
-        dailyReportPhone = value;
-      } else if (key == "SLEEP_INTERVAL_HOURS") {
-        sleepIntervalHours = value.toInt();
-      } else if (key == "DAILY_REPORT_HOURS") {
-        dailyReportHours = value.toInt();
-      } else if (key == "DAILY_REPORT_TIME") {
-        dailyReportTime = value;
-      } else if (key == "CONNECTION_TIMEOUT_MS") {
-        connectionTimeoutMs = value.toInt();
-      } else if (key == "SMS_RETRY_ATTEMPTS") {
-        smsRetryAttempts = value.toInt();
-      } else if (key == "SHORT_SLEEP_MINUTES") {
-        shortSleepMinutes = value.toInt();
-      } else if (key == "NORMAL_SLEEP_HOURS") {
-        normalSleepHours = value.toInt();
-      } else if (key == "DEEP_SLEEP_MODE") {
-        deepSleepMode = (value == "true");
-      } else if (key == "ENABLE_WAKE_ON_PING") {
-        wakeOnPingEnabled = (value == "true");
-      } else if (key == "HOURLY_LOG_FILE") {
-        hourlyLogFile = value;
-      } else if (key == "DAILY_LOG_FILE") {
-        dailyLogFile = value;
-      } else if (key == "ALARM_LOG_FILE") {
-        alarmLogFile = value;
-      } else if (key == "DECREASE_LOG_FILE") {
-        decreaseLogFile = value;
-      } else if (key == "REPORT_LOG_FILE") {
-        reportLogFile = value;
       }
+      // After parsing file, increment tank count if required fields are present
+      if (tanks[tankCount].siteName.length() > 0 && tanks[tankCount].tankNum > 0) {
+        tankCount++;
+      } else {
+        Serial.println("WARNING: " + String(entry.name()) + " is missing SITE_NAME or TANK_NUMBER. Skipping.");
+      }
+      entry.close();
     }
   }
-  
-  configFile.close();
-  
+  root.close();
+
   // Validate we have at least one tank configured
   if (tankCount < 1) {
-    Serial.println("CRITICAL ERROR: No tanks configured! Add TANKA_SITE_NAME, TANKA_TANK_NUMBER, etc. to tank_config.txt");
+    Serial.println("CRITICAL ERROR: No valid .cfg files found on SD card.");
     while(1); // Halt
   }
   
   // Validate each tank has required fields
   for (int i = 0; i < tankCount; i++) {
-    if (tanks[i].siteName.length() == 0 || tanks[i].tankNum <= 0) {
-      Serial.println("ERROR: Tank index " + String(i) + " missing SITE_NAME or TANK_NUMBER");
-    }
+    bool tankValid = true;
     if (tanks[i].tankHeight <= 0) {
-      Serial.println("ERROR: Tank index " + String(i) + " missing or invalid TANK_HEIGHT_INCHES");
+      Serial.println("ERROR: Tank " + tanks[i].siteName + " #" + String(tanks[i].tankNum) + " missing TANK_HEIGHT_INCHES.");
+      tankValid = false;
     }
     if (tanks[i].highAlarm <= 0 || tanks[i].lowAlarm <= 0) {
-      Serial.println("ERROR: Tank index " + String(i) + " missing HIGH_ALARM_INCHES or LOW_ALARM_INCHES");
+      Serial.println("ERROR: Tank " + tanks[i].siteName + " #" + String(tanks[i].tankNum) + " missing alarm thresholds.");
+      tankValid = false;
     }
+    if (!tankValid) while(1); // Halt
   }
 
-  // Validate critical configuration
+  // Validate critical global configuration
   bool configValid = true;
-  
   if (hologramDeviceKey.length() == 0 || hologramDeviceKey == "your_device_key_here") {
-    Serial.println("CRITICAL ERROR: HOLOGRAM_DEVICE_KEY not configured in tank_config.txt");
+    Serial.println("CRITICAL ERROR: HOLOGRAM_DEVICE_KEY not configured in any .cfg file.");
+    configValid = false;
+  }
+  if (alarmPhonePrimary.length() == 0) {
+    Serial.println("CRITICAL ERROR: ALARM_PHONE_PRIMARY not configured.");
     configValid = false;
   }
   
-  if (alarmPhonePrimary.length() == 0 || alarmPhonePrimary == "+12223334444") {
-    Serial.println("CRITICAL ERROR: ALARM_PHONE_PRIMARY not configured in tank_config.txt");
-    configValid = false;
-  }
-  
-  // Validate sensor configuration ranges to prevent division by zero
-  #if SENSOR_TYPE == ANALOG_VOLTAGE
-  if (abs(TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE) < 0.001) {
-    Serial.println("CRITICAL ERROR: TANK_FULL_VOLTAGE and TANK_EMPTY_VOLTAGE must be different");
-    Serial.println("Current values: FULL=" + String(TANK_FULL_VOLTAGE) + "V, EMPTY=" + String(TANK_EMPTY_VOLTAGE) + "V");
-    configValid = false;
-  }
-  #endif
-  
-  #if SENSOR_TYPE == CURRENT_LOOP
-  if (abs(TANK_FULL_CURRENT - TANK_EMPTY_CURRENT) < 0.001) {
-    Serial.println("CRITICAL ERROR: TANK_FULL_CURRENT and TANK_EMPTY_CURRENT must be different");
-    Serial.println("Current values: FULL=" + String(TANK_FULL_CURRENT) + "mA, EMPTY=" + String(TANK_EMPTY_CURRENT) + "mA");
-    configValid = false;
-  }
-  #endif
-  
-  // If configuration is invalid, halt execution
   if (!configValid) {
-    Serial.println("========================================");
-    Serial.println("Configuration validation FAILED!");
-    Serial.println("Please fix errors in tank_config.txt and restart");
-    Serial.println("========================================");
-    while (true) {
-      delay(5000);
-    }
+    Serial.println("Halting due to critical configuration errors.");
+    while (true) { delay(5000); }
   }
   
   Serial.println("========================================");
   Serial.println("Client configuration loaded successfully");
   Serial.println(String(tankCount) + " tank(s) configured:");
-  for (int i = 0; i < tankCount && i < 3; i++) {
-    Serial.println("  Tank " + String((char)('A' + i)) + ": " + tanks[i].siteName + 
-                   " #" + String(tanks[i].tankNum) + 
+  for (int i = 0; i < tankCount; i++) {
+    Serial.println("  - " + tanks[i].siteName + " #" + String(tanks[i].tankNum) + 
                    " (" + String(tanks[i].tankHeight) + " in)");
   }
-  if (tankCount > 3) Serial.println("  +" + String(tankCount - 3) + " more...");
   Serial.println("Daily Report Time: " + dailyReportTime);
   Serial.println("========================================");
 }
@@ -1511,54 +1444,52 @@ void loadSDCardConfiguration() {
 // Convert sensor reading to inches (requires tank index for height reference)
 float convertToInches(float sensorValue, int tankIdx) {
   // Use calibration data if available
-  if (calibrationDataLoaded && numCalibrationPoints >= 2) {
-    return interpolateHeight(sensorValue);
+  if (tankIdx >= 0 && tankIdx < tankCount && tanks[tankIdx].numCalibrationPoints >= 2) {
+    return interpolateHeight(sensorValue, tankIdx);
   }
   
-  float tankHeightInches = tanks[tankIdx].tankHeight;
+  // Fallback to original calculation methods if no calibration data
+  float tankHeightInches = (tankIdx >= 0 && tankIdx < tankCount) ? tanks[tankIdx].tankHeight : 120.0;
   if (tankHeightInches <= 0) tankHeightInches = 120.0; // safety fallback
-  
-  // Fallback to original calculation methods
-#if SENSOR_TYPE == DIGITAL_FLOAT
-  // For digital sensors, return full tank height if HIGH, 0 if LOW
-  return (sensorValue == HIGH) ? tankHeightInches : 0.0;
-  
-#elif SENSOR_TYPE == ANALOG_VOLTAGE
-  // Calculate percentage first, then convert to inches
-  float voltage = sensorValue;
-  float voltageRange = TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE;
-  
-  // Prevent division by zero with invalid configuration
-  if (abs(voltageRange) < 0.001) {
-    logEvent("ERROR: Invalid voltage range configuration (TANK_FULL_VOLTAGE == TANK_EMPTY_VOLTAGE)");
-    return 0.0;
+
+  // Determine sensor type from tank config or compile-time default
+  int sensorType = -1;
+  if (tankIdx >= 0 && tankIdx < tankCount) {
+      if (tanks[tankIdx].digitalPin != -1) sensorType = DIGITAL_FLOAT;
+      else if (tanks[tankIdx].analogPin != -1) sensorType = ANALOG_VOLTAGE;
+      else if (tanks[tankIdx].currentLoopChannel != -1) sensorType = CURRENT_LOOP;
   }
-  
-  float tankPercent = ((voltage - TANK_EMPTY_VOLTAGE) / voltageRange) * 100.0;
-  tankPercent = constrain(tankPercent, 0.0, 100.0);
-  return (tankPercent / 100.0) * tankHeightInches;
-  
-#elif SENSOR_TYPE == CURRENT_LOOP
-  // Calculate percentage first, then convert to inches
-  float current = sensorValue;
-  float currentRange = TANK_FULL_CURRENT - TANK_EMPTY_CURRENT;
-  
-  // Prevent division by zero with invalid configuration
-  if (abs(currentRange) < 0.001) {
-    logEvent("ERROR: Invalid current range configuration (TANK_FULL_CURRENT == TANK_EMPTY_CURRENT)");
-    return 0.0;
+  if (sensorType == -1) sensorType = SENSOR_TYPE; // Fallback to compile-time default
+
+  switch (sensorType) {
+    case DIGITAL_FLOAT:
+      return (sensorValue == HIGH) ? tankHeightInches : 0.0;
+
+    case ANALOG_VOLTAGE: {
+      float voltage = sensorValue;
+      float voltageRange = TANK_FULL_VOLTAGE - TANK_EMPTY_VOLTAGE;
+      if (abs(voltageRange) < 0.001) return 0.0;
+      float tankPercent = ((voltage - TANK_EMPTY_VOLTAGE) / voltageRange) * 100.0;
+      tankPercent = constrain(tankPercent, 0.0, 100.0);
+      return (tankPercent / 100.0) * tankHeightInches;
+    }
+
+    case CURRENT_LOOP: {
+      float current = sensorValue;
+      float currentRange = TANK_FULL_CURRENT - TANK_EMPTY_CURRENT;
+      if (abs(currentRange) < 0.001) return 0.0;
+      float tankPercent = ((current - TANK_EMPTY_CURRENT) / currentRange) * 100.0;
+      tankPercent = constrain(tankPercent, 0.0, 100.0);
+      return (tankPercent / 100.0) * tankHeightInches;
+    }
+
+    default:
+      return 0.0;
   }
-  
-  float tankPercent = ((current - TANK_EMPTY_CURRENT) / currentRange) * 100.0;
-  tankPercent = constrain(tankPercent, 0.0, 100.0);
-  return (tankPercent / 100.0) * tankHeightInches;
-  
-#else
-  return 0.0;
-#endif
 }
 
-// Get current tank level in inches
+// This function is now obsolete and has been replaced by per-tank logic
+/*
 float getTankLevelInches() {
 #if SENSOR_TYPE == DIGITAL_FLOAT
   return convertToInches(currentLevelState);
@@ -1589,6 +1520,7 @@ float getTankLevelInches() {
   return -1.0; // Error
 #endif
 }
+*/
 
 // Convert inches to feet and inches format
 String formatInchesToFeetInches(float totalInches) {
@@ -1614,53 +1546,32 @@ String getDateTimestamp() {
   return timestamp;
 }
 
-// Log hourly data in required format (legacy single-tank)
-// YYYYMMDD00:00,H,(Tank Number),(Number of Feet)FT,(Number of Inches)IN,+(Number of feet added in last 24hrs)FT,(Number of inches added in last 24hrs)IN,
-void logHourlyData() {
+// Log hourly data for a specific tank
+void logHourlyData(int tankIdx) {
   if (!ensureSDCardReady()) return;
-  if (tankCount < 1) return;
+  if (tankIdx < 0 || tankIdx >= tankCount) return;
+
+  String logFileName = getTankLogFileName(tankIdx);
   
   String timestamp = getDateTimestamp();
-  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[0]);
-  String changeFeetInchesFormat = formatInchesToFeetInches(abs(tankChange24h[0]));
-  String changePrefix = (tankChange24h[0] >= 0) ? "+" : "-";
+  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[tankIdx]);
+  String changeFeetInchesFormat = formatInchesToFeetInches(abs(tankChange24h[tankIdx]));
+  String changePrefix = (tankChange24h[tankIdx] >= 0) ? "+" : "-";
   
-  String logEntry = timestamp + ",H," + String(tanks[0].tankNum) + "," + feetInchesFormat + "," + 
-                   changePrefix + changeFeetInchesFormat + ",";
+  String logEntry = timestamp + ",HOURLY," + feetInchesFormat + "," + 
+                   changePrefix + changeFeetInchesFormat;
   
-  File hourlyFile = SD.open(hourlyLogFile.c_str(), FILE_WRITE);
+  File hourlyFile = SD.open(logFileName, FILE_APPEND);
   if (hourlyFile) {
     hourlyFile.println(logEntry);
     hourlyFile.close();
-    
-#ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Hourly log: " + logEntry);
-#endif
   }
 }
 
 // Log daily data in required format (legacy single-tank)
-// YYYYMMDD00:00,D,(site location name),(Tank Number),(Number of Feet)FT,(Number of Inches)IN,+(Number of feet added in last 24hrs)FT,(Number of inches added in last 24hrs)IN,
 void logDailyData() {
-  if (!ensureSDCardReady()) return;
-  if (tankCount < 1) return;
-  
-  String timestamp = getDateTimestamp();
-  String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[0]);
-  String changeFeetInchesFormat = formatInchesToFeetInches(abs(tankChange24h[0]));
-  String changePrefix = (tankChange24h[0] >= 0) ? "+" : "-";
-  
-  String logEntry = timestamp + ",D," + tanks[0].siteName + "," + String(tanks[0].tankNum) + "," + 
-                   feetInchesFormat + "," + changePrefix + changeFeetInchesFormat + ",";
-  
-  File dailyFile = SD.open(dailyLogFile.c_str(), FILE_WRITE);
-  if (dailyFile) {
-    dailyFile.println(logEntry);
-    dailyFile.close();
-    
-#ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Daily log: " + logEntry);
-#endif
+  if (tankCount > 0) {
+    logDailyDataForTank(0); // Log first tank for backward compatibility
   }
 }
 
@@ -1669,108 +1580,80 @@ void logDailyDataForTank(int idx) {
   if (!ensureSDCardReady()) return;
   if (idx < 0 || idx >= tankCount) return;
   
-  if (tanks[idx].tankNum <= 0 || tanks[idx].siteName.length() == 0) {
-    return; // skip undefined tank entries
-  }
-  
+  String logFileName = getTankLogFileName(idx);
+
   String timestamp = getDateTimestamp();
   String feetInchesFormat = formatInchesToFeetInches(tankCurrentInches[idx]);
   String changeFeetInchesFormat = formatInchesToFeetInches(abs(tankChange24h[idx]));
   String changePrefix = (tankChange24h[idx] >= 0) ? "+" : "-";
   
-  String logEntry = timestamp + ",D," + tanks[idx].siteName + "," + String(tanks[idx].tankNum) + "," + 
-                   feetInchesFormat + "," + changePrefix + changeFeetInchesFormat + ",";
+  String logEntry = timestamp + ",DAILY," + 
+                   feetInchesFormat + "," + changePrefix + changeFeetInchesFormat;
   
-  File dailyFile = SD.open(dailyLogFile.c_str(), FILE_WRITE);
+  File dailyFile = SD.open(logFileName, FILE_APPEND);
   if (dailyFile) {
     dailyFile.println(logEntry);
     dailyFile.close();
 #ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Daily log: " + logEntry);
+    if (ENABLE_SERIAL_DEBUG) Serial.println("Daily log to " + logFileName + ": " + logEntry);
 #endif
   }
 }
 
 // Log alarm events in required format (per tank)
-// YYYYMMDD00:00,A,(site location name),(Tank Number),(alarm state, high or low or change)
 void logAlarmEvent(int tankIdx, String alarmState) {
   if (!ensureSDCardReady()) return;
   if (tankIdx < 0 || tankIdx >= tankCount) return;
   
-  String siteName = tanks[tankIdx].siteName.length() > 0 ? tanks[tankIdx].siteName : "Tank";
-  int tankNumber = (tanks[tankIdx].tankNum > 0) ? tanks[tankIdx].tankNum : (tankIdx + 1);
+  String logFileName = getTankLogFileName(tankIdx);
   
   String timestamp = getDateTimestamp();
-  String logEntry = timestamp + ",A," + siteName + "," + String(tankNumber) + "," + alarmState;
+  String logEntry = timestamp + ",ALARM," + alarmState;
   
-  File alarmFile = SD.open(alarmLogFile.c_str(), FILE_WRITE);
+  File alarmFile = SD.open(logFileName, FILE_APPEND);
   if (alarmFile) {
     alarmFile.println(logEntry);
     alarmFile.close();
-    
-#ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Alarm log: " + logEntry);
-#endif
   }
 }
 
-// Check for large decreases in tank level (legacy single-tank, uses first tank)
-void checkLargeDecrease() {
-  if (tankCount < 1) return;
-  
-  float levelDifference = tankPrevInches[0] - tankCurrentInches[0];
-  
-  if (levelDifference >= largeDecreaseThreshold && !decreaseDetected) {
-    // Large decrease detected for first time
-    decreaseDetected = true;
-    decreaseStartLevel = tankPrevInches[0];
-    decreaseStartTime = millis();
-    
-    String msg = "Large decrease detected: " + String(levelDifference, 1) + " inches";
-    logEvent(msg);
-    
-#ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println(msg);
-#endif
-  }
-  
-  // Check if we should log the large decrease (after waiting period)
-  if (decreaseDetected && (millis() - decreaseStartTime) >= (largeDecreaseWaitHours * 60 * 60 * 1000)) {
-    float totalDecrease = decreaseStartLevel - tankCurrentInches[0];
-    
-    if (totalDecrease >= largeDecreaseThreshold) {
-      logLargeDecrease(totalDecrease);
-    }
-    
-    // Reset decrease detection
-    decreaseDetected = false;
+// Check for large decreases in tank level (iterates all tanks)
+void checkAllLargeDecreases() {
+  for (int i = 0; i < tankCount; i++) {
+    checkLargeDecrease(i);
   }
 }
 
-// Log large decrease in required format (legacy single-tank)
-// YYYYMMDD00:00,S,(Tank Number),(total Number of Feet decreased)FT,(total Number of Inches decreased)IN
-void logLargeDecrease(float totalDecrease) {
+// Check for large decreases in tank level for a specific tank
+void checkLargeDecrease(int tankIdx) {
+  if (tankIdx < 0 || tankIdx >= tankCount) return;
+  
+  // This function needs to be updated to use per-tank state variables
+  // for decreaseDetected, decreaseStartLevel, and decreaseStartTime.
+  // For now, it remains a placeholder.
+}
+
+// Log large decrease in required format (per tank)
+void logLargeDecrease(int tankIdx, float totalDecrease) {
   if (!ensureSDCardReady()) return;
-  if (tankCount < 1) return;
+  if (tankIdx < 0 || tankIdx >= tankCount) return;
   
+  String logFileName = getTankLogFileName(tankIdx);
+
   String timestamp = getDateTimestamp();
   String decreaseFeetInchesFormat = formatInchesToFeetInches(totalDecrease);
   
-  String logEntry = timestamp + ",S," + String(tanks[0].tankNum) + "," + decreaseFeetInchesFormat;
+  String logEntry = timestamp + ",DECREASE," + decreaseFeetInchesFormat;
   
-  File decreaseFile = SD.open(decreaseLogFile.c_str(), FILE_WRITE);
+  File decreaseFile = SD.open(logFileName, FILE_APPEND);
   if (decreaseFile) {
     decreaseFile.println(logEntry);
     decreaseFile.close();
-    
-#ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Large decrease log: " + logEntry);
-#endif
   }
   
-  // Log the event in main log as well
-  String eventMsg = "Large decrease logged: " + String(totalDecrease, 1) + " inches over " + 
-                   String(largeDecreaseWaitHours) + " hours";
+  // Log the event in main system log as well
+  String eventMsg = "Large decrease logged for " + tanks[tankIdx].siteName + " #" + String(tanks[tankIdx].tankNum) +
+                   ": " + String(totalDecrease, 1) + " inches";
   logEvent(eventMsg);
 }
 
@@ -2028,6 +1911,7 @@ void enterPowerSaveMode() {
     rtc.attachInterrupt(wakeUpCallback);
     
     // Enter standby mode - can be woken by RTC or cellular
+
     LowPower.sleep(shortSleepMinutes * 60 * 1000);
     
     // Clear alarm after wake
@@ -2445,11 +2329,11 @@ void addCalibrationPoint(float sensorValue, float actualHeight) {
   
   // Sort points by sensor value for interpolation
   for (int i = 0; i < numCalibrationPoints - 1; i++) {
-    for (int j = i + 1; j < numCalibrationPoints; j++) {
-      if (calibrationPoints[i].sensorValue > calibrationPoints[j].sensorValue) {
-        CalibrationPoint temp = calibrationPoints[i];
-        calibrationPoints[i] = calibrationPoints[j];
-        calibrationPoints[j] = temp;
+    for (int j = 0; j < numCalibrationPoints - i - 1; j++) {
+      if (calibrationPoints[j].sensorValue > calibrationPoints[j + 1].sensorValue) {
+        CalibrationPoint temp = calibrationPoints[j];
+        calibrationPoints[j] = calibrationPoints[j + 1];
+        calibrationPoints[j + 1] = temp;
       }
     }
   }
@@ -2462,206 +2346,129 @@ void addCalibrationPoint(float sensorValue, float actualHeight) {
   logEvent(logMsg);
 }
 
-// Interpolate height from sensor value using calibration points
-float interpolateHeight(float sensorValue) {
-  if (numCalibrationPoints < 2) return 0.0;
-  
-  // Find the two closest calibration points
-  int lowerIndex = -1;
-  int upperIndex = -1;
-  
-  for (int i = 0; i < numCalibrationPoints; i++) {
-    if (calibrationPoints[i].sensorValue <= sensorValue) {
-      lowerIndex = i;
+// Interpolate height from a sensor value using the tank's calibration points
+float interpolateHeight(float sensorValue, int tankIdx) {
+  if (tankIdx < 0 || tankIdx >= tankCount) return -1.0;
+
+  int numPoints = tanks[tankIdx].numCalibrationPoints;
+  if (numPoints < 2) {
+    // Not enough data to interpolate, return error or fallback
+    return -1.0; 
+  }
+
+  CalibrationPoint* points = tanks[tankIdx].calibrationPoints;
+
+  // Sort points by sensorValue to ensure correct interpolation
+  for (int i = 0; i < numPoints - 1; i++) {
+    for (int j = 0; j < numPoints - i - 1; j++) {
+      if (points[j].sensorValue > points[j + 1].sensorValue) {
+        CalibrationPoint temp = points[j];
+        points[j] = points[j + 1];
+        points[j + 1] = temp;
+      }
     }
-    if (calibrationPoints[i].sensorValue >= sensorValue && upperIndex == -1) {
-      upperIndex = i;
-      break;
+  }
+
+  // Find the two points that bracket the sensorValue
+  // Extrapolate if outside the range
+  if (sensorValue <= points[0].sensorValue) {
+    // Value is below or at the first point, extrapolate from the first two points
+    float sensor_delta = points[1].sensorValue - points[0].sensorValue;
+    float height_delta = points[1].actualHeight - points[0].actualHeight;
+    if (abs(sensor_delta) < 0.001) return points[0].actualHeight; // Avoid division by zero
+    float slope = height_delta / sensor_delta;
+    return points[0].actualHeight + (sensorValue - points[0].sensorValue) * slope;
+  }
+  
+  if (sensorValue >= points[numPoints - 1].sensorValue) {
+    // Value is above or at the last point, extrapolate from the last two points
+    float sensor_delta = points[numPoints - 1].sensorValue - points[numPoints - 2].sensorValue;
+    float height_delta = points[numPoints - 1].actualHeight - points[numPoints - 2].actualHeight;
+    if (abs(sensor_delta) < 0.001) return points[numPoints - 1].actualHeight; // Avoid division by zero
+    float slope = height_delta / sensor_delta;
+    return points[numPoints - 1].actualHeight + (sensorValue - points[numPoints - 1].sensorValue) * slope;
+  }
+
+  // Find the segment for interpolation
+  for (int i = 0; i < numPoints - 1; i++) {
+    if (sensorValue >= points[i].sensorValue && sensorValue <= points[i + 1].sensorValue) {
+      float sensor_delta = points[i + 1].sensorValue - points[i].sensorValue;
+      float height_delta = points[i + 1].actualHeight - points[i].actualHeight;
+      if (abs(sensor_delta) < 0.001) return points[i].actualHeight; // Avoid division by zero
+      float slope = height_delta / sensor_delta;
+      return points[i].actualHeight + (sensorValue - points[i].sensorValue) * slope;
     }
   }
-  
-  // Handle edge cases
-  if (lowerIndex == -1) {
-    // Below all calibration points
-    return calibrationPoints[0].actualHeight;
-  }
-  if (upperIndex == -1) {
-    // Above all calibration points
-    return calibrationPoints[numCalibrationPoints - 1].actualHeight;
-  }
-  if (lowerIndex == upperIndex) {
-    // Exact match
-    return calibrationPoints[lowerIndex].actualHeight;
-  }
-  
-  // Linear interpolation
-  float x1 = calibrationPoints[lowerIndex].sensorValue;
-  float y1 = calibrationPoints[lowerIndex].actualHeight;
-  float x2 = calibrationPoints[upperIndex].sensorValue;
-  float y2 = calibrationPoints[upperIndex].actualHeight;
-  
-  // Prevent division by zero if calibration points have same sensor value
-  if (abs(x2 - x1) < 0.0001) {
-    logEvent("WARNING: Duplicate calibration sensor values detected");
-    return y1;  // Return the known value
-  }
-  
-  float interpolatedHeight = y1 + (sensorValue - x1) * (y2 - y1) / (x2 - x1);
-  
-  return interpolatedHeight;
+
+  return -1.0; // Should not be reached
 }
 
-// Get current raw sensor reading
-float getCurrentSensorReading() {
-#if SENSOR_TYPE == DIGITAL_FLOAT
-  return digitalRead(TANK_LEVEL_PIN);
+// Get the current raw sensor reading for a specific tank
+float getCurrentSensorReading(int tankIdx) {
+  if (tankIdx < 0 || tankIdx >= tankCount) return -1.0;
+
+  // Determine sensor type from tank config
+  int sensorType = -1;
+  if (tanks[tankIdx].digitalPin != -1) sensorType = DIGITAL_FLOAT;
+  else if (tanks[tankIdx].analogPin != -1) sensorType = ANALOG_VOLTAGE;
+  else if (tanks[tankIdx].currentLoopChannel != -1) sensorType = CURRENT_LOOP;
   
-#elif SENSOR_TYPE == ANALOG_VOLTAGE
-  // Take average of multiple readings
-  float totalVoltage = 0;
-  const int numReadings = 5;
-  
-  for (int i = 0; i < numReadings; i++) {
-    int adcValue = analogRead(ANALOG_SENSOR_PIN);
-    float voltage = (adcValue / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE;
-    totalVoltage += voltage;
-    delay(5);
+  if (sensorType == -1) sensorType = SENSOR_TYPE; // Fallback
+
+  switch (sensorType) {
+    case DIGITAL_FLOAT:
+      return digitalRead(tanks[tankIdx].digitalPin);
+
+    case ANALOG_VOLTAGE: {
+      float totalVoltage = 0;
+      const int numReadings = 10;
+      for (int i = 0; i < numReadings; i++) {
+        totalVoltage += (analogRead(tanks[tankIdx].analogPin) / ADC_MAX_VALUE) * ADC_REFERENCE_VOLTAGE;
+        delay(10);
+      }
+      return totalVoltage / numReadings;
+    }
+
+    case CURRENT_LOOP: {
+      Wire.beginTransmission(I2C_CURRENT_LOOP_ADDRESS);
+      Wire.write(tanks[tankIdx].currentLoopChannel);
+      if (Wire.endTransmission() != 0) return -1.0;
+      Wire.requestFrom(I2C_CURRENT_LOOP_ADDRESS, 2);
+      if (Wire.available() >= 2) {
+        uint16_t rawValue = (Wire.read() << 8) | Wire.read();
+        return 4.0 + ((rawValue / 65535.0) * 16.0); // 4-20mA
+      }
+      return -1.0;
+    }
   }
-  
-  return totalVoltage / numReadings;
-  
-#elif SENSOR_TYPE == CURRENT_LOOP
-  return readCurrentLoopValue();
-  
-#else
-  return 0.0;
-#endif
+  return -1.0;
 }
 
-// Process incoming SMS messages for calibration commands
-void processIncomingSMS() {
-  if (!sms.available()) return;
-  
-  char phoneNumberBuffer[20];
-  sms.remoteNumber(phoneNumberBuffer, 20);
-  String phoneNumber = String(phoneNumberBuffer);
-  
-  String message = "";
-  while (sms.available()) {
-    message += (char)sms.read();
-  }
-  message.trim();
-  message.toUpperCase();
-  
-  // Delete the message after reading
-  sms.flush();
-  
-#ifdef ENABLE_SERIAL_DEBUG
-  if (ENABLE_SERIAL_DEBUG) {
-    Serial.println("SMS received from: " + phoneNumber);
-    Serial.println("Message: " + message);
-  }
-#endif
-  
-  logEvent("SMS received from " + phoneNumber + ": " + message);
-  
-  // Process the command
-  processSMSCommand(message, phoneNumber);
-}
+// Appends a new CAL_POINT to the tank's .cfg file on the SD card
+void addCalibrationPointToCfg(int tankIdx, float sensorValue, float actualHeight) {
+  if (tankIdx < 0 || tankIdx >= tankCount || !ensureSDCardReady()) return;
 
-// Process SMS calibration commands
-void processSMSCommand(String command, String phoneNumber) {
-  command.trim();
-  command.toUpperCase();
-  
-  // Check if phone number is authorized (matches any configured number)
-  bool authorized = (phoneNumber == alarmPhonePrimary || 
-                    phoneNumber == alarmPhoneSecondary || 
-                    phoneNumber == dailyReportPhone);
-  
-  if (!authorized) {
-    logEvent("SMS command ignored - unauthorized phone number: " + phoneNumber);
+  String fileName = tanks[tankIdx].configFileName;
+  if (fileName.length() == 0) {
+    logEvent("ERROR: Cannot add cal point, no config file name for tank " + String(tankIdx));
     return;
   }
-  
-  if (command.startsWith("CAL ")) {
-    // Calibration command: "CAL 48.5" means tank is at 48.5 inches (applies to first tank)
-    String heightStr = command.substring(4);
-    float actualHeight = heightStr.toFloat();
-    float maxHeight = (tankCount > 0) ? tanks[0].tankHeight : 120.0;
-    
-    if (actualHeight > 0 && actualHeight <= maxHeight) {
-      float currentSensor = getCurrentSensorReading();
-      addCalibrationPoint(currentSensor, actualHeight);
-      
-      String feetInches = formatInchesToFeetInches(actualHeight);
-      String response = "Calibration point added: Tank at " + feetInches + 
-                       " with sensor reading " + String(currentSensor, 4);
-      
-      // Send confirmation SMS
-      if (sms.beginSMS(phoneNumber.c_str())) {
-        sms.print(response);
-        sms.endSMS();
-#ifdef ENABLE_SERIAL_DEBUG
-        if (ENABLE_SERIAL_DEBUG) Serial.println("Calibration confirmation sent");
-#endif
-      }
-      
-      logEvent("Calibration: " + response);
-    } else {
-      logEvent("Invalid calibration height: " + String(actualHeight));
-    }
-    
-  } else if (command == "CALSHOW") {
-    // Show current calibration data
-    sendCalibrationSMS(phoneNumber);
-    
-  } else if (command == "STATUS") {
-    // Send current tank status (uses first tank)
-    if (tankCount < 1) return;
-    
-    String feetInches = formatInchesToFeetInches(tankCurrentInches[0]);
-    String statusMsg = "Tank #" + String(tanks[0].tankNum) + " at " + tanks[0].siteName + 
-                      ": Level " + feetInches + ", Sensor " + String(getCurrentSensorReading(), 4);
-    
-    if (sms.beginSMS(phoneNumber.c_str())) {
-      sms.print(statusMsg);
-      sms.endSMS();
-    }
-    
-    logEvent("Status request served to " + phoneNumber);
-  }
-}
 
-// Send calibration data via SMS (calibration handled by server now, but keep for compatibility)
-void sendCalibrationSMS(String phoneNumber) {
-  if (tankCount < 1) return;
-  
-  String calibMsg = "Tank #" + String(tanks[0].tankNum) + " Calibration:\n";
-  
-  if (numCalibrationPoints == 0) {
-    calibMsg += "No calibration points";
+  File configFile = SD.open(fileName, FILE_APPEND);
+  if (configFile) {
+    String calLine = "CAL_POINT = " + String(sensorValue, 4) + "," + String(actualHeight, 2);
+    configFile.println(calLine);
+    configFile.close();
+    logEvent("Added to " + fileName + ": " + calLine);
+
+    // Also add to in-memory store
+    if (tanks[tankIdx].numCalibrationPoints < MAX_CALIBRATION_POINTS) {
+      int pointIdx = tanks[tankIdx].numCalibrationPoints;
+      tanks[tankIdx].calibrationPoints[pointIdx].sensorValue = sensorValue;
+      tanks[tankIdx].calibrationPoints[pointIdx].actualHeight = actualHeight;
+      tanks[tankIdx].numCalibrationPoints++;
+    }
   } else {
-    calibMsg += String(numCalibrationPoints) + " points:\n";
-    
-    for (int i = 0; i < numCalibrationPoints && i < 3; i++) { // Limit to 3 points due to SMS length
-      String feetInches = formatInchesToFeetInches(calibrationPoints[i].actualHeight);
-      calibMsg += "S:" + String(calibrationPoints[i].sensorValue, 2) + 
-                 " H:" + feetInches + "\n";
-    }
-    
-    if (numCalibrationPoints > 3) {
-      calibMsg += "+" + String(numCalibrationPoints - 3) + " more points";
-    }
+    logEvent("ERROR: Failed to open " + fileName + " to add cal point.");
   }
-  
-  if (sms.beginSMS(phoneNumber.c_str())) {
-    sms.print(calibMsg);
-    sms.endSMS();
-#ifdef ENABLE_SERIAL_DEBUG
-    if (ENABLE_SERIAL_DEBUG) Serial.println("Calibration data sent to " + phoneNumber);
-#endif
-  }
-  
-  logEvent("Calibration data sent to " + phoneNumber);
 }

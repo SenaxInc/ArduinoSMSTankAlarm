@@ -91,6 +91,8 @@ bool systemRecovering = false;
 String lastShutdownReason = "";
 unsigned long lastHeartbeat = 0;
 
+// The Ping and Calibration features are not fully implemented and have been removed for simplification.
+/*
 // Tank ping tracking
 struct PingStatus {
   String siteLocation;
@@ -99,23 +101,10 @@ struct PingStatus {
   bool pingSuccess;
   bool pingInProgress;
 };
+*/
 
-// Power failure tracking for daily emails
-struct PowerFailureEvent {
-  String timestamp;
-  String siteLocation;
-  int tankNumber;
-  String currentLevel;
-  String shutdownReason;
-};
-
-const int MAX_PING_ENTRIES = 20;
-PingStatus pingStatuses[MAX_PING_ENTRIES];
-int pingStatusCount = 0;
-
-const int MAX_POWER_FAILURE_EVENTS = 50;
-PowerFailureEvent powerFailureEvents[MAX_POWER_FAILURE_EVENTS];
-int powerFailureEventCount = 0;
+// Power failure tracking for daily emails is now handled by parsing CSV logs.
+// The in-memory array below is obsolete.
 
 // Server configuration variables (loaded from SD card config file - REQUIRED)
 String hologramDeviceKey = "";
@@ -149,6 +138,24 @@ int ethernetMacByte6 = 0x72;
 
 // SD card configuration file
 #define SERVER_CONFIG_FILE "server_config.txt"
+#define SYSTEM_LOG_FILE "system_events.log"
+
+// Sanitize a site/location and tank number into a filesystem-safe CSV filename
+String getTankLogFileName(String siteName, int tankNum) {
+  String safeName = "";
+  // Sanitize site name
+  for (unsigned int i = 0; i < siteName.length(); i++) {
+    char c = siteName.charAt(i);
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+      safeName += c;
+    } else if (c == ' ' || c == '-' || c == '_') {
+      safeName += '_';
+    }
+  }
+  if (safeName.length() == 0) safeName = "site";
+  
+  return safeName + "_" + String(tankNum) + ".csv";
+}
 
 void setup() {
   // Initialize serial communication for debugging
@@ -420,25 +427,45 @@ void processDailyReport(String reportData) {
 void processAlarmReport(String alarmData) {
   Serial.println("Processing alarm report: " + alarmData);
   
-  // Log alarm to SD card
-  String logEntry = getCurrentTimestamp() + ",ALARM," + alarmData;
-  appendToFile("alarm_log.txt", logEntry);
-  
-  // Attempt to mirror into per-site alarm log if site can be extracted
-  String siteExtract = "";
-  int sitePos = alarmData.indexOf("TANK ALARM ");
-  if (sitePos >= 0) {
-    int tankHash = alarmData.indexOf(" Tank #", sitePos + 11);
-    if (tankHash > sitePos) {
-      siteExtract = alarmData.substring(sitePos + 10, tankHash);
-      siteExtract.trim();
-    }
-  }
-  if (siteExtract.length() > 0) {
-    appendToSiteFile(siteExtract, "alarm_log.txt", logEntry);
-  }
-  
+  // Log alarm to the main system event log
   logEvent("Alarm received: " + alarmData);
+
+  // --- New Logic to log to per-tank CSV ---
+  // Expected format: "TANK ALARM [Site] Tank #[Number] - [Status]"
+  String siteLocation = "";
+  int tankNumber = 0;
+  String status = "";
+
+  // Extract site location
+  int siteStart = alarmData.indexOf("TANK ALARM ") + 11;
+  int siteEnd = alarmData.indexOf(" Tank #");
+  if (siteStart > 10 && siteEnd > siteStart) {
+    siteLocation = alarmData.substring(siteStart, siteEnd);
+    siteLocation.trim();
+  }
+
+  // Extract tank number
+  int tankStart = alarmData.indexOf("Tank #") + 6;
+  int tankEnd = alarmData.indexOf(" - ", tankStart);
+  if (tankStart > 5 && tankEnd > tankStart) {
+    tankNumber = alarmData.substring(tankStart, tankEnd).toInt();
+  }
+
+  // Extract status
+  int statusStart = alarmData.indexOf(" - ") + 3;
+  if (statusStart > 2) {
+    status = alarmData.substring(statusStart);
+    status.trim();
+  }
+
+  if (siteLocation.length() > 0 && tankNumber > 0) {
+    String logFileName = getTankLogFileName(siteLocation, tankNumber);
+    // CSV Format: Timestamp,EventType,Level,Percent,Gallons,Change,Status,Details
+    String logEntry = getCurrentTimestamp() + ",ALARM,,,,," + status + ",";
+    appendToFile(logFileName, logEntry);
+    Serial.println("Alarm event logged to " + logFileName);
+  }
+  // --- End New Logic ---
 }
 
 void processPowerFailureReport(String powerFailureData) {
@@ -462,75 +489,41 @@ void processPowerFailureReport(String powerFailureData) {
       event.shutdownReason = "Unknown";
     }
     
-    // Store in memory for daily email inclusion
+    // Storing in memory for email is now obsolete. This logic will be removed.
+    /*
     if (powerFailureEventCount < MAX_POWER_FAILURE_EVENTS) {
       powerFailureEvents[powerFailureEventCount] = event;
       powerFailureEventCount++;
     }
+    */
     
-    // Log power failure to SD card
-    String logEntry = getCurrentTimestamp() + ",POWER_FAILURE," + event.siteLocation + 
-                     "," + String(event.tankNumber) + "," + event.timestamp + "," + 
-                     event.currentLevel + "," + event.shutdownReason;
-    appendToFile("power_failure_log.txt", logEntry);
-  appendToSiteFile(event.siteLocation, "power_failure_log.txt", logEntry);
-    
-    logEvent("Power failure reported: " + event.siteLocation + " Tank #" + String(event.tankNumber));
+    // Log power failure to the specific tank's CSV file
+    String logFileName = getTankLogFileName(event.siteLocation, event.tankNumber);
+    String logEntry = event.timestamp + ",POWER_FAILURE," + event.currentLevel + ",,,," + event.shutdownReason;
+    appendToFile(logFileName, logEntry);
+
+    // Also log to the main system event log
+    logEvent("Power failure reported: " + event.siteLocation + " Tank #" + String(event.tankNumber) + " Reason: " + event.shutdownReason);
   }
 }
 
 void logTankReport(TankReport report) {
-  // Format: YYYYMMDD HH:MM,DAILY,SiteLocation,TankNumber,CurrentLevel,24hrChange,Status
-  String logEntry = report.timestamp + ",DAILY," + report.siteLocation + "," + 
-                   String(report.tankNumber) + "," + report.currentLevel + "," + 
-                   report.change24hr + "," + report.status;
+  // New CSV Format: Timestamp,EventType,Level,Percent,Gallons,Change,Status,Details
+  String logFileName = getTankLogFileName(report.siteLocation, report.tankNumber);
   
-  appendToFile("daily_reports.txt", logEntry);
+  // Sanitize values to be CSV-safe (remove commas)
+  report.currentLevel.replace(",", "");
+  report.change24hr.replace(",", "");
+  report.status.replace(",", "");
+
+  String logEntry = report.timestamp + ",DAILY," + report.currentLevel + ",,," + report.change24hr + "," + report.status + ",";
   
-  // Also mirror logs into per-site folder for grouped logging
-  // sites/<sanitized_site>/daily_reports.txt
-  appendToSiteFile(report.siteLocation, "daily_reports.txt", logEntry);
+  appendToFile(logFileName, logEntry);
   
-  Serial.println("Tank report logged: " + logEntry);
+  Serial.println("Tank report logged to " + logFileName);
 }
 
-// Sanitize a site/location string to a filesystem-safe folder name
-String sanitizeForPath(String name) {
-  String out = "";
-  for (unsigned int i = 0; i < name.length(); i++) {
-    char c = name.charAt(i);
-    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
-      out += c;
-    } else if (c == ' ' || c == '-' || c == '_' ) {
-      out += '_';
-    } else {
-      out += '_';
-    }
-  }
-  if (out.length() == 0) out = "site";
-  return out;
-}
-
-// Ensure the per-site directory exists: sites/<safeSite>
-void ensureSiteDirectory(String safeSite) {
-  if (!SD.begin(SD_CARD_CS_PIN)) return;
-  SD.mkdir("sites");
-  String dir = String("sites/") + safeSite;
-  SD.mkdir(dir.c_str());
-}
-
-// Append content to a file under the site's directory
-void appendToSiteFile(String siteName, String filename, String content) {
-  if (!SD.begin(SD_CARD_CS_PIN)) return;
-  String safeSite = sanitizeForPath(siteName);
-  ensureSiteDirectory(safeSite);
-  String fullPath = String("sites/") + safeSite + "/" + filename;
-  File file = SD.open(fullPath.c_str(), FILE_WRITE);
-  if (file) {
-    file.println(content);
-    file.close();
-  }
-}
+// This function is now obsolete and will be removed.
 
 void handleWebRequests() {
   EthernetClient client = webServer.available();
@@ -627,12 +620,11 @@ void sendWebPage(EthernetClient &client) {
   client.println("</style>");
   client.println("</head>");
   client.println("<body>");
-  
-  client.println("<h1>Tank Alarm Server Dashboard</h1>");
-  
   client.println("<div class='nav-links'>");
   client.println("<a href='/' class='nav-link'>Dashboard</a>");
   client.println("<a href='/emails' class='nav-link'>Email Management</a>");
+  client.println("<a href='/calibration' class='nav-link'>Tank Calibration</a>");
+  client.println("</div>");/emails' class='nav-link'>Email Management</a>");
   client.println("<a href='/tanks' class='nav-link'>Tank Management</a>");
   client.println("<a href='/calibration' class='nav-link'>Tank Calibration</a>");
   client.println("</div>");
@@ -852,7 +844,9 @@ String composeDailyEmailContent() {
     }
   }
   
-  // Include power failure events from the last 24 hours
+  // The in-memory power failure event list is obsolete.
+  // This section can be removed or adapted to read from CSV logs if needed in the future.
+  /*
   if (powerFailureEventCount > 0) {
     String today = getDateString();
     bool hasPowerFailures = false;
@@ -873,6 +867,7 @@ String composeDailyEmailContent() {
       }
     }
   }
+  */
   
   content += "\n--- Tank Alarm Server 092025 ---";
   
@@ -983,8 +978,8 @@ void checkPowerFailureRecovery() {
       Serial.println("Power failure detected! Last state: " + lastState);
       logEvent("POWER FAILURE RECOVERY - Last state: " + lastState);
       
-      // Restore tank reports from backup
-      restoreTankReportsFromSD();
+      // Restore tank reports from backup - OBSOLETE
+      // restoreTankReportsFromSD();
       
       // Send recovery notification
       sendRecoveryNotification();
@@ -1028,17 +1023,21 @@ void restoreSystemState() {
     logEvent("Email dates restored");
   }
   
-  // Restore tank reports if not already restored
+  // Restore tank reports if not already restored - OBSOLETE
+  /*
   if (!systemRecovering && reportCount == 0) {
     restoreTankReportsFromSD();
   }
+  */
   
-  // Restore power failure events
-  restorePowerFailureEventsFromSD();
+  // Restore power failure events - OBSOLETE
+  // restorePowerFailureEventsFromSD();
   
   logEvent("System state restoration completed");
 }
 
+// Obsolete function - no longer needed with direct-to-CSV logging
+/*
 void restoreTankReportsFromSD() {
   Serial.println("Restoring tank reports from SD card...");
   
@@ -1085,7 +1084,10 @@ void restoreTankReportsFromSD() {
     Serial.println("No tank reports backup found");
   }
 }
+*/
 
+// Obsolete function - no longer needed with direct-to-CSV logging
+/*
 void restorePowerFailureEventsFromSD() {
   Serial.println("Restoring power failure events from SD card...");
   
@@ -1122,6 +1124,7 @@ void restorePowerFailureEventsFromSD() {
     Serial.println("No power failure events backup found");
   }
 }
+*/
 
 void saveSystemState(String reason) {
   // Save current state for power failure recovery
@@ -1141,13 +1144,15 @@ void saveSystemState(String reason) {
     dateFile.close();
   }
   
-  // Backup tank reports
-  backupTankReportsToSD();
+  // Backup tank reports - OBSOLETE
+  // backupTankReportsToSD();
   
-  // Backup power failure events
-  backupPowerFailureEventsToSD();
+  // Backup power failure events - OBSOLETE
+  // backupPowerFailureEventsToSD();
 }
 
+// Obsolete function - no longer needed with direct-to-CSV logging
+/*
 void backupTankReportsToSD() {
   File reportsFile = SD.open("tank_reports_backup.txt", FILE_WRITE);
   if (reportsFile) {
@@ -1162,7 +1167,10 @@ void backupTankReportsToSD() {
     reportsFile.close();
   }
 }
+*/
 
+// Obsolete function - no longer needed with direct-to-CSV logging
+/*
 void backupPowerFailureEventsToSD() {
   File powerFailureFile = SD.open("power_failure_backup.txt", FILE_WRITE);
   if (powerFailureFile) {
@@ -1176,6 +1184,7 @@ void backupPowerFailureEventsToSD() {
     powerFailureFile.close();
   }
 }
+*/
 
 void updateHeartbeat() {
   // Update heartbeat timestamp for power failure detection
@@ -1230,8 +1239,6 @@ void sendHttpResponse(EthernetClient &client, String path) {
     sendWebPage(client);
   } else if (path == "/emails") {
     sendEmailManagementPage(client);
-  } else if (path == "/tanks") {
-    sendTankManagementPage(client);
   } else if (path == "/calibration") {
     sendCalibrationPage(client);
   } else {
@@ -1277,20 +1284,21 @@ void handlePostRequest(EthernetClient &client, String path, String postData) {
     client.println("HTTP/1.1 200 OK");
     client.println("Content-Type: application/json");
     client.println("Connection: close");
+    // Return JSON response for AJAX
+    client.println("HTTP/1.1 404 Not Found");
+    client.println("Content-Type: application/json");
+    client.println("Connection: close");
     client.println();
-    client.println("{\"status\": \"ping_initiated\"}");
+    client.println("{\"status\": \"not_found\"}");
     return;
   } else if (path.startsWith("/calibration/send/")) {
-    // Handle calibration command: /calibration/send/site_tank/CAL%2024.5
+    // Handle calibration command: /calibration/send/site_tank/24.5
     String params = path.substring(18); // Remove "/calibration/send/"
     int slashPos = params.indexOf("/");
     
     if (slashPos > 0) {
       String tankId = params.substring(0, slashPos);
-      String command = params.substring(slashPos + 1);
-      command.replace("%20", " "); // URL decode spaces
-      command.replace("%2E", "."); // URL decode dots
-      command.replace("%2C", ","); // URL decode commas
+      String height = params.substring(slashPos + 1);
       
       int underscorePos = tankId.indexOf("_");
       if (underscorePos > 0) {
@@ -1299,7 +1307,8 @@ void handlePostRequest(EthernetClient &client, String path, String postData) {
         int tank = tankId.substring(underscorePos + 1).toInt();
         
         // Send calibration command to tank client via Hologram
-        sendCalibrationCommand(site, tank, command);
+        String command = "CAL " + height;
+        sendHologramCommandToTank(site, tank, command);
         
         logEvent("Calibration command sent to " + site + " Tank #" + String(tank) + ": " + command);
       }
@@ -1308,7 +1317,6 @@ void handlePostRequest(EthernetClient &client, String path, String postData) {
     // Return JSON response for AJAX
     client.println("HTTP/1.1 200 OK");
     client.println("Content-Type: application/json");
-    client.println("Connection: close");
     client.println();
     client.println("{\"status\": \"command_sent\"}");
     return;
@@ -1317,14 +1325,10 @@ void handlePostRequest(EthernetClient &client, String path, String postData) {
   // Redirect back to appropriate page for non-ping requests
   String redirectPage = "/emails";
   if (path.startsWith("/tanks/")) {
-    redirectPage = "/tanks";
+    redirectPage = "/"; // Redirect to dashboard
   } else if (path.startsWith("/calibration/")) {
     redirectPage = "/calibration";
-  }
-  
-  client.println("HTTP/1.1 302 Found");
-  client.println("Location: " + redirectPage);
-  client.println("Connection: close");
+  }lient.println("Connection: close");
   client.println();
 }
 
@@ -1774,6 +1778,8 @@ void removeMonthlyEmailRecipient(int index) {
   }
 }
 
+// Obsolete function - feature removed for simplification.
+/*
 void sendTankManagementPage(EthernetClient &client) {
   client.println("<!DOCTYPE html>");
   client.println("<html>");
@@ -1824,7 +1830,7 @@ void sendTankManagementPage(EthernetClient &client) {
     
     for (int i = 0; i < reportCount && uniqueCount < 20; i++) {
       TankReport report = tankReports[i];
-      String tankKey = report.siteLocation + "_" + String(report.tankNumber);
+      String tankKey = report.siteLocation + "_Tank" + String(report.tankNumber);
       
       // Check if this tank is already in the list
       bool found = false;
@@ -1944,7 +1950,10 @@ void sendTankManagementPage(EthernetClient &client) {
   client.println("</body>");
   client.println("</html>");
 }
+*/
 
+// Obsolete function - feature removed for simplification.
+/*
 void sendCalibrationPage(EthernetClient &client) {
   client.println("<!DOCTYPE html>");
   client.println("<html>");
@@ -1955,7 +1964,7 @@ void sendCalibrationPage(EthernetClient &client) {
   client.println("h1, h2 { color: #333; }");
   client.println(".container { max-width: 1000px; margin: 0 auto; }");
   client.println(".calib-section { background: white; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }");
-  client.println(".nav-link { display: inline-block; margin: 10px 5px; padding: 8px 16px; background: #6c757d; color: white; text-decoration: none; border-radius: 4px; }");
+*/  client.println(".nav-link { display: inline-block; margin: 10px 5px; padding: 8px 16px; background: #6c757d; color: white; text-decoration: none; border-radius: 4px; }");
   client.println(".instructions { background: #e9ecef; padding: 15px; border-radius: 4px; margin: 15px 0; }");
   client.println("</style>");
   client.println("</head>");
@@ -2270,17 +2279,33 @@ String getMonthString() {
 }
 
 void logEvent(String event) {
-  String logEntry = getCurrentTimestamp() + " - " + event;
-  appendToFile("server_log.txt", logEntry);
-  Serial.println("LOG: " + logEntry);
+  if (enableSerialDebug) {
+    Serial.println("EVENT: " + event);
+  }
+  
+  // Append to the main system event log file
+  appendToFile(SYSTEM_LOG_FILE, getCurrentTimestamp() + " - " + event);
 }
 
+// Append content to a file on the SD card
 void appendToFile(String filename, String content) {
-  if (SD.begin(SD_CARD_CS_PIN)) {
-    File file = SD.open(filename, FILE_WRITE);
+  if (!SD.begin(SD_CARD_CS_PIN)) {
+    Serial.println("SD card not available for appendToFile");
+    return;
+  }
+  
+  File file = SD.open(filename.c_str(), FILE_APPEND);
+  if (file) {
+    file.println(content);
+    file.close();
+  } else {
+    // If the file doesn't exist, try creating it
+    file = SD.open(filename.c_str(), FILE_WRITE);
     if (file) {
       file.println(content);
       file.close();
+    } else {
+      Serial.println("Failed to open " + filename + " for appending/writing");
     }
   }
 }
