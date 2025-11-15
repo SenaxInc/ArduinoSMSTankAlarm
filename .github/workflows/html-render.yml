@@ -287,6 +287,7 @@ jobs:
           EOF
 
       - name: Commit and push changes
+        if: github.event_name != 'pull_request'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
