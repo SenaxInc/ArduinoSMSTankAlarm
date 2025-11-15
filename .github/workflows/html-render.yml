@@ -23,6 +23,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -284,12 +287,13 @@ jobs:
           EOF
 
       - name: Commit and push changes
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add TankAlarm-092025-Server-Hologram/WEBSITE_PREVIEW.md TankAlarm-092025-Server-Hologram/screenshots/
           git add TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md TankAlarm-112025-Server-BluesOpta/screenshots/
           git diff --staged --quiet || git commit -m "Update website preview screenshots [skip ci]"
-          git push
+          git push origin HEAD:${{ github.head_ref || github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
