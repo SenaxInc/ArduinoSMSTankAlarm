@@ -224,6 +224,7 @@ int largeDecreaseWaitHours = 2;
 struct CalibrationPoint {
   float sensorValue;    // Raw sensor reading (voltage, current, etc.)
   float actualHeight;   // Actual measured height in inches
+  String timestamp;     // Timestamp of calibration point (for tracking/debugging)
 };
 
 // Multi-site / Multi-tank support - all tanks configured via TANKA, TANKB, etc.
@@ -2229,6 +2230,13 @@ void sendPowerFailureNotificationToServer() {
 }
 
 // ========== HEIGHT CALIBRATION FUNCTIONS (OBSOLETE - replaced by per-tank calibration in .cfg files) ==========
+
+// NOTE: The following obsolete functions reference deleted global variables:
+// - calibrationDataLoaded (bool)
+// - numCalibrationPoints (int)
+// - calibrationPoints[] (CalibrationPoint array)
+// - CALIBRATION_FILE_NAME (constant)
+// These would need to be restored if these functions are ever uncommented.
 
 // Obsolete - Load calibration data from SD card
 /*
