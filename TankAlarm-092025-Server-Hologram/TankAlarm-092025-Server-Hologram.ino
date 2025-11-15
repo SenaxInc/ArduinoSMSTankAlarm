@@ -1255,7 +1255,11 @@ void sendHttpResponse(EthernetClient &client, String path) {
   } else if (path == "/emails") {
     sendEmailManagementPage(client);
   } else if (path == "/calibration") {
-    // Calibration page removed for simplification
+    // Calibration page removed for simplification - send proper HTTP response
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html");
+    client.println("Connection: close");
+    client.println();
     client.println("<html><body><h1>Calibration Feature Removed</h1>");
     client.println("<p>The calibration feature has been removed for simplification.</p>");
     client.println("<p><a href='/'>Back to Dashboard</a></p></body></html>");

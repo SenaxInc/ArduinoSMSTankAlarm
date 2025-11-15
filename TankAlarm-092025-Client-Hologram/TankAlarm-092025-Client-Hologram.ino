@@ -224,7 +224,6 @@ int largeDecreaseWaitHours = 2;
 struct CalibrationPoint {
   float sensorValue;    // Raw sensor reading (voltage, current, etc.)
   float actualHeight;   // Actual measured height in inches
-  String timestamp;     // Timestamp of calibration point (for tracking/debugging)
 };
 
 // Multi-site / Multi-tank support - all tanks configured via TANKA, TANKB, etc.
