@@ -64,6 +64,14 @@ struct TankReport {
   String status;
 };
 
+struct PowerFailureEvent {
+  String siteLocation;
+  int tankNumber;
+  String timestamp;
+  String currentLevel;
+  String shutdownReason;
+};
+
 // Email recipient management
 const int MAX_EMAIL_RECIPIENTS = 10;
 String dailyEmailRecipients[MAX_EMAIL_RECIPIENTS];
@@ -139,6 +147,15 @@ int ethernetMacByte6 = 0x72;
 // SD card configuration file
 #define SERVER_CONFIG_FILE "server_config.txt"
 #define SYSTEM_LOG_FILE "system_events.log"
+
+// Forward declarations
+void logEvent(String event);
+String getCurrentTimestamp();
+String getDateString();
+bool isTimeForMonthlyReport();
+void generateMonthlyReport();
+void appendToFile(String filename, String content);
+bool sendHologramEmail(String recipient, String subject, String body);
 
 // Sanitize a site/location and tank number into a filesystem-safe CSV filename
 String getTankLogFileName(String siteName, int tankNum) {
@@ -623,8 +640,6 @@ void sendWebPage(EthernetClient &client) {
   client.println("<div class='nav-links'>");
   client.println("<a href='/' class='nav-link'>Dashboard</a>");
   client.println("<a href='/emails' class='nav-link'>Email Management</a>");
-  client.println("<a href='/calibration' class='nav-link'>Tank Calibration</a>");
-  client.println("</div>");/emails' class='nav-link'>Email Management</a>");
   client.println("<a href='/tanks' class='nav-link'>Tank Management</a>");
   client.println("<a href='/calibration' class='nav-link'>Tank Calibration</a>");
   client.println("</div>");
@@ -1240,7 +1255,10 @@ void sendHttpResponse(EthernetClient &client, String path) {
   } else if (path == "/emails") {
     sendEmailManagementPage(client);
   } else if (path == "/calibration") {
-    sendCalibrationPage(client);
+    // Calibration page removed for simplification
+    client.println("<html><body><h1>Calibration Feature Removed</h1>");
+    client.println("<p>The calibration feature has been removed for simplification.</p>");
+    client.println("<p><a href='/'>Back to Dashboard</a></p></body></html>");
   } else {
     send404Page(client);
   }
@@ -1277,7 +1295,7 @@ void handlePostRequest(EthernetClient &client, String path, String postData) {
       String site = tankId.substring(0, underscorePos);
       site.replace("%20", " "); // URL decode spaces
       int tank = tankId.substring(underscorePos + 1).toInt();
-      pingTankClient(site, tank);
+      // pingTankClient(site, tank); // Ping feature removed for simplification
     }
     
     // Return JSON response for AJAX
@@ -1307,8 +1325,9 @@ void handlePostRequest(EthernetClient &client, String path, String postData) {
         int tank = tankId.substring(underscorePos + 1).toInt();
         
         // Send calibration command to tank client via Hologram
+        // Calibration feature removed for simplification
         String command = "CAL " + height;
-        sendHologramCommandToTank(site, tank, command);
+        // sendHologramCommandToTank(site, tank, command);
         
         logEvent("Calibration command sent to " + site + " Tank #" + String(tank) + ": " + command);
       }
@@ -1328,7 +1347,8 @@ void handlePostRequest(EthernetClient &client, String path, String postData) {
     redirectPage = "/"; // Redirect to dashboard
   } else if (path.startsWith("/calibration/")) {
     redirectPage = "/calibration";
-  }lient.println("Connection: close");
+  }
+  client.println("Connection: close");
   client.println();
 }
 
@@ -1866,22 +1886,23 @@ void sendTankManagementPage(EthernetClient &client) {
         }
       }
       
+      // Ping feature removed for simplification
       // Get ping status for this tank
-      PingStatus* status = getPingStatus(site, tankNum.toInt());
-      String pingStatusIcon = "";
-      String pingStatusClass = "";
-      if (status) {
-        if (status->pingInProgress) {
-          pingStatusIcon = "⏳";
-          pingStatusClass = "status-pending";
-        } else if (status->pingSuccess) {
-          pingStatusIcon = "✅";
-          pingStatusClass = "status-success";
-        } else {
-          pingStatusIcon = "❌";
-          pingStatusClass = "status-error";
-        }
-      }
+      // PingStatus* status = getPingStatus(site, tankNum.toInt());
+      // String pingStatusIcon = "";
+      // String pingStatusClass = "";
+      // if (status) {
+      //   if (status->pingInProgress) {
+      //     pingStatusIcon = "⏳";
+      //     pingStatusClass = "status-pending";
+      //   } else if (status->pingSuccess) {
+      //     pingStatusIcon = "✅";
+      //     pingStatusClass = "status-success";
+      //   } else {
+      //     pingStatusIcon = "❌";
+      //     pingStatusClass = "status-error";
+      //   }
+      // }
       
       String tankIdForUrl = site;
       tankIdForUrl.replace(" ", "%20"); // URL encode spaces
@@ -1893,15 +1914,16 @@ void sendTankManagementPage(EthernetClient &client) {
       client.println("Current Level: " + currentLevel + "<br>");
       client.println("Last Seen: " + lastSeen);
       client.println("</div>");
-      client.println("<div class='tank-actions'>");
-      client.println("<button class='ping-btn' onclick='pingTank(\"" + tankIdForUrl + "\", this)' id='ping_" + tankIdForUrl + "'>Ping Tank</button>");
-      if (pingStatusIcon.length() > 0) {
-        client.println("<span class='ping-status " + pingStatusClass + "' id='status_" + tankIdForUrl + "'>" + pingStatusIcon + "</span>");
-      } else {
-        client.println("<span class='ping-status' id='status_" + tankIdForUrl + "'></span>");
-      }
-      client.println("</div>");
-      client.println("</div>");
+      // Ping feature removed for simplification - actions div commented out
+      // client.println("<div class='tank-actions'>");
+      // client.println("<button class='ping-btn' onclick='pingTank(\"" + tankIdForUrl + "\", this)' id='ping_" + tankIdForUrl + "'>Ping Tank</button>");
+      // if (pingStatusIcon.length() > 0) {
+      //   client.println("<span class='ping-status " + pingStatusClass + "' id='status_" + tankIdForUrl + "'>" + pingStatusIcon + "</span>");
+      // } else {
+      //   client.println("<span class='ping-status' id='status_" + tankIdForUrl + "'></span>");
+      // }
+      // client.println("</div>");
+      client.println("</div>"); // Close tank-item
     }
     
     client.println("</div>");
@@ -1964,7 +1986,7 @@ void sendCalibrationPage(EthernetClient &client) {
   client.println("h1, h2 { color: #333; }");
   client.println(".container { max-width: 1000px; margin: 0 auto; }");
   client.println(".calib-section { background: white; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }");
-*/  client.println(".nav-link { display: inline-block; margin: 10px 5px; padding: 8px 16px; background: #6c757d; color: white; text-decoration: none; border-radius: 4px; }");
+  client.println(".nav-link { display: inline-block; margin: 10px 5px; padding: 8px 16px; background: #6c757d; color: white; text-decoration: none; border-radius: 4px; }");
   client.println(".instructions { background: #e9ecef; padding: 15px; border-radius: 4px; margin: 15px 0; }");
   client.println("</style>");
   client.println("</head>");
@@ -2001,6 +2023,7 @@ void sendCalibrationPage(EthernetClient &client) {
   client.println("</body>");
   client.println("</html>");
 }
+*/
 
 void sendCalibrationCommand(String siteLocation, int tankNumber, String command) {
   // Log the calibration command that would be sent
@@ -2011,6 +2034,8 @@ void sendCalibrationCommand(String siteLocation, int tankNumber, String command)
   // to send commands to the specific tank client
 }
 
+// Obsolete function - ping feature removed for simplification.
+/*
 PingStatus* getPingStatus(String siteLocation, int tankNumber) {
   for (int i = 0; i < pingStatusCount; i++) {
     if (pingStatuses[i].siteLocation == siteLocation && 
@@ -2086,6 +2111,7 @@ bool sendHologramPing(String pingMessage) {
     return false;
   }
 }
+*/
 
 bool sendHologramEmail(String recipient, String subject, String body) {
   // Send email via Hologram API
@@ -2294,7 +2320,7 @@ void appendToFile(String filename, String content) {
     return;
   }
   
-  File file = SD.open(filename.c_str(), FILE_APPEND);
+  File file = SD.open(filename.c_str(), FILE_WRITE);
   if (file) {
     file.println(content);
     file.close();

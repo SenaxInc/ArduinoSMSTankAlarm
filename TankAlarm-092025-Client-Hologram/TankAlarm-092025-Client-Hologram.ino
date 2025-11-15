@@ -218,6 +218,14 @@ bool digitalLowAlarm = false;
 float largeDecreaseThreshold = 24.0;
 int largeDecreaseWaitHours = 2;
 
+// Calibration point structure
+#define MAX_CALIBRATION_POINTS 10
+
+struct CalibrationPoint {
+  float sensorValue;    // Raw sensor reading (voltage, current, etc.)
+  float actualHeight;   // Actual measured height in inches
+};
+
 // Multi-site / Multi-tank support - all tanks configured via TANKA, TANKB, etc.
 // Supports up to 26 tanks (A-Z), adjust array size below if needed
 struct TankEntry {
@@ -269,16 +277,7 @@ int normalSleepHours = 1;    // Normal sleep duration between readings
 bool wakeOnPingEnabled = true; // Wake on ping functionality
 
 // Height calibration system
-#define MAX_CALIBRATION_POINTS 10
-
-struct CalibrationPoint {
-  float sensorValue;    // Raw sensor reading (voltage, current, etc.)
-  float actualHeight;   // Actual measured height in inches
-};
-
-// Per-tank level measurements in inches
-float tankCurrentInches[26];  // Current reading per tank
-bool tankAlarmSent[26];       // Alarm state per tank
+// Note: MAX_CALIBRATION_POINTS and CalibrationPoint moved above TankEntry struct
 
 
 // Network configuration (loaded from SD card - REQUIRED)
@@ -292,6 +291,12 @@ String alarmLogFile = "alarm_log.txt";
 String decreaseLogFile = "decrease_log.txt";
 String reportLogFile = "report_log.txt";
 String systemLogFile = "system_events.log";
+
+// Forward declarations
+void logEvent(String event, int tankIdx = -1);
+void checkLargeDecrease(int tankIdx);
+float getTankLevelInches();
+float interpolateHeight(float sensorValue, int tankIdx);
 
 // Helper to create a sanitized log filename from site and tank info
 String getTankLogFileName(int tankIdx) {
@@ -457,7 +462,7 @@ void loop() {
     }
     
     // Check for large decrease in level (first tank only for legacy)
-    checkLargeDecrease();
+    checkLargeDecrease(0); // Use first tank (index 0)
   }
   
   // Check if it's time for hourly log entry
@@ -483,7 +488,7 @@ void loop() {
     if (connectToCellular()) {
       checkForIncomingData();  // Check for any incoming data first
       checkForServerCommands();
-      processIncomingSMS();    // Check for incoming SMS commands
+      // processIncomingSMS();    // Function not implemented yet
       checkServerCommands = true;
     }
     lastServerCheckTime = millis();
@@ -657,8 +662,8 @@ int readAnalogVoltageSensor() {
   
   float avgVoltage = totalVoltage / numReadings;
   
-  // Convert voltage to inches
-  float levelInches = convertToInches(avgVoltage);
+  // Convert voltage to inches (using first tank - index 0)
+  float levelInches = convertToInches(avgVoltage, 0);
   
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) {
@@ -698,8 +703,8 @@ int readCurrentLoopSensor() {
     return LOW; // Default to normal state on error
   }
   
-  // Convert current to inches
-  float levelInches = convertToInches(current);
+  // Convert current to inches (using first tank - index 0)
+  float levelInches = convertToInches(current, 0);
   
 #ifdef ENABLE_SERIAL_DEBUG
   if (ENABLE_SERIAL_DEBUG) {
@@ -1203,7 +1208,7 @@ bool ensureSDCardReady() {
   return lastState;
 }
 
-void logEvent(String event, int tankIdx = -1) {
+void logEvent(String event, int tankIdx) {
   // Log events to SD card with timestamp
   if (ensureSDCardReady()) {
     String logFileName;
@@ -1488,11 +1493,10 @@ float convertToInches(float sensorValue, int tankIdx) {
   }
 }
 
-// This function is now obsolete and has been replaced by per-tank logic
-/*
+// This function provides backward compatibility for legacy single-tank setups
 float getTankLevelInches() {
 #if SENSOR_TYPE == DIGITAL_FLOAT
-  return convertToInches(currentLevelState);
+  return convertToInches(currentLevelState, 0);
   
 #elif SENSOR_TYPE == ANALOG_VOLTAGE
   // Read analog sensor and calculate inches
@@ -1507,20 +1511,19 @@ float getTankLevelInches() {
   }
   
   float avgVoltage = totalVoltage / numReadings;
-  return convertToInches(avgVoltage);
+  return convertToInches(avgVoltage, 0);
   
 #elif SENSOR_TYPE == CURRENT_LOOP
   // Read current loop sensor and calculate inches
   float current = readCurrentLoopValue();
   if (current < 0) return -1.0; // Error indicator
   
-  return convertToInches(current);
+  return convertToInches(current, 0);
   
 #else
   return -1.0; // Error
 #endif
 }
-*/
 
 // Convert inches to feet and inches format
 String formatInchesToFeetInches(float totalInches) {
@@ -1561,7 +1564,7 @@ void logHourlyData(int tankIdx) {
   String logEntry = timestamp + ",HOURLY," + feetInchesFormat + "," + 
                    changePrefix + changeFeetInchesFormat;
   
-  File hourlyFile = SD.open(logFileName, FILE_APPEND);
+  File hourlyFile = SD.open(logFileName, FILE_WRITE);
   if (hourlyFile) {
     hourlyFile.println(logEntry);
     hourlyFile.close();
@@ -1590,7 +1593,7 @@ void logDailyDataForTank(int idx) {
   String logEntry = timestamp + ",DAILY," + 
                    feetInchesFormat + "," + changePrefix + changeFeetInchesFormat;
   
-  File dailyFile = SD.open(logFileName, FILE_APPEND);
+  File dailyFile = SD.open(logFileName, FILE_WRITE);
   if (dailyFile) {
     dailyFile.println(logEntry);
     dailyFile.close();
@@ -1610,7 +1613,7 @@ void logAlarmEvent(int tankIdx, String alarmState) {
   String timestamp = getDateTimestamp();
   String logEntry = timestamp + ",ALARM," + alarmState;
   
-  File alarmFile = SD.open(logFileName, FILE_APPEND);
+  File alarmFile = SD.open(logFileName, FILE_WRITE);
   if (alarmFile) {
     alarmFile.println(logEntry);
     alarmFile.close();
@@ -1645,7 +1648,7 @@ void logLargeDecrease(int tankIdx, float totalDecrease) {
   
   String logEntry = timestamp + ",DECREASE," + decreaseFeetInchesFormat;
   
-  File decreaseFile = SD.open(logFileName, FILE_APPEND);
+  File decreaseFile = SD.open(logFileName, FILE_WRITE);
   if (decreaseFile) {
     decreaseFile.println(logEntry);
     decreaseFile.close();
@@ -2225,9 +2228,10 @@ void sendPowerFailureNotificationToServer() {
   logEvent("Power failure notification sent to server for daily email tracking");
 }
 
-// ========== HEIGHT CALIBRATION FUNCTIONS ==========
+// ========== HEIGHT CALIBRATION FUNCTIONS (OBSOLETE - replaced by per-tank calibration in .cfg files) ==========
 
-// Load calibration data from SD card
+// Obsolete - Load calibration data from SD card
+/*
 void loadCalibrationData() {
   calibrationDataLoaded = false;
   numCalibrationPoints = 0;
@@ -2310,8 +2314,10 @@ void saveCalibrationData() {
   calibFile.close();
   logEvent("Calibration data saved: " + String(numCalibrationPoints) + " points");
 }
+*/
 
-// Add a new calibration point
+// Obsolete - Add a new calibration point
+/*
 void addCalibrationPoint(float sensorValue, float actualHeight) {
   if (numCalibrationPoints >= MAX_CALIBRATION_POINTS) {
     // Remove oldest point to make room
@@ -2345,6 +2351,7 @@ void addCalibrationPoint(float sensorValue, float actualHeight) {
                   ", height=" + String(actualHeight, 2) + " inches";
   logEvent(logMsg);
 }
+*/
 
 // Interpolate height from a sensor value using the tank's calibration points
 float interpolateHeight(float sensorValue, int tankIdx) {
@@ -2454,7 +2461,7 @@ void addCalibrationPointToCfg(int tankIdx, float sensorValue, float actualHeight
     return;
   }
 
-  File configFile = SD.open(fileName, FILE_APPEND);
+  File configFile = SD.open(fileName, FILE_WRITE);
   if (configFile) {
     String calLine = "CAL_POINT = " + String(sensorValue, 4) + "," + String(actualHeight, 2);
     configFile.println(calLine);
