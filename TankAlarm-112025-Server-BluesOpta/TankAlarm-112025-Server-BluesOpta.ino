@@ -110,6 +110,7 @@ static IPAddress gStaticDns(8, 8, 8, 8);
 
 struct ServerConfig {
   char serverName[32];
+  char clientFleet[32];  // Target fleet for client devices (e.g., "tankalarm-clients")
   char smsPrimary[20];
   char smsSecondary[20];
   char dailyEmail[64];
@@ -389,7 +390,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           <div class="form-grid">
             <label class="field"><span>Site Name</span><input id="siteInput" type="text" placeholder="Site name"></label>
             <label class="field"><span>Device Label</span><input id="deviceLabelInput" type="text" placeholder="Device label"></label>
-            <label class="field"><span>Server Route</span><input id="routeInput" type="text" placeholder="default-route"></label>
+            <label class="field"><span>Server Fleet</span><input id="routeInput" type="text" placeholder="tankalarm-server"></label>
             <label class="field"><span>Sample Seconds</span><input id="sampleSecondsInput" type="number" min="30" step="30"></label>
             <label class="field"><span>Report Hour (0-23)</span><input id="reportHourInput" type="number" min="0" max="23"></label>
             <label class="field"><span>Report Minute (0-59)</span><input id="reportMinuteInput" type="number" min="0" max="59"></label>
@@ -570,7 +571,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         return {
           site: client ? (client.site || '') : '',
           deviceLabel: client ? `${((client.site || 'Client')).replace(/\s+/g, '-')}-${client.tank || tankId || 'A'}` : 'Client-112025',
-          serverRoute: 'default-route',
+          serverFleet: 'tankalarm-server',
           sampleSeconds: 300,
           reportHour: 5,
           reportMinute: 0,
@@ -657,7 +658,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         state.selected = uid;
     els.site.value = config.site || '';
     els.deviceLabel.value = config.deviceLabel || '';
-    els.route.value = config.serverRoute || '';
+    els.route.value = config.serverFleet || '';
     els.sampleSeconds.value = valueOr(config.sampleSeconds, 300);
     els.reportHour.value = valueOr(config.reportHour, 5);
     els.reportMinute.value = valueOr(config.reportMinute, 0);
@@ -709,7 +710,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         const config = {
           site: els.site.value.trim(),
           deviceLabel: els.deviceLabel.value.trim(),
-          serverRoute: els.route.value.trim() || 'default-route',
+          serverFleet: els.route.value.trim() || 'tankalarm-server',
           sampleSeconds: parseInt(els.sampleSeconds.value, 10) || 300,
           reportHour: parseInt(els.reportHour.value, 10) || 5,
           reportMinute: parseInt(els.reportMinute.value, 10) || 0,
@@ -906,6 +907,7 @@ static void ensureConfigLoaded() {
 static void createDefaultConfig(ServerConfig &cfg) {
   memset(&cfg, 0, sizeof(ServerConfig));
   strlcpy(cfg.serverName, "Tank Alarm Server", sizeof(cfg.serverName));
+  strlcpy(cfg.clientFleet, "tankalarm-clients", sizeof(cfg.clientFleet));
   strlcpy(cfg.smsPrimary, "+12223334444", sizeof(cfg.smsPrimary));
   strlcpy(cfg.smsSecondary, "+15556667777", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, "reports@example.com", sizeof(cfg.dailyEmail));
@@ -936,6 +938,7 @@ static bool loadConfig(ServerConfig &cfg) {
   memset(&cfg, 0, sizeof(ServerConfig));
 
   strlcpy(cfg.serverName, doc["serverName"].as<const char *>() ? doc["serverName"].as<const char *>() : "Tank Alarm Server", sizeof(cfg.serverName));
+  strlcpy(cfg.clientFleet, doc["clientFleet"].as<const char *>() ? doc["clientFleet"].as<const char *>() : "tankalarm-clients", sizeof(cfg.clientFleet));
   strlcpy(cfg.smsPrimary, doc["smsPrimary"].as<const char *>() ? doc["smsPrimary"].as<const char *>() : "+12223334444", sizeof(cfg.smsPrimary));
   strlcpy(cfg.smsSecondary, doc["smsSecondary"].as<const char *>() ? doc["smsSecondary"].as<const char *>() : "+15556667777", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, doc["dailyEmail"].as<const char *>() ? doc["dailyEmail"].as<const char *>() : "reports@example.com", sizeof(cfg.dailyEmail));
@@ -975,6 +978,7 @@ static bool loadConfig(ServerConfig &cfg) {
 static bool saveConfig(const ServerConfig &cfg) {
   DynamicJsonDocument doc(2048);
   doc["serverName"] = cfg.serverName;
+  doc["clientFleet"] = cfg.clientFleet;
   doc["smsPrimary"] = cfg.smsPrimary;
   doc["smsSecondary"] = cfg.smsSecondary;
   doc["dailyEmail"] = cfg.dailyEmail;
@@ -1455,9 +1459,11 @@ static void dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj)
   if (!req) {
     return;
   }
-  JAddStringToObject(req, "file", CONFIG_OUTBOX_FILE);
+  // Use device-specific targeting: send directly to client's config.qi inbox
+  char targetFile[80];
+  snprintf(targetFile, sizeof(targetFile), "device:%s:config.qi", clientUid);
+  JAddStringToObject(req, "file", targetFile);
   JAddBoolToObject(req, "sync", true);
-  JAddStringToObject(req, "device", clientUid);
 
   J *body = JParse(buffer);
   if (!body) {

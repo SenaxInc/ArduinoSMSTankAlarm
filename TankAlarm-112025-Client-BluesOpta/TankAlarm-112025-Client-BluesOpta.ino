@@ -56,15 +56,15 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #endif
 
 #ifndef TELEMETRY_FILE
-#define TELEMETRY_FILE "telemetry.qo"
+#define TELEMETRY_FILE "telemetry.qi"
 #endif
 
 #ifndef ALARM_FILE
-#define ALARM_FILE "alarm.qo"
+#define ALARM_FILE "alarm.qi"
 #endif
 
 #ifndef DAILY_FILE
-#define DAILY_FILE "daily.qo"
+#define DAILY_FILE "daily.qi"
 #endif
 
 #ifndef CONFIG_INBOX_FILE
@@ -144,7 +144,7 @@ struct TankConfig {
 struct ClientConfig {
   char siteName[32];
   char deviceLabel[24];
-  char serverRoute[32]; // Logical route used by server to group clients
+  char serverFleet[32]; // Target fleet name for server (e.g., "tankalarm-server")
   char smsPrimary[20];
   char smsSecondary[20];
   char dailyEmail[64];
@@ -347,7 +347,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   memset(&cfg, 0, sizeof(ClientConfig));
   strlcpy(cfg.siteName, "Opta Tank Site", sizeof(cfg.siteName));
   strlcpy(cfg.deviceLabel, "Client-112025", sizeof(cfg.deviceLabel));
-  strlcpy(cfg.serverRoute, "default-route", sizeof(cfg.serverRoute));
+  strlcpy(cfg.serverFleet, "tankalarm-server", sizeof(cfg.serverFleet));
   strlcpy(cfg.smsPrimary, "+12223334444", sizeof(cfg.smsPrimary));
   strlcpy(cfg.smsSecondary, "+15556667777", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, "reports@example.com", sizeof(cfg.dailyEmail));
@@ -395,7 +395,7 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
 
   strlcpy(cfg.siteName, doc["site"].as<const char *>() ? doc["site"].as<const char *>() : "", sizeof(cfg.siteName));
   strlcpy(cfg.deviceLabel, doc["deviceLabel"].as<const char *>() ? doc["deviceLabel"].as<const char *>() : "", sizeof(cfg.deviceLabel));
-  strlcpy(cfg.serverRoute, doc["serverRoute"].as<const char *>() ? doc["serverRoute"].as<const char *>() : "", sizeof(cfg.serverRoute));
+  strlcpy(cfg.serverFleet, doc["serverFleet"].as<const char *>() ? doc["serverFleet"].as<const char *>() : "", sizeof(cfg.serverFleet));
   strlcpy(cfg.smsPrimary, doc["sms"]["primary"].as<const char *>() ? doc["sms"]["primary"].as<const char *>() : "", sizeof(cfg.smsPrimary));
   strlcpy(cfg.smsSecondary, doc["sms"]["secondary"].as<const char *>() ? doc["sms"]["secondary"].as<const char *>() : "", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, doc["dailyEmail"].as<const char *>() ? doc["dailyEmail"].as<const char *>() : "", sizeof(cfg.dailyEmail));
@@ -438,7 +438,7 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   DynamicJsonDocument doc(4096);
   doc["site"] = cfg.siteName;
   doc["deviceLabel"] = cfg.deviceLabel;
-  doc["serverRoute"] = cfg.serverRoute;
+  doc["serverFleet"] = cfg.serverFleet;
   doc["sampleSeconds"] = cfg.sampleSeconds;
   doc["reportHour"] = cfg.reportHour;
   doc["reportMinute"] = cfg.reportMinute;
@@ -539,7 +539,7 @@ static void initializeNotecard() {
   if (req) {
     JAddStringToObject(req, "product", PRODUCT_UID);
     JAddStringToObject(req, "mode", "continuous");
-    JAddStringToObject(req, "route", gConfig.serverRoute);
+    // No route needed - using fleet-based targeting
     notecard.sendRequest(req);
   }
 
@@ -740,8 +740,8 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   if (doc.containsKey("deviceLabel")) {
     strlcpy(gConfig.deviceLabel, doc["deviceLabel"].as<const char *>(), sizeof(gConfig.deviceLabel));
   }
-  if (doc.containsKey("serverRoute")) {
-    strlcpy(gConfig.serverRoute, doc["serverRoute"].as<const char *>(), sizeof(gConfig.serverRoute));
+  if (doc.containsKey("serverFleet")) {
+    strlcpy(gConfig.serverFleet, doc["serverFleet"].as<const char *>(), sizeof(gConfig.serverFleet));
   }
   if (doc.containsKey("sampleSeconds")) {
     gConfig.sampleSeconds = doc["sampleSeconds"].as<uint16_t>();
@@ -1355,7 +1355,11 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
     return;
   }
 
-  JAddStringToObject(req, "file", fileName);
+  // Use fleet-based targeting: send to server fleet's notefile
+  // Format: fleet.<fleetname>:<filename>
+  char targetFile[80];
+  snprintf(targetFile, sizeof(targetFile), "fleet.%s:%s", gConfig.serverFleet, fileName);
+  JAddStringToObject(req, "file", targetFile);
   if (syncNow) {
     JAddBoolToObject(req, "sync", true);
   }

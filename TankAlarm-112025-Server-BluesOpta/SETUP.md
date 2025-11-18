@@ -1,4 +1,14 @@
-# Blues Notehub Routing Setup (112025 Opta Release)
+# Blues Notehub Setup (112025 Opta Release)
+
+> **⚠️ DEPRECATED:** This document describes the old route-based setup method. For new deployments, use the **fleet-based setup** which eliminates manual route configuration.
+>
+> **See: [FLEET_SETUP.md](FLEET_SETUP.md)** for the simplified, recommended approach.
+>
+> This document is kept for reference and for systems already using manual routes.
+
+---
+
+## Manual Route-Based Setup (Legacy Method)
 
 The 112025 client and server sketches exchange data exclusively through Blues Notehub. Complete the following steps before deploying the Opta hardware so telemetry, alarms, and configuration updates flow to the correct devices.
 
