@@ -129,7 +129,7 @@ struct TankRecord {
   float levelInches;
   float percent;
   bool alarmActive;
-  char alarmType[8];
+  char alarmType[24];
   double lastUpdateEpoch;
   // Rate limiting for SMS alerts
   double lastSmsAlertEpoch;
@@ -806,7 +806,12 @@ static void sendDashboard(EthernetClient &client);
 static void sendTankJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client);
 static void handleConfigPost(EthernetClient &client, const String &body);
-static void dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
+enum class ConfigDispatchStatus : uint8_t {
+  Ok = 0,
+  PayloadTooLarge,
+  NotecardFailure
+};
+static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
 static void pollNotecard();
 static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double));
 static void handleTelemetry(JsonDocument &doc, double epoch);
@@ -1439,25 +1444,33 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
   if (doc.containsKey("client") && doc.containsKey("config")) {
     const char *clientUid = doc["client"].as<const char *>();
     if (clientUid && strlen(clientUid) > 0) {
-      dispatchClientConfig(clientUid, doc["config"]);
+      ConfigDispatchStatus status = dispatchClientConfig(clientUid, doc["config"]);
+      if (status == ConfigDispatchStatus::PayloadTooLarge) {
+        respondStatus(client, 413, F("Config payload too large"));
+        return;
+      }
+      if (status == ConfigDispatchStatus::NotecardFailure) {
+        respondStatus(client, 500, F("Failed to queue config"));
+        return;
+      }
     }
   }
 
   respondStatus(client, 200, F("OK"));
 }
 
-static void dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
+static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
   char buffer[1536];
   size_t len = serializeJson(cfgObj, buffer, sizeof(buffer));
   if (len == 0 || len >= sizeof(buffer)) {
     Serial.println(F("Client config payload too large"));
-    return;
+    return ConfigDispatchStatus::PayloadTooLarge;
   }
   buffer[len] = '\0';
 
   J *req = notecard.newRequest("note.add");
   if (!req) {
-    return;
+    return ConfigDispatchStatus::NotecardFailure;
   }
   // Use device-specific targeting: send directly to client's config.qi inbox
   char targetFile[80];
@@ -1468,15 +1481,20 @@ static void dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj)
   J *body = JParse(buffer);
   if (!body) {
     notecard.deleteRequest(req);
-    return;
+    return ConfigDispatchStatus::PayloadTooLarge;
   }
   JAddItemToObject(req, "body", body);
-  notecard.sendRequest(req);
+  bool queued = notecard.sendRequest(req);
+  if (!queued) {
+    return ConfigDispatchStatus::NotecardFailure;
+  }
 
   cacheClientConfigFromBuffer(clientUid, buffer);
 
   Serial.print(F("Queued config update for client " ));
   Serial.println(clientUid);
+
+  return ConfigDispatchStatus::Ok;
 }
 
 static void pollNotecard() {
@@ -1547,10 +1565,17 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
 
   const char *type = doc["type"] | "";
   float inches = doc["levelInches"].as<float>();
+  bool isDiagnostic = (strcmp(type, "sensor-fault") == 0) ||
+                      (strcmp(type, "sensor-stuck") == 0) ||
+                      (strcmp(type, "sensor-recovered") == 0);
+  bool isRecovery = (strcmp(type, "sensor-recovered") == 0);
 
-  if (strcmp(type, "clear") == 0) {
+  if (strcmp(type, "clear") == 0 || isRecovery) {
     rec->alarmActive = false;
     strlcpy(rec->alarmType, "clear", sizeof(rec->alarmType));
+    if (isRecovery) {
+      strlcpy(rec->alarmType, type, sizeof(rec->alarmType));
+    }
   } else {
     rec->alarmActive = true;
     strlcpy(rec->alarmType, type, sizeof(rec->alarmType));
@@ -1567,7 +1592,8 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
 
   // Check rate limit before sending SMS
-  if (checkSmsRateLimit(rec)) {
+  bool smsEnabled = !doc.containsKey("smsEnabled") || doc["smsEnabled"].as<bool>();
+  if (!isDiagnostic && smsEnabled && checkSmsRateLimit(rec)) {
     char message[160];
     snprintf(message, sizeof(message), "%s #%d %s alarm %.1f in", rec->site, rec->tankNumber, rec->alarmType, inches);
     sendSmsAlert(message);

@@ -75,6 +75,14 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define CONFIG_OUTBOX_FILE "config.qo"
 #endif
 
+#ifndef NOTE_BUFFER_PATH
+#define NOTE_BUFFER_PATH "/pending_notes.log"
+#endif
+
+#ifndef NOTE_BUFFER_TEMP_PATH
+#define NOTE_BUFFER_TEMP_PATH "/pending_notes.tmp"
+#endif
+
 #ifndef MAX_TANKS
 #define MAX_TANKS 8
 #endif
@@ -169,6 +177,7 @@ struct TankRuntime {
   uint8_t clearDebounceCount;
   // Sensor failure detection
   float lastValidReading;
+  bool hasLastValidReading;
   uint8_t consecutiveFailures;
   uint8_t stuckReadingCount;
   bool sensorFailed;
@@ -225,6 +234,8 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow);
 static void sendAlarm(uint8_t idx, const char *alarmType, float inches);
 static void sendDailyReport();
 static void publishNote(const char *fileName, const JsonDocument &doc, bool syncNow);
+static void bufferNoteForRetry(const char *fileName, const char *payload, bool syncNow);
+static void flushBufferedNotes();
 static void ensureTimeSync();
 static void updateDailyScheduleIfNeeded();
 static bool checkNotecardHealth();
@@ -272,6 +283,7 @@ void setup() {
     gTankState[i].lowAlarmDebounceCount = 0;
     gTankState[i].clearDebounceCount = 0;
     gTankState[i].lastValidReading = 0.0f;
+    gTankState[i].hasLastValidReading = false;
     gTankState[i].consecutiveFailures = 0;
     gTankState[i].stuckReadingCount = 0;
     gTankState[i].sensorFailed = false;
@@ -591,6 +603,7 @@ static bool checkNotecardHealth() {
   gNotecardAvailable = true;
   gNotecardFailureCount = 0;
   gLastSuccessfulNotecardComm = millis();
+  flushBufferedNotes();
   return true;
 }
 
@@ -726,6 +739,7 @@ static void reinitializeHardware() {
     gTankState[i].stuckReadingCount = 0;
     gTankState[i].sensorFailed = false;
     gTankState[i].lastValidReading = 0.0f;
+    gTankState[i].hasLastValidReading = false;
   }
   
   Serial.println(F("Hardware reinitialized after config update"));
@@ -884,7 +898,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   }
 
   // Check for stuck sensor (same reading multiple times)
-  if (state.lastValidReading > 0.0f && fabs(reading - state.lastValidReading) < 0.05f) {
+  if (state.hasLastValidReading && fabs(reading - state.lastValidReading) < 0.05f) {
     state.stuckReadingCount++;
     if (state.stuckReadingCount >= SENSOR_STUCK_THRESHOLD) {
       if (!state.sensorFailed) {
@@ -928,6 +942,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
     publishNote(ALARM_FILE, doc, true);
   }
   state.lastValidReading = reading;
+  state.hasLastValidReading = true;
   return true;
 }
 
@@ -1206,9 +1221,7 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
   }
 
   const TankConfig &cfg = gConfig.tanks[idx];
-  if (!cfg.enableAlarmSms) {
-    return;
-  }
+  bool allowSmsEscalation = cfg.enableAlarmSms;
 
   // Always activate local alarm regardless of rate limits
   bool isAlarm = (strcmp(alarmType, "clear") != 0);
@@ -1233,6 +1246,7 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     doc["levelInches"] = inches;
     doc["highThreshold"] = cfg.highAlarmInches;
     doc["lowThreshold"] = cfg.lowAlarmInches;
+    doc["smsEnabled"] = allowSmsEscalation;
     doc["smsPrimary"] = gConfig.smsPrimary;
     doc["smsSecondary"] = gConfig.smsSecondary;
     doc["time"] = currentEpoch();
@@ -1344,47 +1358,138 @@ static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t 
 }
 
 static void publishNote(const char *fileName, const JsonDocument &doc, bool syncNow) {
-  // Skip if notecard is offline - local alarms still work
+  // Build target file string and serialized payload once for both live send and buffering
+  char targetFile[80];
+  snprintf(targetFile, sizeof(targetFile), "fleet.%s:%s", gConfig.serverFleet, fileName);
+
+  char buffer[1024];
+  size_t len = serializeJson(doc, buffer, sizeof(buffer));
+  if (len == 0 || len >= sizeof(buffer)) {
+    return;
+  }
+  buffer[len] = '\0';
+
   if (!gNotecardAvailable) {
+    bufferNoteForRetry(targetFile, buffer, syncNow);
     return;
   }
 
   J *req = notecard.newRequest("note.add");
   if (!req) {
     gNotecardFailureCount++;
+    bufferNoteForRetry(targetFile, buffer, syncNow);
     return;
   }
 
-  // Use fleet-based targeting: send to server fleet's notefile
-  // Format: fleet.<fleetname>:<filename>
-  char targetFile[80];
-  snprintf(targetFile, sizeof(targetFile), "fleet.%s:%s", gConfig.serverFleet, fileName);
   JAddStringToObject(req, "file", targetFile);
   if (syncNow) {
     JAddBoolToObject(req, "sync", true);
   }
 
-  char buffer[1024];
-  size_t len = serializeJson(doc, buffer, sizeof(buffer));
-  if (len == 0 || len >= sizeof(buffer)) {
-    notecard.deleteRequest(req);
-    return;
-  }
-
-  buffer[len] = '\0';
   J *body = JParse(buffer);
   if (!body) {
     notecard.deleteRequest(req);
+    bufferNoteForRetry(targetFile, buffer, syncNow);
     return;
   }
 
   JAddItemToObject(req, "body", body);
-  
   bool success = notecard.sendRequest(req);
   if (success) {
     gLastSuccessfulNotecardComm = millis();
     gNotecardFailureCount = 0;
+    flushBufferedNotes();
   } else {
     gNotecardFailureCount++;
+    bufferNoteForRetry(targetFile, buffer, syncNow);
+  }
+}
+
+static void bufferNoteForRetry(const char *fileName, const char *payload, bool syncNow) {
+  File file = LittleFS.open(NOTE_BUFFER_PATH, "a");
+  if (!file) {
+    Serial.println(F("Failed to open note buffer; dropping payload"));
+    return;
+  }
+  file.print(fileName);
+  file.print('\t');
+  file.print(syncNow ? '1' : '0');
+  file.print('\t');
+  file.println(payload);
+  file.close();
+  Serial.println(F("Note buffered for retry"));
+}
+
+static void flushBufferedNotes() {
+  if (!gNotecardAvailable) {
+    return;
+  }
+  if (!LittleFS.exists(NOTE_BUFFER_PATH)) {
+    return;
+  }
+
+  File src = LittleFS.open(NOTE_BUFFER_PATH, "r");
+  if (!src) {
+    return;
+  }
+
+  File tmp = LittleFS.open(NOTE_BUFFER_TEMP_PATH, "w");
+  if (!tmp) {
+    src.close();
+    return;
+  }
+
+  bool wroteFailures = false;
+  while (src.available()) {
+    String line = src.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) {
+      continue;
+    }
+
+    int firstTab = line.indexOf('\t');
+    int secondTab = (firstTab >= 0) ? line.indexOf('\t', firstTab + 1) : -1;
+    if (firstTab < 0 || secondTab < 0) {
+      continue;
+    }
+
+    String fileName = line.substring(0, firstTab);
+    String syncToken = line.substring(firstTab + 1, secondTab);
+    bool syncNow = (syncToken == "1");
+    String payload = line.substring(secondTab + 1);
+
+    J *req = notecard.newRequest("note.add");
+    if (!req) {
+      wroteFailures = true;
+      tmp.println(line);
+      continue;
+    }
+    JAddStringToObject(req, "file", fileName.c_str());
+    if (syncNow) {
+      JAddBoolToObject(req, "sync", true);
+    }
+
+    J *body = JParse(payload.c_str());
+    if (!body) {
+      notecard.deleteRequest(req);
+      continue;
+    }
+    JAddItemToObject(req, "body", body);
+
+    if (!notecard.sendRequest(req)) {
+      wroteFailures = true;
+      tmp.println(line);
+    }
+  }
+
+  src.close();
+  tmp.close();
+
+  if (wroteFailures) {
+    LittleFS.remove(NOTE_BUFFER_PATH);
+    LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
+  } else {
+    LittleFS.remove(NOTE_BUFFER_PATH);
+    LittleFS.remove(NOTE_BUFFER_TEMP_PATH);
   }
 }
