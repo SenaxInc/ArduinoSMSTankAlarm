@@ -179,6 +179,262 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 }
 #endif
 
+static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Config Generator</title>
+  <style>
+    :root { color-scheme: light dark; font-family: "Segoe UI", Arial, sans-serif; }
+    body { margin: 0; background: #f4f6f8; color: #1f2933; }
+    header { padding: 16px 24px; background: #1d3557; color: #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.2); display: flex; justify-content: space-between; align-items: center; }
+    header h1 { margin: 0; font-size: 1.6rem; }
+    header a { color: #fff; text-decoration: none; font-size: 0.95rem; }
+    main { padding: 20px; max-width: 800px; margin: 0 auto; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,0.08); padding: 20px; }
+    h2 { margin-top: 0; font-size: 1.3rem; }
+    h3 { margin: 20px 0 10px; font-size: 1.1rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }
+    .field { display: flex; flex-direction: column; margin-bottom: 12px; }
+    .field span { font-size: 0.9rem; color: #475569; margin-bottom: 4px; }
+    .field input, .field select { padding: 8px 10px; border-radius: 6px; border: 1px solid #cbd5f5; font-size: 0.95rem; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+    .sensor-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 16px; position: relative; }
+    .sensor-header { display: flex; justify-content: space-between; margin-bottom: 12px; }
+    .sensor-title { font-weight: 600; color: #334155; }
+    .remove-btn { color: #ef4444; cursor: pointer; font-size: 0.9rem; border: none; background: none; padding: 0; }
+    .actions { margin-top: 24px; display: flex; gap: 12px; }
+    button { border: none; border-radius: 6px; padding: 10px 16px; font-size: 0.95rem; cursor: pointer; background: #1d4ed8; color: #fff; }
+    button.secondary { background: #64748b; }
+    button:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Config Generator</h1>
+    <a href="/">&larr; Back to Dashboard</a>
+  </header>
+  <main>
+    <div class="card">
+      <h2>New Client Configuration</h2>
+      <form id="generatorForm">
+        <div class="form-grid">
+          <label class="field"><span>Site Name</span><input id="siteName" type="text" placeholder="Site Name" required></label>
+          <label class="field"><span>Device Label</span><input id="deviceLabel" type="text" placeholder="Device Label" required></label>
+          <label class="field"><span>Server Fleet</span><input id="serverFleet" type="text" value="tankalarm-server"></label>
+          <label class="field"><span>Sample Seconds</span><input id="sampleSeconds" type="number" value="300"></label>
+          <label class="field"><span>Report Hour</span><input id="reportHour" type="number" value="5"></label>
+          <label class="field"><span>Report Minute</span><input id="reportMinute" type="number" value="0"></label>
+          <label class="field"><span>SMS Primary</span><input id="smsPrimary" type="text"></label>
+          <label class="field"><span>SMS Secondary</span><input id="smsSecondary" type="text"></label>
+          <label class="field"><span>Daily Email</span><input id="dailyEmail" type="email"></label>
+        </div>
+        
+        <h3>Sensors</h3>
+        <div id="sensorsContainer"></div>
+        
+        <div class="actions">
+          <button type="button" id="addSensorBtn" class="secondary">+ Add Sensor</button>
+          <button type="button" id="downloadBtn">Download Config</button>
+        </div>
+      </form>
+    </div>
+  </main>
+  <script>
+    const sensorTypes = [
+      { value: 0, label: 'Digital Input' },
+      { value: 1, label: 'Analog Input (0-10V)' },
+      { value: 2, label: 'Current Loop (4-20mA)' }
+    ];
+
+    const monitorTypes = [
+      { value: 'tank', label: 'Tank Level' },
+      { value: 'gas', label: 'Gas Pressure' }
+    ];
+    
+    const optaPins = [
+      { value: 0, label: 'I1' },
+      { value: 1, label: 'I2' },
+      { value: 2, label: 'I3' },
+      { value: 3, label: 'I4' },
+      { value: 4, label: 'I5' },
+      { value: 5, label: 'I6' },
+      { value: 6, label: 'I7' },
+      { value: 7, label: 'I8' }
+    ];
+
+    const expansionChannels = [
+      { value: 0, label: 'I1' },
+      { value: 1, label: 'I2' },
+      { value: 2, label: 'I3' },
+      { value: 3, label: 'I4' },
+      { value: 4, label: 'I5' },
+      { value: 5, label: 'I6' }
+    ];
+
+    let sensorCount = 0;
+
+    function createSensorHtml(id) {
+      return `
+        <div class="sensor-card" id="sensor-${id}">
+          <div class="sensor-header">
+            <span class="sensor-title">Sensor #${id + 1}</span>
+            <button type="button" class="remove-btn" onclick="removeSensor(${id})">Remove</button>
+          </div>
+          <div class="form-grid">
+            <label class="field"><span>Monitor Type</span>
+              <select class="monitor-type" onchange="updateMonitorFields(${id})">
+                ${monitorTypes.map(t => `<option value="${t.value}">${t.label}</option>`).join('')}
+              </select>
+            </label>
+            <label class="field tank-num-field"><span>Tank Number</span><input type="number" class="tank-num" value="${id + 1}"></label>
+            <label class="field"><span><span class="name-label">Tank Name</span></span><input type="text" class="tank-name" placeholder="Name"></label>
+            <label class="field"><span>Sensor Type</span>
+              <select class="sensor-type" onchange="updatePinOptions(${id})">
+                ${sensorTypes.map(t => `<option value="${t.value}">${t.label}</option>`).join('')}
+              </select>
+            </label>
+            <label class="field"><span>Pin / Channel</span>
+              <select class="sensor-pin">
+                ${optaPins.map(p => `<option value="${p.value}">${p.label}</option>`).join('')}
+              </select>
+            </label>
+            <label class="field"><span><span class="height-label">Height (in)</span></span><input type="number" class="tank-height" value="120"></label>
+            <label class="field"><span>High Alarm</span><input type="number" class="high-alarm" value="100"></label>
+            <label class="field"><span>Low Alarm</span><input type="number" class="low-alarm" value="20"></label>
+          </div>
+        </div>
+      `;
+    }
+
+    function addSensor() {
+      const container = document.getElementById('sensorsContainer');
+      const div = document.createElement('div');
+      div.innerHTML = createSensorHtml(sensorCount);
+      container.appendChild(div.firstElementChild);
+      sensorCount++;
+    }
+
+    window.removeSensor = function(id) {
+      const el = document.getElementById(`sensor-${id}`);
+      if (el) el.remove();
+    };
+
+    window.updateMonitorFields = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const type = card.querySelector('.monitor-type').value;
+      const numField = card.querySelector('.tank-num-field');
+      const nameLabel = card.querySelector('.name-label');
+      const heightLabel = card.querySelector('.height-label');
+      
+      if (type === 'gas') {
+        numField.style.display = 'none';
+        nameLabel.textContent = 'System Name';
+        heightLabel.textContent = 'Max Pressure';
+      } else {
+        numField.style.display = 'flex';
+        nameLabel.textContent = 'Tank Name';
+        heightLabel.textContent = 'Height (in)';
+      }
+    };
+
+    window.updatePinOptions = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const typeSelect = card.querySelector('.sensor-type');
+      const pinSelect = card.querySelector('.sensor-pin');
+      const type = parseInt(typeSelect.value);
+      
+      pinSelect.innerHTML = '';
+      let options = [];
+      
+      if (type === 2) { // Current Loop
+        options = expansionChannels;
+      } else { // Digital or Analog
+        options = optaPins;
+      }
+      
+      options.forEach(opt => {
+        const option = document.createElement('option');
+        option.value = opt.value;
+        option.textContent = opt.label;
+        pinSelect.appendChild(option);
+      });
+    };
+
+    document.getElementById('addSensorBtn').addEventListener('click', addSensor);
+
+    document.getElementById('downloadBtn').addEventListener('click', () => {
+      const config = {
+        siteName: document.getElementById('siteName').value,
+        deviceLabel: document.getElementById('deviceLabel').value,
+        serverFleet: document.getElementById('serverFleet').value,
+        smsPrimary: document.getElementById('smsPrimary').value,
+        smsSecondary: document.getElementById('smsSecondary').value,
+        dailyEmail: document.getElementById('dailyEmail').value,
+        sampleSeconds: parseInt(document.getElementById('sampleSeconds').value) || 300,
+        reportHour: parseInt(document.getElementById('reportHour').value) || 5,
+        reportMinute: parseInt(document.getElementById('reportMinute').value) || 0,
+        tankCount: 0,
+        tanks: []
+      };
+
+      const sensorCards = document.querySelectorAll('.sensor-card');
+      config.tankCount = sensorCards.length;
+      
+      sensorCards.forEach((card, index) => {
+        const monitorType = card.querySelector('.monitor-type').value;
+        const type = parseInt(card.querySelector('.sensor-type').value);
+        const pin = parseInt(card.querySelector('.sensor-pin').value);
+        
+        // For gas sensors, we hide the number but still need one for the firmware.
+        // We'll use the index + 1.
+        let tankNum = parseInt(card.querySelector('.tank-num').value) || (index + 1);
+        let name = card.querySelector('.tank-name').value;
+        
+        if (monitorType === 'gas') {
+           if (!name) name = `Gas System ${index + 1}`;
+        } else {
+           if (!name) name = `Tank ${index + 1}`;
+        }
+        
+        const tank = {
+          id: String.fromCharCode(65 + index), // A, B, C...
+          name: name,
+          tankNumber: tankNum,
+          sensorType: type,
+          primaryPin: (type !== 2) ? pin : 0,
+          secondaryPin: -1,
+          currentLoopChannel: (type === 2) ? pin : -1,
+          heightInches: parseFloat(card.querySelector('.tank-height').value) || 120,
+          highAlarmInches: parseFloat(card.querySelector('.high-alarm').value) || 100,
+          lowAlarmInches: parseFloat(card.querySelector('.low-alarm').value) || 20,
+          hysteresisInches: 2.0,
+          enableDailyReport: true,
+          enableAlarmSms: true,
+          enableServerUpload: true
+        };
+        config.tanks.push(tank);
+      });
+
+      const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'client_config.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+
+    // Add one sensor by default
+    addSensor();
+  </script>
+</body>
+</html>
+)HTML";
+
 static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html lang="en">
@@ -358,6 +614,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
     <div class="meta">
       <span>Server UID: <code id="serverUid">--</code></span>
       <span>Next Daily Email: <span id="nextEmail">--</span></span>
+      <a href="/config-generator" style="color: #fff; text-decoration: underline;">Config Generator</a>
     </div>
   </header>
   <main>
@@ -1151,6 +1408,8 @@ static void handleWebRequests() {
 
   if (method == "GET" && path == "/") {
     sendDashboard(client);
+  } else if (method == "GET" && path == "/config-generator") {
+    sendConfigGenerator(client);
   } else if (method == "GET" && path == "/api/tanks") {
     sendTankJson(client);
   } else if (method == "GET" && path == "/api/clients") {
@@ -1289,6 +1548,21 @@ static void sendDashboard(EthernetClient &client) {
 
   for (size_t i = 0; i < htmlLen; ++i) {
     char c = pgm_read_byte_near(DASHBOARD_HTML + i);
+    client.write(c);
+  }
+}
+
+static void sendConfigGenerator(EthernetClient &client) {
+  size_t htmlLen = strlen_P(CONFIG_GENERATOR_HTML);
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: text/html; charset=utf-8"));
+  client.print(F("Content-Length: "));
+  client.println(htmlLen);
+  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
+  client.println();
+
+  for (size_t i = 0; i < htmlLen; ++i) {
+    char c = pgm_read_byte_near(CONFIG_GENERATOR_HTML + i);
     client.write(c);
   }
 }
