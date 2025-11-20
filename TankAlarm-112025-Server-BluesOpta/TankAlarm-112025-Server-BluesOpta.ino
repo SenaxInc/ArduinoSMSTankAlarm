@@ -266,8 +266,6 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           <label class="field"><span>Sample Seconds</span><input id="sampleSeconds" type="number" value="300"></label>
           <label class="field"><span>Report Hour</span><input id="reportHour" type="number" value="5"></label>
           <label class="field"><span>Report Minute</span><input id="reportMinute" type="number" value="0"></label>
-          <label class="field"><span>SMS Primary</span><input id="smsPrimary" type="text"></label>
-          <label class="field"><span>SMS Secondary</span><input id="smsSecondary" type="text"></label>
           <label class="field"><span>Daily Email</span><input id="dailyEmail" type="email"></label>
         </div>
         
@@ -420,10 +418,6 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         sampleSeconds: parseInt(document.getElementById('sampleSeconds').value, 10) || 300,
         reportHour: parseInt(document.getElementById('reportHour').value, 10) || 5,
         reportMinute: parseInt(document.getElementById('reportMinute').value, 10) || 0,
-        sms: {
-          primary: document.getElementById('smsPrimary').value.trim(),
-          secondary: document.getElementById('smsSecondary').value.trim()
-        },
         dailyEmail: document.getElementById('dailyEmail').value.trim(),
         tanks: []
       };
@@ -1078,6 +1072,8 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       }
 
       function syncServerSettings(serverInfo) {
+        els.smsPrimary.value = valueOr(serverInfo && serverInfo.smsPrimary, '');
+        els.smsSecondary.value = valueOr(serverInfo && serverInfo.smsSecondary, '');
         els.smsHighToggle.checked = !!valueOr(serverInfo && serverInfo.smsOnHigh, true);
         els.smsLowToggle.checked = !!valueOr(serverInfo && serverInfo.smsOnLow, true);
         els.smsClearToggle.checked = !!valueOr(serverInfo && serverInfo.smsOnClear, false);
@@ -1197,10 +1193,6 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           sampleSeconds: 300,
           reportHour: 5,
           reportMinute: 0,
-          sms: {
-            primary: serverDefaults.smsPrimary || '',
-            secondary: serverDefaults.smsSecondary || ''
-          },
           dailyEmail: serverDefaults.dailyEmail || '',
           tanks: tankList.length ? tankList.map(t => ({
             id: t.tank || 'A',
@@ -1284,9 +1276,6 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
     els.sampleSeconds.value = valueOr(config.sampleSeconds, 300);
     els.reportHour.value = valueOr(config.reportHour, 5);
     els.reportMinute.value = valueOr(config.reportMinute, 0);
-    const smsConfig = config.sms || {};
-    els.smsPrimary.value = smsConfig.primary || '';
-    els.smsSecondary.value = smsConfig.secondary || '';
         els.dailyEmail.value = config.dailyEmail || '';
         populateTankRows(config.tanks);
 
@@ -1300,11 +1289,6 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       }
 
       function collectConfig() {
-        const sms = {
-          primary: els.smsPrimary.value.trim(),
-          secondary: els.smsSecondary.value.trim()
-        };
-
         const tanks = [];
         els.tankBody.querySelectorAll('tr').forEach(row => {
           const tank = {
@@ -1336,7 +1320,6 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           sampleSeconds: parseInt(els.sampleSeconds.value, 10) || 300,
           reportHour: parseInt(els.reportHour.value, 10) || 5,
           reportMinute: parseInt(els.reportMinute.value, 10) || 0,
-          sms,
           dailyEmail: els.dailyEmail.value.trim(),
           tanks
         };
@@ -1346,6 +1329,8 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 
       function collectServerSettings() {
         return {
+          smsPrimary: els.smsPrimary.value.trim(),
+          smsSecondary: els.smsSecondary.value.trim(),
           smsOnHigh: !!els.smsHighToggle.checked,
           smsOnLow: !!els.smsLowToggle.checked,
           smsOnClear: !!els.smsClearToggle.checked

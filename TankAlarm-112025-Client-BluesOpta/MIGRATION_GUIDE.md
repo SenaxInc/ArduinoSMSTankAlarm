@@ -147,7 +147,7 @@ For each client:
 
 4. **Review other settings:**
    - Verify all tank configurations
-   - Confirm SMS and email settings
+   - Confirm email recipients (SMS numbers now live on the server)
    - Check sample intervals
 
 5. **Click "Send Config to Client"**

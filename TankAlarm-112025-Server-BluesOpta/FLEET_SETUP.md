@@ -49,10 +49,6 @@ The client configuration file (`/client_config.json` on LittleFS) includes:
   "sampleSeconds": 300,
   "reportHour": 5,
   "reportMinute": 0,
-  "sms": {
-    "primary": "+12223334444",
-    "secondary": "+15556667777"
-  },
   "dailyEmail": "reports@example.com",
   "tanks": [
     {
@@ -73,6 +69,8 @@ The client configuration file (`/client_config.json` on LittleFS) includes:
   ]
 }
 ```
+
+Server-managed SMS contacts have been removed from the client schema; per-tank `alarmSms` flags now simply request that the server escalate alerts via its own contact list.
 
 **Key field:** `serverFleet` - Must match the server's fleet name in Notehub
 

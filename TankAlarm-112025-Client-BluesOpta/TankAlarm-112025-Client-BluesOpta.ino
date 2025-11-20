@@ -161,8 +161,6 @@ struct ClientConfig {
   char siteName[32];
   char deviceLabel[24];
   char serverFleet[32]; // Target fleet name for server (e.g., "tankalarm-server")
-  char smsPrimary[20];
-  char smsSecondary[20];
   char dailyEmail[64];
   uint16_t sampleSeconds;
   uint8_t reportHour;
@@ -369,8 +367,6 @@ static void createDefaultConfig(ClientConfig &cfg) {
   strlcpy(cfg.siteName, "Opta Tank Site", sizeof(cfg.siteName));
   strlcpy(cfg.deviceLabel, "Client-112025", sizeof(cfg.deviceLabel));
   strlcpy(cfg.serverFleet, "tankalarm-server", sizeof(cfg.serverFleet));
-  strlcpy(cfg.smsPrimary, "+12223334444", sizeof(cfg.smsPrimary));
-  strlcpy(cfg.smsSecondary, "+15556667777", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, "reports@example.com", sizeof(cfg.dailyEmail));
   cfg.sampleSeconds = DEFAULT_SAMPLE_SECONDS;
   cfg.reportHour = DEFAULT_REPORT_HOUR;
@@ -417,8 +413,6 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   strlcpy(cfg.siteName, doc["site"].as<const char *>() ? doc["site"].as<const char *>() : "", sizeof(cfg.siteName));
   strlcpy(cfg.deviceLabel, doc["deviceLabel"].as<const char *>() ? doc["deviceLabel"].as<const char *>() : "", sizeof(cfg.deviceLabel));
   strlcpy(cfg.serverFleet, doc["serverFleet"].as<const char *>() ? doc["serverFleet"].as<const char *>() : "", sizeof(cfg.serverFleet));
-  strlcpy(cfg.smsPrimary, doc["sms"]["primary"].as<const char *>() ? doc["sms"]["primary"].as<const char *>() : "", sizeof(cfg.smsPrimary));
-  strlcpy(cfg.smsSecondary, doc["sms"]["secondary"].as<const char *>() ? doc["sms"]["secondary"].as<const char *>() : "", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, doc["dailyEmail"].as<const char *>() ? doc["dailyEmail"].as<const char *>() : "", sizeof(cfg.dailyEmail));
 
   cfg.sampleSeconds = doc["sampleSeconds"].is<uint16_t>() ? doc["sampleSeconds"].as<uint16_t>() : DEFAULT_SAMPLE_SECONDS;
@@ -464,10 +458,6 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   doc["reportHour"] = cfg.reportHour;
   doc["reportMinute"] = cfg.reportMinute;
   doc["dailyEmail"] = cfg.dailyEmail;
-
-  JsonObject smsObj = doc.createNestedObject("sms");
-  smsObj["primary"] = cfg.smsPrimary;
-  smsObj["secondary"] = cfg.smsSecondary;
 
   JsonArray tanks = doc.createNestedArray("tanks");
   for (uint8_t i = 0; i < cfg.tankCount; ++i) {
@@ -774,14 +764,6 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   }
   if (doc.containsKey("reportMinute")) {
     gConfig.reportMinute = doc["reportMinute"].as<uint8_t>();
-  }
-  if (doc.containsKey("sms")) {
-    if (doc["sms"].containsKey("primary")) {
-      strlcpy(gConfig.smsPrimary, doc["sms"]["primary"].as<const char *>(), sizeof(gConfig.smsPrimary));
-    }
-    if (doc["sms"].containsKey("secondary")) {
-      strlcpy(gConfig.smsSecondary, doc["sms"]["secondary"].as<const char *>(), sizeof(gConfig.smsSecondary));
-    }
   }
   if (doc.containsKey("dailyEmail")) {
     strlcpy(gConfig.dailyEmail, doc["dailyEmail"].as<const char *>(), sizeof(gConfig.dailyEmail));
@@ -1256,8 +1238,6 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     doc["highThreshold"] = cfg.highAlarmInches;
     doc["lowThreshold"] = cfg.lowAlarmInches;
     doc["smsEnabled"] = allowSmsEscalation;
-    doc["smsPrimary"] = gConfig.smsPrimary;
-    doc["smsSecondary"] = gConfig.smsSecondary;
     doc["time"] = currentEpoch();
 
     publishNote(ALARM_FILE, doc, true);

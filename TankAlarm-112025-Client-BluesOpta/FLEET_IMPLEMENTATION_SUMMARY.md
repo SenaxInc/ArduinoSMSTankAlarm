@@ -152,10 +152,6 @@ The Tank Alarm system has been updated to use **Blues Notehub fleet-based device
   "sampleSeconds": 300,
   "reportHour": 5,
   "reportMinute": 0,
-  "sms": {
-    "primary": "+12223334444",
-    "secondary": "+15556667777"
-  },
   "dailyEmail": "reports@example.com",
   "tanks": [
     {
@@ -173,6 +169,8 @@ The Tank Alarm system has been updated to use **Blues Notehub fleet-based device
   ]
 }
 ```
+
+SMS recipients now reside exclusively in the server configuration. Client-side `alarmSms` flags simply signal whether a tank should request SMS escalation when it triggers an alarm.
 
 ### Server Config Example
 ```json
