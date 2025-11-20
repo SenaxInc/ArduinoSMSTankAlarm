@@ -41,6 +41,10 @@ Both client and server use a **two-file configuration system**:
 
 This approach keeps setup simple and consistent between client and server.
 
+### Config Generator Tool
+
+For easier setup, check out the **[Config Generator Website Preview](WEBSITE_PREVIEW.md)** - a mockup of a web-based tool that will help you create configuration files through an intuitive interface instead of editing text files manually.
+
 # General Logic
 
 	
