@@ -83,6 +83,14 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define NOTE_BUFFER_TEMP_PATH "/pending_notes.tmp"
 #endif
 
+#ifndef NOTE_BUFFER_MAX_BYTES
+#define NOTE_BUFFER_MAX_BYTES 16384
+#endif
+
+#ifndef NOTE_BUFFER_MIN_HEADROOM
+#define NOTE_BUFFER_MIN_HEADROOM 2048
+#endif
+
 #ifndef MAX_TANKS
 #define MAX_TANKS 8
 #endif
@@ -236,6 +244,7 @@ static void sendDailyReport();
 static void publishNote(const char *fileName, const JsonDocument &doc, bool syncNow);
 static void bufferNoteForRetry(const char *fileName, const char *payload, bool syncNow);
 static void flushBufferedNotes();
+static void pruneNoteBufferIfNeeded();
 static void ensureTimeSync();
 static void updateDailyScheduleIfNeeded();
 static bool checkNotecardHealth();
@@ -1360,7 +1369,8 @@ static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t 
 static void publishNote(const char *fileName, const JsonDocument &doc, bool syncNow) {
   // Build target file string and serialized payload once for both live send and buffering
   char targetFile[80];
-  snprintf(targetFile, sizeof(targetFile), "fleet.%s:%s", gConfig.serverFleet, fileName);
+  const char *fleetName = (strlen(gConfig.serverFleet) > 0) ? gConfig.serverFleet : "tankalarm-server";
+  snprintf(targetFile, sizeof(targetFile), "fleet:%s:%s", fleetName, fileName);
 
   char buffer[1024];
   size_t len = serializeJson(doc, buffer, sizeof(buffer));
@@ -1418,6 +1428,7 @@ static void bufferNoteForRetry(const char *fileName, const char *payload, bool s
   file.println(payload);
   file.close();
   Serial.println(F("Note buffered for retry"));
+  pruneNoteBufferIfNeeded();
 }
 
 static void flushBufferedNotes() {
@@ -1492,4 +1503,53 @@ static void flushBufferedNotes() {
     LittleFS.remove(NOTE_BUFFER_PATH);
     LittleFS.remove(NOTE_BUFFER_TEMP_PATH);
   }
+}
+
+static void pruneNoteBufferIfNeeded() {
+  if (!LittleFS.exists(NOTE_BUFFER_PATH)) {
+    return;
+  }
+
+  File file = LittleFS.open(NOTE_BUFFER_PATH, "r");
+  if (!file) {
+    return;
+  }
+
+  size_t size = file.size();
+  if (size <= NOTE_BUFFER_MAX_BYTES) {
+    file.close();
+    return;
+  }
+
+  size_t targetSize = NOTE_BUFFER_MAX_BYTES > NOTE_BUFFER_MIN_HEADROOM ? (NOTE_BUFFER_MAX_BYTES - NOTE_BUFFER_MIN_HEADROOM) : (NOTE_BUFFER_MAX_BYTES / 2);
+  if (targetSize == 0) {
+    targetSize = NOTE_BUFFER_MAX_BYTES / 2;
+  }
+  size_t startOffset = (size > targetSize) ? (size - targetSize) : 0;
+
+  if (!file.seek(startOffset)) {
+    file.close();
+    LittleFS.remove(NOTE_BUFFER_PATH);
+    return;
+  }
+
+  if (startOffset > 0) {
+    file.readStringUntil('\n');
+  }
+
+  File tmp = LittleFS.open(NOTE_BUFFER_TEMP_PATH, "w");
+  if (!tmp) {
+    file.close();
+    return;
+  }
+
+  while (file.available()) {
+    tmp.write(file.read());
+  }
+
+  file.close();
+  tmp.close();
+  LittleFS.remove(NOTE_BUFFER_PATH);
+  LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
+  Serial.println(F("Note buffer pruned"));
 }

@@ -25,7 +25,17 @@
 #include <Ethernet.h>
 #include <math.h>
 #include <string.h>
-#include <pgmspace.h>
+#include <ctype.h>
+#if defined(ARDUINO_ARCH_AVR)
+  #include <avr/pgmspace.h>
+#else
+  #ifndef PROGMEM
+    #define PROGMEM
+  #endif
+  #ifndef pgm_read_byte_near
+    #define pgm_read_byte_near(addr) (*(const uint8_t *)(addr))
+  #endif
+#endif
 
 // Watchdog support for STM32H7 (Arduino Opta)
 #if defined(ARDUINO_OPTA) || defined(STM32H7xx)
@@ -102,6 +112,9 @@
 #define MAX_CLIENT_CONFIG_SNAPSHOTS 20
 #endif
 
+static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(10)) + 512;
+static const size_t CLIENT_JSON_CAPACITY = 24576;
+
 static byte gMacAddress[6] = { 0x02, 0x00, 0x01, 0x12, 0x20, 0x25 };
 static IPAddress gStaticIp(192, 168, 1, 200);
 static IPAddress gStaticGateway(192, 168, 1, 1);
@@ -114,10 +127,14 @@ struct ServerConfig {
   char smsPrimary[20];
   char smsSecondary[20];
   char dailyEmail[64];
+  char configPin[8];
   uint8_t dailyHour;
   uint8_t dailyMinute;
   uint8_t webRefreshSeconds;
   bool useStaticIp;
+  bool smsOnHigh;
+  bool smsOnLow;
+  bool smsOnClear;
 };
 
 struct TankRecord {
@@ -178,6 +195,29 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
   return len;
 }
 #endif
+
+static bool isValidPin(const char *pin) {
+  if (!pin) {
+    return false;
+  }
+  size_t len = strlen(pin);
+  if (len != 4) {
+    return false;
+  }
+  for (size_t i = 0; i < len; ++i) {
+    if (!isdigit(pin[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool pinMatches(const char *pin) {
+  if (!pin || gConfig.configPin[0] == '\0') {
+    return false;
+  }
+  return strncmp(pin, gConfig.configPin, sizeof(gConfig.configPin)) == 0;
+}
 
 static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
@@ -364,23 +404,35 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
 
     document.getElementById('addSensorBtn').addEventListener('click', addSensor);
 
+    function sensorKeyFromValue(value) {
+      switch (value) {
+        case 0: return 'digital';
+        case 2: return 'current';
+        default: return 'analog';
+      }
+    }
+
     document.getElementById('downloadBtn').addEventListener('click', () => {
       const config = {
-        siteName: document.getElementById('siteName').value,
-        deviceLabel: document.getElementById('deviceLabel').value,
-        serverFleet: document.getElementById('serverFleet').value,
-        smsPrimary: document.getElementById('smsPrimary').value,
-        smsSecondary: document.getElementById('smsSecondary').value,
-        dailyEmail: document.getElementById('dailyEmail').value,
-        sampleSeconds: parseInt(document.getElementById('sampleSeconds').value) || 300,
-        reportHour: parseInt(document.getElementById('reportHour').value) || 5,
-        reportMinute: parseInt(document.getElementById('reportMinute').value) || 0,
-        tankCount: 0,
+        site: document.getElementById('siteName').value.trim(),
+        deviceLabel: document.getElementById('deviceLabel').value.trim() || 'Client-112025',
+        serverFleet: document.getElementById('serverFleet').value.trim() || 'tankalarm-server',
+        sampleSeconds: parseInt(document.getElementById('sampleSeconds').value, 10) || 300,
+        reportHour: parseInt(document.getElementById('reportHour').value, 10) || 5,
+        reportMinute: parseInt(document.getElementById('reportMinute').value, 10) || 0,
+        sms: {
+          primary: document.getElementById('smsPrimary').value.trim(),
+          secondary: document.getElementById('smsSecondary').value.trim()
+        },
+        dailyEmail: document.getElementById('dailyEmail').value.trim(),
         tanks: []
       };
 
       const sensorCards = document.querySelectorAll('.sensor-card');
-      config.tankCount = sensorCards.length;
+      if (!sensorCards.length) {
+        alert('Add at least one sensor before downloading a configuration.');
+        return;
+      }
       
       sensorCards.forEach((card, index) => {
         const monitorType = card.querySelector('.monitor-type').value;
@@ -398,21 +450,23 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
            if (!name) name = `Tank ${index + 1}`;
         }
         
+        const sensor = sensorKeyFromValue(type);
+
         const tank = {
           id: String.fromCharCode(65 + index), // A, B, C...
           name: name,
-          tankNumber: tankNum,
-          sensorType: type,
-          primaryPin: (type !== 2) ? pin : 0,
+          number: tankNum,
+          sensor: sensor,
+          primaryPin: sensor === 'current' ? 0 : pin,
           secondaryPin: -1,
-          currentLoopChannel: (type === 2) ? pin : -1,
+          loopChannel: sensor === 'current' ? pin : -1,
           heightInches: parseFloat(card.querySelector('.tank-height').value) || 120,
-          highAlarmInches: parseFloat(card.querySelector('.high-alarm').value) || 100,
-          lowAlarmInches: parseFloat(card.querySelector('.low-alarm').value) || 20,
-          hysteresisInches: 2.0,
-          enableDailyReport: true,
-          enableAlarmSms: true,
-          enableServerUpload: true
+          highAlarm: parseFloat(card.querySelector('.high-alarm').value) || 100,
+          lowAlarm: parseFloat(card.querySelector('.low-alarm').value) || 20,
+          hysteresis: 2.0,
+          daily: true,
+          alarmSms: true,
+          upload: true
         };
         config.tanks.push(tank);
       });
@@ -606,6 +660,68 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       padding: 4px 8px;
       font-size: 0.8rem;
     }
+    .pin-actions {
+      display: flex;
+      gap: 10px;
+      margin: 10px 0 20px;
+      flex-wrap: wrap;
+    }
+    .toggle-group {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin: 10px 0 20px;
+    }
+    .toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: #f8fafc;
+    }
+    .toggle span {
+      font-size: 0.9rem;
+      color: #334155;
+    }
+    .toggle input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+    }
+    .modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(15,23,42,0.65);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      transition: opacity 0.2s ease;
+    }
+    .modal.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .modal-card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 360px;
+      width: 90%;
+      box-shadow: 0 20px 40px rgba(15,23,42,0.35);
+    }
+    .modal-card h2 {
+      margin-top: 0;
+      margin-bottom: 8px;
+    }
+    .modal-card p {
+      margin: 0 0 16px;
+      color: #475569;
+    }
+    .hidden {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
@@ -643,6 +759,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           <select id="clientSelect"></select>
         </label>
         <div id="clientDetails" class="details">Select a client to review configuration.</div>
+        <div class="pin-actions">
+          <button type="button" class="secondary" id="changePinBtn" data-pin-control="true">Change PIN</button>
+          <button type="button" class="secondary" id="lockPinBtn" data-pin-control="true">Lock Console</button>
+        </div>
         <form id="configForm">
           <div class="form-grid">
             <label class="field"><span>Site Name</span><input id="siteInput" type="text" placeholder="Site name"></label>
@@ -654,6 +774,21 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <label class="field"><span>SMS Primary</span><input id="smsPrimaryInput" type="text" placeholder="+1234567890"></label>
             <label class="field"><span>SMS Secondary</span><input id="smsSecondaryInput" type="text" placeholder="+1234567890"></label>
             <label class="field"><span>Daily Report Email</span><input id="dailyEmailInput" type="email" placeholder="reports@example.com"></label>
+          </div>
+          <h3>Server SMS Alerts</h3>
+          <div class="toggle-group">
+            <label class="toggle">
+              <span>Send SMS on High Alarm</span>
+              <input type="checkbox" id="smsHighToggle">
+            </label>
+            <label class="toggle">
+              <span>Send SMS on Low Alarm</span>
+              <input type="checkbox" id="smsLowToggle">
+            </label>
+            <label class="toggle">
+              <span>Send SMS on Clear Alarm</span>
+              <input type="checkbox" id="smsClearToggle">
+            </label>
           </div>
           <h3>Tanks</h3>
           <table class="tank-table" id="tankTable">
@@ -686,11 +821,42 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
     </div>
   </main>
   <div id="toast"></div>
+  <div id="pinModal" class="modal hidden">
+    <div class="modal-card">
+      <h2 id="pinModalTitle">Set Admin PIN</h2>
+      <p id="pinModalDescription">Enter a 4-digit PIN to unlock configuration changes.</p>
+      <form id="pinForm">
+        <label class="field hidden" id="pinCurrentGroup">
+          <span>Current PIN</span>
+          <input type="password" id="pinCurrentInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off">
+        </label>
+        <label class="field" id="pinPrimaryGroup">
+          <span id="pinPrimaryLabel">PIN</span>
+          <input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required>
+        </label>
+        <label class="field hidden" id="pinConfirmGroup">
+          <span>Confirm PIN</span>
+          <input type="password" id="pinConfirmInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off">
+        </label>
+        <div class="actions">
+          <button type="submit" id="pinSubmit">Save PIN</button>
+          <button type="button" class="secondary" id="pinCancel">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
   <script>
     (function() {
+      const PIN_STORAGE_KEY = 'tankalarmPin';
       const state = {
         data: null,
         selected: null
+      };
+
+      const pinState = {
+        value: sessionStorage.getItem(PIN_STORAGE_KEY) || null,
+        configured: false,
+        mode: 'unlock'
       };
 
       const els = {
@@ -709,11 +875,192 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         smsPrimary: document.getElementById('smsPrimaryInput'),
         smsSecondary: document.getElementById('smsSecondaryInput'),
         dailyEmail: document.getElementById('dailyEmailInput'),
+        smsHighToggle: document.getElementById('smsHighToggle'),
+        smsLowToggle: document.getElementById('smsLowToggle'),
+        smsClearToggle: document.getElementById('smsClearToggle'),
         tankBody: document.querySelector('#tankTable tbody'),
         toast: document.getElementById('toast'),
         addTank: document.getElementById('addTank'),
-        form: document.getElementById('configForm')
+        form: document.getElementById('configForm'),
+        changePinBtn: document.getElementById('changePinBtn'),
+        lockPinBtn: document.getElementById('lockPinBtn')
       };
+
+      const pinEls = {
+        modal: document.getElementById('pinModal'),
+        title: document.getElementById('pinModalTitle'),
+        description: document.getElementById('pinModalDescription'),
+        currentGroup: document.getElementById('pinCurrentGroup'),
+        current: document.getElementById('pinCurrentInput'),
+        pin: document.getElementById('pinInput'),
+        confirmGroup: document.getElementById('pinConfirmGroup'),
+        confirm: document.getElementById('pinConfirmInput'),
+        primaryLabel: document.getElementById('pinPrimaryLabel'),
+        form: document.getElementById('pinForm'),
+        submit: document.getElementById('pinSubmit'),
+        cancel: document.getElementById('pinCancel')
+      };
+
+      els.smsHighToggle.checked = true;
+      els.smsLowToggle.checked = true;
+      els.smsClearToggle.checked = false;
+
+
+      function setFormDisabled(disabled) {
+        const controls = els.form.querySelectorAll('input, select, button');
+        controls.forEach(control => {
+          if (control.dataset && control.dataset.pinControl === 'true') {
+            return;
+          }
+          control.disabled = disabled;
+        });
+        els.addTank.disabled = disabled;
+      }
+
+      function invalidatePin() {
+        pinState.value = null;
+        sessionStorage.removeItem(PIN_STORAGE_KEY);
+        setFormDisabled(true);
+      }
+
+      function isPinModalVisible() {
+        return !pinEls.modal.classList.contains('hidden');
+      }
+
+      function resetPinForm() {
+        pinEls.form.reset();
+        pinEls.currentGroup.classList.add('hidden');
+        pinEls.confirmGroup.classList.add('hidden');
+        pinEls.primaryLabel.textContent = 'PIN';
+      }
+
+      function showPinModal(mode) {
+        pinState.mode = mode;
+        resetPinForm();
+        if (mode === 'setup') {
+          pinEls.title.textContent = 'Set Admin PIN';
+          pinEls.description.textContent = 'Choose a 4-digit PIN to secure configuration changes.';
+          pinEls.confirmGroup.classList.remove('hidden');
+          pinEls.cancel.classList.add('hidden');
+        } else if (mode === 'change') {
+          pinEls.title.textContent = 'Change Admin PIN';
+          pinEls.description.textContent = 'Enter your current PIN and the new PIN you would like to use.';
+          pinEls.currentGroup.classList.remove('hidden');
+          pinEls.confirmGroup.classList.remove('hidden');
+          pinEls.primaryLabel.textContent = 'New PIN';
+          pinEls.cancel.classList.remove('hidden');
+        } else {
+          pinEls.title.textContent = 'Enter Admin PIN';
+          pinEls.description.textContent = 'Enter the admin PIN to unlock configuration controls.';
+          pinEls.cancel.classList.remove('hidden');
+        }
+        pinEls.modal.classList.remove('hidden');
+        setFormDisabled(true);
+        setTimeout(() => pinEls.pin.focus(), 50);
+      }
+
+      function hidePinModal() {
+        if (isPinModalVisible()) {
+          pinEls.modal.classList.add('hidden');
+          resetPinForm();
+        }
+      }
+
+      async function requestPin(payload) {
+        const res = await fetch('/api/pin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          const error = new Error(text || 'PIN request failed');
+          error.serverRejected = true;
+          throw error;
+        }
+        const data = await res.json();
+        pinState.configured = !!data.pinConfigured;
+        return data;
+      }
+
+      async function handlePinSubmit(event) {
+        event.preventDefault();
+        let payload;
+        let pinToStore = null;
+        try {
+          if (pinState.mode === 'setup') {
+            const newPin = pinEls.pin.value.trim();
+            const confirmPin = pinEls.confirm.value.trim();
+            if (!isFourDigits(newPin)) {
+              throw new Error('PIN must be exactly 4 digits.');
+            }
+            if (newPin !== confirmPin) {
+              throw new Error('PIN confirmation does not match.');
+            }
+            payload = { newPin };
+            pinToStore = newPin;
+          } else if (pinState.mode === 'change') {
+            const currentPin = pinEls.current.value.trim();
+            const newPin = pinEls.pin.value.trim();
+            const confirmPin = pinEls.confirm.value.trim();
+            if (!isFourDigits(currentPin) || !isFourDigits(newPin)) {
+              throw new Error('PINs must be exactly 4 digits.');
+            }
+            if (newPin !== confirmPin) {
+              throw new Error('PIN confirmation does not match.');
+            }
+            payload = { pin: currentPin, newPin };
+            pinToStore = newPin;
+          } else {
+            const pin = pinEls.pin.value.trim();
+            if (!isFourDigits(pin)) {
+              throw new Error('PIN must be exactly 4 digits.');
+            }
+            payload = { pin };
+            pinToStore = pin;
+          }
+
+          const result = await requestPin(payload);
+          pinState.value = pinToStore;
+          sessionStorage.setItem(PIN_STORAGE_KEY, pinToStore);
+          hidePinModal();
+          setFormDisabled(false);
+          showToast((result && result.message) || 'PIN updated');
+          updatePinLock();
+        } catch (err) {
+          if (err.serverRejected) {
+            invalidatePin();
+          }
+          showToast(err.message || 'PIN action failed', true);
+        }
+      }
+
+      function isFourDigits(value) {
+        return /^\d{4}$/.test(value || '');
+      }
+
+      function updatePinLock() {
+        const configured = !!(state.data && state.data.server && state.data.server.pinConfigured);
+        pinState.configured = configured;
+        if (!configured) {
+          if (!isPinModalVisible() || pinState.mode !== 'setup') {
+            invalidatePin();
+            showPinModal('setup');
+          }
+          return;
+        }
+
+        if (!pinState.value) {
+          if (!isPinModalVisible()) {
+            showPinModal('unlock');
+          }
+        } else {
+          setFormDisabled(false);
+          hidePinModal();
+        }
+      }
+
+      setFormDisabled(true);
 
       function showToast(message, isError) {
         els.toast.textContent = message;
@@ -728,6 +1075,12 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 
       function valueOr(value, fallback) {
         return (value === undefined || value === null) ? fallback : value;
+      }
+
+      function syncServerSettings(serverInfo) {
+        els.smsHighToggle.checked = !!valueOr(serverInfo && serverInfo.smsOnHigh, true);
+        els.smsLowToggle.checked = !!valueOr(serverInfo && serverInfo.smsOnLow, true);
+        els.smsClearToggle.checked = !!valueOr(serverInfo && serverInfo.smsOnClear, false);
       }
 
       function formatEpoch(epoch) {
@@ -800,7 +1153,19 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       function lookupConfig(uid) {
         if (!state.data || !state.data.configs) return null;
         const entry = state.data.configs.find(c => c.client === uid);
-        return entry ? entry.config : null;
+        if (!entry) return null;
+        if (entry.config) {
+          return entry.config;
+        }
+        if (entry.configJson) {
+          try {
+            entry.config = JSON.parse(entry.configJson);
+            return entry.config;
+          } catch (err) {
+            console.warn('Stored config failed to parse', err);
+          }
+        }
+        return null;
       }
 
       function buildDefaultConfig(uid) {
@@ -979,6 +1344,14 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         return config;
       }
 
+      function collectServerSettings() {
+        return {
+          smsOnHigh: !!els.smsHighToggle.checked,
+          smsOnLow: !!els.smsLowToggle.checked,
+          smsOnClear: !!els.smsClearToggle.checked
+        };
+      }
+
       async function submitConfig(event) {
         event.preventDefault();
         const uid = state.selected;
@@ -994,7 +1367,16 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           return;
         }
 
-        const payload = { client: uid, config };
+        if (pinState.configured && !pinState.value) {
+          showPinModal('unlock');
+          showToast('Enter the admin PIN to send configurations.', true);
+          return;
+        }
+
+        const payload = { client: uid, config, server: collectServerSettings() };
+        if (pinState.value) {
+          payload.pin = pinState.value;
+        }
         try {
           const res = await fetch('/api/config', {
             method: 'POST',
@@ -1002,7 +1384,13 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             body: JSON.stringify(payload)
           });
           if (!res.ok) {
-            throw new Error('Server rejected configuration');
+            if (res.status === 403) {
+              invalidatePin();
+              showPinModal(pinState.configured ? 'unlock' : 'setup');
+              throw new Error('PIN required or invalid.');
+            }
+            const text = await res.text();
+            throw new Error(text || 'Server rejected configuration');
           }
           showToast('Configuration queued for delivery');
           await refreshData();
@@ -1016,9 +1404,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         if (!res.ok) {
           throw new Error('Failed to fetch server data');
         }
-        state.data = await res.json();
-  const serverInfo = (state.data && state.data.server) ? state.data.server : {};
-  els.serverName.textContent = serverInfo.name || 'Tank Alarm Server';
+          state.data = await res.json();
+          const serverInfo = (state.data && state.data.server) ? state.data.server : {};
+          els.serverName.textContent = serverInfo.name || 'Tank Alarm Server';
+          syncServerSettings(serverInfo);
         els.serverUid.textContent = state.data.serverUid || '--';
         els.nextEmail.textContent = formatEpoch(state.data.nextDailyEmailEpoch);
         renderTelemetry();
@@ -1028,8 +1417,31 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         } else if (els.clientSelect.options.length) {
           loadConfigIntoForm(els.clientSelect.value);
         }
+        updatePinLock();
       }
 
+      pinEls.form.addEventListener('submit', handlePinSubmit);
+      pinEls.cancel.addEventListener('click', () => {
+        hidePinModal();
+      });
+      els.changePinBtn.addEventListener('click', () => {
+        if (!pinState.configured) {
+          showPinModal('setup');
+        } else if (!pinState.value) {
+          showPinModal('unlock');
+        } else {
+          showPinModal('change');
+        }
+      });
+      els.lockPinBtn.addEventListener('click', () => {
+        invalidatePin();
+        showToast('Console locked', false);
+        if (pinState.configured) {
+          showPinModal('unlock');
+        } else {
+          showPinModal('setup');
+        }
+      });
       els.addTank.addEventListener('click', () => addTankRow());
       els.clientSelect.addEventListener('change', event => {
         loadConfigIntoForm(event.target.value);
@@ -1063,6 +1475,7 @@ static void sendDashboard(EthernetClient &client);
 static void sendTankJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client);
 static void handleConfigPost(EthernetClient &client, const String &body);
+static void handlePinPost(EthernetClient &client, const String &body);
 enum class ConfigDispatchStatus : uint8_t {
   Ok = 0,
   PayloadTooLarge,
@@ -1173,10 +1586,14 @@ static void createDefaultConfig(ServerConfig &cfg) {
   strlcpy(cfg.smsPrimary, "+12223334444", sizeof(cfg.smsPrimary));
   strlcpy(cfg.smsSecondary, "+15556667777", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, "reports@example.com", sizeof(cfg.dailyEmail));
+  cfg.configPin[0] = '\0';
   cfg.dailyHour = DAILY_EMAIL_HOUR_DEFAULT;
   cfg.dailyMinute = DAILY_EMAIL_MINUTE_DEFAULT;
   cfg.webRefreshSeconds = 15;
   cfg.useStaticIp = true;
+  cfg.smsOnHigh = true;
+  cfg.smsOnLow = true;
+  cfg.smsOnClear = false;
 }
 
 static bool loadConfig(ServerConfig &cfg) {
@@ -1204,10 +1621,18 @@ static bool loadConfig(ServerConfig &cfg) {
   strlcpy(cfg.smsPrimary, doc["smsPrimary"].as<const char *>() ? doc["smsPrimary"].as<const char *>() : "+12223334444", sizeof(cfg.smsPrimary));
   strlcpy(cfg.smsSecondary, doc["smsSecondary"].as<const char *>() ? doc["smsSecondary"].as<const char *>() : "+15556667777", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, doc["dailyEmail"].as<const char *>() ? doc["dailyEmail"].as<const char *>() : "reports@example.com", sizeof(cfg.dailyEmail));
+  if (doc["configPin"].as<const char *>() && isValidPin(doc["configPin"].as<const char *>())) {
+    strlcpy(cfg.configPin, doc["configPin"].as<const char *>(), sizeof(cfg.configPin));
+  } else {
+    cfg.configPin[0] = '\0';
+  }
   cfg.dailyHour = doc["dailyHour"].is<uint8_t>() ? doc["dailyHour"].as<uint8_t>() : DAILY_EMAIL_HOUR_DEFAULT;
   cfg.dailyMinute = doc["dailyMinute"].is<uint8_t>() ? doc["dailyMinute"].as<uint8_t>() : DAILY_EMAIL_MINUTE_DEFAULT;
   cfg.webRefreshSeconds = doc["webRefreshSeconds"].is<uint8_t>() ? doc["webRefreshSeconds"].as<uint8_t>() : 15;
   cfg.useStaticIp = doc["useStaticIp"].is<bool>() ? doc["useStaticIp"].as<bool>() : true;
+  cfg.smsOnHigh = doc["smsOnHigh"].is<bool>() ? doc["smsOnHigh"].as<bool>() : true;
+  cfg.smsOnLow = doc["smsOnLow"].is<bool>() ? doc["smsOnLow"].as<bool>() : true;
+  cfg.smsOnClear = doc["smsOnClear"].is<bool>() ? doc["smsOnClear"].as<bool>() : false;
 
   if (doc.containsKey("staticIp")) {
     JsonArray ip = doc["staticIp"].as<JsonArray>();
@@ -1244,10 +1669,14 @@ static bool saveConfig(const ServerConfig &cfg) {
   doc["smsPrimary"] = cfg.smsPrimary;
   doc["smsSecondary"] = cfg.smsSecondary;
   doc["dailyEmail"] = cfg.dailyEmail;
+  doc["configPin"] = cfg.configPin;
   doc["dailyHour"] = cfg.dailyHour;
   doc["dailyMinute"] = cfg.dailyMinute;
   doc["webRefreshSeconds"] = cfg.webRefreshSeconds;
   doc["useStaticIp"] = cfg.useStaticIp;
+  doc["smsOnHigh"] = cfg.smsOnHigh;
+  doc["smsOnLow"] = cfg.smsOnLow;
+  doc["smsOnClear"] = cfg.smsOnClear;
 
   JsonArray ip = doc.createNestedArray("staticIp");
   ip.add(gStaticIp[0]);
@@ -1416,6 +1845,8 @@ static void handleWebRequests() {
     sendClientDataJson(client);
   } else if (method == "POST" && path == "/api/config") {
     handleConfigPost(client, body);
+  } else if (method == "POST" && path == "/api/pin") {
+    handlePinPost(client, body);
   } else {
     respondStatus(client, 404, F("Not Found"));
   }
@@ -1568,7 +1999,7 @@ static void sendConfigGenerator(EthernetClient &client) {
 }
 
 static void sendTankJson(EthernetClient &client) {
-  DynamicJsonDocument doc(4096);
+  DynamicJsonDocument doc(TANK_JSON_CAPACITY);
   JsonArray arr = doc.createNestedArray("tanks");
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
     JsonObject obj = arr.createNestedObject();
@@ -1585,12 +2016,15 @@ static void sendTankJson(EthernetClient &client) {
   }
 
   String json;
-  serializeJson(doc, json);
+  if (serializeJson(doc, json) == 0) {
+    respondStatus(client, 500, F("Failed to encode tank data"));
+    return;
+  }
   respondJson(client, json);
 }
 
 static void sendClientDataJson(EthernetClient &client) {
-  DynamicJsonDocument doc(16384);
+  DynamicJsonDocument doc(CLIENT_JSON_CAPACITY);
 
   JsonObject serverObj = doc.createNestedObject("server");
   serverObj["name"] = gConfig.serverName;
@@ -1600,6 +2034,10 @@ static void sendClientDataJson(EthernetClient &client) {
   serverObj["dailyHour"] = gConfig.dailyHour;
   serverObj["dailyMinute"] = gConfig.dailyMinute;
   serverObj["webRefreshSeconds"] = gConfig.webRefreshSeconds;
+  serverObj["smsOnHigh"] = gConfig.smsOnHigh;
+  serverObj["smsOnLow"] = gConfig.smsOnLow;
+  serverObj["smsOnClear"] = gConfig.smsOnClear;
+  serverObj["pinConfigured"] = (gConfig.configPin[0] != '\0');
 
   doc["serverUid"] = gServerUid;
   doc["nextDailyEmailEpoch"] = gNextDailyEmailEpoch;
@@ -1671,15 +2109,14 @@ static void sendClientDataJson(EthernetClient &client) {
     JsonObject cfgEntry = configsArr.createNestedObject();
     cfgEntry["client"] = snap.uid;
     cfgEntry["site"] = snap.site;
-
-    DynamicJsonDocument cfgDoc(2048);
-    if (deserializeJson(cfgDoc, snap.payload) == DeserializationError::Ok) {
-      cfgEntry["config"] = cfgDoc.as<JsonVariantConst>();
-    }
+    cfgEntry["configJson"] = snap.payload;
   }
 
   String json;
-  serializeJson(doc, json);
+  if (serializeJson(doc, json) == 0) {
+    respondStatus(client, 500, F("Failed to encode client data"));
+    return;
+  }
   respondJson(client, json);
 }
 
@@ -1688,6 +2125,17 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
     respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  if (gConfig.configPin[0] == '\0') {
+    respondStatus(client, 403, F("Configure admin PIN before making changes"));
+    return;
+  }
+
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!pinMatches(pinValue)) {
+    respondStatus(client, 403, F("Invalid PIN"));
     return;
   }
 
@@ -1711,6 +2159,15 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
     if (serverObj.containsKey("webRefreshSeconds")) {
       gConfig.webRefreshSeconds = serverObj["webRefreshSeconds"].as<uint8_t>();
     }
+    if (serverObj.containsKey("smsOnHigh")) {
+      gConfig.smsOnHigh = serverObj["smsOnHigh"].as<bool>();
+    }
+    if (serverObj.containsKey("smsOnLow")) {
+      gConfig.smsOnLow = serverObj["smsOnLow"].as<bool>();
+    }
+    if (serverObj.containsKey("smsOnClear")) {
+      gConfig.smsOnClear = serverObj["smsOnClear"].as<bool>();
+    }
     gConfigDirty = true;
     scheduleNextDailyEmail();
   }
@@ -1731,6 +2188,56 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
   }
 
   respondStatus(client, 200, F("OK"));
+}
+
+static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *message) {
+  DynamicJsonDocument resp(128);
+  resp["pinConfigured"] = (gConfig.configPin[0] != '\0');
+  String msg(message);
+  resp["message"] = msg;
+  String json;
+  serializeJson(resp, json);
+  respondJson(client, json);
+}
+
+static void handlePinPost(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(256);
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *currentPin = doc["pin"].as<const char *>();
+  const char *newPin = doc["newPin"].as<const char *>();
+  bool configured = (gConfig.configPin[0] != '\0');
+
+  if (!configured) {
+    if (!isValidPin(newPin)) {
+      respondStatus(client, 400, F("PIN must be 4 digits"));
+      return;
+    }
+    strlcpy(gConfig.configPin, newPin, sizeof(gConfig.configPin));
+    gConfigDirty = true;
+    sendPinResponse(client, F("PIN set"));
+    return;
+  }
+
+  if (!pinMatches(currentPin)) {
+    respondStatus(client, 403, F("Invalid PIN"));
+    return;
+  }
+
+  if (newPin) {
+    if (!isValidPin(newPin)) {
+      respondStatus(client, 400, F("PIN must be 4 digits"));
+      return;
+    }
+    strlcpy(gConfig.configPin, newPin, sizeof(gConfig.configPin));
+    gConfigDirty = true;
+    sendPinResponse(client, F("PIN updated"));
+  } else {
+    sendPinResponse(client, F("PIN verified"));
+  }
 }
 
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
@@ -1867,7 +2374,16 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
 
   // Check rate limit before sending SMS
   bool smsEnabled = !doc.containsKey("smsEnabled") || doc["smsEnabled"].as<bool>();
-  if (!isDiagnostic && smsEnabled && checkSmsRateLimit(rec)) {
+  bool smsAllowedByServer = true;
+  if (strcmp(type, "high") == 0) {
+    smsAllowedByServer = gConfig.smsOnHigh;
+  } else if (strcmp(type, "low") == 0) {
+    smsAllowedByServer = gConfig.smsOnLow;
+  } else if (strcmp(type, "clear") == 0) {
+    smsAllowedByServer = gConfig.smsOnClear;
+  }
+
+  if (!isDiagnostic && smsEnabled && smsAllowedByServer && checkSmsRateLimit(rec)) {
     char message[160];
     snprintf(message, sizeof(message), "%s #%d %s alarm %.1f in", rec->site, rec->tankNumber, rec->alarmType, inches);
     sendSmsAlert(message);
