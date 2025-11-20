@@ -87,7 +87,7 @@ The server configuration file (`/server_config.json` on LittleFS) includes:
   "dailyEmail": "reports@example.com",
   "dailyHour": 6,
   "dailyMinute": 0,
-  "webRefreshSeconds": 15,
+   "webRefreshSeconds": 21600,
   "useStaticIp": true
 }
 ```
@@ -143,6 +143,7 @@ The server configuration file (`/server_config.json` on LittleFS) includes:
 | Client → Server (alarm) | `fleet.tankalarm-server:alarm.qi` | Alarm state changes |
 | Client → Server (daily) | `fleet.tankalarm-server:daily.qi` | Daily summary reports |
 | Server → Client (config) | `device:<client-uid>:config.qi` | Configuration updates |
+| Server → Viewer (summary) | `viewer_summary.qo` (route to viewer fleet `viewer_summary.qi`) | 6-hour fleet snapshot |
 | Server → SMS Gateway | `sms.qo` | SMS alert requests |
 | Server → Email Gateway | `email.qo` | Email report requests |
 

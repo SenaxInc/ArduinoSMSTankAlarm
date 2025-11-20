@@ -112,6 +112,18 @@
 #define MAX_CLIENT_CONFIG_SNAPSHOTS 20
 #endif
 
+#ifndef VIEWER_SUMMARY_FILE
+#define VIEWER_SUMMARY_FILE "viewer_summary.qo"
+#endif
+
+#ifndef VIEWER_SUMMARY_INTERVAL_SECONDS
+#define VIEWER_SUMMARY_INTERVAL_SECONDS 21600UL  // 6 hours
+#endif
+
+#ifndef VIEWER_SUMMARY_BASE_HOUR
+#define VIEWER_SUMMARY_BASE_HOUR 6
+#endif
+
 static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(10)) + 512;
 static const size_t CLIENT_JSON_CAPACITY = 24576;
 
@@ -130,7 +142,7 @@ struct ServerConfig {
   char configPin[8];
   uint8_t dailyHour;
   uint8_t dailyMinute;
-  uint8_t webRefreshSeconds;
+  uint16_t webRefreshSeconds;
   bool useStaticIp;
   bool smsOnHigh;
   bool smsOnLow;
@@ -176,6 +188,8 @@ static char gServerUid[48] = {0};
 static double gLastSyncedEpoch = 0.0;
 static unsigned long gLastSyncMillis = 0;
 static double gNextDailyEmailEpoch = 0.0;
+static double gNextViewerSummaryEpoch = 0.0;
+static double gLastViewerSummaryEpoch = 0.0;
 
 static unsigned long gLastPollMillis = 0;
 
@@ -660,6 +674,12 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       margin: 10px 0 20px;
       flex-wrap: wrap;
     }
+    .refresh-actions {
+      display: flex;
+      gap: 10px;
+      margin: 10px 0 20px;
+      flex-wrap: wrap;
+    }
     .toggle-group {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -753,6 +773,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           <select id="clientSelect"></select>
         </label>
         <div id="clientDetails" class="details">Select a client to review configuration.</div>
+        <div class="refresh-actions">
+          <button type="button" id="refreshSelectedBtn">Refresh Selected Site</button>
+          <button type="button" class="secondary" id="refreshAllBtn">Refresh All Sites</button>
+        </div>
         <div class="pin-actions">
           <button type="button" class="secondary" id="changePinBtn" data-pin-control="true">Change PIN</button>
           <button type="button" class="secondary" id="lockPinBtn" data-pin-control="true">Lock Console</button>
@@ -877,7 +901,9 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         addTank: document.getElementById('addTank'),
         form: document.getElementById('configForm'),
         changePinBtn: document.getElementById('changePinBtn'),
-        lockPinBtn: document.getElementById('lockPinBtn')
+        lockPinBtn: document.getElementById('lockPinBtn'),
+        refreshSelectedBtn: document.getElementById('refreshSelectedBtn'),
+        refreshAllBtn: document.getElementById('refreshAllBtn')
       };
 
       const pinEls = {
@@ -1378,23 +1404,22 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             throw new Error(text || 'Server rejected configuration');
           }
           showToast('Configuration queued for delivery');
-          await refreshData();
+          await refreshData(state.selected);
         } catch (err) {
           showToast(err.message || 'Failed to send config', true);
         }
       }
 
-      async function refreshData() {
-        const res = await fetch('/api/clients');
-        if (!res.ok) {
-          throw new Error('Failed to fetch server data');
-        }
-          state.data = await res.json();
-          const serverInfo = (state.data && state.data.server) ? state.data.server : {};
-          els.serverName.textContent = serverInfo.name || 'Tank Alarm Server';
-          syncServerSettings(serverInfo);
+      function applyServerData(data, preferredUid) {
+        state.data = data;
+        const serverInfo = (state.data && state.data.server) ? state.data.server : {};
+        els.serverName.textContent = serverInfo.name || 'Tank Alarm Server';
+        syncServerSettings(serverInfo);
         els.serverUid.textContent = state.data.serverUid || '--';
         els.nextEmail.textContent = formatEpoch(state.data.nextDailyEmailEpoch);
+        if (preferredUid) {
+          state.selected = preferredUid;
+        }
         renderTelemetry();
         populateClientSelect();
         if (state.selected) {
@@ -1403,6 +1428,40 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           loadConfigIntoForm(els.clientSelect.value);
         }
         updatePinLock();
+      }
+
+      async function refreshData(preferredUid) {
+        try {
+          const query = preferredUid ? `?client=${encodeURIComponent(preferredUid)}` : '';
+          const res = await fetch(`/api/clients${query}`);
+          if (!res.ok) {
+            throw new Error('Failed to fetch server data');
+          }
+          const data = await res.json();
+          applyServerData(data, preferredUid || state.selected);
+        } catch (err) {
+          showToast(err.message || 'Initialization failed', true);
+        }
+      }
+
+      async function triggerManualRefresh(targetUid) {
+        const payload = targetUid ? { client: targetUid } : {};
+        try {
+          const res = await fetch('/api/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || 'Refresh failed');
+          }
+          const data = await res.json();
+          applyServerData(data, targetUid || state.selected);
+          showToast(targetUid ? 'Selected site updated' : 'All sites updated');
+        } catch (err) {
+          showToast(err.message || 'Refresh failed', true);
+        }
       }
 
       pinEls.form.addEventListener('submit', handlePinSubmit);
@@ -1432,8 +1491,19 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         loadConfigIntoForm(event.target.value);
       });
       els.form.addEventListener('submit', submitConfig);
+      els.refreshSelectedBtn.addEventListener('click', () => {
+        const target = state.selected || (els.clientSelect.value || '');
+        if (!target) {
+          showToast('Select a client first.', true);
+          return;
+        }
+        triggerManualRefresh(target);
+      });
+      els.refreshAllBtn.addEventListener('click', () => {
+        triggerManualRefresh(null);
+      });
 
-      refreshData().catch(err => showToast(err.message || 'Initialization failed', true));
+      refreshData();
     })();
   </script>
 </body>
@@ -1450,6 +1520,7 @@ static void initializeNotecard();
 static void ensureTimeSync();
 static double currentEpoch();
 static void scheduleNextDailyEmail();
+static void scheduleNextViewerSummary();
 static void initializeEthernet();
 static void handleWebRequests();
 static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength);
@@ -1461,11 +1532,35 @@ static void sendTankJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client);
 static void handleConfigPost(EthernetClient &client, const String &body);
 static void handlePinPost(EthernetClient &client, const String &body);
+static void handleRefreshPost(EthernetClient &client, const String &body);
 enum class ConfigDispatchStatus : uint8_t {
   Ok = 0,
   PayloadTooLarge,
   NotecardFailure
 };
+
+static void handleRefreshPost(EthernetClient &client, const String &body) {
+  char clientUid[64] = {0};
+  if (body.length() > 0) {
+    DynamicJsonDocument doc(128);
+    if (deserializeJson(doc, body) == DeserializationError::Ok) {
+      const char *uid = doc["client"] | "";
+      if (uid && *uid) {
+        strlcpy(clientUid, uid, sizeof(clientUid));
+      }
+    }
+  }
+
+  if (clientUid[0]) {
+    Serial.print(F("Manual refresh requested for client " ));
+    Serial.println(clientUid);
+  } else {
+    Serial.println(F("Manual refresh requested for all clients"));
+  }
+
+  pollNotecard();
+  sendClientDataJson(client);
+}
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
 static void pollNotecard();
 static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double));
@@ -1480,6 +1575,8 @@ static void saveClientConfigSnapshots();
 static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffer);
 static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
 static bool checkSmsRateLimit(TankRecord *rec);
+static void publishViewerSummary();
+static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
 
 void setup() {
   Serial.begin(115200);
@@ -1500,6 +1597,7 @@ void setup() {
   initializeNotecard();
   ensureTimeSync();
   scheduleNextDailyEmail();
+  scheduleNextViewerSummary();
 
   initializeEthernet();
   gWebServer.begin();
@@ -1538,6 +1636,11 @@ void loop() {
     scheduleNextDailyEmail();
   }
 
+  if (gNextViewerSummaryEpoch > 0.0 && currentEpoch() >= gNextViewerSummaryEpoch) {
+    publishViewerSummary();
+    scheduleNextViewerSummary();
+  }
+
   if (gConfigDirty) {
     if (saveConfig(gConfig)) {
       gConfigDirty = false;
@@ -1574,7 +1677,7 @@ static void createDefaultConfig(ServerConfig &cfg) {
   cfg.configPin[0] = '\0';
   cfg.dailyHour = DAILY_EMAIL_HOUR_DEFAULT;
   cfg.dailyMinute = DAILY_EMAIL_MINUTE_DEFAULT;
-  cfg.webRefreshSeconds = 15;
+  cfg.webRefreshSeconds = 21600;
   cfg.useStaticIp = true;
   cfg.smsOnHigh = true;
   cfg.smsOnLow = true;
@@ -1613,7 +1716,11 @@ static bool loadConfig(ServerConfig &cfg) {
   }
   cfg.dailyHour = doc["dailyHour"].is<uint8_t>() ? doc["dailyHour"].as<uint8_t>() : DAILY_EMAIL_HOUR_DEFAULT;
   cfg.dailyMinute = doc["dailyMinute"].is<uint8_t>() ? doc["dailyMinute"].as<uint8_t>() : DAILY_EMAIL_MINUTE_DEFAULT;
-  cfg.webRefreshSeconds = doc["webRefreshSeconds"].is<uint8_t>() ? doc["webRefreshSeconds"].as<uint8_t>() : 15;
+  if (doc["webRefreshSeconds"].is<uint16_t>() || doc["webRefreshSeconds"].is<uint32_t>()) {
+    cfg.webRefreshSeconds = doc["webRefreshSeconds"].as<uint16_t>();
+  } else {
+    cfg.webRefreshSeconds = 21600;
+  }
   cfg.useStaticIp = doc["useStaticIp"].is<bool>() ? doc["useStaticIp"].as<bool>() : true;
   cfg.smsOnHigh = doc["smsOnHigh"].is<bool>() ? doc["smsOnHigh"].as<bool>() : true;
   cfg.smsOnLow = doc["smsOnLow"].is<bool>() ? doc["smsOnLow"].as<bool>() : true;
@@ -1785,6 +1892,22 @@ static void scheduleNextDailyEmail() {
   gNextDailyEmailEpoch = scheduled;
 }
 
+static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds) {
+  if (epoch <= 0.0 || intervalSeconds == 0) {
+    return 0.0;
+  }
+  double aligned = floor(epoch / 86400.0) * 86400.0 + (double)baseHour * 3600.0;
+  while (aligned <= epoch) {
+    aligned += (double)intervalSeconds;
+  }
+  return aligned;
+}
+
+static void scheduleNextViewerSummary() {
+  double epoch = currentEpoch();
+  gNextViewerSummaryEpoch = computeNextAlignedEpoch(epoch, VIEWER_SUMMARY_BASE_HOUR, VIEWER_SUMMARY_INTERVAL_SECONDS);
+}
+
 static void initializeEthernet() {
   Serial.print(F("Initializing Ethernet..."));
   int status;
@@ -1832,6 +1955,8 @@ static void handleWebRequests() {
     handleConfigPost(client, body);
   } else if (method == "POST" && path == "/api/pin") {
     handlePinPost(client, body);
+  } else if (method == "POST" && path == "/api/refresh") {
+    handleRefreshPost(client, body);
   } else {
     respondStatus(client, 404, F("Not Found"));
   }
@@ -2142,7 +2267,7 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
       gConfig.dailyMinute = serverObj["dailyMinute"].as<uint8_t>();
     }
     if (serverObj.containsKey("webRefreshSeconds")) {
-      gConfig.webRefreshSeconds = serverObj["webRefreshSeconds"].as<uint8_t>();
+      gConfig.webRefreshSeconds = serverObj["webRefreshSeconds"].as<uint16_t>();
     }
     if (serverObj.containsKey("smsOnHigh")) {
       gConfig.smsOnHigh = serverObj["smsOnHigh"].as<bool>();
@@ -2549,6 +2674,57 @@ static void sendDailyEmail() {
 
   gLastDailyEmailSentEpoch = now;
   Serial.println(F("Daily email queued"));
+}
+
+static void publishViewerSummary() {
+  DynamicJsonDocument doc(TANK_JSON_CAPACITY + 1024);
+  doc["serverName"] = gConfig.serverName;
+  doc["serverUid"] = gServerUid;
+  double now = currentEpoch();
+  doc["generatedEpoch"] = now;
+  doc["refreshSeconds"] = VIEWER_SUMMARY_INTERVAL_SECONDS;
+  doc["baseHour"] = VIEWER_SUMMARY_BASE_HOUR;
+  JsonArray arr = doc.createNestedArray("tanks");
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    JsonObject obj = arr.createNestedObject();
+    obj["client"] = gTankRecords[i].clientUid;
+    obj["site"] = gTankRecords[i].site;
+    obj["label"] = gTankRecords[i].label;
+    obj["tank"] = gTankRecords[i].tankNumber;
+    obj["heightInches"] = gTankRecords[i].heightInches;
+    obj["levelInches"] = gTankRecords[i].levelInches;
+    obj["percent"] = gTankRecords[i].percent;
+    obj["alarm"] = gTankRecords[i].alarmActive;
+    obj["alarmType"] = gTankRecords[i].alarmType;
+    obj["lastUpdate"] = gTankRecords[i].lastUpdateEpoch;
+  }
+
+  String json;
+  if (serializeJson(doc, json) == 0) {
+    Serial.println(F("Viewer summary serialization failed"));
+    return;
+  }
+
+  J *req = notecard.newRequest("note.add");
+  if (!req) {
+    return;
+  }
+  JAddStringToObject(req, "file", VIEWER_SUMMARY_FILE);
+  JAddBoolToObject(req, "sync", true);
+  J *body = JParse(json.c_str());
+  if (!body) {
+    notecard.deleteRequest(req);
+    Serial.println(F("Viewer summary JSON parse failed"));
+    return;
+  }
+  JAddItemToObject(req, "body", body);
+  bool queued = notecard.sendRequest(req);
+  if (queued) {
+    gLastViewerSummaryEpoch = now;
+    Serial.println(F("Viewer summary queued"));
+  } else {
+    Serial.println(F("Viewer summary queue failed"));
+  }
 }
 
 static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid) {

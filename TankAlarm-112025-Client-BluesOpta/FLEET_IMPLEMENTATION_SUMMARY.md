@@ -182,7 +182,7 @@ SMS recipients now reside exclusively in the server configuration. Client-side `
   "dailyEmail": "reports@example.com",
   "dailyHour": 6,
   "dailyMinute": 0,
-  "webRefreshSeconds": 15,
+  "webRefreshSeconds": 21600,
   "useStaticIp": true
 }
 ```
