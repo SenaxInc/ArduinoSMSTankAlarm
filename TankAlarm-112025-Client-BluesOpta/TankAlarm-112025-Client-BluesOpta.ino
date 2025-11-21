@@ -1633,6 +1633,8 @@ static void pruneNoteBufferIfNeeded() {
 // Relay Control Functions
 // ============================================================================
 
+// Get the Arduino pin number for a relay (0-based index: 0=D0, 1=D1, 2=D2, 3=D3)
+// Note: On Arduino Opta, LED_D0-LED_D3 constants are used for relay control
 static int getRelayPin(uint8_t relayIndex) {
 #if defined(ARDUINO_OPTA)
   if (relayIndex < 4) {
@@ -1659,6 +1661,7 @@ static void initializeRelays() {
 #endif
 }
 
+// Set relay state (relayNum is 0-based: 0=relay1, 1=relay2, etc.)
 static void setRelayState(uint8_t relayNum, bool state) {
   if (relayNum >= MAX_RELAYS) {
     Serial.print(F("Invalid relay number: "));
@@ -1768,14 +1771,14 @@ static void processRelayCommand(const JsonDocument &doc) {
   setRelayState(relayNum, state);
 
   // Handle timed auto-off if duration specified
+  // TODO: Implement timer tracking for automatic relay shutoff
+  // This feature is documented in the API but not yet implemented
   if (doc.containsKey("duration") && state) {
     uint16_t duration = doc["duration"].as<uint16_t>();
     if (duration > 0) {
-      Serial.print(F("Relay will auto-off after "));
+      Serial.print(F("Note: Auto-off duration requested ("));
       Serial.print(duration);
-      Serial.println(F(" seconds"));
-      // Note: In a production system, you would track these timers
-      // For now, this is a placeholder for the feature
+      Serial.println(F(" sec) but not yet implemented"));
     }
   }
 }

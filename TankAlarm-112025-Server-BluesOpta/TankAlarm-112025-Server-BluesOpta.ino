@@ -131,6 +131,10 @@
 #define VIEWER_SUMMARY_BASE_HOUR 6
 #endif
 
+#ifndef MAX_RELAYS
+#define MAX_RELAYS 4  // Arduino Opta has 4 relay outputs (D0-D3)
+#endif
+
 static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(10)) + 512;
 static const size_t CLIENT_JSON_CAPACITY = 24576;
 
@@ -1355,7 +1359,8 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 
       function relayButtons(row) {
         if (!row.client || row.client === '--') return '--';
-        const relays = [1, 2, 3, 4];
+        const MAX_RELAYS = 4;
+        const relays = Array.from({length: MAX_RELAYS}, (_, i) => i + 1);
         const escapedClient = escapeHtml(row.client);
         return relays.map(num => 
           `<button class="relay-btn" onclick="toggleRelay('${escapedClient}', ${num}, event)" title="Toggle Relay ${num}">R${num}</button>`
@@ -3497,8 +3502,10 @@ static void handleRelayPost(EthernetClient &client, const String &body) {
   }
 
   uint8_t relayNum = doc["relay"].as<uint8_t>();
-  if (relayNum < 1 || relayNum > 4) {
-    respondStatus(client, 400, F("relay must be 1-4"));
+  if (relayNum < 1 || relayNum > MAX_RELAYS) {
+    char errMsg[32];
+    snprintf(errMsg, sizeof(errMsg), "relay must be 1-%d", MAX_RELAYS);
+    respondStatus(client, 400, errMsg);
     return;
   }
 
@@ -3512,7 +3519,7 @@ static void handleRelayPost(EthernetClient &client, const String &body) {
 }
 
 static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state, const char *source) {
-  if (!clientUid || relayNum < 1 || relayNum > 4) {
+  if (!clientUid || relayNum < 1 || relayNum > MAX_RELAYS) {
     return false;
   }
 
