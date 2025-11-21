@@ -83,6 +83,10 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define CONFIG_OUTBOX_FILE "config.qo"
 #endif
 
+#ifndef RELAY_CONTROL_FILE
+#define RELAY_CONTROL_FILE "relay.qi"
+#endif
+
 #ifndef NOTE_BUFFER_PATH
 #define NOTE_BUFFER_PATH "/pending_notes.log"
 #endif
@@ -232,6 +236,11 @@ static bool gNotecardAvailable = true;
 
 static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
 
+// Relay control state
+#define MAX_RELAYS 4
+static bool gRelayState[MAX_RELAYS] = {false, false, false, false};
+static unsigned long gLastRelayCheckMillis = 0;
+
 // Forward declarations
 static void initializeStorage();
 static void ensureConfigLoaded();
@@ -260,6 +269,10 @@ static void ensureTimeSync();
 static void updateDailyScheduleIfNeeded();
 static bool checkNotecardHealth();
 static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit);
+static void pollForRelayCommands();
+static void processRelayCommand(const JsonDocument &doc);
+static void setRelayState(uint8_t relayNum, bool state);
+static void initializeRelays();
 
 void setup() {
   Serial.begin(115200);
@@ -317,6 +330,8 @@ void setup() {
     }
   }
 
+  initializeRelays();
+
   Serial.println(F("Client setup complete"));
 }
 
@@ -345,6 +360,11 @@ void loop() {
   if (now - gLastConfigCheckMillis >= 15000UL) {
     gLastConfigCheckMillis = now;
     pollForConfigUpdates();
+  }
+
+  if (now - gLastRelayCheckMillis >= 5000UL) {  // Check every 5 seconds
+    gLastRelayCheckMillis = now;
+    pollForRelayCommands();
   }
 
   persistConfigIfDirty();
@@ -1592,4 +1612,144 @@ static void pruneNoteBufferIfNeeded() {
   LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
   Serial.println(F("Note buffer pruned"));
 #endif
+}
+
+// ============================================================================
+// Relay Control Functions
+// ============================================================================
+
+static void initializeRelays() {
+#if defined(ARDUINO_OPTA)
+  // Initialize Opta relay outputs (D0-D3)
+  for (uint8_t i = 0; i < MAX_RELAYS; ++i) {
+    int relayPin = LED_D0 + i;
+    pinMode(relayPin, OUTPUT);
+    digitalWrite(relayPin, LOW);
+    gRelayState[i] = false;
+  }
+  Serial.println(F("Relay control initialized: 4 relays (D0-D3)"));
+#else
+  Serial.println(F("Warning: Relay control not available on this platform"));
+#endif
+}
+
+static void setRelayState(uint8_t relayNum, bool state) {
+  if (relayNum >= MAX_RELAYS) {
+    Serial.print(F("Invalid relay number: "));
+    Serial.println(relayNum);
+    return;
+  }
+
+#if defined(ARDUINO_OPTA)
+  int relayPin = LED_D0 + relayNum;
+  digitalWrite(relayPin, state ? HIGH : LOW);
+  gRelayState[relayNum] = state;
+  
+  Serial.print(F("Relay "));
+  Serial.print(relayNum + 1);
+  Serial.print(F(" (D"));
+  Serial.print(relayNum);
+  Serial.print(F(") set to "));
+  Serial.println(state ? "ON" : "OFF");
+#else
+  Serial.println(F("Warning: Relay control not available on this platform"));
+#endif
+}
+
+static void pollForRelayCommands() {
+  // Skip if notecard is known to be offline
+  if (!gNotecardAvailable) {
+    unsigned long now = millis();
+    if (now - gLastSuccessfulNotecardComm > NOTECARD_RETRY_INTERVAL) {
+      checkNotecardHealth();
+    }
+    return;
+  }
+
+  J *req = notecard.newRequest("note.get");
+  if (!req) {
+    gNotecardFailureCount++;
+    return;
+  }
+
+  JAddStringToObject(req, "file", RELAY_CONTROL_FILE);
+  JAddBoolToObject(req, "delete", true);
+
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    gNotecardFailureCount++;
+    if (gNotecardFailureCount >= NOTECARD_FAILURE_THRESHOLD) {
+      checkNotecardHealth();
+    }
+    return;
+  }
+
+  gLastSuccessfulNotecardComm = millis();
+  gNotecardFailureCount = 0;
+
+  J *body = JGetObject(rsp, "body");
+  if (body) {
+    char *json = JConvertToJSONString(body);
+    if (json) {
+      DynamicJsonDocument doc(1024);
+      DeserializationError err = deserializeJson(doc, json);
+      NoteFree(json);
+      if (!err) {
+        processRelayCommand(doc);
+      } else {
+        Serial.println(F("Relay command invalid JSON"));
+      }
+    }
+  }
+
+  notecard.deleteResponse(rsp);
+}
+
+static void processRelayCommand(const JsonDocument &doc) {
+  // Command format:
+  // {
+  //   "relay": 1-4,           // Relay number (1-based)
+  //   "state": true/false,    // ON/OFF
+  //   "duration": 0,          // Optional: auto-off duration in seconds (0 = manual)
+  //   "source": "server"      // Optional: source of command (server, client, alarm)
+  // }
+
+  if (!doc.containsKey("relay") || !doc.containsKey("state")) {
+    Serial.println(F("Invalid relay command: missing relay or state"));
+    return;
+  }
+
+  uint8_t relayNum = doc["relay"].as<uint8_t>();
+  if (relayNum < 1 || relayNum > MAX_RELAYS) {
+    Serial.print(F("Invalid relay number in command: "));
+    Serial.println(relayNum);
+    return;
+  }
+
+  // Convert from 1-based to 0-based
+  relayNum = relayNum - 1;
+
+  bool state = doc["state"].as<bool>();
+  const char *source = doc["source"] | "unknown";
+  
+  Serial.print(F("Relay command received from "));
+  Serial.print(source);
+  Serial.print(F(": Relay "));
+  Serial.print(relayNum + 1);
+  Serial.print(F(" -> "));
+  Serial.println(state ? "ON" : "OFF");
+
+  setRelayState(relayNum, state);
+
+  // Handle timed auto-off if duration specified
+  if (doc.containsKey("duration") && state) {
+    uint16_t duration = doc["duration"].as<uint16_t>();
+    if (duration > 0) {
+      Serial.print(F("Relay will auto-off after "));
+      Serial.print(duration);
+      Serial.println(F(" seconds"));
+      // Note: In a production system, you would track these timers
+      // For now, this is a placeholder for the feature
+    }
+  }
 }

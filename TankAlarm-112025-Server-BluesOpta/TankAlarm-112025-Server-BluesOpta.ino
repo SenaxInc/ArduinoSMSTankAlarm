@@ -1042,6 +1042,32 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
     #toast.show {
       opacity: 1;
     }
+    .relay-btn {
+      padding: 4px 8px;
+      margin: 0 2px;
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .relay-btn:hover {
+      background: var(--accent);
+      color: var(--accent-contrast);
+      border-color: var(--accent);
+    }
+    .relay-btn.active {
+      background: var(--accent);
+      color: var(--accent-contrast);
+      border-color: var(--accent);
+      font-weight: bold;
+    }
+    .relay-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body data-theme="light">
@@ -1134,6 +1160,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <th>% Full</th>
             <th>Status</th>
             <th>Updated</th>
+            <th>Relays</th>
           </tr>
         </thead>
         <tbody id="tankBody"></tbody>
@@ -1302,7 +1329,8 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <td>${formatNumber(row.levelInches)}</td>
             <td>${formatNumber(row.percent)}</td>
             <td>${statusBadge(row)}</td>
-            <td>${formatEpoch(row.lastUpdate)}</td>`;
+            <td>${formatEpoch(row.lastUpdate)}</td>
+            <td>${relayButtons(row)}</td>`;
           tbody.appendChild(tr);
         });
       }
@@ -1314,6 +1342,44 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         const label = row.alarmType ? row.alarmType : 'Alarm';
         return `<span class="status-pill alarm">${label}</span>`;
       }
+
+      function relayButtons(row) {
+        if (!row.client || row.client === '--') return '--';
+        const relays = [1, 2, 3, 4];
+        return relays.map(num => 
+          `<button class="relay-btn" onclick="toggleRelay('${row.client}', ${num}, event)" title="Toggle Relay ${num}">R${num}</button>`
+        ).join(' ');
+      }
+
+      async function toggleRelay(clientUid, relayNum, event) {
+        const btn = event.target;
+        const wasActive = btn.classList.contains('active');
+        const newState = !wasActive;
+        
+        btn.disabled = true;
+        try {
+          const res = await fetch('/api/relay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              clientUid: clientUid,
+              relay: relayNum,
+              state: newState
+            })
+          });
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || 'Relay command failed');
+          }
+          btn.classList.toggle('active', newState);
+          showToast(`Relay ${relayNum} ${newState ? 'ON' : 'OFF'} command sent`);
+        } catch (err) {
+          showToast(err.message || 'Relay control failed', true);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+      window.toggleRelay = toggleRelay;
 
       function updateStats() {
         const clientIds = new Set();
@@ -2556,7 +2622,9 @@ enum class ConfigDispatchStatus : uint8_t {
 // Forward declarations
 static void handlePinPost(EthernetClient &client, const String &body);
 static void handleRefreshPost(EthernetClient &client, const String &body);
+static void handleRelayPost(EthernetClient &client, const String &body);
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
+static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state, const char *source);
 static void pollNotecard();
 static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double));
 static void handleTelemetry(JsonDocument &doc, double epoch);
@@ -2989,6 +3057,8 @@ static void handleWebRequests() {
     handlePinPost(client, body);
   } else if (method == "POST" && path == "/api/refresh") {
     handleRefreshPost(client, body);
+  } else if (method == "POST" && path == "/api/relay") {
+    handleRelayPost(client, body);
   } else {
     respondStatus(client, 404, F("Not Found"));
   }
@@ -3400,6 +3470,76 @@ static void handlePinPost(EthernetClient &client, const String &body) {
   } else {
     sendPinResponse(client, F("PIN verified"));
   }
+}
+
+static void handleRelayPost(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(512);
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *clientUid = doc["clientUid"].as<const char *>();
+  if (!clientUid || strlen(clientUid) == 0) {
+    respondStatus(client, 400, F("Missing clientUid"));
+    return;
+  }
+
+  uint8_t relayNum = doc["relay"].as<uint8_t>();
+  if (relayNum < 1 || relayNum > 4) {
+    respondStatus(client, 400, F("relay must be 1-4"));
+    return;
+  }
+
+  bool state = doc["state"].as<bool>();
+
+  if (sendRelayCommand(clientUid, relayNum, state, "server")) {
+    respondStatus(client, 200, F("OK"));
+  } else {
+    respondStatus(client, 500, F("Failed to send relay command"));
+  }
+}
+
+static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state, const char *source) {
+  if (!clientUid || relayNum < 1 || relayNum > 4) {
+    return false;
+  }
+
+  J *req = notecard.newRequest("note.add");
+  if (!req) {
+    return false;
+  }
+
+  // Use device-specific targeting: send directly to client's relay.qi inbox
+  char targetFile[80];
+  snprintf(targetFile, sizeof(targetFile), "device:%s:relay.qi", clientUid);
+  JAddStringToObject(req, "file", targetFile);
+  JAddBoolToObject(req, "sync", true);
+
+  J *body = JCreateObject();
+  if (!body) {
+    return false;
+  }
+
+  JAddNumberToObject(body, "relay", relayNum);
+  JAddBoolToObject(body, "state", state);
+  JAddStringToObject(body, "source", source);
+  
+  JAddItemToObject(req, "body", body);
+  
+  bool queued = notecard.sendRequest(req);
+  if (!queued) {
+    return false;
+  }
+
+  Serial.print(F("Queued relay command for client "));
+  Serial.print(clientUid);
+  Serial.print(F(": Relay "));
+  Serial.print(relayNum);
+  Serial.print(F(" -> "));
+  Serial.println(state ? "ON" : "OFF");
+
+  return true;
 }
 
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
