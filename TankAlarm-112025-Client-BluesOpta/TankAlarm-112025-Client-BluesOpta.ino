@@ -22,19 +22,27 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
-#include <LittleFS.h>
 #include <Notecard.h>
 #include <math.h>
 #include <string.h>
 
-// Watchdog support for STM32H7 (Arduino Opta)
-#if defined(ARDUINO_OPTA) || defined(STM32H7xx)
+// Filesystem and Watchdog support
+// Note: Arduino Opta uses Mbed OS, which has different APIs than STM32duino
+#if defined(ARDUINO_ARCH_STM32) && !defined(ARDUINO_ARCH_MBED)
+  // STM32duino platform (non-Mbed)
+  #include <LittleFS.h>
   #include <IWatchdog.h>
+  #define FILESYSTEM_AVAILABLE
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
+#elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  // Arduino Opta with Mbed OS - filesystem and watchdog disabled for now
+  // TODO: Implement Mbed OS LittleFileSystem and mbed::Watchdog support
+  #warning "LittleFS and Watchdog features disabled on Mbed OS platform"
 #endif
 
-#ifndef strlcpy
+// strlcpy is provided by Notecard library on Mbed platforms
+#if !defined(ARDUINO_ARCH_MBED) && !defined(strlcpy)
 static size_t strlcpy(char *dst, const char *src, size_t size) {
   if (!dst || !src || size == 0) {
     return 0;
@@ -350,12 +358,16 @@ void loop() {
 }
 
 static void initializeStorage() {
+#ifdef FILESYSTEM_AVAILABLE
   if (!LittleFS.begin()) {
     Serial.println(F("LittleFS init failed; halting"));
     while (true) {
       delay(1000);
     }
   }
+#else
+  Serial.println(F("Warning: Filesystem not available on this platform - configuration will not persist"));
+#endif
 }
 
 static void ensureConfigLoaded() {
@@ -396,6 +408,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
+#ifdef FILESYSTEM_AVAILABLE
   if (!LittleFS.exists(CLIENT_CONFIG_PATH)) {
     return false;
   }
@@ -457,9 +470,13 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   }
 
   return true;
+#else
+  return false; // Filesystem not available
+#endif
 }
 
 static bool saveConfigToFlash(const ClientConfig &cfg) {
+#ifdef FILESYSTEM_AVAILABLE
   DynamicJsonDocument doc(4096);
   doc["site"] = cfg.siteName;
   doc["deviceLabel"] = cfg.deviceLabel;
@@ -508,6 +525,9 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
 
   file.close();
   return true;
+#else
+  return false; // Filesystem not available
+#endif
 }
 
 static void printHardwareRequirements(const ClientConfig &cfg) {
@@ -710,7 +730,7 @@ static void pollForConfigUpdates() {
 
   J *body = JGetObject(rsp, "body");
   if (body) {
-    char *json = JConvertToJson(body);
+    char *json = JConvertToJSONString(body);
     if (json) {
       DynamicJsonDocument doc(4096);
       DeserializationError err = deserializeJson(doc, json);
@@ -798,10 +818,10 @@ static void applyConfigUpdate(const JsonDocument &doc) {
 
   if (doc.containsKey("tanks")) {
     hardwareChanged = true;  // Tank configuration affects hardware
-    JsonArray tanks = doc["tanks"].as<JsonArray>();
+    JsonArrayConst tanks = doc["tanks"].as<JsonArrayConst>();
     gConfig.tankCount = min<uint8_t>(tanks.size(), MAX_TANKS);
     for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
-      JsonObject t = tanks[i];
+      JsonObjectConst t = tanks[i];
       gConfig.tanks[i].id = t["id"].as<const char *>() ? t["id"].as<const char *>()[0] : ('A' + i);
       strlcpy(gConfig.tanks[i].name, t["name"].as<const char *>() ? t["name"].as<const char *>() : "Tank", sizeof(gConfig.tanks[i].name));
       gConfig.tanks[i].tankNumber = t["number"].is<uint8_t>() ? t["number"].as<uint8_t>() : (i + 1);
@@ -1410,7 +1430,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
 
   J *body = JParse(buffer);
   if (!body) {
-    notecard.deleteRequest(req);
+    notecard.deleteResponse(req);
     bufferNoteForRetry(targetFile, buffer, syncNow);
     return;
   }
@@ -1428,6 +1448,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
 }
 
 static void bufferNoteForRetry(const char *fileName, const char *payload, bool syncNow) {
+#ifdef FILESYSTEM_AVAILABLE
   File file = LittleFS.open(NOTE_BUFFER_PATH, "a");
   if (!file) {
     Serial.println(F("Failed to open note buffer; dropping payload"));
@@ -1441,9 +1462,13 @@ static void bufferNoteForRetry(const char *fileName, const char *payload, bool s
   file.close();
   Serial.println(F("Note buffered for retry"));
   pruneNoteBufferIfNeeded();
+#else
+  Serial.println(F("Warning: Filesystem not available; note dropped"));
+#endif
 }
 
 static void flushBufferedNotes() {
+#ifdef FILESYSTEM_AVAILABLE
   if (!gNotecardAvailable) {
     return;
   }
@@ -1515,9 +1540,11 @@ static void flushBufferedNotes() {
     LittleFS.remove(NOTE_BUFFER_PATH);
     LittleFS.remove(NOTE_BUFFER_TEMP_PATH);
   }
+#endif
 }
 
 static void pruneNoteBufferIfNeeded() {
+#ifdef FILESYSTEM_AVAILABLE
   if (!LittleFS.exists(NOTE_BUFFER_PATH)) {
     return;
   }
@@ -1564,4 +1591,5 @@ static void pruneNoteBufferIfNeeded() {
   LittleFS.remove(NOTE_BUFFER_PATH);
   LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
   Serial.println(F("Note buffer pruned"));
+#endif
 }

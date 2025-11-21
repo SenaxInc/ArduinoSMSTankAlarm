@@ -32,10 +32,17 @@
   #endif
 #endif
 
-#if defined(ARDUINO_OPTA) || defined(STM32H7xx)
+// Watchdog support
+// Note: Arduino Opta uses Mbed OS, which has different APIs than STM32duino
+#if defined(ARDUINO_ARCH_STM32) && !defined(ARDUINO_ARCH_MBED)
+  // STM32duino platform (non-Mbed)
   #include <IWatchdog.h>
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
+#elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  // Arduino Opta with Mbed OS - watchdog disabled for now
+  // TODO: Implement Mbed OS mbed::Watchdog support
+  #warning "Watchdog features disabled on Mbed OS platform"
 #endif
 
 #ifndef VIEWER_PRODUCT_UID
@@ -81,7 +88,8 @@
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
-#ifndef strlcpy
+// strlcpy is provided by Notecard library on Mbed platforms
+#if !defined(ARDUINO_ARCH_MBED) && !defined(strlcpy)
 static size_t strlcpy(char *dst, const char *src, size_t size) {
   if (!dst || !src || size == 0) {
     return 0;
@@ -825,7 +833,7 @@ static void fetchViewerSummary() {
       break;
     }
 
-    char *json = JConvertToJson(body);
+    char *json = JConvertToJSONString(body);
     double epoch = JGetNumber(rsp, "time");
     if (json) {
       DynamicJsonDocument doc(TANK_JSON_CAPACITY + 1024);
