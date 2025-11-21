@@ -2546,13 +2546,14 @@ static void sendClientConsole(EthernetClient &client);
 static void sendTankJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client);
 static void handleConfigPost(EthernetClient &client, const String &body);
-// Forward declarations
+// Enum definitions
 enum class ConfigDispatchStatus : uint8_t {
   Ok = 0,
   PayloadTooLarge,
   NotecardFailure
 };
 
+// Forward declarations
 static void handlePinPost(EthernetClient &client, const String &body);
 static void handleRefreshPost(EthernetClient &client, const String &body);
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
