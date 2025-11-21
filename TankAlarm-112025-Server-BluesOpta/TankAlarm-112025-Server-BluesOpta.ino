@@ -1343,11 +1343,22 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         return `<span class="status-pill alarm">${label}</span>`;
       }
 
+      function escapeHtml(unsafe) {
+        if (!unsafe) return '';
+        return String(unsafe)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
       function relayButtons(row) {
         if (!row.client || row.client === '--') return '--';
         const relays = [1, 2, 3, 4];
+        const escapedClient = escapeHtml(row.client);
         return relays.map(num => 
-          `<button class="relay-btn" onclick="toggleRelay('${row.client}', ${num}, event)" title="Toggle Relay ${num}">R${num}</button>`
+          `<button class="relay-btn" onclick="toggleRelay('${escapedClient}', ${num}, event)" title="Toggle Relay ${num}">R${num}</button>`
         ).join(' ');
       }
 

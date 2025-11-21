@@ -276,6 +276,7 @@ static void processRelayCommand(const JsonDocument &doc);
 static void setRelayState(uint8_t relayNum, bool state);
 static void initializeRelays();
 static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, bool activate);
+static int getRelayPin(uint8_t relayIndex);
 
 void setup() {
   Serial.begin(115200);
@@ -1272,14 +1273,10 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
 static void activateLocalAlarm(uint8_t idx, bool active) {
   // Use Opta's built-in relay outputs for local alarm indication
   // Opta has 4 relay outputs - map tanks to relays (tank 0->relay 0, etc.)
-  if (idx < 4) {
-    #if defined(ARDUINO_OPTA)
-      // For Opta, set relay outputs
-      // Note: Actual pin mapping depends on Opta hardware library
-      int relayPin = LED_D0 + idx;  // Use LED outputs as indicators
-      pinMode(relayPin, OUTPUT);
-      digitalWrite(relayPin, active ? HIGH : LOW);
-    #endif
+  int relayPin = getRelayPin(idx);
+  if (relayPin >= 0) {
+    pinMode(relayPin, OUTPUT);
+    digitalWrite(relayPin, active ? HIGH : LOW);
   }
   
   if (active) {
@@ -1636,15 +1633,26 @@ static void pruneNoteBufferIfNeeded() {
 // Relay Control Functions
 // ============================================================================
 
-static void initializeRelays() {
+static int getRelayPin(uint8_t relayIndex) {
 #if defined(ARDUINO_OPTA)
+  if (relayIndex < 4) {
+    return LED_D0 + relayIndex;
+  }
+#endif
+  return -1;
+}
+
+static void initializeRelays() {
   // Initialize Opta relay outputs (D0-D3)
   for (uint8_t i = 0; i < MAX_RELAYS; ++i) {
-    int relayPin = LED_D0 + i;
-    pinMode(relayPin, OUTPUT);
-    digitalWrite(relayPin, LOW);
-    gRelayState[i] = false;
+    int relayPin = getRelayPin(i);
+    if (relayPin >= 0) {
+      pinMode(relayPin, OUTPUT);
+      digitalWrite(relayPin, LOW);
+      gRelayState[i] = false;
+    }
   }
+#if defined(ARDUINO_OPTA)
   Serial.println(F("Relay control initialized: 4 relays (D0-D3)"));
 #else
   Serial.println(F("Warning: Relay control not available on this platform"));
@@ -1658,20 +1666,20 @@ static void setRelayState(uint8_t relayNum, bool state) {
     return;
   }
 
-#if defined(ARDUINO_OPTA)
-  int relayPin = LED_D0 + relayNum;
-  digitalWrite(relayPin, state ? HIGH : LOW);
-  gRelayState[relayNum] = state;
-  
-  Serial.print(F("Relay "));
-  Serial.print(relayNum + 1);
-  Serial.print(F(" (D"));
-  Serial.print(relayNum);
-  Serial.print(F(") set to "));
-  Serial.println(state ? "ON" : "OFF");
-#else
-  Serial.println(F("Warning: Relay control not available on this platform"));
-#endif
+  int relayPin = getRelayPin(relayNum);
+  if (relayPin >= 0) {
+    digitalWrite(relayPin, state ? HIGH : LOW);
+    gRelayState[relayNum] = state;
+    
+    Serial.print(F("Relay "));
+    Serial.print(relayNum + 1);
+    Serial.print(F(" (D"));
+    Serial.print(relayNum);
+    Serial.print(F(") set to "));
+    Serial.println(state ? "ON" : "OFF");
+  } else {
+    Serial.println(F("Warning: Relay control not available on this platform"));
+  }
 }
 
 static void pollForRelayCommands() {
