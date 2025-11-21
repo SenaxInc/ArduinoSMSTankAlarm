@@ -1,7 +1,5 @@
 # Arduino SMS Tank Alarm
 
-***Latest Version: 092025 - Now Using LTE via Hologram.io***
-
 Arduino LTE cellular system that monitors tank levels and sends SMS alerts when thresholds are exceeded. Includes both client (tank monitoring) and server (data aggregation) components.
 
 Arduino will check sensor data on a scheduled basis. If sensor data is over a set threshold, the arduino will send an SMS text message to defined phone numbers. It will also send a daily reading of the sensor data at a set time of day.
