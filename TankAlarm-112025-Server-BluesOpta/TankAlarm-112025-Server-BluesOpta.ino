@@ -241,33 +241,229 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Config Generator</title>
   <style>
-    :root { color-scheme: light dark; font-family: "Segoe UI", Arial, sans-serif; }
-    body { margin: 0; background: #f4f6f8; color: #1f2933; }
-    header { padding: 16px 24px; background: #1d3557; color: #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.2); display: flex; justify-content: space-between; align-items: center; }
-    header h1 { margin: 0; font-size: 1.6rem; }
-    header a { color: #fff; text-decoration: none; font-size: 0.95rem; }
-    main { padding: 20px; max-width: 800px; margin: 0 auto; }
-    .card { background: #fff; border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,0.08); padding: 20px; }
-    h2 { margin-top: 0; font-size: 1.3rem; }
-    h3 { margin: 20px 0 10px; font-size: 1.1rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }
-    .field { display: flex; flex-direction: column; margin-bottom: 12px; }
-    .field span { font-size: 0.9rem; color: #475569; margin-bottom: 4px; }
-    .field input, .field select { padding: 8px 10px; border-radius: 6px; border: 1px solid #cbd5f5; font-size: 0.95rem; }
-    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-    .sensor-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 16px; position: relative; }
-    .sensor-header { display: flex; justify-content: space-between; margin-bottom: 12px; }
-    .sensor-title { font-weight: 600; color: #334155; }
-    .remove-btn { color: #ef4444; cursor: pointer; font-size: 0.9rem; border: none; background: none; padding: 0; }
-    .actions { margin-top: 24px; display: flex; gap: 12px; }
-    button { border: none; border-radius: 6px; padding: 10px 16px; font-size: 0.95rem; cursor: pointer; background: #1d4ed8; color: #fff; }
-    button.secondary { background: #64748b; }
-    button:hover { opacity: 0.9; }
+    :root {
+      font-family: "Segoe UI", Arial, sans-serif;
+      color-scheme: light dark;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    body[data-theme="light"] {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --text: #1f2933;
+      --muted: #475569;
+      --header-bg: #e2e8f0;
+      --card-border: rgba(15,23,42,0.08);
+      --card-shadow: rgba(15,23,42,0.08);
+      --accent: #2563eb;
+      --accent-strong: #1d4ed8;
+      --accent-contrast: #f8fafc;
+      --chip: #f8fafc;
+      --input-border: #cbd5e1;
+      --danger: #ef4444;
+      --pill-bg: rgba(37,99,235,0.12);
+    }
+    body[data-theme="dark"] {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --header-bg: #16213d;
+      --card-border: rgba(15,23,42,0.55);
+      --card-shadow: rgba(0,0,0,0.55);
+      --accent: #38bdf8;
+      --accent-strong: #22d3ee;
+      --accent-contrast: #0f172a;
+      --chip: rgba(148,163,184,0.15);
+      --input-border: rgba(148,163,184,0.4);
+      --danger: #f87171;
+      --pill-bg: rgba(56,189,248,0.18);
+    }
+    header {
+      background: var(--header-bg);
+      padding: 28px 24px;
+      box-shadow: 0 20px 45px var(--card-shadow);
+    }
+    header .bar {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.9rem;
+    }
+    header p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 640px;
+      line-height: 1.4;
+    }
+    .header-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .pill {
+      border-radius: 999px;
+      padding: 10px 20px;
+      text-decoration: none;
+      font-weight: 600;
+      background: var(--pill-bg);
+      color: var(--accent);
+      border: 1px solid transparent;
+      transition: transform 0.15s ease;
+    }
+    .pill:hover {
+      transform: translateY(-1px);
+    }
+    .icon-button {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      border: 1px solid var(--card-border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 1.2rem;
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+    .icon-button:hover {
+      transform: translateY(-1px);
+    }
+    main {
+      padding: 24px;
+      max-width: 1000px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .card {
+      background: var(--surface);
+      border-radius: 24px;
+      border: 1px solid var(--card-border);
+      padding: 20px;
+      box-shadow: 0 25px 55px var(--card-shadow);
+    }
+    h2 {
+      margin-top: 0;
+      font-size: 1.3rem;
+    }
+    h3 {
+      margin: 20px 0 10px;
+      font-size: 1.1rem;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 6px;
+      color: var(--text);
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 12px;
+    }
+    .field span {
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .field input, .field select {
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--input-border);
+      font-size: 0.95rem;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .sensor-card {
+      background: var(--chip);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      position: relative;
+    }
+    .sensor-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .sensor-title {
+      font-weight: 600;
+      color: var(--text);
+    }
+    .remove-btn {
+      color: var(--danger);
+      cursor: pointer;
+      font-size: 0.9rem;
+      border: none;
+      background: none;
+      padding: 0;
+      font-weight: 600;
+    }
+    .remove-btn:hover {
+      opacity: 0.8;
+    }
+    .actions {
+      margin-top: 24px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--accent);
+      color: var(--accent-contrast);
+      transition: transform 0.15s ease;
+    }
+    button.secondary {
+      background: transparent;
+      border: 1px solid var(--card-border);
+      color: var(--text);
+    }
+    button:hover {
+      transform: translateY(-1px);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
   </style>
 </head>
-<body>
+<body data-theme="light">
   <header>
-    <h1>Config Generator</h1>
-    <a href="/">&larr; Back to Dashboard</a>
+    <div class="bar">
+      <div>
+        <h1>Config Generator</h1>
+        <p>
+          Create new client configurations with sensor definitions and upload settings for Tank Alarm field units.
+        </p>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
+        <a class="pill" href="/">&larr; Back to Dashboard</a>
+      </div>
+    </div>
   </header>
   <main>
     <div class="card">
@@ -294,6 +490,24 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
     </div>
   </main>
   <script>
+    // Theme support
+    const THEME_KEY = 'tankalarmTheme';
+    const themeToggle = document.getElementById('themeToggle');
+    
+    function applyTheme(next) {
+      const theme = next === 'dark' ? 'dark' : 'light';
+      document.body.dataset.theme = theme;
+      themeToggle.textContent = theme === 'dark' ? '☀' : '☾';
+      themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+      localStorage.setItem(THEME_KEY, theme);
+    }
+    
+    applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+    themeToggle.addEventListener('click', () => {
+      const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+    });
+
     const sensorTypes = [
       { value: 0, label: 'Digital Input' },
       { value: 1, label: 'Analog Input (0-10V)' },
