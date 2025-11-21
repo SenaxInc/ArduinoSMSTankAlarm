@@ -2639,6 +2639,7 @@ enum class ConfigDispatchStatus : uint8_t {
 static void handlePinPost(EthernetClient &client, const String &body);
 static void handleRefreshPost(EthernetClient &client, const String &body);
 static void handleRelayPost(EthernetClient &client, const String &body);
+static void sendConfigGenerator(EthernetClient &client);
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
 static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state, const char *source);
 static void pollNotecard();
