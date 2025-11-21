@@ -258,6 +258,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
     body[data-theme="light"] {
       --bg: #f8fafc;
       --surface: #ffffff;
+      --text: #1f2933;
       --muted: #475569;
       --header-bg: #e2e8f0;
       --card-border: rgba(15,23,42,0.08);
@@ -272,6 +273,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
     body[data-theme="dark"] {
       --bg: #0f172a;
       --surface: #1e293b;
+      --text: #e2e8f0;
       --muted: #94a3b8;
       --header-bg: #16213d;
       --card-border: rgba(15,23,42,0.55);
