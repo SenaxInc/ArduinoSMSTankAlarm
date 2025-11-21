@@ -1,4 +1,4 @@
-name: Arduino CI - TankAlarm 092025
+name: Arduino CI - TankAlarm 092025 & 112025
 
 on:
   push:
@@ -6,12 +6,18 @@ on:
     paths:
       - 'TankAlarm-092025-Client-Hologram/**'
       - 'TankAlarm-092025-Server-Hologram/**'
+      - 'TankAlarm-112025-Client-BluesOpta/**'
+      - 'TankAlarm-112025-Server-BluesOpta/**'
+      - 'TankAlarm-112025-Viewer-BluesOpta/**'
       - '.github/workflows/arduino-ci.yml'
   pull_request:
     branches: [main, master]
     paths:
       - 'TankAlarm-092025-Client-Hologram/**'
       - 'TankAlarm-092025-Server-Hologram/**'
+      - 'TankAlarm-112025-Client-BluesOpta/**'
+      - 'TankAlarm-112025-Server-BluesOpta/**'
+      - 'TankAlarm-112025-Viewer-BluesOpta/**'
       - '.github/workflows/arduino-ci.yml'
   workflow_dispatch:
 
@@ -33,6 +39,11 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install arduino:samd
 
+      - name: Install Arduino Mbed OS Opta Boards core
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:mbed_opta
+
       - name: Install required libraries
         run: |
           arduino-cli lib update-index
@@ -41,6 +52,8 @@ jobs:
           arduino-cli lib install "Arduino Low Power"
           arduino-cli lib install "RTCZero"
           arduino-cli lib install "Ethernet"
+          arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "Blues Wireless Notecard"
 
       - name: Compile TankAlarm-092025-Client-Hologram
         id: compile-client
@@ -56,8 +69,34 @@ jobs:
           arduino-cli compile --fqbn arduino:samd:mkrnb1500 \
             TankAlarm-092025-Server-Hologram/TankAlarm-092025-Server-Hologram.ino
 
+      - name: Compile TankAlarm-112025-Client-BluesOpta
+        id: compile-112025-client
+        continue-on-error: true
+        run: |
+          arduino-cli compile --fqbn arduino:mbed_opta:opta \
+            TankAlarm-112025-Client-BluesOpta/TankAlarm-112025-Client-BluesOpta.ino
+
+      - name: Compile TankAlarm-112025-Server-BluesOpta
+        id: compile-112025-server
+        continue-on-error: true
+        run: |
+          arduino-cli compile --fqbn arduino:mbed_opta:opta \
+            TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino
+
+      - name: Compile TankAlarm-112025-Viewer-BluesOpta
+        id: compile-112025-viewer
+        continue-on-error: true
+        run: |
+          arduino-cli compile --fqbn arduino:mbed_opta:opta \
+            TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino
+
       - name: Create issue on compilation failure
-        if: steps.compile-client.outcome == 'failure' || steps.compile-server.outcome == 'failure'
+        if: |
+          steps.compile-client.outcome == 'failure' || 
+          steps.compile-server.outcome == 'failure' || 
+          steps.compile-112025-client.outcome == 'failure' || 
+          steps.compile-112025-server.outcome == 'failure' || 
+          steps.compile-112025-viewer.outcome == 'failure'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -68,41 +107,47 @@ jobs:
             // Determine which sketch(es) failed
             const clientFailed = '${{ steps.compile-client.outcome }}' === 'failure';
             const serverFailed = '${{ steps.compile-server.outcome }}' === 'failure';
+            const client112025Failed = '${{ steps.compile-112025-client.outcome }}' === 'failure';
+            const server112025Failed = '${{ steps.compile-112025-server.outcome }}' === 'failure';
+            const viewer112025Failed = '${{ steps.compile-112025-viewer.outcome }}' === 'failure';
 
-            let sketchName = '';
-            let searchPattern = '';
-            if (clientFailed && serverFailed) {
-              sketchName = 'TankAlarm-092025 Client and Server';
-              searchPattern = 'Arduino Compilation Error in TankAlarm-092025';
-            } else if (clientFailed) {
-              sketchName = 'TankAlarm-092025-Client-Hologram';
-              searchPattern = 'Arduino Compilation Error in TankAlarm-092025-Client-Hologram';
-            } else {
-              sketchName = 'TankAlarm-092025-Server-Hologram';
-              searchPattern = 'Arduino Compilation Error in TankAlarm-092025-Server-Hologram';
-            }
+            const failedSketches = [];
+            if (clientFailed) failedSketches.push('TankAlarm-092025-Client-Hologram');
+            if (serverFailed) failedSketches.push('TankAlarm-092025-Server-Hologram');
+            if (client112025Failed) failedSketches.push('TankAlarm-112025-Client-BluesOpta');
+            if (server112025Failed) failedSketches.push('TankAlarm-112025-Server-BluesOpta');
+            if (viewer112025Failed) failedSketches.push('TankAlarm-112025-Viewer-BluesOpta');
+
+            const sketchName = failedSketches.length === 1 ? failedSketches[0] : 
+                               failedSketches.length > 1 ? 'Multiple Sketches' : 'Unknown';
+            const searchPattern = 'Arduino Compilation Error';
 
             const issueTitle = `Arduino Compilation Error in ${sketchName} (${date})`;
             const workflowUrl = '${{ github.server_url }}/' +
               '${{ github.repository }}/actions/runs/${{ github.run_id }}';
 
             let detailsSection = '### Details\n';
-            if (clientFailed) {
-              detailsSection += `- **Client Sketch:** TankAlarm-092025-Client-Hologram/` +
-                `TankAlarm-092025-Client-Hologram.ino ❌\n`;
-            } else {
-              detailsSection += `- **Client Sketch:** TankAlarm-092025-Client-Hologram/` +
-                `TankAlarm-092025-Client-Hologram.ino ✅\n`;
-            }
-            if (serverFailed) {
-              detailsSection += `- **Server Sketch:** TankAlarm-092025-Server-Hologram/` +
-                `TankAlarm-092025-Server-Hologram.ino ❌\n`;
-            } else {
-              detailsSection += `- **Server Sketch:** TankAlarm-092025-Server-Hologram/` +
-                `TankAlarm-092025-Server-Hologram.ino ✅\n`;
-            }
-            detailsSection += `- **Board:** Arduino MKR NB 1500 (arduino:samd:mkrnb1500)\n`;
-            detailsSection += `- **Triggered by:** ${{ github.event_name }}`;
+            
+            // TankAlarm-092025 sketches
+            detailsSection += `#### TankAlarm-092025 (MKR NB 1500)\n`;
+            detailsSection += `- **Client Sketch:** TankAlarm-092025-Client-Hologram/` +
+              `TankAlarm-092025-Client-Hologram.ino ${clientFailed ? '❌' : '✅'}\n`;
+            detailsSection += `- **Server Sketch:** TankAlarm-092025-Server-Hologram/` +
+              `TankAlarm-092025-Server-Hologram.ino ${serverFailed ? '❌' : '✅'}\n`;
+            
+            // TankAlarm-112025 sketches
+            detailsSection += `\n#### TankAlarm-112025 (Arduino Opta)\n`;
+            detailsSection += `- **Client Sketch:** TankAlarm-112025-Client-BluesOpta/` +
+              `TankAlarm-112025-Client-BluesOpta.ino ${client112025Failed ? '❌' : '✅'}\n`;
+            detailsSection += `- **Server Sketch:** TankAlarm-112025-Server-BluesOpta/` +
+              `TankAlarm-112025-Server-BluesOpta.ino ${server112025Failed ? '❌' : '✅'}\n`;
+            detailsSection += `- **Viewer Sketch:** TankAlarm-112025-Viewer-BluesOpta/` +
+              `TankAlarm-112025-Viewer-BluesOpta.ino ${viewer112025Failed ? '❌' : '✅'}\n`;
+            
+            detailsSection += `\n**Boards:**\n`;
+            detailsSection += `- Arduino MKR NB 1500 (arduino:samd:mkrnb1500)\n`;
+            detailsSection += `- Arduino Opta (arduino:mbed_opta:opta)\n`;
+            detailsSection += `\n**Triggered by:** ${{ github.event_name }}`;
 
             const issueBody = `## Arduino Compilation Failed
             
@@ -161,5 +206,10 @@ jobs:
             }
 
       - name: Fail workflow if compilation failed
-        if: steps.compile-client.outcome == 'failure' || steps.compile-server.outcome == 'failure'
+        if: |
+          steps.compile-client.outcome == 'failure' || 
+          steps.compile-server.outcome == 'failure' || 
+          steps.compile-112025-client.outcome == 'failure' || 
+          steps.compile-112025-server.outcome == 'failure' || 
+          steps.compile-112025-viewer.outcome == 'failure'
         run: exit 1
