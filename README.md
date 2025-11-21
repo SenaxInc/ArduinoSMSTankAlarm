@@ -6,7 +6,43 @@ Arduino LTE cellular system that monitors tank levels and sends SMS alerts when 
 
 Arduino will check sensor data on a scheduled basis. If sensor data is over a set threshold, the arduino will send an SMS text message to defined phone numbers. It will also send a daily reading of the sensor data at a set time of day.
 
-## Version 092025 (Current - Recommended)
+## Version 112025 (Blues Wireless + Arduino Opta)
+
+The 112025 version uses Arduino Opta with Blues Wireless Notecard for cellular connectivity. Features include:
+- **Internal flash storage** (LittleFS) - No SD card required
+- **Fleet-based communication** - Simplified device-to-device data exchange via Blues Notehub
+- **Web-based configuration** - Update clients remotely from server dashboard
+- **Intranet dashboard** - Real-time monitoring via Ethernet web interface
+
+### Quick Links - 112025 Client (Tank Monitor)
+- **[Installation Guide](TankAlarm-112025-Client-BluesOpta/INSTALLATION.md)** - Complete Arduino IDE setup with library installation
+- **[Fleet Implementation Summary](TankAlarm-112025-Client-BluesOpta/FLEET_IMPLEMENTATION_SUMMARY.md)** - Architecture overview
+- **[Migration Guide](TankAlarm-112025-Client-BluesOpta/MIGRATION_GUIDE.md)** - Upgrading from route-based setup
+
+### Quick Links - 112025 Server (Data Aggregation)
+- **[Installation Guide](TankAlarm-112025-Server-BluesOpta/INSTALLATION.md)** - Complete Arduino IDE setup with library installation
+- **[Fleet Setup Guide](TankAlarm-112025-Server-BluesOpta/FLEET_SETUP.md)** - Blues Notehub fleet configuration
+
+### Configuration Approach (112025)
+
+The 112025 version uses a **simplified configuration system**:
+
+1. **LittleFS Internal Storage** - Configuration persisted to device flash
+   - No SD card required
+   - Survives power cycles
+   - Automatic default config on first boot
+   
+2. **Remote Configuration** - Update clients via server web interface
+   - Push config changes from server to any client
+   - Changes routed through Blues Notehub
+   - No physical access needed for updates
+
+3. **Fleet-Based Communication** - Simplified device-to-device routing
+   - Just assign devices to fleets in Blues Notehub
+   - No manual route configuration needed
+   - Easier scaling for multiple devices
+
+## Version 092025 (Current - Recommended for MKR NB 1500)
 
 The 092025 version is the latest implementation using Arduino MKR NB 1500 with Hologram.io cellular connectivity.
 

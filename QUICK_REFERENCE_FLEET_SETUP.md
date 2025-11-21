@@ -1,5 +1,31 @@
 # Quick Reference: Fleet-Based vs Route-Based Setup
 
+## Arduino IDE Setup (112025)
+
+### Required Software
+- **Arduino IDE** 2.0+ (recommended) or 1.8.x
+- **Board Support:** Arduino Mbed OS Opta Boards (via Boards Manager)
+
+### Required Libraries (Install via Library Manager)
+1. **ArduinoJson** (version 7.x or later) - JSON parsing
+2. **Blues Wireless Notecard** (latest) - Notecard communication
+3. **Ethernet** (built-in) - Web server (server only)
+4. **LittleFS** (built-in with Mbed core) - File system
+5. **Wire** (built-in) - I2C communication
+
+### Installation Steps
+1. Install Arduino IDE from [arduino.cc/software](https://www.arduino.cc/en/software)
+2. Open **Tools → Boards Manager** → Search "Arduino Mbed OS Opta Boards" → Install
+3. Open **Tools → Manage Libraries** → Install libraries listed above
+4. Open sketch (.ino file) for client or server
+5. Select **Tools → Board → Arduino Opta**
+6. Update `PRODUCT_UID` (client) or `SERVER_PRODUCT_UID` (server) to match your Blues Notehub project
+7. Compile and upload
+
+**📚 Detailed Instructions:**
+- [Client Installation Guide](TankAlarm-112025-Client-BluesOpta/INSTALLATION.md)
+- [Server Installation Guide](TankAlarm-112025-Server-BluesOpta/INSTALLATION.md)
+
 ## At a Glance
 
 | Aspect | Route-Based (OLD) | Fleet-Based (NEW) ✅ |

@@ -2,7 +2,7 @@
 
 This guide helps ensure Arduino sketches compile successfully in the CI workflow and locally.
 
-## Quick Verification
+## Quick Verification - 092025 (MKR NB 1500)
 
 To verify your changes compile correctly before committing:
 
@@ -24,6 +24,33 @@ arduino-cli compile --fqbn arduino:samd:mkrnb1500 \
 arduino-cli compile --fqbn arduino:samd:mkrnb1500 \
   TankAlarm-092025-Server-Hologram/TankAlarm-092025-Server-Hologram.ino
 ```
+
+## Quick Verification - 112025 (Arduino Opta)
+
+To verify the 112025 sketches compile:
+
+```bash
+# Install Arduino CLI (if not already installed)
+curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+export PATH="$PWD/bin:$PATH"
+
+# Setup cores and libraries for Arduino Opta
+arduino-cli core update-index
+arduino-cli core install arduino:mbed_opta
+arduino-cli lib install "ArduinoJson@7.2.0"
+arduino-cli lib install "Blues Wireless Notecard"
+arduino-cli lib install "Ethernet"
+
+# Compile Client sketch
+arduino-cli compile --fqbn arduino:mbed_opta:opta \
+  TankAlarm-112025-Client-BluesOpta/TankAlarm-112025-Client-BluesOpta.ino
+
+# Compile Server sketch
+arduino-cli compile --fqbn arduino:mbed_opta:opta \
+  TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino
+```
+
+**Note:** LittleFS and Wire libraries are built into the Arduino Mbed OS core and don't need separate installation.
 
 ## Common Compilation Issues
 
@@ -103,17 +130,31 @@ Keep resource usage reasonable:
 
 ## Configuration Files
 
-### Client Configuration
+### 092025 Configuration (MKR NB 1500)
 
+**Client Configuration:**
 - **Template:** `TankAlarm-092025-Client-Hologram/config_template.h`
 - **Active:** Include `config_template.h` for compilation (users create their own `config.h`)
 - **Tracked:** Only `config_template.h` is in git (config.h is .gitignored)
 
-### Server Configuration  
-
+**Server Configuration:**
 - **Hardware Config:** `TankAlarm-092025-Server-Hologram/server_config.h` (compile-time hardware constants)
 - **SD Card Config:** `TankAlarm-092025-Server-Hologram/server_config.txt` (runtime user configuration)
 - **Tracked:** Hardware config.h is in git; SD card .txt template is tracked
+
+### 112025 Configuration (Arduino Opta)
+
+**Client Configuration:**
+- **Runtime Config:** `/client_config.json` stored in LittleFS (internal flash)
+- **Default config created automatically** on first boot
+- **Product UID:** Update `PRODUCT_UID` define in `.ino` file to match Blues Notehub project
+- **No SD card required**
+
+**Server Configuration:**
+- **Runtime Config:** `/server_config.json` stored in LittleFS (internal flash)
+- **Default config created automatically** on first boot
+- **Product UID:** Update `SERVER_PRODUCT_UID` define in `.ino` file to match Blues Notehub project
+- **No SD card required**
 
 ## Troubleshooting
 
@@ -130,6 +171,54 @@ Keep resource usage reasonable:
 2. Missing hardware-specific libraries
 3. Different board variant (check FQBN)
 
+## Common Compilation Issues - 112025 (Arduino Opta)
+
+### 1. ArduinoJson Version Mismatch
+
+**Problem:** `no matching function for call to 'JsonDocument::JsonDocument(int)'`
+
+**Solution:** Ensure you have ArduinoJson version 7.x or later:
+- ArduinoJson 7.x uses `JsonDocument` instead of `DynamicJsonDocument`
+- Install via Library Manager: Search "ArduinoJson" and install version 7.2.0 or later
+- Version 6.x will not work with the 112025 code
+
+### 2. Notecard Library Missing
+
+**Problem:** `Notecard.h: No such file or directory`
+
+**Solution:** Install Blues Wireless Notecard library:
+- Open Library Manager
+- Search: "Notecard"
+- Install: "Blues Wireless Notecard by Blues Inc."
+
+### 3. LittleFS Not Found
+
+**Problem:** `LittleFS.h: No such file or directory`
+
+**Solution:** LittleFS is built into Arduino Mbed OS core:
+- Go to **Tools → Board → Boards Manager**
+- Search: "Arduino Mbed OS Opta Boards"
+- Install the package
+- LittleFS will be automatically available
+
+### 4. Wrong Board Selected
+
+**Problem:** `#error "This sketch is designed for Arduino Opta"`
+
+**Solution:** Ensure correct board is selected:
+- Go to **Tools → Board → Arduino Mbed OS Opta Boards**
+- Select **Arduino Opta**
+- FQBN should be: `arduino:mbed_opta:opta`
+
+### 5. Ethernet Library Issues
+
+**Problem:** Ethernet-related compilation errors (server only)
+
+**Solution:** 
+- Ethernet library should be built-in
+- If missing, install via Library Manager: "Ethernet by Arduino"
+- Ensure you're compiling the server, not the client (client doesn't use Ethernet)
+
 ## Best Practices
 
 1. **Always test locally** before pushing
@@ -139,9 +228,20 @@ Keep resource usage reasonable:
 5. **Check resource usage** after adding features
 6. **Verify closing braces** match opening ones
 7. **Keep sketches modular** with clear function separation
+8. **For 112025:** Ensure ArduinoJson 7.x is installed (not 6.x)
+9. **For 112025:** Verify Mbed OS Opta core is installed for LittleFS support
 
 ## Additional Resources
 
+### 092025 (MKR NB 1500)
 - [Arduino CLI Documentation](https://arduino.github.io/arduino-cli/)
 - [MKRNB Library Reference](https://www.arduino.cc/reference/en/libraries/mkrnb/)
 - [Arduino MKR NB 1500 Documentation](https://docs.arduino.cc/hardware/mkr-nb-1500)
+
+### 112025 (Arduino Opta)
+- [Arduino Opta Documentation](https://docs.arduino.cc/hardware/opta)
+- [Blues Wireless Notecard Library](https://dev.blues.io/tools-and-sdks/firmware-libraries/arduino-library/)
+- [ArduinoJson v7 Documentation](https://arduinojson.org/v7/)
+- [Arduino Mbed OS Documentation](https://docs.arduino.cc/learn/programming/mbed-os-basics)
+- [Client Installation Guide](../TankAlarm-112025-Client-BluesOpta/INSTALLATION.md)
+- [Server Installation Guide](../TankAlarm-112025-Server-BluesOpta/INSTALLATION.md)
