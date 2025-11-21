@@ -20,9 +20,9 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
-#include <LittleFS.h>
 #include <Notecard.h>
 #include <Ethernet.h>
+#include <LittleFS.h>
 #include <math.h>
 #include <string.h>
 #include <ctype.h>
@@ -39,6 +39,7 @@
 
 // Watchdog support for STM32H7 (Arduino Opta)
 #if defined(ARDUINO_OPTA) || defined(STM32H7xx)
+
   #include <IWatchdog.h>
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
@@ -197,8 +198,9 @@ static unsigned long gLastPollMillis = 0;
 static double gLastDailyEmailSentEpoch = 0.0;
 #define MIN_DAILY_EMAIL_INTERVAL_SECONDS 3600  // Minimum 1 hour between daily emails
 
-#ifndef strlcpy
-static size_t strlcpy(char *dst, const char *src, size_t size) {
+#ifndef ARDUINO_TANKALARM_HAS_STRLCPY
+#define ARDUINO_TANKALARM_HAS_STRLCPY
+size_t strlcpy(char *dst, const char *src, size_t size) {
   if (!dst || !src || size == 0) {
     return 0;
   }
@@ -2540,6 +2542,22 @@ static void sendClientDataJson(EthernetClient &client);
 static void handleConfigPost(EthernetClient &client, const String &body);
 static void handlePinPost(EthernetClient &client, const String &body);
 static void handleRefreshPost(EthernetClient &client, const String &body);
+static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
+static void pollNotecard();
+static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double));
+static void handleTelemetry(JsonDocument &doc, double epoch);
+static void handleAlarm(JsonDocument &doc, double epoch);
+static void handleDaily(JsonDocument &doc, double epoch);
+static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber);
+static void sendSmsAlert(const char *message);
+static void sendDailyEmail();
+static void loadClientConfigSnapshots();
+static void saveClientConfigSnapshots();
+static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffer);
+static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
+static bool checkSmsRateLimit(TankRecord *rec);
+static void publishViewerSummary();
+static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
 enum class ConfigDispatchStatus : uint8_t {
   Ok = 0,
   PayloadTooLarge,
@@ -2568,22 +2586,6 @@ static void handleRefreshPost(EthernetClient &client, const String &body) {
   pollNotecard();
   sendClientDataJson(client);
 }
-static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
-static void pollNotecard();
-static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double));
-static void handleTelemetry(JsonDocument &doc, double epoch);
-static void handleAlarm(JsonDocument &doc, double epoch);
-static void handleDaily(JsonDocument &doc, double epoch);
-static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber);
-static void sendSmsAlert(const char *message);
-static void sendDailyEmail();
-static void loadClientConfigSnapshots();
-static void saveClientConfigSnapshots();
-static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffer);
-static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
-static bool checkSmsRateLimit(TankRecord *rec);
-static void publishViewerSummary();
-static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
 
 void setup() {
   Serial.begin(115200);
@@ -3057,7 +3059,11 @@ static void respondHtml(EthernetClient &client, const String &body) {
 static void respondJson(EthernetClient &client, const String &body, int status) {
   client.print(F("HTTP/1.1 "));
   client.print(status);
-  client.println(status == 200 ? F(" OK") : "");
+  if (status == 200) {
+    client.println(F(" OK"));
+  } else {
+    client.println();
+  }
   client.println(F("Content-Type: application/json"));
   client.print(F("Content-Length: "));
   client.println(body.length());
@@ -3396,7 +3402,6 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
 
   J *body = JParse(buffer);
   if (!body) {
-    notecard.deleteRequest(req);
     return ConfigDispatchStatus::PayloadTooLarge;
   }
   JAddItemToObject(req, "body", body);
@@ -3438,7 +3443,7 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
       break;
     }
 
-    char *json = JConvertToJson(body);
+    char *json = JConvertToJSONString(body);
     double epoch = JGetNumber(rsp, "time");
     if (json) {
       DynamicJsonDocument doc(4096);
@@ -3635,7 +3640,6 @@ static void sendSmsAlert(const char *message) {
   JAddBoolToObject(req, "sync", true);
   J *body = JParse(buffer);
   if (!body) {
-    notecard.deleteRequest(req);
     return;
   }
   JAddItemToObject(req, "body", body);
@@ -3691,7 +3695,6 @@ static void sendDailyEmail() {
   JAddBoolToObject(req, "sync", true);
   J *body = JParse(buffer);
   if (!body) {
-    notecard.deleteRequest(req);
     return;
   }
   JAddItemToObject(req, "body", body);
@@ -3738,7 +3741,6 @@ static void publishViewerSummary() {
   JAddBoolToObject(req, "sync", true);
   J *body = JParse(json.c_str());
   if (!body) {
-    notecard.deleteRequest(req);
     Serial.println(F("Viewer summary JSON parse failed"));
     return;
   }
