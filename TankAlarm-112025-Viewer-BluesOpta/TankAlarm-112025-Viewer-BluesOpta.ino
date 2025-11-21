@@ -135,38 +135,68 @@ static unsigned long gLastSyncMillis = 0;
 static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tank Alarm Viewer</title>
-  <style>
-    :root { color-scheme: light dark; font-family: "Segoe UI", Arial, sans-serif; }
-    body { margin: 0; background: #0f172a; color: #e2e8f0; }
-    header { padding: 20px 28px; background: #1e293b; box-shadow: 0 2px 10px rgba(0,0,0,0.4); }
+<body data-theme="light">
+  <header>
+    <div class="title-row">
+      <div>
+        <h1 id="viewerName">Tank Alarm Viewer</h1>
+        <div class="meta">
+          <span>Viewer UID: <code id="viewerUid">--</code></span>
+          <span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span>
+          <span>Summary Generated: <span id="summaryGenerated">--</span></span>
+          <span>Last Fetch: <span id="lastFetch">--</span></span>
+          <span>Next Scheduled Fetch: <span id="nextFetch">--</span></span>
+          <span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
+      </div>
+    </div>
+  </header>
+      --meta-color: #475569;
+      --card-bg: #ffffff;
+      --filter-bg: #ffffff;
+      --table-border: rgba(15,23,42,0.08);
+    }
+    body[data-theme="dark"] {
+      --bg: #0f172a;
+      --text: #e2e8f0;
+      --header-bg: #1e293b;
+      --meta-color: #94a3b8;
+      --card-bg: #1e293b;
+      --filter-bg: #1e293b;
+      --table-border: rgba(255,255,255,0.08);
+    }
+    header { padding: 20px 28px; background: var(--header-bg); box-shadow: 0 2px 10px rgba(0,0,0,0.15); }
     header h1 { margin: 0; font-size: 1.7rem; }
-    header .meta { margin-top: 8px; font-size: 0.95rem; color: #94a3b8; display: flex; gap: 16px; flex-wrap: wrap; }
+    header .meta { margin-top: 12px; font-size: 0.95rem; color: var(--meta-color); display: flex; gap: 16px; flex-wrap: wrap; }
+    .title-row { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+    .header-actions { display: flex; gap: 12px; align-items: center; }
+    .icon-button { width: 40px; height: 40px; border-radius: 50%; border: 1px solid rgba(148,163,184,0.4); background: var(--card-bg); color: var(--text); font-size: 1.1rem; cursor: pointer; }
     main { padding: 24px; max-width: 1400px; margin: 0 auto; }
-    .card { background: #1e293b; border-radius: 16px; padding: 20px; box-shadow: 0 25px 60px rgba(15,23,42,0.55); }
-    .filter-bar { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin-bottom: 20px; background: #1e293b; padding: 12px 16px; border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,0.45); }
-    .filter-bar label { display: flex; flex-direction: column; font-size: 0.9rem; color: #cbd5f5; }
-    .filter-bar select { margin-top: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.4); background: #0f172a; color: #e2e8f0; min-width: 220px; }
+    .card { background: var(--card-bg); border-radius: 16px; padding: 20px; box-shadow: 0 25px 60px rgba(15,23,42,0.15); border: 1px solid rgba(15,23,42,0.08); }
+    .filter-bar { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin-bottom: 20px; background: var(--filter-bg); padding: 12px 16px; border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,0.15); border: 1px solid rgba(15,23,42,0.08); }
+    .filter-bar label { display: flex; flex-direction: column; font-size: 0.9rem; color: var(--meta-color); }
+    .filter-bar select { margin-top: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.4); background: var(--bg); color: var(--text); min-width: 220px; }
     .filter-actions { display: flex; gap: 12px; flex-wrap: wrap; }
-    .btn { padding: 10px 16px; border-radius: 999px; border: none; background: linear-gradient(135deg,#22d3ee,#818cf8); color: #0f172a; font-weight: 600; cursor: pointer; box-shadow: 0 15px 30px rgba(14,165,233,0.35); transition: transform 0.15s ease, box-shadow 0.15s ease; }
+    .btn { padding: 10px 16px; border-radius: 999px; border: none; background: linear-gradient(135deg,#22d3ee,#818cf8); color: #0f172a; font-weight: 600; cursor: pointer; box-shadow: 0 15px 30px rgba(14,165,233,0.25); transition: transform 0.15s ease, box-shadow 0.15s ease; }
     .btn:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; }
     .btn:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 20px 40px rgba(14,165,233,0.45); }
     table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
-    th { text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.75rem; color: #cbd5f5; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--table-border); }
+    th { text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.75rem; color: var(--meta-color); }
     tr:last-child td { border-bottom: none; }
     tr.alarm { background: rgba(220,38,38,0.08); }
+    body[data-theme="dark"] tr.alarm { background: rgba(220,38,38,0.18); }
     .status-pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 12px; font-size: 0.85rem; }
     .status-pill.ok { background: rgba(16,185,129,0.15); color: #34d399; }
     .status-pill.alarm { background: rgba(248,113,113,0.2); color: #fca5a5; }
-    .timestamp { font-feature-settings: "tnum"; color: #94a3b8; font-size: 0.9rem; }
-    footer { margin-top: 20px; color: #64748b; font-size: 0.85rem; text-align: center; }
+    .timestamp { font-feature-settings: "tnum"; color: var(--meta-color); font-size: 0.9rem; }
+    footer { margin-top: 20px; color: var(--meta-color); font-size: 0.85rem; text-align: center; }
   </style>
 </head>
-<body>
+<body data-theme="light">
   <header>
     <h1 id="viewerName">Tank Alarm Viewer</h1>
     <div class="meta">
@@ -217,6 +247,21 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
   </main>
   <script>
     (() => {
+      const THEME_KEY = 'tankalarmTheme';
+      const themeToggle = document.getElementById('themeToggle');
+      function applyTheme(next) {
+        const theme = next === 'dark' ? 'dark' : 'light';
+        document.body.dataset.theme = theme;
+        themeToggle.textContent = theme === 'dark' ? '☀' : '☾';
+        themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+        localStorage.setItem(THEME_KEY, theme);
+      }
+      applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+      themeToggle.addEventListener('click', () => {
+        const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
+      });
+
       const REFRESH_SECONDS = )HTML" STR(WEB_REFRESH_SECONDS) R"HTML(;
       const els = {
         viewerName: document.getElementById('viewerName'),

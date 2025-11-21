@@ -506,118 +506,298 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
   <title>Tank Alarm Server</title>
   <style>
     :root {
-      color-scheme: light dark;
       font-family: "Segoe UI", Arial, sans-serif;
+      color-scheme: light dark;
+    }
+    * {
+      box-sizing: border-box;
     }
     body {
       margin: 0;
-      background: #f4f6f8;
-      color: #1f2933;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    body[data-theme="light"] {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --muted: #475569;
+      --header-bg: #e2e8f0;
+      --card-border: rgba(15,23,42,0.08);
+      --card-shadow: rgba(15,23,42,0.08);
+      --accent: #2563eb;
+      --accent-strong: #1d4ed8;
+      --accent-contrast: #f8fafc;
+      --chip: #eceff7;
+      --table-border: rgba(15,23,42,0.08);
+      --pill-bg: rgba(37,99,235,0.12);
+      --alarm: #b91c1c;
+      --ok: #0f766e;
+    }
+    body[data-theme="dark"] {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --muted: #94a3b8;
+      --header-bg: #16213d;
+      --card-border: rgba(15,23,42,0.55);
+      --card-shadow: rgba(0,0,0,0.55);
+      --accent: #38bdf8;
+      --accent-strong: #22d3ee;
+      --accent-contrast: #0f172a;
+      --chip: rgba(148,163,184,0.15);
+      --table-border: rgba(255,255,255,0.12);
+      --pill-bg: rgba(56,189,248,0.18);
+      --alarm: #f87171;
+      --ok: #34d399;
     }
     header {
-      padding: 16px 24px;
-      background: #1d3557;
-      color: #fff;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      background: var(--header-bg);
+      padding: 28px 24px;
+      box-shadow: 0 20px 45px var(--card-shadow);
     }
-    header h1 {
-      margin: 0 0 4px 0;
-      font-size: 1.6rem;
-    }
-    header .meta {
+    header .bar {
       display: flex;
+      justify-content: space-between;
       gap: 16px;
       flex-wrap: wrap;
-      font-size: 0.95rem;
+      align-items: flex-start;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.9rem;
+    }
+    header p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 640px;
+      line-height: 1.4;
+    }
+    .header-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .pill {
+      border-radius: 999px;
+      padding: 10px 20px;
+      text-decoration: none;
+      font-weight: 600;
+      background: var(--pill-bg);
+      color: var(--accent);
+      border: 1px solid transparent;
+      transition: transform 0.15s ease;
+    }
+    .pill.secondary {
+      background: transparent;
+      border-color: var(--card-border);
+      color: var(--muted);
+    }
+    .pill:hover {
+      transform: translateY(-1px);
+    }
+    .icon-button {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      border: 1px solid var(--card-border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 1.2rem;
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+    .icon-button:hover {
+      transform: translateY(-1px);
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 20px;
+    }
+    .meta-card {
+      background: var(--surface);
+      border-radius: 16px;
+      border: 1px solid var(--card-border);
+      padding: 16px;
+      box-shadow: 0 15px 35px var(--card-shadow);
+    }
+    .meta-card span {
+      display: block;
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .meta-card strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 1.05rem;
+      word-break: break-all;
     }
     main {
-      padding: 20px;
-      max-width: 1200px;
+      padding: 24px;
+      max-width: 1400px;
       margin: 0 auto;
+      width: 100%;
     }
-    .layout {
+    .stats-grid {
       display: grid;
-      gap: 20px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
     }
-    @media (min-width: 960px) {
-      .layout {
-        grid-template-columns: 1fr 1.3fr;
-      }
+    .stat-card {
+      background: var(--surface);
+      border-radius: 16px;
+      padding: 18px;
+      border: 1px solid var(--card-border);
+      box-shadow: 0 12px 30px var(--card-shadow);
+    }
+    .stat-card span {
+      font-size: 0.85rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .stat-card strong {
+      display: block;
+      margin-top: 8px;
+      font-size: 1.8rem;
+    }
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: flex-end;
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 16px;
+      box-shadow: 0 18px 40px var(--card-shadow);
+      margin-bottom: 20px;
+    }
+    .filter-bar label {
+      display: flex;
+      flex-direction: column;
+      font-size: 0.9rem;
+      color: var(--muted);
+      min-width: 220px;
+    }
+    select {
+      appearance: none;
+      border-radius: 10px;
+      border: 1px solid var(--card-border);
+      padding: 10px 12px;
+      margin-top: 6px;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .filter-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .btn {
+      border: none;
+      border-radius: 999px;
+      padding: 10px 20px;
+      font-weight: 600;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: var(--accent-contrast);
+      box-shadow: 0 18px 40px rgba(37,99,235,0.35);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .btn.secondary {
+      background: transparent;
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      box-shadow: none;
+    }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    .btn:not(:disabled):hover {
+      transform: translateY(-1px);
     }
     .card {
-      background: #fff;
-      border-radius: 12px;
-      box-shadow: 0 10px 30px rgba(15,23,42,0.08);
+      background: var(--surface);
+      border-radius: 24px;
+      border: 1px solid var(--card-border);
       padding: 20px;
+      box-shadow: 0 25px 55px var(--card-shadow);
     }
-    h2 {
-      margin-top: 0;
-      font-size: 1.3rem;
+    .card-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 6px 12px;
+      background: var(--chip);
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 600;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      margin-top: 10px;
+      margin-top: 18px;
     }
     th, td {
-      padding: 8px 10px;
-      border-bottom: 1px solid #e2e8f0;
       text-align: left;
-      vertical-align: middle;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--table-border);
+      font-size: 0.9rem;
     }
     th {
-      background: #f1f5f9;
-      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    tr:last-child td {
+      border-bottom: none;
     }
     tr.alarm {
-      background: #ffe3e3;
+      background: rgba(220,38,38,0.08);
     }
-    .field {
-      display: flex;
-      flex-direction: column;
-      margin-bottom: 12px;
+    body[data-theme="dark"] tr.alarm {
+      background: rgba(248,113,113,0.08);
     }
-    .field span {
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .status-pill.ok {
+      background: rgba(16,185,129,0.15);
+      color: var(--ok);
+    }
+    .status-pill.alarm {
+      background: rgba(220,38,38,0.15);
+      color: var(--alarm);
+    }
+    .timestamp {
       font-size: 0.9rem;
-      color: #475569;
-      margin-bottom: 4px;
-    }
-    .field input,
-    .field select {
-      padding: 8px 10px;
-      border-radius: 6px;
-      border: 1px solid #cbd5f5;
-      font-size: 0.95rem;
-    }
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 12px;
-    }
-    .actions {
-      margin-top: 16px;
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-    button {
-      border: none;
-      border-radius: 6px;
-      padding: 10px 16px;
-      font-size: 0.95rem;
-      cursor: pointer;
-      background: #1d4ed8;
-      color: #fff;
-      transition: transform 0.1s ease;
-    }
-    button.secondary {
-      background: #64748b;
-    }
-    button.destructive {
-      background: #e11d48;
-    }
-    button:hover {
-      transform: translateY(-1px);
+      color: var(--muted);
     }
     #toast {
       position: fixed;
@@ -632,76 +812,653 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.3s ease;
+      font-weight: 600;
     }
     #toast.show {
       opacity: 1;
     }
-    .checkbox-cell {
-      text-align: center;
+  </style>
+</head>
+<body data-theme="light">
+  <header>
+    <div class="bar">
+      <div>
+        <p class="timestamp">Tank Alarm Fleet · Live server telemetry</p>
+        <h1 id="serverName">Tank Alarm Server</h1>
+        <p>
+          Monitor every field unit in one place. Filter by site, highlight alarms, and jump into the client console when you need to push configuration updates.
+        </p>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
+        <a class="pill" href="/client-console">Client Console</a>
+        <a class="pill secondary" href="/config-generator">Config Generator</a>
+      </div>
+    </div>
+    <div class="meta-grid">
+      <div class="meta-card">
+        <span>Server UID</span>
+        <strong id="serverUid">--</strong>
+      </div>
+      <div class="meta-card">
+        <span>Client Fleet</span>
+        <strong id="fleetName">--</strong>
+      </div>
+      <div class="meta-card">
+        <span>Next Daily Email</span>
+        <strong id="nextEmail">--</strong>
+      </div>
+      <div class="meta-card">
+        <span>Last Time Sync</span>
+        <strong id="lastSync">--</strong>
+      </div>
+      <div class="meta-card">
+        <span>PIN Status</span>
+        <strong id="pinStatus">--</strong>
+      </div>
+      <div class="meta-card">
+        <span>Last Dashboard Refresh</span>
+        <strong id="lastRefresh">--</strong>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <span>Total Clients</span>
+        <strong id="statClients">0</strong>
+      </div>
+      <div class="stat-card">
+        <span>Active Tanks</span>
+        <strong id="statTanks">0</strong>
+      </div>
+      <div class="stat-card">
+        <span>Active Alarms</span>
+        <strong id="statAlarms">0</strong>
+      </div>
+      <div class="stat-card">
+        <span>Stale Tanks (&gt;60m)</span>
+        <strong id="statStale">0</strong>
+      </div>
+    </div>
+    <section class="filter-bar">
+      <label>
+        Site Filter
+        <select id="siteFilter">
+          <option value="">All Sites</option>
+        </select>
+      </label>
+      <div class="filter-actions">
+        <button class="btn" id="refreshSiteBtn">Refresh Selected Site</button>
+        <button class="btn secondary" id="refreshAllBtn">Refresh All Sites</button>
+        <span class="badge" id="autoRefreshHint">UI refresh 60 s · Server cadence 6 h</span>
+      </div>
+    </section>
+    <section class="card">
+      <div class="card-head">
+        <h2 style="margin:0;">Fleet Telemetry</h2>
+        <span class="timestamp">Rows update automatically while this page remains open.</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>Site</th>
+            <th>Tank</th>
+            <th>Level (in)</th>
+            <th>% Full</th>
+            <th>Status</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody id="tankBody"></tbody>
+      </table>
+    </section>
+  </main>
+  <div id="toast"></div>
+  <script>
+    (() => {
+      const THEME_KEY = 'tankalarmTheme';
+      const DEFAULT_REFRESH_SECONDS = 60;
+      const STALE_MINUTES = 60;
+
+      const els = {
+        themeToggle: document.getElementById('themeToggle'),
+        serverName: document.getElementById('serverName'),
+        serverUid: document.getElementById('serverUid'),
+        fleetName: document.getElementById('fleetName'),
+        nextEmail: document.getElementById('nextEmail'),
+        lastSync: document.getElementById('lastSync'),
+        lastRefresh: document.getElementById('lastRefresh'),
+        pinStatus: document.getElementById('pinStatus'),
+        autoRefreshHint: document.getElementById('autoRefreshHint'),
+        siteFilter: document.getElementById('siteFilter'),
+        refreshSiteBtn: document.getElementById('refreshSiteBtn'),
+        refreshAllBtn: document.getElementById('refreshAllBtn'),
+        tankBody: document.getElementById('tankBody'),
+        statClients: document.getElementById('statClients'),
+        statTanks: document.getElementById('statTanks'),
+        statAlarms: document.getElementById('statAlarms'),
+        statStale: document.getElementById('statStale'),
+        toast: document.getElementById('toast')
+      };
+
+      const state = {
+        clients: [],
+        tanks: [],
+        selected: '',
+        refreshing: false,
+        timer: null,
+        uiRefreshSeconds: DEFAULT_REFRESH_SECONDS
+      };
+
+      function applyTheme(next) {
+        const theme = next === 'dark' ? 'dark' : 'light';
+        document.body.dataset.theme = theme;
+        els.themeToggle.textContent = theme === 'dark' ? '☀' : '☾';
+        els.themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+        localStorage.setItem(THEME_KEY, theme);
+      }
+      applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+      els.themeToggle.addEventListener('click', () => {
+        const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
+      });
+
+      function showToast(message, isError) {
+        els.toast.textContent = message;
+        els.toast.style.background = isError ? '#dc2626' : '#0284c7';
+        els.toast.classList.add('show');
+        setTimeout(() => els.toast.classList.remove('show'), 2500);
+      }
+
+      function formatNumber(value) {
+        return (typeof value === 'number' && isFinite(value)) ? value.toFixed(1) : '--';
+      }
+
+      function formatEpoch(epoch) {
+        if (!epoch) return '--';
+        const date = new Date(epoch * 1000);
+        if (isNaN(date.getTime())) return '--';
+        return date.toLocaleString();
+      }
+
+      function describeCadence(seconds) {
+        if (!seconds) return '6 h';
+        if (seconds < 3600) {
+          return `${Math.round(seconds / 60)} m`;
+        }
+        const hours = (seconds / 3600).toFixed(1).replace(/\.0$/, '');
+        return `${hours} h`;
+      }
+
+      function flattenTanks(clients) {
+        const rows = [];
+        clients.forEach(client => {
+          const tanks = Array.isArray(client.tanks) ? client.tanks : [];
+          if (!tanks.length) {
+            rows.push({
+              client: client.client,
+              site: client.site,
+              label: client.label || 'Tank',
+              tank: client.tank || '--',
+              levelInches: client.levelInches,
+              percent: client.percent,
+              alarm: client.alarm,
+              alarmType: client.alarmType,
+              lastUpdate: client.lastUpdate
+            });
+            return;
+          }
+          tanks.forEach(tank => {
+            rows.push({
+              client: client.client,
+              site: client.site,
+              label: tank.label || client.label || 'Tank',
+              tank: tank.tank || '--',
+              levelInches: tank.levelInches,
+              percent: tank.percent,
+              alarm: tank.alarm,
+              alarmType: tank.alarmType || client.alarmType,
+              lastUpdate: tank.lastUpdate
+            });
+          });
+        });
+        return rows;
+      }
+
+      function populateSiteFilter(preferredUid) {
+        const select = els.siteFilter;
+        const map = new Map();
+        state.clients.forEach(client => {
+          if (!client.client) return;
+          const suffix = client.client.length > 6 ? client.client.slice(-6) : client.client;
+          const label = client.site ? `${client.site} (${suffix})` : `Client ${suffix}`;
+          map.set(client.client, label);
+        });
+        const previous = select.value;
+        select.innerHTML = '<option value="">All Sites</option>';
+        map.forEach((label, uid) => {
+          const option = document.createElement('option');
+          option.value = uid;
+          option.textContent = label;
+          select.appendChild(option);
+        });
+        const desired = preferredUid || previous;
+        if (desired && map.has(desired)) {
+          select.value = desired;
+          state.selected = desired;
+        } else if (!map.has(state.selected)) {
+          state.selected = '';
+          select.value = '';
+        } else {
+          select.value = state.selected || '';
+        }
+        updateButtonState();
+      }
+
+      function renderTankRows() {
+        const tbody = els.tankBody;
+        tbody.innerHTML = '';
+        const rows = state.selected ? state.tanks.filter(t => t.client === state.selected) : state.tanks;
+        if (!rows.length) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td colspan="7">No telemetry available</td>';
+          tbody.appendChild(tr);
+          return;
+        }
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          if (row.alarm) tr.classList.add('alarm');
+          tr.innerHTML = `
+            <td><code>${row.client || '--'}</code></td>
+            <td>${row.site || '--'}</td>
+            <td>${row.label || 'Tank'} #${row.tank || '?'}</td>
+            <td>${formatNumber(row.levelInches)}</td>
+            <td>${formatNumber(row.percent)}</td>
+            <td>${statusBadge(row)}</td>
+            <td>${formatEpoch(row.lastUpdate)}</td>`;
+          tbody.appendChild(tr);
+        });
+      }
+
+      function statusBadge(row) {
+        if (!row.alarm) {
+          return '<span class="status-pill ok">Normal</span>';
+        }
+        const label = row.alarmType ? row.alarmType : 'Alarm';
+        return `<span class="status-pill alarm">${label}</span>`;
+      }
+
+      function updateStats() {
+        const clientIds = new Set();
+        state.tanks.forEach(t => {
+          if (t.client) {
+            clientIds.add(t.client);
+          }
+        });
+        els.statClients.textContent = clientIds.size;
+        els.statTanks.textContent = state.tanks.length;
+        els.statAlarms.textContent = state.tanks.filter(t => t.alarm).length;
+        const cutoff = Date.now() - STALE_MINUTES * 60 * 1000;
+        const stale = state.tanks.filter(t => !t.lastUpdate || (t.lastUpdate * 1000) < cutoff).length;
+        els.statStale.textContent = stale;
+      }
+
+      function updateButtonState() {
+        els.refreshAllBtn.disabled = state.refreshing;
+        els.refreshSiteBtn.disabled = state.refreshing || !state.selected;
+      }
+
+      function scheduleUiRefresh() {
+        if (state.timer) {
+          clearInterval(state.timer);
+        }
+        state.timer = setInterval(() => {
+          refreshData(state.selected);
+        }, state.uiRefreshSeconds * 1000);
+      }
+
+      function updateRefreshHint(serverInfo) {
+        const cadence = describeCadence(serverInfo && serverInfo.webRefreshSeconds);
+        els.autoRefreshHint.textContent = `UI refresh ${state.uiRefreshSeconds} s · Server cadence ${cadence}`;
+      }
+
+      function applyServerData(data, preferredUid) {
+        state.clients = data.clients || [];
+        state.tanks = flattenTanks(state.clients);
+        if (preferredUid) {
+          state.selected = preferredUid;
+        }
+        const serverInfo = data.server || {};
+        els.serverName.textContent = serverInfo.name || 'Tank Alarm Server';
+        els.serverUid.textContent = data.serverUid || '--';
+        els.fleetName.textContent = serverInfo.clientFleet || 'tankalarm-clients';
+        els.nextEmail.textContent = formatEpoch(data.nextDailyEmailEpoch);
+        els.lastSync.textContent = formatEpoch(data.lastSyncEpoch);
+        els.pinStatus.textContent = serverInfo.pinConfigured ? 'Configured' : 'Not Set';
+        els.lastRefresh.textContent = new Date().toLocaleString();
+        state.uiRefreshSeconds = DEFAULT_REFRESH_SECONDS;
+        updateRefreshHint(serverInfo);
+        populateSiteFilter(preferredUid);
+        renderTankRows();
+        updateStats();
+        scheduleUiRefresh();
+      }
+
+      async function refreshData(preferredUid) {
+        try {
+          const res = await fetch('/api/clients');
+          if (!res.ok) {
+            throw new Error('Failed to fetch fleet data');
+          }
+          const data = await res.json();
+          applyServerData(data, preferredUid || state.selected);
+        } catch (err) {
+          showToast(err.message || 'Fleet refresh failed', true);
+        }
+      }
+
+      async function triggerManualRefresh(targetUid) {
+        const payload = targetUid ? { client: targetUid } : {};
+        state.refreshing = true;
+        updateButtonState();
+        try {
+          const res = await fetch('/api/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || 'Refresh failed');
+          }
+          const data = await res.json();
+          applyServerData(data, targetUid || state.selected);
+          showToast(targetUid ? 'Selected site refreshed' : 'Fleet refresh queued');
+        } catch (err) {
+          showToast(err.message || 'Refresh failed', true);
+        } finally {
+          state.refreshing = false;
+          updateButtonState();
+        }
+      }
+
+      els.siteFilter.addEventListener('change', event => {
+        state.selected = event.target.value;
+        renderTankRows();
+        updateButtonState();
+      });
+      els.refreshSiteBtn.addEventListener('click', () => {
+        if (!state.selected) {
+          showToast('Pick a site first.', true);
+          return;
+        }
+        triggerManualRefresh(state.selected);
+      });
+      els.refreshAllBtn.addEventListener('click', () => {
+        triggerManualRefresh(null);
+      });
+
+      refreshData();
+    })();
+  </script>
+</body>
+</html>
+)HTML";
+
+static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tank Alarm Client Console</title>
+  <style>
+    :root {
+      font-family: "Segoe UI", Arial, sans-serif;
+      color-scheme: light dark;
     }
-    .checkbox-cell input {
-      width: 18px;
-      height: 18px;
+    * {
+      box-sizing: border-box;
     }
-    .details {
-      margin: 10px 0 18px;
-      font-size: 0.95rem;
-      color: #475569;
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      transition: background 0.2s ease, color 0.2s ease;
     }
-    .details code {
-      background: #e2e8f0;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 0.85rem;
+    body[data-theme="light"] {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --muted: #475569;
+      --header-bg: #eef2ff;
+      --card-border: rgba(15,23,42,0.08);
+      --card-shadow: rgba(15,23,42,0.08);
+      --accent: #2563eb;
+      --accent-strong: #1d4ed8;
+      --accent-contrast: #f8fafc;
+      --chip: #e2e8f0;
+      --danger: #dc2626;
     }
-    .tank-table th,
-    .tank-table td {
-      font-size: 0.85rem;
+    body[data-theme="dark"] {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --muted: #94a3b8;
+      --header-bg: #16213d;
+      --card-border: rgba(15,23,42,0.55);
+      --card-shadow: rgba(0,0,0,0.55);
+      --accent: #38bdf8;
+      --accent-strong: #22d3ee;
+      --accent-contrast: #0f172a;
+      --chip: rgba(148,163,184,0.2);
+      --danger: #f87171;
     }
-    .tank-table input,
-    .tank-table select {
+    header {
+      background: var(--header-bg);
+      padding: 28px 24px;
+      box-shadow: 0 18px 40px var(--card-shadow);
+    }
+    header .bar {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    h1 {
+      margin: 0 0 8px;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+    }
+    .header-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .pill {
+      border-radius: 999px;
+      padding: 10px 20px;
+      text-decoration: none;
+      font-weight: 600;
+      background: rgba(37,99,235,0.12);
+      color: var(--accent);
+      border: 1px solid transparent;
+    }
+    .pill.secondary {
+      background: transparent;
+      border-color: var(--card-border);
+      color: var(--muted);
+    }
+    .icon-button {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      border: 1px solid var(--card-border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 1.2rem;
+      cursor: pointer;
+    }
+    main {
+      padding: 24px;
+      max-width: 1400px;
+      margin: 0 auto;
       width: 100%;
-      padding: 4px 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .card {
+      background: var(--surface);
+      border-radius: 20px;
+      border: 1px solid var(--card-border);
+      padding: 20px;
+      box-shadow: 0 18px 40px var(--card-shadow);
+    }
+    .console-layout {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+    label.field {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 12px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .field span {
+      margin-bottom: 4px;
+    }
+    input, select {
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
+      padding: 10px 12px;
+      font-size: 0.95rem;
+      background: var(--bg);
+      color: var(--text);
+    }
+    select {
+      width: 100%;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--accent);
+      color: var(--accent-contrast);
+    }
+    button.secondary {
+      background: transparent;
+      border: 1px solid var(--card-border);
+      color: var(--text);
+    }
+    button.destructive {
+      background: var(--danger);
+      color: #fff;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--card-border);
+      padding: 8px 8px;
+      text-align: left;
       font-size: 0.85rem;
     }
-    .tank-table button {
-      padding: 4px 8px;
-      font-size: 0.8rem;
+    th {
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 0.75rem;
+      color: var(--muted);
     }
-    .pin-actions {
-      display: flex;
-      gap: 10px;
-      margin: 10px 0 20px;
-      flex-wrap: wrap;
-    }
-    .refresh-actions {
-      display: flex;
-      gap: 10px;
-      margin: 10px 0 20px;
-      flex-wrap: wrap;
+    tr.alarm {
+      background: rgba(220,38,38,0.08);
     }
     .toggle-group {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 12px;
-      margin: 10px 0 20px;
+      margin: 16px 0;
     }
     .toggle {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border: 1px solid #e2e8f0;
-      border-radius: 8px;
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
       padding: 10px 14px;
-      background: #f8fafc;
+      background: var(--chip);
     }
     .toggle span {
       font-size: 0.9rem;
-      color: #334155;
+      color: var(--muted);
     }
-    .toggle input[type="checkbox"] {
-      width: 18px;
-      height: 18px;
+    .pin-actions,
+    .refresh-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin: 12px 0;
+    }
+    .details {
+      margin: 12px 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .details code {
+      background: var(--chip);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .checkbox-cell {
+      text-align: center;
+    }
+    .checkbox-cell input {
+      width: 16px;
+      height: 16px;
+    }
+    #toast {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%);
+      background: #0284c7;
+      color: #fff;
+      padding: 12px 18px;
+      border-radius: 999px;
+      box-shadow: 0 10px 30px rgba(15,23,42,0.25);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+      font-weight: 600;
+    }
+    #toast.show {
+      opacity: 1;
     }
     .modal {
       position: fixed;
@@ -711,46 +1468,70 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       align-items: center;
       justify-content: center;
       z-index: 999;
-      transition: opacity 0.2s ease;
     }
     .modal.hidden {
       opacity: 0;
       pointer-events: none;
     }
     .modal-card {
-      background: #fff;
-      border-radius: 12px;
+      background: var(--surface);
+      border-radius: 16px;
       padding: 24px;
-      max-width: 360px;
-      width: 90%;
-      box-shadow: 0 20px 40px rgba(15,23,42,0.35);
+      width: min(420px, 90%);
+      border: 1px solid var(--card-border);
+      box-shadow: 0 20px 40px var(--card-shadow);
     }
     .modal-card h2 {
       margin-top: 0;
-      margin-bottom: 8px;
-    }
-    .modal-card p {
-      margin: 0 0 16px;
-      color: #475569;
     }
     .hidden {
       display: none !important;
     }
   </style>
 </head>
-<body>
+<body data-theme="light">
   <header>
-    <h1 id="serverName">Tank Alarm Server</h1>
-    <div class="meta">
-      <span>Server UID: <code id="serverUid">--</code></span>
-      <span>Next Daily Email: <span id="nextEmail">--</span></span>
-      <a href="/config-generator" style="color: #fff; text-decoration: underline;">Config Generator</a>
+    <div class="bar">
+      <div>
+        <p>Queue configuration changes for remote Tank Alarm clients.</p>
+        <h1>Client Console</h1>
+        <p>
+          Select a client, review the cached configuration, and dispatch updates with PIN-protected controls.
+        </p>
+        <div class="details" style="margin-top:12px;">
+          <span>Server: <strong id="serverName">Tank Alarm Server</strong></span>
+          &nbsp;•&nbsp;
+          <span>Server UID: <code id="serverUid">--</code></span>
+          &nbsp;•&nbsp;
+          <span>Next Email: <span id="nextEmail">--</span></span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
+        <a class="pill" href="/">Dashboard</a>
+        <a class="pill secondary" href="/config-generator">Config Generator</a>
+      </div>
     </div>
   </header>
   <main>
-    <div class="layout">
+    <div class="console-layout">
       <section class="card">
-        <h2>Active Sites</h2>
+        <label class="field">
+          <span>Select Client</span>
+          <select id="clientSelect"></select>
+        </label>
+        <div id="clientDetails" class="details">Select a client to review configuration.</div>
+        <div class="refresh-actions">
+          <button type="button" id="refreshSelectedBtn">Refresh Selected Site</button>
+          <button type="button" class="secondary" id="refreshAllBtn">Refresh All Sites</button>
+        </div>
+        <div class="pin-actions">
+          <button type="button" class="secondary" id="changePinBtn" data-pin-control="true">Change PIN</button>
+          <button type="button" class="secondary" id="lockPinBtn" data-pin-control="true">Lock Console</button>
+        </div>
+      </section>
+      <section class="card">
+        <h2 style="margin-top:0;">Active Sites</h2>
         <table id="telemetryTable">
           <thead>
             <tr>
@@ -766,77 +1547,65 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           <tbody></tbody>
         </table>
       </section>
-      <section class="card">
-        <h2>Client Configuration</h2>
-        <label class="field">
-          <span>Select Client</span>
-          <select id="clientSelect"></select>
-        </label>
-        <div id="clientDetails" class="details">Select a client to review configuration.</div>
-        <div class="refresh-actions">
-          <button type="button" id="refreshSelectedBtn">Refresh Selected Site</button>
-          <button type="button" class="secondary" id="refreshAllBtn">Refresh All Sites</button>
-        </div>
-        <div class="pin-actions">
-          <button type="button" class="secondary" id="changePinBtn" data-pin-control="true">Change PIN</button>
-          <button type="button" class="secondary" id="lockPinBtn" data-pin-control="true">Lock Console</button>
-        </div>
-        <form id="configForm">
-          <div class="form-grid">
-            <label class="field"><span>Site Name</span><input id="siteInput" type="text" placeholder="Site name"></label>
-            <label class="field"><span>Device Label</span><input id="deviceLabelInput" type="text" placeholder="Device label"></label>
-            <label class="field"><span>Server Fleet</span><input id="routeInput" type="text" placeholder="tankalarm-server"></label>
-            <label class="field"><span>Sample Seconds</span><input id="sampleSecondsInput" type="number" min="30" step="30"></label>
-            <label class="field"><span>Report Hour (0-23)</span><input id="reportHourInput" type="number" min="0" max="23"></label>
-            <label class="field"><span>Report Minute (0-59)</span><input id="reportMinuteInput" type="number" min="0" max="59"></label>
-            <label class="field"><span>SMS Primary</span><input id="smsPrimaryInput" type="text" placeholder="+1234567890"></label>
-            <label class="field"><span>SMS Secondary</span><input id="smsSecondaryInput" type="text" placeholder="+1234567890"></label>
-            <label class="field"><span>Daily Report Email</span><input id="dailyEmailInput" type="email" placeholder="reports@example.com"></label>
-          </div>
-          <h3>Server SMS Alerts</h3>
-          <div class="toggle-group">
-            <label class="toggle">
-              <span>Send SMS on High Alarm</span>
-              <input type="checkbox" id="smsHighToggle">
-            </label>
-            <label class="toggle">
-              <span>Send SMS on Low Alarm</span>
-              <input type="checkbox" id="smsLowToggle">
-            </label>
-            <label class="toggle">
-              <span>Send SMS on Clear Alarm</span>
-              <input type="checkbox" id="smsClearToggle">
-            </label>
-          </div>
-          <h3>Tanks</h3>
-          <table class="tank-table" id="tankTable">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Name</th>
-                <th>#</th>
-                <th>Sensor</th>
-                <th>Primary Pin</th>
-                <th>Secondary Pin</th>
-                <th>Loop Ch</th>
-                <th>Height (in)</th>
-                <th>High Alarm</th>
-                <th>Low Alarm</th>
-                <th class="checkbox-cell">Daily</th>
-                <th class="checkbox-cell">Alarm SMS</th>
-                <th class="checkbox-cell">Upload</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-          <div class="actions">
-            <button type="button" class="secondary" id="addTank">Add Tank</button>
-            <button type="submit">Send Configuration</button>
-          </div>
-        </form>
-      </section>
     </div>
+
+    <section class="card">
+      <h2 style="margin-top:0;">Client Configuration</h2>
+      <form id="configForm">
+        <div class="form-grid">
+          <label class="field"><span>Site Name</span><input id="siteInput" type="text" placeholder="Site name"></label>
+          <label class="field"><span>Device Label</span><input id="deviceLabelInput" type="text" placeholder="Device label"></label>
+          <label class="field"><span>Server Fleet</span><input id="routeInput" type="text" placeholder="tankalarm-server"></label>
+          <label class="field"><span>Sample Seconds</span><input id="sampleSecondsInput" type="number" min="30" step="30"></label>
+          <label class="field"><span>Report Hour (0-23)</span><input id="reportHourInput" type="number" min="0" max="23"></label>
+          <label class="field"><span>Report Minute (0-59)</span><input id="reportMinuteInput" type="number" min="0" max="59"></label>
+          <label class="field"><span>SMS Primary</span><input id="smsPrimaryInput" type="text" placeholder="+1234567890"></label>
+          <label class="field"><span>SMS Secondary</span><input id="smsSecondaryInput" type="text" placeholder="+1234567890"></label>
+          <label class="field"><span>Daily Report Email</span><input id="dailyEmailInput" type="email" placeholder="reports@example.com"></label>
+        </div>
+        <h3 style="margin-top:24px;">Server SMS Alerts</h3>
+        <div class="toggle-group">
+          <label class="toggle">
+            <span>Send SMS on High Alarm</span>
+            <input type="checkbox" id="smsHighToggle">
+          </label>
+          <label class="toggle">
+            <span>Send SMS on Low Alarm</span>
+            <input type="checkbox" id="smsLowToggle">
+          </label>
+          <label class="toggle">
+            <span>Send SMS on Clear Alarm</span>
+            <input type="checkbox" id="smsClearToggle">
+          </label>
+        </div>
+        <h3>Tanks</h3>
+        <table class="tank-table" id="tankTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Name</th>
+              <th>#</th>
+              <th>Sensor</th>
+              <th>Primary Pin</th>
+              <th>Secondary Pin</th>
+              <th>Loop Ch</th>
+              <th>Height (in)</th>
+              <th>High Alarm</th>
+              <th>Low Alarm</th>
+              <th class="checkbox-cell">Daily</th>
+              <th class="checkbox-cell">Alarm SMS</th>
+              <th class="checkbox-cell">Upload</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="actions">
+          <button type="button" class="secondary" id="addTank">Add Tank</button>
+          <button type="submit">Send Configuration</button>
+        </div>
+      </form>
+    </section>
   </main>
   <div id="toast"></div>
   <div id="pinModal" class="modal hidden">
@@ -865,6 +1634,21 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
   </div>
   <script>
     (function() {
+      const THEME_KEY = 'tankalarmTheme';
+      const themeToggle = document.getElementById('themeToggle');
+      function applyTheme(next) {
+        const theme = next === 'dark' ? 'dark' : 'light';
+        document.body.dataset.theme = theme;
+        themeToggle.textContent = theme === 'dark' ? '☀' : '☾';
+        themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+        localStorage.setItem(THEME_KEY, theme);
+      }
+      applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+      themeToggle.addEventListener('click', () => {
+        const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
+      });
+
       const PIN_STORAGE_KEY = 'tankalarmPin';
       const state = {
         data: null,
@@ -1528,6 +2312,7 @@ static void respondHtml(EthernetClient &client, const String &body);
 static void respondJson(EthernetClient &client, const String &body, int status = 200);
 static void respondStatus(EthernetClient &client, int status, const String &message);
 static void sendDashboard(EthernetClient &client);
+static void sendClientConsole(EthernetClient &client);
 static void sendTankJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client);
 static void handleConfigPost(EthernetClient &client, const String &body);
@@ -1945,6 +2730,8 @@ static void handleWebRequests() {
 
   if (method == "GET" && path == "/") {
     sendDashboard(client);
+  } else if (method == "GET" && path == "/client-console") {
+    sendClientConsole(client);
   } else if (method == "GET" && path == "/config-generator") {
     sendConfigGenerator(client);
   } else if (method == "GET" && path == "/api/tanks") {
@@ -2093,6 +2880,21 @@ static void sendDashboard(EthernetClient &client) {
   }
 }
 
+static void sendClientConsole(EthernetClient &client) {
+  size_t htmlLen = strlen_P(CLIENT_CONSOLE_HTML);
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: text/html; charset=utf-8"));
+  client.print(F("Content-Length: "));
+  client.println(htmlLen);
+  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
+  client.println();
+
+  for (size_t i = 0; i < htmlLen; ++i) {
+    char c = pgm_read_byte_near(CLIENT_CONSOLE_HTML + i);
+    client.write(c);
+  }
+}
+
 static void sendConfigGenerator(EthernetClient &client) {
   size_t htmlLen = strlen_P(CONFIG_GENERATOR_HTML);
   client.println(F("HTTP/1.1 200 OK"));
@@ -2138,6 +2940,7 @@ static void sendClientDataJson(EthernetClient &client) {
 
   JsonObject serverObj = doc.createNestedObject("server");
   serverObj["name"] = gConfig.serverName;
+  serverObj["clientFleet"] = gConfig.clientFleet;
   serverObj["smsPrimary"] = gConfig.smsPrimary;
   serverObj["smsSecondary"] = gConfig.smsSecondary;
   serverObj["dailyEmail"] = gConfig.dailyEmail;
