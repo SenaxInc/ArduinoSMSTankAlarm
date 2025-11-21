@@ -171,6 +171,8 @@ struct TankConfig {
   bool enableDailyReport;  // Include in daily summary
   bool enableAlarmSms;     // Escalate SMS when alarms trigger
   bool enableServerUpload; // Send telemetry to server
+  char relayTargetClient[48]; // Client UID to trigger relays on (empty = none)
+  uint8_t relayMask;       // Bitmask of relays to trigger (bit 0=relay 1, etc.)
 };
 
 struct ClientConfig {
@@ -273,6 +275,7 @@ static void pollForRelayCommands();
 static void processRelayCommand(const JsonDocument &doc);
 static void setRelayState(uint8_t relayNum, bool state);
 static void initializeRelays();
+static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, bool activate);
 
 void setup() {
   Serial.begin(115200);
@@ -425,6 +428,8 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].enableDailyReport = true;
   cfg.tanks[0].enableAlarmSms = true;
   cfg.tanks[0].enableServerUpload = true;
+  cfg.tanks[0].relayTargetClient[0] = '\0'; // No relay target by default
+  cfg.tanks[0].relayMask = 0; // No relays triggered by default
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -868,6 +873,14 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       }
       if (t.containsKey("upload")) {
         gConfig.tanks[i].enableServerUpload = t["upload"].as<bool>();
+      }
+      if (t.containsKey("relayTargetClient")) {
+        strlcpy(gConfig.tanks[i].relayTargetClient, 
+                t["relayTargetClient"].as<const char *>() ?: "", 
+                sizeof(gConfig.tanks[i].relayTargetClient));
+      }
+      if (t.containsKey("relayMask")) {
+        gConfig.tanks[i].relayMask = t["relayMask"].as<uint8_t>();
       }
     }
   }
@@ -1317,6 +1330,11 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     Serial.print(cfg.name);
     Serial.print(F(" type "));
     Serial.println(alarmType);
+    
+    // Trigger remote relays if configured
+    if (isAlarm && cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
+      triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, isAlarm);
+    }
   } else {
     Serial.print(F("Network offline - local alarm only for tank "));
     Serial.print(cfg.name);
@@ -1750,6 +1768,58 @@ static void processRelayCommand(const JsonDocument &doc) {
       Serial.println(F(" seconds"));
       // Note: In a production system, you would track these timers
       // For now, this is a placeholder for the feature
+    }
+  }
+}
+
+static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, bool activate) {
+  if (!targetClient || targetClient[0] == '\0' || relayMask == 0) {
+    return;
+  }
+
+  if (!gNotecardAvailable) {
+    Serial.println(F("Cannot trigger remote relays - notecard offline"));
+    return;
+  }
+
+  // Send commands for each relay bit set in the mask
+  for (uint8_t relayNum = 1; relayNum <= 4; ++relayNum) {
+    uint8_t bit = relayNum - 1;
+    if (relayMask & (1 << bit)) {
+      J *req = notecard.newRequest("note.add");
+      if (!req) {
+        continue;
+      }
+
+      // Use device-specific targeting: send directly to target client's relay.qi inbox
+      char targetFile[80];
+      snprintf(targetFile, sizeof(targetFile), "device:%s:relay.qi", targetClient);
+      JAddStringToObject(req, "file", targetFile);
+      JAddBoolToObject(req, "sync", true);
+
+      J *body = JCreateObject();
+      if (!body) {
+        continue;
+      }
+
+      JAddNumberToObject(body, "relay", relayNum);
+      JAddBoolToObject(body, "state", activate);
+      JAddStringToObject(body, "source", "client-alarm");
+      
+      JAddItemToObject(req, "body", body);
+      
+      bool queued = notecard.sendRequest(req);
+      if (queued) {
+        Serial.print(F("Queued relay command for client "));
+        Serial.print(targetClient);
+        Serial.print(F(": Relay "));
+        Serial.print(relayNum);
+        Serial.print(F(" -> "));
+        Serial.println(activate ? "ON" : "OFF");
+      } else {
+        Serial.print(F("Failed to queue relay command for relay "));
+        Serial.println(relayNum);
+      }
     }
   }
 }
