@@ -159,7 +159,7 @@ For each client:
 ## Step 7: Verify Communication
 
 1. **Check Telemetry Flow (Client → Server):**
-   - Wait for client to take samples (~5 minutes with default 300s interval)
+   - Wait for client to take samples (~30 minutes with default 1800s interval unless you lowered it)
    - In Notehub, navigate to **Events**
    - Filter by client device
    - Look for notes with format: `fleet.tankalarm-server:telemetry.qi`
@@ -268,10 +268,13 @@ Once verified working:
   "site": "Tank Farm A",
   "deviceLabel": "Tank-01",
   "serverFleet": "tankalarm-server",
-  "sampleSeconds": 300,
+   "sampleSeconds": 1800,
+   "levelChangeThreshold": 0,
   ...
 }
 ```
+
+`levelChangeThreshold` (in inches) lets you opt-in to change-based telemetry per site. Leave it at `0` to disable periodic uploads and rely on alarms/daily reports, or set a threshold (for example `2.5`) via the server UI to resume delta-triggered telemetry.
 
 ### Server Config (LittleFS: /server_config.json)
 

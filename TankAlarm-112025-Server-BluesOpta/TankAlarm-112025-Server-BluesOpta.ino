@@ -473,7 +473,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           <label class="field"><span>Site Name</span><input id="siteName" type="text" placeholder="Site Name" required></label>
           <label class="field"><span>Device Label</span><input id="deviceLabel" type="text" placeholder="Device Label" required></label>
           <label class="field"><span>Server Fleet</span><input id="serverFleet" type="text" value="tankalarm-server"></label>
-          <label class="field"><span>Sample Seconds</span><input id="sampleSeconds" type="number" value="300"></label>
+          <label class="field"><span>Sample Seconds</span><input id="sampleSeconds" type="number" value="1800"></label>
+          <label class="field"><span>Level Change Threshold (in)</span><input id="levelChangeThreshold" type="number" step="0.1" value="0" placeholder="0 = disabled"></label>
           <label class="field"><span>Report Hour</span><input id="reportHour" type="number" value="5"></label>
           <label class="field"><span>Report Minute</span><input id="reportMinute" type="number" value="0"></label>
           <label class="field"><span>Daily Email</span><input id="dailyEmail" type="email"></label>
@@ -639,11 +640,13 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
     }
 
     document.getElementById('downloadBtn').addEventListener('click', () => {
+      const levelChange = parseFloat(document.getElementById('levelChangeThreshold').value);
       const config = {
         site: document.getElementById('siteName').value.trim(),
         deviceLabel: document.getElementById('deviceLabel').value.trim() || 'Client-112025',
         serverFleet: document.getElementById('serverFleet').value.trim() || 'tankalarm-server',
-        sampleSeconds: parseInt(document.getElementById('sampleSeconds').value, 10) || 300,
+        sampleSeconds: parseInt(document.getElementById('sampleSeconds').value, 10) || 1800,
+        levelChangeThreshold: Math.max(0, isNaN(levelChange) ? 0 : levelChange),
         reportHour: parseInt(document.getElementById('reportHour').value, 10) || 5,
         reportMinute: parseInt(document.getElementById('reportMinute').value, 10) || 0,
         dailyEmail: document.getElementById('dailyEmail').value.trim(),
@@ -1771,6 +1774,7 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
           <label class="field"><span>Device Label</span><input id="deviceLabelInput" type="text" placeholder="Device label"></label>
           <label class="field"><span>Server Fleet</span><input id="routeInput" type="text" placeholder="tankalarm-server"></label>
           <label class="field"><span>Sample Seconds</span><input id="sampleSecondsInput" type="number" min="30" step="30"></label>
+          <label class="field"><span>Level Change Threshold (in)</span><input id="levelChangeThresholdInput" type="number" min="0" step="0.1" placeholder="0 = disabled"></label>
           <label class="field"><span>Report Hour (0-23)</span><input id="reportHourInput" type="number" min="0" max="23"></label>
           <label class="field"><span>Report Minute (0-59)</span><input id="reportMinuteInput" type="number" min="0" max="59"></label>
           <label class="field"><span>SMS Primary</span><input id="smsPrimaryInput" type="text" placeholder="+1234567890"></label>
@@ -1886,6 +1890,7 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
         deviceLabel: document.getElementById('deviceLabelInput'),
         route: document.getElementById('routeInput'),
         sampleSeconds: document.getElementById('sampleSecondsInput'),
+        levelChangeThreshold: document.getElementById('levelChangeThresholdInput'),
         reportHour: document.getElementById('reportHourInput'),
         reportMinute: document.getElementById('reportMinuteInput'),
         smsPrimary: document.getElementById('smsPrimaryInput'),
@@ -2214,7 +2219,8 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
           site: client ? (client.site || '') : '',
           deviceLabel: client ? `${((client.site || 'Client')).replace(/\s+/g, '-')}-${client.tank || tankId || 'A'}` : 'Client-112025',
           serverFleet: 'tankalarm-server',
-          sampleSeconds: 300,
+          sampleSeconds: 1800,
+          levelChangeThreshold: 0,
           reportHour: 5,
           reportMinute: 0,
           dailyEmail: serverDefaults.dailyEmail || '',
@@ -2297,7 +2303,8 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
     els.site.value = config.site || '';
     els.deviceLabel.value = config.deviceLabel || '';
     els.route.value = config.serverFleet || '';
-    els.sampleSeconds.value = valueOr(config.sampleSeconds, 300);
+    els.sampleSeconds.value = valueOr(config.sampleSeconds, 1800);
+    els.levelChangeThreshold.value = valueOr(config.levelChangeThreshold, 0);
     els.reportHour.value = valueOr(config.reportHour, 5);
     els.reportMinute.value = valueOr(config.reportMinute, 0);
         els.dailyEmail.value = config.dailyEmail || '';
@@ -2341,7 +2348,8 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
           site: els.site.value.trim(),
           deviceLabel: els.deviceLabel.value.trim(),
           serverFleet: els.route.value.trim() || 'tankalarm-server',
-          sampleSeconds: parseInt(els.sampleSeconds.value, 10) || 300,
+          sampleSeconds: parseInt(els.sampleSeconds.value, 10) || 1800,
+          levelChangeThreshold: Math.max(0, parseFloat(els.levelChangeThreshold.value) || 0),
           reportHour: parseInt(els.reportHour.value, 10) || 5,
           reportMinute: parseInt(els.reportMinute.value, 10) || 0,
           dailyEmail: els.dailyEmail.value.trim(),

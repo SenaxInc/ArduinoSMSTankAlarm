@@ -96,7 +96,11 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #endif
 
 #ifndef DEFAULT_SAMPLE_SECONDS
-#define DEFAULT_SAMPLE_SECONDS 300
+#define DEFAULT_SAMPLE_SECONDS 1800
+#endif
+
+#ifndef DEFAULT_LEVEL_CHANGE_THRESHOLD_INCHES
+#define DEFAULT_LEVEL_CHANGE_THRESHOLD_INCHES 0.0f
 #endif
 
 #ifndef DEFAULT_REPORT_HOUR
@@ -163,6 +167,7 @@ struct ClientConfig {
   char serverFleet[32]; // Target fleet name for server (e.g., "tankalarm-server")
   char dailyEmail[64];
   uint16_t sampleSeconds;
+  float minLevelChangeInches;
   uint8_t reportHour;
   uint8_t reportMinute;
   uint8_t tankCount;
@@ -369,6 +374,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   strlcpy(cfg.serverFleet, "tankalarm-server", sizeof(cfg.serverFleet));
   strlcpy(cfg.dailyEmail, "reports@example.com", sizeof(cfg.dailyEmail));
   cfg.sampleSeconds = DEFAULT_SAMPLE_SECONDS;
+  cfg.minLevelChangeInches = DEFAULT_LEVEL_CHANGE_THRESHOLD_INCHES;
   cfg.reportHour = DEFAULT_REPORT_HOUR;
   cfg.reportMinute = DEFAULT_REPORT_MINUTE;
   cfg.tankCount = 1;
@@ -416,6 +422,10 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   strlcpy(cfg.dailyEmail, doc["dailyEmail"].as<const char *>() ? doc["dailyEmail"].as<const char *>() : "", sizeof(cfg.dailyEmail));
 
   cfg.sampleSeconds = doc["sampleSeconds"].is<uint16_t>() ? doc["sampleSeconds"].as<uint16_t>() : DEFAULT_SAMPLE_SECONDS;
+  cfg.minLevelChangeInches = doc["levelChangeThreshold"].is<float>() ? doc["levelChangeThreshold"].as<float>() : DEFAULT_LEVEL_CHANGE_THRESHOLD_INCHES;
+  if (cfg.minLevelChangeInches < 0.0f) {
+    cfg.minLevelChangeInches = 0.0f;
+  }
   cfg.reportHour = doc["reportHour"].is<uint8_t>() ? doc["reportHour"].as<uint8_t>() : DEFAULT_REPORT_HOUR;
   cfg.reportMinute = doc["reportMinute"].is<uint8_t>() ? doc["reportMinute"].as<uint8_t>() : DEFAULT_REPORT_MINUTE;
 
@@ -455,6 +465,7 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   doc["deviceLabel"] = cfg.deviceLabel;
   doc["serverFleet"] = cfg.serverFleet;
   doc["sampleSeconds"] = cfg.sampleSeconds;
+  doc["levelChangeThreshold"] = cfg.minLevelChangeInches;
   doc["reportHour"] = cfg.reportHour;
   doc["reportMinute"] = cfg.reportMinute;
   doc["dailyEmail"] = cfg.dailyEmail;
@@ -739,13 +750,22 @@ static void reinitializeHardware() {
     gTankState[i].sensorFailed = false;
     gTankState[i].lastValidReading = 0.0f;
     gTankState[i].hasLastValidReading = false;
+    gTankState[i].lastReportedInches = -9999.0f;
   }
   
   Serial.println(F("Hardware reinitialized after config update"));
 }
 
+static void resetTelemetryBaselines() {
+  for (uint8_t i = 0; i < MAX_TANKS; ++i) {
+    gTankState[i].lastReportedInches = -9999.0f;
+  }
+}
+
 static void applyConfigUpdate(const JsonDocument &doc) {
   bool hardwareChanged = false;
+  bool telemetryPolicyChanged = false;
+  float previousThreshold = gConfig.minLevelChangeInches;
   
   if (doc.containsKey("site")) {
     strlcpy(gConfig.siteName, doc["site"].as<const char *>(), sizeof(gConfig.siteName));
@@ -758,6 +778,13 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   }
   if (doc.containsKey("sampleSeconds")) {
     gConfig.sampleSeconds = doc["sampleSeconds"].as<uint16_t>();
+  }
+  if (doc.containsKey("levelChangeThreshold")) {
+    gConfig.minLevelChangeInches = doc["levelChangeThreshold"].as<float>();
+    if (gConfig.minLevelChangeInches < 0.0f) {
+      gConfig.minLevelChangeInches = 0.0f;
+    }
+    telemetryPolicyChanged = (fabsf(previousThreshold - gConfig.minLevelChangeInches) > 0.0001f);
   }
   if (doc.containsKey("reportHour")) {
     gConfig.reportHour = doc["reportHour"].as<uint8_t>();
@@ -809,6 +836,8 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   
   if (hardwareChanged) {
     reinitializeHardware();
+  } else if (telemetryPolicyChanged) {
+    resetTelemetryBaselines();
   }
   
   printHardwareRequirements(gConfig);
@@ -1001,8 +1030,11 @@ static void sampleTanks() {
     evaluateAlarms(i);
 
     if (gConfig.tanks[i].enableServerUpload && !gTankState[i].sensorFailed) {
-      float delta = fabs(inches - gTankState[i].lastReportedInches);
-      if (delta >= 0.5f || gTankState[i].lastReportedInches < 0.0f) {
+      const float threshold = gConfig.minLevelChangeInches;
+      const bool needBaseline = (gTankState[i].lastReportedInches < 0.0f);
+      const bool thresholdEnabled = (threshold > 0.0f);
+      const bool changeExceeded = thresholdEnabled && (fabs(inches - gTankState[i].lastReportedInches) >= threshold);
+      if (needBaseline || changeExceeded) {
         sendTelemetry(i, "sample", false);
         gTankState[i].lastReportedInches = inches;
       }

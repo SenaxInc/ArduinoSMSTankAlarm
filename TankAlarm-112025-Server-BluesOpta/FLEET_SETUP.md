@@ -46,7 +46,8 @@ The client configuration file (`/client_config.json` on LittleFS) includes:
   "site": "Tank Farm A",
   "deviceLabel": "Tank-01",
   "serverFleet": "tankalarm-server",
-  "sampleSeconds": 300,
+   "sampleSeconds": 1800,
+   "levelChangeThreshold": 0,
   "reportHour": 5,
   "reportMinute": 0,
   "dailyEmail": "reports@example.com",
@@ -70,7 +71,7 @@ The client configuration file (`/client_config.json` on LittleFS) includes:
 }
 ```
 
-Server-managed SMS contacts have been removed from the client schema; per-tank `alarmSms` flags now simply request that the server escalate alerts via its own contact list.
+Server-managed SMS contacts have been removed from the client schema; per-tank `alarmSms` flags now simply request that the server escalate alerts via its own contact list. The `levelChangeThreshold` value (in inches) controls when the client sends change-based telemetry. `0` disables those transmissions, so by default only daily reports and alarms consume data until you enable a per-site threshold via the server console.
 
 **Key field:** `serverFleet` - Must match the server's fleet name in Notehub
 
@@ -126,7 +127,7 @@ The server configuration file (`/server_config.json` on LittleFS) includes:
    - Configuration saved to flash
 
 2. **Monitor telemetry:**
-   - Wait for sample interval (~5 minutes default)
+   - Wait for sample interval (~30 minutes default; lower if you configured a smaller value)
    - Server web UI should show tank levels
    - Check Notehub Events to see note traffic
 

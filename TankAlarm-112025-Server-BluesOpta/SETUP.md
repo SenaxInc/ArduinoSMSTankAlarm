@@ -111,7 +111,8 @@ The server’s intranet dashboard lets you push JSON configuration updates direc
    {
      "client": "dev:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
      "config": {
-       "sampleSeconds": 600,
+      "sampleSeconds": 1800,
+      "levelChangeThreshold": 0,
        "tanks": [
          {
            "id": "A",
