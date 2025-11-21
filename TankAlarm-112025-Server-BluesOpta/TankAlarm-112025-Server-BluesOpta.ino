@@ -22,7 +22,6 @@
 #include <ArduinoJson.h>
 #include <Notecard.h>
 #include <Ethernet.h>
-#include <LittleFS.h>
 #include <math.h>
 #include <string.h>
 #include <ctype.h>
@@ -37,12 +36,19 @@
   #endif
 #endif
 
-// Watchdog support for STM32H7 (Arduino Opta)
-#if defined(ARDUINO_OPTA) || defined(STM32H7xx)
-
+// Filesystem and Watchdog support
+// Note: Arduino Opta uses Mbed OS, which has different APIs than STM32duino
+#if defined(ARDUINO_ARCH_STM32) && !defined(ARDUINO_ARCH_MBED)
+  // STM32duino platform (non-Mbed)
+  #include <LittleFS.h>
   #include <IWatchdog.h>
+  #define FILESYSTEM_AVAILABLE
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
+#elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  // Arduino Opta with Mbed OS - filesystem and watchdog disabled for now
+  // TODO: Implement Mbed OS LittleFileSystem and mbed::Watchdog support
+  #warning "LittleFS and Watchdog features disabled on Mbed OS platform"
 #endif
 
 #ifndef SERVER_PRODUCT_UID
@@ -2540,6 +2546,13 @@ static void sendClientConsole(EthernetClient &client);
 static void sendTankJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client);
 static void handleConfigPost(EthernetClient &client, const String &body);
+// Forward declarations
+enum class ConfigDispatchStatus : uint8_t {
+  Ok = 0,
+  PayloadTooLarge,
+  NotecardFailure
+};
+
 static void handlePinPost(EthernetClient &client, const String &body);
 static void handleRefreshPost(EthernetClient &client, const String &body);
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
@@ -2558,11 +2571,6 @@ static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
 static bool checkSmsRateLimit(TankRecord *rec);
 static void publishViewerSummary();
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
-enum class ConfigDispatchStatus : uint8_t {
-  Ok = 0,
-  PayloadTooLarge,
-  NotecardFailure
-};
 
 static void handleRefreshPost(EthernetClient &client, const String &body) {
   char clientUid[64] = {0};
@@ -2658,12 +2666,16 @@ void loop() {
 }
 
 static void initializeStorage() {
+#ifdef FILESYSTEM_AVAILABLE
   if (!LittleFS.begin()) {
     Serial.println(F("LittleFS init failed; halting"));
     while (true) {
       delay(1000);
     }
   }
+#else
+  Serial.println(F("Warning: Filesystem not available on this platform - configuration will not persist"));
+#endif
 }
 
 static void ensureConfigLoaded() {
@@ -2694,6 +2706,7 @@ static void createDefaultConfig(ServerConfig &cfg) {
 }
 
 static bool loadConfig(ServerConfig &cfg) {
+#ifdef FILESYSTEM_AVAILABLE
   if (!LittleFS.exists(SERVER_CONFIG_PATH)) {
     return false;
   }
@@ -2736,34 +2749,38 @@ static bool loadConfig(ServerConfig &cfg) {
   cfg.smsOnClear = doc["smsOnClear"].is<bool>() ? doc["smsOnClear"].as<bool>() : false;
 
   if (doc.containsKey("staticIp")) {
-    JsonArray ip = doc["staticIp"].as<JsonArray>();
+    JsonArrayConst ip = doc["staticIp"].as<JsonArrayConst>();
     if (ip.size() == 4) {
       gStaticIp = IPAddress(ip[0], ip[1], ip[2], ip[3]);
     }
   }
   if (doc.containsKey("gateway")) {
-    JsonArray gw = doc["gateway"].as<JsonArray>();
+    JsonArrayConst gw = doc["gateway"].as<JsonArrayConst>();
     if (gw.size() == 4) {
       gStaticGateway = IPAddress(gw[0], gw[1], gw[2], gw[3]);
     }
   }
   if (doc.containsKey("subnet")) {
-    JsonArray sn = doc["subnet"].as<JsonArray>();
+    JsonArrayConst sn = doc["subnet"].as<JsonArrayConst>();
     if (sn.size() == 4) {
       gStaticSubnet = IPAddress(sn[0], sn[1], sn[2], sn[3]);
     }
   }
   if (doc.containsKey("dns")) {
-    JsonArray dns = doc["dns"].as<JsonArray>();
+    JsonArrayConst dns = doc["dns"].as<JsonArrayConst>();
     if (dns.size() == 4) {
       gStaticDns = IPAddress(dns[0], dns[1], dns[2], dns[3]);
     }
   }
 
   return true;
+#else
+  return false; // Filesystem not available
+#endif
 }
 
 static bool saveConfig(const ServerConfig &cfg) {
+#ifdef FILESYSTEM_AVAILABLE
   DynamicJsonDocument doc(2048);
   doc["serverName"] = cfg.serverName;
   doc["clientFleet"] = cfg.clientFleet;
@@ -2817,6 +2834,9 @@ static bool saveConfig(const ServerConfig &cfg) {
 
   file.close();
   return true;
+#else
+  return false; // Filesystem not available
+#endif
 }
 
 static void printHardwareRequirements() {
@@ -3768,6 +3788,7 @@ static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid) {
 
 static void loadClientConfigSnapshots() {
   gClientConfigCount = 0;
+#ifdef FILESYSTEM_AVAILABLE
   if (!LittleFS.exists(CLIENT_CONFIG_CACHE_PATH)) {
     return;
   }
@@ -3812,9 +3833,11 @@ static void loadClientConfigSnapshots() {
   }
 
   file.close();
+#endif
 }
 
 static void saveClientConfigSnapshots() {
+#ifdef FILESYSTEM_AVAILABLE
   File file = LittleFS.open(CLIENT_CONFIG_CACHE_PATH, "w");
   if (!file) {
     return;
@@ -3827,6 +3850,7 @@ static void saveClientConfigSnapshots() {
   }
 
   file.close();
+#endif
 }
 
 static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffer) {
