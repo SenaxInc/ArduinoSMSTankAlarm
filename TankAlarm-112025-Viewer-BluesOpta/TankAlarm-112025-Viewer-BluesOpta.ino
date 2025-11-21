@@ -135,25 +135,15 @@ static unsigned long gLastSyncMillis = 0;
 static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html lang="en">
-<body data-theme="light">
-  <header>
-    <div class="title-row">
-      <div>
-        <h1 id="viewerName">Tank Alarm Viewer</h1>
-        <div class="meta">
-          <span>Viewer UID: <code id="viewerUid">--</code></span>
-          <span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span>
-          <span>Summary Generated: <span id="summaryGenerated">--</span></span>
-          <span>Last Fetch: <span id="lastFetch">--</span></span>
-          <span>Next Scheduled Fetch: <span id="nextFetch">--</span></span>
-          <span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span>
-        </div>
-      </div>
-      <div class="header-actions">
-        <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
-      </div>
-    </div>
-  </header>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tank Alarm Viewer</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --text: #0f172a;
+      --header-bg: #ffffff;
       --meta-color: #475569;
       --card-bg: #ffffff;
       --filter-bg: #ffffff;
@@ -168,6 +158,7 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
       --filter-bg: #1e293b;
       --table-border: rgba(255,255,255,0.08);
     }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); transition: background 0.3s, color 0.3s; }
     header { padding: 20px 28px; background: var(--header-bg); box-shadow: 0 2px 10px rgba(0,0,0,0.15); }
     header h1 { margin: 0; font-size: 1.7rem; }
     header .meta { margin-top: 12px; font-size: 0.95rem; color: var(--meta-color); display: flex; gap: 16px; flex-wrap: wrap; }
@@ -198,14 +189,21 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
 </head>
 <body data-theme="light">
   <header>
-    <h1 id="viewerName">Tank Alarm Viewer</h1>
-    <div class="meta">
-      <span>Viewer UID: <code id="viewerUid">--</code></span>
-      <span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span>
-      <span>Summary Generated: <span id="summaryGenerated">--</span></span>
-      <span>Last Fetch: <span id="lastFetch">--</span></span>
-      <span>Next Scheduled Fetch: <span id="nextFetch">--</span></span>
-      <span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span>
+    <div class="title-row">
+      <div>
+        <h1 id="viewerName">Tank Alarm Viewer</h1>
+        <div class="meta">
+          <span>Viewer UID: <code id="viewerUid">--</code></span>
+          <span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span>
+          <span>Summary Generated: <span id="summaryGenerated">--</span></span>
+          <span>Last Fetch: <span id="lastFetch">--</span></span>
+          <span>Next Scheduled Fetch: <span id="nextFetch">--</span></span>
+          <span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
+      </div>
     </div>
   </header>
   <main>
