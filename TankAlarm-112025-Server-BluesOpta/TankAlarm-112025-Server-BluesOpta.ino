@@ -269,6 +269,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       --chip: #f8fafc;
       --input-border: #cbd5e1;
       --danger: #ef4444;
+      --pill-bg: rgba(37,99,235,0.12);
     }
     body[data-theme="dark"] {
       --bg: #0f172a;
@@ -284,6 +285,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       --chip: rgba(148,163,184,0.15);
       --input-border: rgba(148,163,184,0.4);
       --danger: #f87171;
+      --pill-bg: rgba(56,189,248,0.18);
     }
     header {
       background: var(--header-bg);
@@ -318,13 +320,10 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       padding: 10px 20px;
       text-decoration: none;
       font-weight: 600;
-      background: rgba(37,99,235,0.12);
+      background: var(--pill-bg);
       color: var(--accent);
       border: 1px solid transparent;
       transition: transform 0.15s ease;
-    }
-    body[data-theme="dark"] .pill {
-      background: rgba(56,189,248,0.18);
     }
     .pill:hover {
       transform: translateY(-1px);
