@@ -132,7 +132,7 @@ Commands are sent via Blues Notecard to `device:<clientUID>:relay.qi`:
 
 ### Client Polling
 
-- Client polls `relay.qi` every 1 hour
+- Client polls `relay.qi` every 10 minutes
 - Commands are deleted after processing
 - Invalid commands are logged and ignored
 
