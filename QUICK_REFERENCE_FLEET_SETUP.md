@@ -144,8 +144,7 @@ JAddStringToObject(req, "file", targetFile);
 ├── FLEET_SETUP.md              ← Start here for new deployments
 ├── DEVICE_TO_DEVICE_API.md     ← Technical details & API docs  
 ├── MIGRATION_GUIDE.md          ← Existing system migration
-├── FLEET_IMPLEMENTATION_SUMMARY.md  ← Complete change summary
-└── SETUP.md (deprecated)       ← Old route-based method
+└── FLEET_IMPLEMENTATION_SUMMARY.md  ← Complete change summary
 ```
 
 ## Quick Troubleshooting

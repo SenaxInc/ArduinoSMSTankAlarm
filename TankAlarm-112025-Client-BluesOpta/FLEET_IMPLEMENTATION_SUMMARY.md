@@ -139,7 +139,6 @@ The Tank Alarm system has been updated to use **Blues Notehub fleet-based device
 ### Modified Files
 - `TankAlarm-112025-Client-BluesOpta/TankAlarm-112025-Client-BluesOpta.ino` - Client firmware
 - `TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino` - Server firmware
-- `TankAlarm-112025-Server-BluesOpta/SETUP.md` - Marked as deprecated, redirects to fleet setup
 
 ## Configuration Format
 
