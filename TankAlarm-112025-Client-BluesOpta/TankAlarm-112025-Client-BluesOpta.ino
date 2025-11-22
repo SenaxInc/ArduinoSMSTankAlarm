@@ -83,6 +83,10 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define CONFIG_OUTBOX_FILE "config.qo"
 #endif
 
+#ifndef RELAY_CONTROL_FILE
+#define RELAY_CONTROL_FILE "relay.qi"
+#endif
+
 #ifndef NOTE_BUFFER_PATH
 #define NOTE_BUFFER_PATH "/pending_notes.log"
 #endif
@@ -167,6 +171,8 @@ struct TankConfig {
   bool enableDailyReport;  // Include in daily summary
   bool enableAlarmSms;     // Escalate SMS when alarms trigger
   bool enableServerUpload; // Send telemetry to server
+  char relayTargetClient[48]; // Client UID to trigger relays on (empty = none)
+  uint8_t relayMask;       // Bitmask of relays to trigger (bit 0=relay 1, etc.)
 };
 
 struct ClientConfig {
@@ -232,6 +238,11 @@ static bool gNotecardAvailable = true;
 
 static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
 
+// Relay control state
+#define MAX_RELAYS 4
+static bool gRelayState[MAX_RELAYS] = {false, false, false, false};
+static unsigned long gLastRelayCheckMillis = 0;
+
 // Forward declarations
 static void initializeStorage();
 static void ensureConfigLoaded();
@@ -260,6 +271,12 @@ static void ensureTimeSync();
 static void updateDailyScheduleIfNeeded();
 static bool checkNotecardHealth();
 static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit);
+static void pollForRelayCommands();
+static void processRelayCommand(const JsonDocument &doc);
+static void setRelayState(uint8_t relayNum, bool state);
+static void initializeRelays();
+static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, bool activate);
+static int getRelayPin(uint8_t relayIndex);
 
 void setup() {
   Serial.begin(115200);
@@ -317,6 +334,8 @@ void setup() {
     }
   }
 
+  initializeRelays();
+
   Serial.println(F("Client setup complete"));
 }
 
@@ -345,6 +364,11 @@ void loop() {
   if (now - gLastConfigCheckMillis >= 15000UL) {
     gLastConfigCheckMillis = now;
     pollForConfigUpdates();
+  }
+
+  if (now - gLastRelayCheckMillis >= 600000UL) {  // Check every 10 minutes
+    gLastRelayCheckMillis = now;
+    pollForRelayCommands();
   }
 
   persistConfigIfDirty();
@@ -405,6 +429,8 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].enableDailyReport = true;
   cfg.tanks[0].enableAlarmSms = true;
   cfg.tanks[0].enableServerUpload = true;
+  cfg.tanks[0].relayTargetClient[0] = '\0'; // No relay target by default
+  cfg.tanks[0].relayMask = 0; // No relays triggered by default
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -849,6 +875,14 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       if (t.containsKey("upload")) {
         gConfig.tanks[i].enableServerUpload = t["upload"].as<bool>();
       }
+      if (t.containsKey("relayTargetClient")) {
+        strlcpy(gConfig.tanks[i].relayTargetClient, 
+                t["relayTargetClient"].as<const char *>() ?: "", 
+                sizeof(gConfig.tanks[i].relayTargetClient));
+      }
+      if (t.containsKey("relayMask")) {
+        gConfig.tanks[i].relayMask = t["relayMask"].as<uint8_t>();
+      }
     }
   }
 
@@ -1239,14 +1273,10 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
 static void activateLocalAlarm(uint8_t idx, bool active) {
   // Use Opta's built-in relay outputs for local alarm indication
   // Opta has 4 relay outputs - map tanks to relays (tank 0->relay 0, etc.)
-  if (idx < 4) {
-    #if defined(ARDUINO_OPTA)
-      // For Opta, set relay outputs
-      // Note: Actual pin mapping depends on Opta hardware library
-      int relayPin = LED_D0 + idx;  // Use LED outputs as indicators
-      pinMode(relayPin, OUTPUT);
-      digitalWrite(relayPin, active ? HIGH : LOW);
-    #endif
+  int relayPin = getRelayPin(idx);
+  if (relayPin >= 0) {
+    pinMode(relayPin, OUTPUT);
+    digitalWrite(relayPin, active ? HIGH : LOW);
   }
   
   if (active) {
@@ -1297,6 +1327,11 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     Serial.print(cfg.name);
     Serial.print(F(" type "));
     Serial.println(alarmType);
+    
+    // Trigger remote relays if configured
+    if (isAlarm && cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
+      triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, isAlarm);
+    }
   } else {
     Serial.print(F("Network offline - local alarm only for tank "));
     Serial.print(cfg.name);
@@ -1592,4 +1627,210 @@ static void pruneNoteBufferIfNeeded() {
   LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
   Serial.println(F("Note buffer pruned"));
 #endif
+}
+
+// ============================================================================
+// Relay Control Functions
+// ============================================================================
+
+// Get the Arduino pin number for a relay (0-based index: 0=D0, 1=D1, 2=D2, 3=D3)
+// Note: On Arduino Opta, LED_D0-LED_D3 constants are used for relay control
+static int getRelayPin(uint8_t relayIndex) {
+#if defined(ARDUINO_OPTA)
+  if (relayIndex < 4) {
+    return LED_D0 + relayIndex;
+  }
+#endif
+  return -1;
+}
+
+static void initializeRelays() {
+  // Initialize Opta relay outputs (D0-D3)
+  for (uint8_t i = 0; i < MAX_RELAYS; ++i) {
+    int relayPin = getRelayPin(i);
+    if (relayPin >= 0) {
+      pinMode(relayPin, OUTPUT);
+      digitalWrite(relayPin, LOW);
+      gRelayState[i] = false;
+    }
+  }
+#if defined(ARDUINO_OPTA)
+  Serial.println(F("Relay control initialized: 4 relays (D0-D3)"));
+#else
+  Serial.println(F("Warning: Relay control not available on this platform"));
+#endif
+}
+
+// Set relay state (relayNum is 0-based: 0=relay1, 1=relay2, etc.)
+static void setRelayState(uint8_t relayNum, bool state) {
+  if (relayNum >= MAX_RELAYS) {
+    Serial.print(F("Invalid relay number: "));
+    Serial.println(relayNum);
+    return;
+  }
+
+  int relayPin = getRelayPin(relayNum);
+  if (relayPin >= 0) {
+    digitalWrite(relayPin, state ? HIGH : LOW);
+    gRelayState[relayNum] = state;
+    
+    Serial.print(F("Relay "));
+    Serial.print(relayNum + 1);
+    Serial.print(F(" (D"));
+    Serial.print(relayNum);
+    Serial.print(F(") set to "));
+    Serial.println(state ? "ON" : "OFF");
+  } else {
+    Serial.println(F("Warning: Relay control not available on this platform"));
+  }
+}
+
+static void pollForRelayCommands() {
+  // Skip if notecard is known to be offline
+  if (!gNotecardAvailable) {
+    unsigned long now = millis();
+    if (now - gLastSuccessfulNotecardComm > NOTECARD_RETRY_INTERVAL) {
+      checkNotecardHealth();
+    }
+    return;
+  }
+
+  J *req = notecard.newRequest("note.get");
+  if (!req) {
+    gNotecardFailureCount++;
+    return;
+  }
+
+  JAddStringToObject(req, "file", RELAY_CONTROL_FILE);
+  JAddBoolToObject(req, "delete", true);
+
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    gNotecardFailureCount++;
+    if (gNotecardFailureCount >= NOTECARD_FAILURE_THRESHOLD) {
+      checkNotecardHealth();
+    }
+    return;
+  }
+
+  gLastSuccessfulNotecardComm = millis();
+  gNotecardFailureCount = 0;
+
+  J *body = JGetObject(rsp, "body");
+  if (body) {
+    char *json = JConvertToJSONString(body);
+    if (json) {
+      DynamicJsonDocument doc(1024);
+      DeserializationError err = deserializeJson(doc, json);
+      NoteFree(json);
+      if (!err) {
+        processRelayCommand(doc);
+      } else {
+        Serial.println(F("Relay command invalid JSON"));
+      }
+    }
+  }
+
+  notecard.deleteResponse(rsp);
+}
+
+static void processRelayCommand(const JsonDocument &doc) {
+  // Command format:
+  // {
+  //   "relay": 1-4,           // Relay number (1-based)
+  //   "state": true/false,    // ON/OFF
+  //   "duration": 0,          // Optional: auto-off duration in seconds (0 = manual)
+  //   "source": "server"      // Optional: source of command (server, client, alarm)
+  // }
+
+  if (!doc.containsKey("relay") || !doc.containsKey("state")) {
+    Serial.println(F("Invalid relay command: missing relay or state"));
+    return;
+  }
+
+  uint8_t relayNum = doc["relay"].as<uint8_t>();
+  if (relayNum < 1 || relayNum > MAX_RELAYS) {
+    Serial.print(F("Invalid relay number in command: "));
+    Serial.println(relayNum);
+    return;
+  }
+
+  // Convert from 1-based to 0-based
+  relayNum = relayNum - 1;
+
+  bool state = doc["state"].as<bool>();
+  const char *source = doc["source"] | "unknown";
+  
+  Serial.print(F("Relay command received from "));
+  Serial.print(source);
+  Serial.print(F(": Relay "));
+  Serial.print(relayNum + 1);
+  Serial.print(F(" -> "));
+  Serial.println(state ? "ON" : "OFF");
+
+  setRelayState(relayNum, state);
+
+  // Handle timed auto-off if duration specified
+  // TODO: Implement timer tracking for automatic relay shutoff
+  // This feature is documented in the API but not yet implemented
+  if (doc.containsKey("duration") && state) {
+    uint16_t duration = doc["duration"].as<uint16_t>();
+    if (duration > 0) {
+      Serial.print(F("Note: Auto-off duration requested ("));
+      Serial.print(duration);
+      Serial.println(F(" sec) but not yet implemented"));
+    }
+  }
+}
+
+static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, bool activate) {
+  if (!targetClient || targetClient[0] == '\0' || relayMask == 0) {
+    return;
+  }
+
+  if (!gNotecardAvailable) {
+    Serial.println(F("Cannot trigger remote relays - notecard offline"));
+    return;
+  }
+
+  // Send commands for each relay bit set in the mask
+  for (uint8_t relayNum = 1; relayNum <= 4; ++relayNum) {
+    uint8_t bit = relayNum - 1;
+    if (relayMask & (1 << bit)) {
+      J *req = notecard.newRequest("note.add");
+      if (!req) {
+        continue;
+      }
+
+      // Use device-specific targeting: send directly to target client's relay.qi inbox
+      char targetFile[80];
+      snprintf(targetFile, sizeof(targetFile), "device:%s:relay.qi", targetClient);
+      JAddStringToObject(req, "file", targetFile);
+      JAddBoolToObject(req, "sync", true);
+
+      J *body = JCreateObject();
+      if (!body) {
+        continue;
+      }
+
+      JAddNumberToObject(body, "relay", relayNum);
+      JAddBoolToObject(body, "state", activate);
+      JAddStringToObject(body, "source", "client-alarm");
+      
+      JAddItemToObject(req, "body", body);
+      
+      bool queued = notecard.sendRequest(req);
+      if (queued) {
+        Serial.print(F("Queued relay command for client "));
+        Serial.print(targetClient);
+        Serial.print(F(": Relay "));
+        Serial.print(relayNum);
+        Serial.print(F(" -> "));
+        Serial.println(activate ? "ON" : "OFF");
+      } else {
+        Serial.print(F("Failed to queue relay command for relay "));
+        Serial.println(relayNum);
+      }
+    }
+  }
 }

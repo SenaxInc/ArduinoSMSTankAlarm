@@ -131,6 +131,10 @@
 #define VIEWER_SUMMARY_BASE_HOUR 6
 #endif
 
+#ifndef MAX_RELAYS
+#define MAX_RELAYS 4  // Arduino Opta has 4 relay outputs (D0-D3)
+#endif
+
 static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(10)) + 512;
 static const size_t CLIENT_JSON_CAPACITY = 24576;
 
@@ -1042,6 +1046,32 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
     #toast.show {
       opacity: 1;
     }
+    .relay-btn {
+      padding: 4px 8px;
+      margin: 0 2px;
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .relay-btn:hover {
+      background: var(--accent);
+      color: var(--accent-contrast);
+      border-color: var(--accent);
+    }
+    .relay-btn.active {
+      background: var(--accent);
+      color: var(--accent-contrast);
+      border-color: var(--accent);
+      font-weight: bold;
+    }
+    .relay-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body data-theme="light">
@@ -1134,6 +1164,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <th>% Full</th>
             <th>Status</th>
             <th>Updated</th>
+            <th>Relays</th>
           </tr>
         </thead>
         <tbody id="tankBody"></tbody>
@@ -1302,7 +1333,8 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <td>${formatNumber(row.levelInches)}</td>
             <td>${formatNumber(row.percent)}</td>
             <td>${statusBadge(row)}</td>
-            <td>${formatEpoch(row.lastUpdate)}</td>`;
+            <td>${formatEpoch(row.lastUpdate)}</td>
+            <td>${relayButtons(row)}</td>`;
           tbody.appendChild(tr);
         });
       }
@@ -1314,6 +1346,56 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         const label = row.alarmType ? row.alarmType : 'Alarm';
         return `<span class="status-pill alarm">${label}</span>`;
       }
+
+      function escapeHtml(unsafe) {
+        if (!unsafe) return '';
+        return String(unsafe)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      function relayButtons(row) {
+        if (!row.client || row.client === '--') return '--';
+        const MAX_RELAYS = 4;
+        const relays = Array.from({length: MAX_RELAYS}, (_, i) => i + 1);
+        const escapedClient = escapeHtml(row.client);
+        return relays.map(num => 
+          `<button class="relay-btn" onclick="toggleRelay('${escapedClient}', ${num}, event)" title="Toggle Relay ${num}">R${num}</button>`
+        ).join(' ');
+      }
+
+      async function toggleRelay(clientUid, relayNum, event) {
+        const btn = event.target;
+        const wasActive = btn.classList.contains('active');
+        const newState = !wasActive;
+        
+        btn.disabled = true;
+        try {
+          const res = await fetch('/api/relay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              clientUid: clientUid,
+              relay: relayNum,
+              state: newState
+            })
+          });
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || 'Relay command failed');
+          }
+          btn.classList.toggle('active', newState);
+          showToast(`Relay ${relayNum} ${newState ? 'ON' : 'OFF'} command sent`);
+        } catch (err) {
+          showToast(err.message || 'Relay control failed', true);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+      window.toggleRelay = toggleRelay;
 
       function updateStats() {
         const clientIds = new Set();
@@ -2556,7 +2638,10 @@ enum class ConfigDispatchStatus : uint8_t {
 // Forward declarations
 static void handlePinPost(EthernetClient &client, const String &body);
 static void handleRefreshPost(EthernetClient &client, const String &body);
+static void handleRelayPost(EthernetClient &client, const String &body);
+static void sendConfigGenerator(EthernetClient &client);
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
+static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state, const char *source);
 static void pollNotecard();
 static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double));
 static void handleTelemetry(JsonDocument &doc, double epoch);
@@ -2989,6 +3074,8 @@ static void handleWebRequests() {
     handlePinPost(client, body);
   } else if (method == "POST" && path == "/api/refresh") {
     handleRefreshPost(client, body);
+  } else if (method == "POST" && path == "/api/relay") {
+    handleRelayPost(client, body);
   } else {
     respondStatus(client, 404, F("Not Found"));
   }
@@ -3400,6 +3487,78 @@ static void handlePinPost(EthernetClient &client, const String &body) {
   } else {
     sendPinResponse(client, F("PIN verified"));
   }
+}
+
+static void handleRelayPost(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(512);
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *clientUid = doc["clientUid"].as<const char *>();
+  if (!clientUid || strlen(clientUid) == 0) {
+    respondStatus(client, 400, F("Missing clientUid"));
+    return;
+  }
+
+  uint8_t relayNum = doc["relay"].as<uint8_t>();
+  if (relayNum < 1 || relayNum > MAX_RELAYS) {
+    char errMsg[32];
+    snprintf(errMsg, sizeof(errMsg), "relay must be 1-%d", MAX_RELAYS);
+    respondStatus(client, 400, errMsg);
+    return;
+  }
+
+  bool state = doc["state"].as<bool>();
+
+  if (sendRelayCommand(clientUid, relayNum, state, "server")) {
+    respondStatus(client, 200, F("OK"));
+  } else {
+    respondStatus(client, 500, F("Failed to send relay command"));
+  }
+}
+
+static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state, const char *source) {
+  if (!clientUid || relayNum < 1 || relayNum > MAX_RELAYS) {
+    return false;
+  }
+
+  J *req = notecard.newRequest("note.add");
+  if (!req) {
+    return false;
+  }
+
+  // Use device-specific targeting: send directly to client's relay.qi inbox
+  char targetFile[80];
+  snprintf(targetFile, sizeof(targetFile), "device:%s:relay.qi", clientUid);
+  JAddStringToObject(req, "file", targetFile);
+  JAddBoolToObject(req, "sync", true);
+
+  J *body = JCreateObject();
+  if (!body) {
+    return false;
+  }
+
+  JAddNumberToObject(body, "relay", relayNum);
+  JAddBoolToObject(body, "state", state);
+  JAddStringToObject(body, "source", source);
+  
+  JAddItemToObject(req, "body", body);
+  
+  bool queued = notecard.sendRequest(req);
+  if (!queued) {
+    return false;
+  }
+
+  Serial.print(F("Queued relay command for client "));
+  Serial.print(clientUid);
+  Serial.print(F(": Relay "));
+  Serial.print(relayNum);
+  Serial.print(F(" -> "));
+  Serial.println(state ? "ON" : "OFF");
+
+  return true;
 }
 
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
