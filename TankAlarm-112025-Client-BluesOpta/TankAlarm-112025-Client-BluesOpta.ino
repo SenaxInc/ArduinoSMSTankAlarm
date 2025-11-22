@@ -366,7 +366,7 @@ void loop() {
     pollForConfigUpdates();
   }
 
-  if (now - gLastRelayCheckMillis >= 5000UL) {  // Check every 5 seconds
+  if (now - gLastRelayCheckMillis >= 3600000UL) {  // Check every 1 hour
     gLastRelayCheckMillis = now;
     pollForRelayCommands();
   }
