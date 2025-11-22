@@ -120,14 +120,14 @@ jobs:
               <div class="tank-header">Tank #1</div>
               <div class="tank-level">Level: 85.3%</div>
               <div class="tank-change positive">24hr Change: +2.1%</div>
-              <div class="status status-normal">Status: Normal</div>
+              <div class="status-normal">Status: Normal</div>
               <div style="font-size: 12px; color: #666; margin-top: 10px;">Updated: 11/22/2025, 4:55:56 AM</div>
             </div>
             <div class="tank-card">
               <div class="tank-header">Tank #2</div>
               <div class="tank-level">Level: 52.1%</div>
               <div class="tank-change negative">24hr Change: -3.2%</div>
-              <div class="status status-normal">Status: Normal</div>
+              <div class="status-normal">Status: Normal</div>
               <div style="font-size: 12px; color: #666; margin-top: 10px;">Updated: 11/22/2025, 4:55:56 AM</div>
             </div>
           </div>
@@ -137,7 +137,7 @@ jobs:
               <div class="tank-header">Tank #1</div>
               <div class="tank-level">Level: 22.5%</div>
               <div class="tank-change negative">24hr Change: -8.5%</div>
-              <div class="status status-alarm">Status: LOW</div>
+              <div class="status-alarm">Status: LOW</div>
               <div style="font-size: 12px; color: #666; margin-top: 10px;">Updated: 11/22/2025, 4:54:56 AM</div>
             </div>
           </div>
@@ -147,7 +147,7 @@ jobs:
               <div class="tank-header">Tank #1</div>
               <div class="tank-level">Level: 95.8%</div>
               <div class="tank-change positive">24hr Change: +1.2%</div>
-              <div class="status status-normal">Status: Normal</div>
+              <div class="status-normal">Status: Normal</div>
               <div style="font-size: 12px; color: #666; margin-top: 10px;">Updated: 11/22/2025, 4:56:26 AM</div>
             </div>
           </div>
@@ -157,17 +157,17 @@ jobs:
               <div class="tank-header">Tank #1</div>
               <div class="tank-level">Level: 15.2%</div>
               <div class="tank-change negative">24hr Change: -12.8%</div>
-              <div class="status status-alarm">Status: CRITICAL</div>
+              <div class="status-alarm">Status: CRITICAL</div>
               <div style="font-size: 12px; color: #666; margin-top: 10px;">Updated: 11/22/2025, 4:57:26 AM</div>
             </div>
           </div>
           <div class="footer">Last updated: 2025-11-22 18:00:00 UTC</div>
-          </body>
-          </html>
           '''
-                      # Insert before closing tags if they don't exist
-                      if '</body>' not in html_content:
-                          html_content += sample_data
+                      # Replace the "No tank reports received yet" message with sample data
+                      html_content = html_content.replace(
+                          "<p style='text-align: center;'>No tank reports received yet.</p>",
+                          sample_data
+                      )
                   
                   # Make sure we have closing tags
                   if '</html>' not in html_content:
