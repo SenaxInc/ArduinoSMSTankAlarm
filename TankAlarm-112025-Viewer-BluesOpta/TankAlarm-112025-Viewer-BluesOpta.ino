@@ -402,7 +402,7 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
       }
 
       function formatFeetInches(inches) {
-        if (typeof inches !== 'number' || !isFinite(inches)) return '--';
+        if (typeof inches !== 'number' || !isFinite(inches) || inches < 0) return '--';
         const feet = Math.floor(inches / 12);
         const remainingInches = inches % 12;
         return `${feet}' ${remainingInches.toFixed(1)}"`;
