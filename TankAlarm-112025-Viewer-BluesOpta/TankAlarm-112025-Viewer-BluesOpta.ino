@@ -20,6 +20,7 @@
 #include <Ethernet.h>
 #include <math.h>
 #include <string.h>
+#include <ctype.h>
 
 #if defined(ARDUINO_ARCH_AVR)
   #include <avr/pgmspace.h>
@@ -102,6 +103,12 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 }
 #endif
 
+enum ViewerRecordKind : uint8_t {
+  VIEWER_RECORD_TANK = 0,
+  VIEWER_RECORD_PRESSURE = 1,
+  VIEWER_RECORD_ENGINE = 2
+};
+
 struct TankRecord {
   char clientUid[48];
   char site[32];
@@ -113,9 +120,14 @@ struct TankRecord {
   bool alarmActive;
   char alarmType[24];
   double lastUpdateEpoch;
+  ViewerRecordKind kind;
+  char unit[8];
+  int8_t relayNumber;
+  bool relayLinked;
+  bool relayActive;
 };
 
-static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(10)) + 768;
+static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(16)) + 1024;
 
 static byte gMacAddress[6] = { 0x02, 0x00, 0x01, 0x11, 0x20, 0x25 };
 static IPAddress gStaticIp(192, 168, 1, 210);
@@ -191,6 +203,20 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
     .status-pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 12px; font-size: 0.85rem; }
     .status-pill.ok { background: rgba(16,185,129,0.15); color: #34d399; }
     .status-pill.alarm { background: rgba(248,113,113,0.2); color: #fca5a5; }
+    .site-divider td { padding: 14px 10px; border-bottom: none; }
+    .site-divider { background: rgba(37,99,235,0.08); }
+    body[data-theme="dark"] .site-divider { background: rgba(148,163,184,0.1); }
+    .site-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 0.9rem; }
+    .site-title { display: flex; gap: 12px; align-items: baseline; font-weight: 600; }
+    .site-pill { border-radius: 999px; padding: 2px 10px; font-size: 0.75rem; background: rgba(37,99,235,0.18); color: var(--muted); }
+    body[data-theme="dark"] .site-pill { background: rgba(56,189,248,0.18); color: var(--text); }
+    .name-cell { display: flex; flex-direction: column; gap: 4px; }
+    .type-pill { align-self: flex-start; border-radius: 999px; padding: 2px 8px; font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; background: rgba(15,23,42,0.08); color: var(--muted); }
+    body[data-theme="dark"] .type-pill { background: rgba(148,163,184,0.22); }
+    .reading { font-variant-numeric: tabular-nums; }
+    .relay-chip { border-radius: 8px; padding: 4px 8px; background: rgba(148,163,184,0.18); font-size: 0.8rem; font-weight: 600; }
+    body[data-theme="light"] .relay-chip { background: rgba(37,99,235,0.12); }
+    .relay-chip.active { background: rgba(16,185,129,0.18); color: var(--ok); }
     .timestamp { font-feature-settings: "tnum"; color: var(--meta-color); font-size: 0.9rem; }
     footer { margin-top: 20px; color: var(--meta-color); font-size: 0.85rem; text-align: center; }
   </style>
@@ -237,11 +263,13 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
           <tr>
             <th>Client</th>
             <th>Site</th>
-            <th>Tank</th>
-            <th>Level (in)</th>
+            <th>Name</th>
+            <th>Channel</th>
+            <th>Reading</th>
             <th>% Full</th>
             <th>Status</th>
             <th>Updated</th>
+            <th>Relay</th>
           </tr>
         </thead>
         <tbody id="tankBody"></tbody>
@@ -254,6 +282,10 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
   <script>
     (() => {
       const THEME_KEY = 'tankalarmTheme';
+      const TYPE_TANK = 'tank';
+      const TYPE_PRESSURE = 'pressure';
+      const TYPE_ENGINE = 'engine';
+
       const themeToggle = document.getElementById('themeToggle');
       function applyTheme(next) {
         const theme = next === 'dark' ? 'dark' : 'light';
@@ -285,7 +317,8 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
       };
 
       const state = {
-        tanks: [],
+        records: [],
+        groups: [],
         selected: '',
         refreshing: false
       };
@@ -299,7 +332,8 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
         els.lastFetch.textContent = formatEpoch(data.lastFetchEpoch);
         els.nextFetch.textContent = formatEpoch(data.nextFetchEpoch);
         els.refreshHint.textContent = describeCadence(data.refreshSeconds, data.baseHour);
-        state.tanks = data.tanks || [];
+        state.records = normalizeRecords(data);
+        state.groups = groupBySite(state.records);
         const desired = preferredUid || state.selected;
         populateSiteFilter(desired);
         renderTankRows();
@@ -339,70 +373,220 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
       }
 
       function populateSiteFilter(preferredUid) {
-        const uniqueClients = new Map();
-        state.tanks.forEach(tank => {
-          if (!tank.client) return;
-          if (!uniqueClients.has(tank.client)) {
-            const label = tank.site || `Client ${tank.client.slice(-4)}`;
-            uniqueClients.set(tank.client, label);
-          }
-        });
         const select = els.siteFilter;
         select.innerHTML = '<option value="">All Sites</option>';
-        uniqueClients.forEach((label, uid) => {
+        const options = new Map();
+        state.groups.forEach(group => {
+          if (!group.client) return;
+          const suffix = group.client.length > 6 ? group.client.slice(-6) : group.client;
+          const label = group.site ? `${group.site} (${suffix})` : `Client ${suffix}`;
+          options.set(group.client, label);
+        });
+        options.forEach((label, uid) => {
           const option = document.createElement('option');
-          const suffix = uid.length > 6 ? uid.slice(-6) : uid;
           option.value = uid;
-          option.textContent = `${label} (${suffix})`;
+          option.textContent = label;
           select.appendChild(option);
         });
-        if (preferredUid && uniqueClients.has(preferredUid)) {
-          select.value = preferredUid;
+        if (preferredUid && options.has(preferredUid)) {
           state.selected = preferredUid;
-        } else if (!uniqueClients.has(state.selected)) {
-          select.value = '';
+        } else if (!options.has(state.selected)) {
           state.selected = '';
-        } else {
-          select.value = state.selected;
         }
+        select.value = state.selected;
         updateButtonState();
       }
 
       function renderTankRows() {
         const tbody = els.tankBody;
         tbody.innerHTML = '';
-        const rows = state.selected ? state.tanks.filter(t => t.client === state.selected) : state.tanks;
-        if (!rows.length) {
+        const groupsToRender = state.selected
+          ? state.groups.filter(group => group.client === state.selected)
+          : state.groups;
+        if (!groupsToRender.length) {
           const tr = document.createElement('tr');
-          tr.innerHTML = '<td colspan="7">No tank data available</td>';
+          tr.innerHTML = '<td colspan="9">No telemetry available</td>';
           tbody.appendChild(tr);
           return;
         }
-        rows.forEach(tank => {
-          const tr = document.createElement('tr');
-          if (tank.alarm) tr.classList.add('alarm');
-          tr.innerHTML = `
-            <td><code>${escapeHtml(tank.client, '--')}</code></td>
-            <td>${escapeHtml(tank.site, '--')}</td>
-            <td>${escapeHtml(tank.label || 'Tank')} #${escapeHtml((tank.tank ?? '?'))}</td>
-            <td>${formatNumber(tank.levelInches)}</td>
-            <td>${formatNumber(tank.percent)}</td>
-            <td>${statusBadge(tank)}</td>
-            <td>${formatEpoch(tank.lastUpdate)}</td>`;
-          tbody.appendChild(tr);
+        groupsToRender.forEach(group => {
+          tbody.appendChild(createGroupHeaderRow(group));
+          group.records.forEach(record => {
+            tbody.appendChild(createRecordRow(group, record));
+          });
         });
       }
 
-      function statusBadge(tank) {
-        if (!tank.alarm) {
-          return '<span class="status-pill ok">Normal</span>';
-        }
-        const label = escapeHtml(tank.alarmType || 'Alarm', 'Alarm');
-        return `<span class="status-pill alarm">${label}</span>`;
+      function createGroupHeaderRow(group) {
+        const tr = document.createElement('tr');
+        tr.className = 'site-divider';
+        const count = `${group.records.length} item${group.records.length === 1 ? '' : 's'}`;
+        tr.innerHTML = `
+          <td colspan="9">
+            <div class="site-meta">
+              <div class="site-title">
+                <span>${escapeHtml(group.site || 'Unassigned Site')}</span>
+                <span class="site-pill">${escapeHtml(formatClientCode(group.client))}</span>
+              </div>
+              <span>${escapeHtml(count)}</span>
+            </div>
+          </td>`;
+        return tr;
       }
 
-      function formatNumber(val) {
-        return (typeof val === 'number' && isFinite(val)) ? val.toFixed(1) : '--';
+      function createRecordRow(group, record) {
+        const tr = document.createElement('tr');
+        if (record.alarm) {
+          tr.classList.add('alarm');
+        }
+        tr.innerHTML = `
+          <td><code>${escapeHtml(record.client || '--')}</code></td>
+          <td>${escapeHtml(record.site || group.site || '--')}</td>
+          <td>
+            <div class="name-cell">
+              <span>${escapeHtml(record.label)}</span>
+              <span class="type-pill">${escapeHtml(typeLabel(record.type))}</span>
+            </div>
+          </td>
+          <td>${escapeHtml(formatChannel(record))}</td>
+          <td class="reading">${formatReading(record)}</td>
+          <td>${escapeHtml(formatPercent(record))}</td>
+          <td>${statusBadge(record)}</td>
+          <td>${formatEpoch(record.lastUpdate)}</td>
+          <td>${relayBadge(record)}</td>`;
+        return tr;
+      }
+
+      function normalizeRecords(data) {
+        const source = Array.isArray(data.records)
+          ? data.records
+          : Array.isArray(data.entries)
+            ? data.entries
+            : Array.isArray(data.tanks)
+              ? data.tanks
+              : [];
+        return source.map(item => {
+          const type = normalizeType(item.type);
+          const level = asNumber(item.levelInches);
+          const explicitValue = asNumber(item.value);
+          const rpm = asNumber(item.rpm);
+          const pressure = asNumber(item.pressure);
+          let value = explicitValue ?? level ?? rpm ?? pressure;
+          const percent = asNumber(item.percent);
+          return {
+            type,
+            client: item.client || '',
+            site: item.site || '',
+            label: item.label || (type === TYPE_PRESSURE ? 'Pressure' : type === TYPE_ENGINE ? 'Engine' : 'Tank'),
+            tank: typeof item.tank === 'number' ? item.tank : null,
+            value,
+            unit: item.unit || defaultUnit(type),
+            levelInches: level ?? value ?? null,
+            percent: percent,
+            alarm: Boolean(item.alarm),
+            alarmType: item.alarmType || '',
+            lastUpdate: item.lastUpdate || item.time || null,
+            relay: parseRelay(item),
+            status: item.status || ''
+          };
+        });
+      }
+
+      function groupBySite(records) {
+        const groups = new Map();
+        const typeRank = { [TYPE_TANK]: 0, [TYPE_PRESSURE]: 1, [TYPE_ENGINE]: 2 };
+        records.forEach(record => {
+          const key = record.client || record.site || 'unassigned';
+          if (!groups.has(key)) {
+            groups.set(key, { client: record.client || '', site: record.site || '', records: [] });
+          }
+          groups.get(key).records.push(record);
+        });
+        return Array.from(groups.values()).map(group => {
+          group.records.sort((a, b) => {
+            const rank = (typeRank[a.type] ?? 99) - (typeRank[b.type] ?? 99);
+            if (rank !== 0) return rank;
+            if (a.tank != null && b.tank != null) return a.tank - b.tank;
+            return (a.label || '').localeCompare(b.label || '');
+          });
+          return group;
+        }).sort((a, b) => (a.site || '').localeCompare(b.site || ''));
+      }
+
+      function normalizeType(value) {
+        const token = (value || '').toString().toLowerCase();
+        if (token === TYPE_PRESSURE || token === TYPE_ENGINE) {
+          return token;
+        }
+        return TYPE_TANK;
+      }
+
+      function defaultUnit(type) {
+        if (type === TYPE_PRESSURE) return 'psi';
+        if (type === TYPE_ENGINE) return 'rpm';
+        return 'in';
+      }
+
+      function formatClientCode(client) {
+        if (!client) return '--';
+        const suffix = client.length > 6 ? client.slice(-6) : client;
+        return suffix.toUpperCase();
+      }
+
+      function formatChannel(record) {
+        if (record.type === TYPE_TANK) {
+          return record.tank != null ? `#${record.tank}` : '--';
+        }
+        if (record.type === TYPE_ENGINE) {
+          if (record.relay.number != null) {
+            return `Relay ${record.relay.number}`;
+          }
+          return 'Engine';
+        }
+        return 'System';
+      }
+
+      function formatReading(record) {
+        const value = asNumber(record.value ?? record.levelInches);
+        if (value === null) {
+          return '--';
+        }
+        const unit = escapeHtml(record.unit || defaultUnit(record.type));
+        if (record.type === TYPE_ENGINE) {
+          return `${Math.round(value)} ${unit}`;
+        }
+        return `${value.toFixed(1)} ${unit}`;
+      }
+
+      function formatPercent(record) {
+        if (record.type !== TYPE_TANK) {
+          return '--';
+        }
+        const value = asNumber(record.percent);
+        return value === null ? '--' : `${value.toFixed(0)}%`;
+      }
+
+      function typeLabel(type) {
+        switch (type) {
+          case TYPE_PRESSURE: return 'Pressure';
+          case TYPE_ENGINE: return 'Engine';
+          default: return 'Tank';
+        }
+      }
+
+      function relayBadge(record) {
+        if (!record.relay.linked || record.relay.number == null) {
+          return '--';
+        }
+        const cls = record.relay.active ? 'relay-chip active' : 'relay-chip';
+        const state = record.relay.active ? 'ON' : 'OFF';
+        return `<span class="${cls}">R${record.relay.number} · ${state}</span>`;
+      }
+
+      function statusBadge(record) {
+        const label = record.alarm ? (record.alarmType || 'Alarm') : (record.status || 'Normal');
+        const cls = record.alarm ? 'alarm' : 'ok';
+        return `<span class="status-pill ${cls}">${escapeHtml(label)}</span>`;
       }
 
       function formatEpoch(epoch) {
@@ -422,14 +606,27 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
         if (value === undefined || value === null || value === '') {
           return fallback;
         }
-        const entityMap = {
-          '&': '&amp;',
-          '<': '&lt;',
-          '>': '&gt;',
-          '"': '&quot;',
-          "'": '&#39;'
-        };
+        const entityMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
         return String(value).replace(/[&<>"']/g, c => entityMap[c] || c);
+      }
+
+      function asNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      }
+
+      function parseRelay(record) {
+        const relay = (record.relay && typeof record.relay === 'object') ? record.relay : null;
+        const number = relay && relay.number != null ? relay.number : record.relayNumber;
+        const active = relay && relay.active != null ? relay.active : record.relayActive;
+        const linked = relay && relay.linked != null ? relay.linked : record.relayLinked;
+        const parsedNumber = asNumber(number);
+        return {
+          linked: Boolean(linked && parsedNumber !== null && parsedNumber >= 0),
+          number: parsedNumber !== null && parsedNumber >= 0 ? parsedNumber : null,
+          active: Boolean(active),
+          name: relay && relay.name ? relay.name : (record.relayName || '')
+        };
       }
 
       function setRefreshBusy(busy) {
@@ -484,6 +681,11 @@ static void scheduleNextSummaryFetch();
 static void fetchViewerSummary();
 static void handleViewerSummary(JsonDocument &doc, double epoch);
 static void handleRefreshPost(EthernetClient &client, const String &body);
+static ViewerRecordKind parseViewerRecordKind(const char *typeToken, ViewerRecordKind fallbackKind);
+static const char *viewerRecordKindToString(ViewerRecordKind kind);
+static const char *defaultUnitForKind(ViewerRecordKind kind);
+static void appendViewerRecord(JsonVariantConst item, ViewerRecordKind fallbackKind);
+static bool equalsIgnoreCase(const char *a, const char *b);
 
 void setup() {
   Serial.begin(115200);
@@ -780,7 +982,7 @@ static void sendDashboard(EthernetClient &client) {
 }
 
 static void sendTankJson(EthernetClient &client) {
-  DynamicJsonDocument doc(TANK_JSON_CAPACITY + 256);
+  DynamicJsonDocument doc(TANK_JSON_CAPACITY + 512);
   doc["viewerName"] = VIEWER_NAME;
   doc["viewerUid"] = gViewerUid;
   doc["sourceServerName"] = gSourceServerName;
@@ -803,10 +1005,25 @@ static void sendTankJson(EthernetClient &client) {
     obj["tank"] = gTankRecords[i].tankNumber;
     obj["heightInches"] = gTankRecords[i].heightInches;
     obj["levelInches"] = gTankRecords[i].levelInches;
-    obj["percent"] = gTankRecords[i].percent;
+    if (isfinite(gTankRecords[i].percent)) {
+      obj["percent"] = gTankRecords[i].percent;
+    }
     obj["alarm"] = gTankRecords[i].alarmActive;
     obj["alarmType"] = gTankRecords[i].alarmType;
     obj["lastUpdate"] = gTankRecords[i].lastUpdateEpoch;
+    obj["type"] = viewerRecordKindToString(gTankRecords[i].kind);
+    obj["unit"] = gTankRecords[i].unit;
+    obj["value"] = gTankRecords[i].levelInches;
+    obj["relayNumber"] = (gTankRecords[i].relayNumber >= 0) ? gTankRecords[i].relayNumber : -1;
+    obj["relayActive"] = gTankRecords[i].relayActive;
+    if (gTankRecords[i].relayLinked && gTankRecords[i].relayNumber >= 0) {
+      JsonObject relay = obj.createNestedObject("relay");
+      relay["linked"] = true;
+      relay["number"] = gTankRecords[i].relayNumber;
+      relay["active"] = gTankRecords[i].relayActive;
+    } else {
+      obj["relayLinked"] = false;
+    }
   }
 
   String body;
@@ -851,6 +1068,154 @@ static void fetchViewerSummary() {
   }
 }
 
+static bool equalsIgnoreCase(const char *a, const char *b) {
+  if (!a || !b) {
+    return false;
+  }
+  while (*a && *b) {
+    char ca = (char)tolower((unsigned char)*a);
+    char cb = (char)tolower((unsigned char)*b);
+    if (ca != cb) {
+      return false;
+    }
+    ++a;
+    ++b;
+  }
+  return (*a == '\0') && (*b == '\0');
+}
+
+static ViewerRecordKind parseViewerRecordKind(const char *typeToken, ViewerRecordKind fallbackKind) {
+  if (!typeToken || !*typeToken) {
+    return fallbackKind;
+  }
+  if (equalsIgnoreCase(typeToken, "pressure")) {
+    return VIEWER_RECORD_PRESSURE;
+  }
+  if (equalsIgnoreCase(typeToken, "engine")) {
+    return VIEWER_RECORD_ENGINE;
+  }
+  return VIEWER_RECORD_TANK;
+}
+
+static const char *viewerRecordKindToString(ViewerRecordKind kind) {
+  switch (kind) {
+    case VIEWER_RECORD_PRESSURE:
+      return "pressure";
+    case VIEWER_RECORD_ENGINE:
+      return "engine";
+    default:
+      return "tank";
+  }
+}
+
+static const char *defaultUnitForKind(ViewerRecordKind kind) {
+  switch (kind) {
+    case VIEWER_RECORD_PRESSURE:
+      return "psi";
+    case VIEWER_RECORD_ENGINE:
+      return "rpm";
+    default:
+      return "in";
+  }
+}
+
+static void appendViewerRecord(JsonVariantConst item, ViewerRecordKind fallbackKind) {
+  if (!item.is<JsonObject>() || gTankRecordCount >= MAX_TANK_RECORDS) {
+    return;
+  }
+
+  TankRecord &rec = gTankRecords[gTankRecordCount++];
+  memset(&rec, 0, sizeof(TankRecord));
+  rec.relayNumber = -1;
+
+  strlcpy(rec.clientUid, item["client"] | "", sizeof(rec.clientUid));
+  strlcpy(rec.site, item["site"] | "", sizeof(rec.site));
+  strlcpy(rec.label, item["label"] | "Tank", sizeof(rec.label));
+
+  rec.kind = parseViewerRecordKind(item["type"] | nullptr, fallbackKind);
+  const char *unit = item["unit"] | defaultUnitForKind(rec.kind);
+  strlcpy(rec.unit, unit, sizeof(rec.unit));
+
+  rec.tankNumber = item["tank"].is<uint8_t>() ? item["tank"].as<uint8_t>() : 0;
+  rec.heightInches = item["heightInches"].as<float>();
+
+  if (item.containsKey("value")) {
+    rec.levelInches = item["value"].as<float>();
+  } else if (item.containsKey("levelInches")) {
+    rec.levelInches = item["levelInches"].as<float>();
+  } else if (item.containsKey("rpm")) {
+    rec.levelInches = item["rpm"].as<float>();
+  } else if (item.containsKey("pressure")) {
+    rec.levelInches = item["pressure"].as<float>();
+  } else {
+    rec.levelInches = 0.0f;
+  }
+
+  if (rec.kind == VIEWER_RECORD_TANK) {
+    if (rec.tankNumber == 0) {
+      rec.tankNumber = gTankRecordCount;
+    }
+    if (rec.heightInches <= 0.0f && item.containsKey("heightInches")) {
+      rec.heightInches = item["heightInches"].as<float>();
+    }
+    if (item.containsKey("percent")) {
+      rec.percent = item["percent"].as<float>();
+    } else if (rec.heightInches > 0.1f) {
+      rec.percent = (rec.levelInches / rec.heightInches) * 100.0f;
+    } else {
+      rec.percent = NAN;
+    }
+  } else {
+    if (item.containsKey("percent")) {
+      rec.percent = item["percent"].as<float>();
+    } else {
+      rec.percent = NAN;
+    }
+  }
+
+  rec.alarmActive = item["alarm"].as<bool>();
+  strlcpy(rec.alarmType, item["alarmType"] | (rec.alarmActive ? "alarm" : "normal"), sizeof(rec.alarmType));
+
+  if (item.containsKey("lastUpdate")) {
+    rec.lastUpdateEpoch = item["lastUpdate"].as<double>();
+  } else if (item.containsKey("time")) {
+    rec.lastUpdateEpoch = item["time"].as<double>();
+  } else {
+    rec.lastUpdateEpoch = currentEpoch();
+  }
+
+  JsonVariantConst relay = item["relay"];
+  int relayNumber = -1;
+  bool relayLinked = false;
+  bool relayActive = false;
+
+  if (relay.is<JsonObject>()) {
+    relayLinked = relay["linked"].as<bool>();
+    if (relay.containsKey("number")) {
+      relayNumber = relay["number"].as<int>();
+    }
+    if (relay.containsKey("active")) {
+      relayActive = relay["active"].as<bool>();
+    }
+  } else {
+    relayLinked = item["relayLinked"].as<bool>();
+    if (item["relayNumber"].is<int>()) {
+      relayNumber = item["relayNumber"].as<int>();
+    }
+    if (item.containsKey("relayActive")) {
+      relayActive = item["relayActive"].as<bool>();
+    }
+  }
+
+  if (relayNumber < 0 || relayNumber > 127) {
+    relayNumber = -1;
+  }
+
+  rec.relayNumber = (relayNumber >= 0) ? (int8_t)relayNumber : -1;
+  rec.relayActive = relayActive;
+  rec.relayLinked = relayLinked || (rec.relayNumber >= 0);
+}
+
 static void handleViewerSummary(JsonDocument &doc, double epoch) {
   const char *serverName = doc["serverName"] | "Tank Alarm Server";
   const char *serverUid = doc["serverUid"] | "";
@@ -874,24 +1239,53 @@ static void handleViewerSummary(JsonDocument &doc, double epoch) {
   }
 
   gTankRecordCount = 0;
-  JsonArray arr = doc["tanks"].as<JsonArray>();
-  if (arr) {
-    for (JsonVariantConst item : arr) {
+
+  JsonArray tanks = doc["tanks"].as<JsonArray>();
+  if (tanks) {
+    for (JsonVariantConst item : tanks) {
+      appendViewerRecord(item, VIEWER_RECORD_TANK);
       if (gTankRecordCount >= MAX_TANK_RECORDS) {
         break;
       }
-      TankRecord &rec = gTankRecords[gTankRecordCount++];
-      memset(&rec, 0, sizeof(TankRecord));
-      strlcpy(rec.clientUid, item["client"] | "", sizeof(rec.clientUid));
-      strlcpy(rec.site, item["site"] | "", sizeof(rec.site));
-      strlcpy(rec.label, item["label"] | "Tank", sizeof(rec.label));
-      rec.tankNumber = item["tank"].is<uint8_t>() ? item["tank"].as<uint8_t>() : gTankRecordCount;
-      rec.heightInches = item["heightInches"].as<float>();
-      rec.levelInches = item["levelInches"].as<float>();
-      rec.percent = item["percent"].as<float>();
-      rec.alarmActive = item["alarm"].as<bool>();
-      strlcpy(rec.alarmType, item["alarmType"] | (rec.alarmActive ? "alarm" : "clear"), sizeof(rec.alarmType));
-      rec.lastUpdateEpoch = item["lastUpdate"].as<double>();
+    }
+  }
+
+  JsonArray pressures = doc["pressures"].as<JsonArray>();
+  if (pressures) {
+    for (JsonVariantConst item : pressures) {
+      appendViewerRecord(item, VIEWER_RECORD_PRESSURE);
+      if (gTankRecordCount >= MAX_TANK_RECORDS) {
+        break;
+      }
+    }
+  }
+
+  JsonArray engines = doc["engines"].as<JsonArray>();
+  if (engines) {
+    for (JsonVariantConst item : engines) {
+      appendViewerRecord(item, VIEWER_RECORD_ENGINE);
+      if (gTankRecordCount >= MAX_TANK_RECORDS) {
+        break;
+      }
+    }
+  }
+
+  JsonArray sites = doc["sites"].as<JsonArray>();
+  if (sites) {
+    for (JsonVariantConst site : sites) {
+      JsonArray metrics = site["metrics"].as<JsonArray>();
+      if (!metrics) {
+        continue;
+      }
+      for (JsonVariantConst metric : metrics) {
+        appendViewerRecord(metric, VIEWER_RECORD_TANK);
+        if (gTankRecordCount >= MAX_TANK_RECORDS) {
+          break;
+        }
+      }
+      if (gTankRecordCount >= MAX_TANK_RECORDS) {
+        break;
+      }
     }
   }
 
