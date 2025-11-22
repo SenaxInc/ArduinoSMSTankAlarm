@@ -1083,7 +1083,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <th>Client</th>
             <th>Site</th>
             <th>Tank</th>
-            <th>Level (in)</th>
+            <th>Level</th>
             <th>Status</th>
             <th>Updated</th>
             <th>Refresh</th>
@@ -1146,6 +1146,18 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 
       function formatNumber(value) {
         return (typeof value === 'number' && isFinite(value)) ? value.toFixed(1) : '--';
+      }
+
+      function formatLevel(inches) {
+        if (typeof inches !== 'number' || !isFinite(inches)) {
+          return '--';
+        }
+        const feet = Math.floor(inches / 12);
+        const remainingInches = inches % 12;
+        if (feet === 0) {
+          return `${remainingInches.toFixed(1)}"`;
+        }
+        return `${feet}' ${remainingInches.toFixed(1)}"`;
       }
 
       function formatEpoch(epoch) {
@@ -1216,7 +1228,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <td><code>${row.client || '--'}</code></td>
             <td>${row.site || '--'}</td>
             <td>${row.label || 'Tank'} #${row.tank || '?'}</td>
-            <td>${formatNumber(row.levelInches)}</td>
+            <td>${formatLevel(row.levelInches)}</td>
             <td>${statusBadge(row)}</td>
             <td>${formatEpoch(row.lastUpdate)}</td>
             <td>${refreshButton(row)}</td>`;
