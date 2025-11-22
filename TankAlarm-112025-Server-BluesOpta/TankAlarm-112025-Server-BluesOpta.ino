@@ -2625,6 +2625,7 @@ static void respondJson(EthernetClient &client, const String &body, int status =
 static void respondStatus(EthernetClient &client, int status, const String &message);
 static void sendDashboard(EthernetClient &client);
 static void sendClientConsole(EthernetClient &client);
+static void sendConfigGenerator(EthernetClient &client);
 static void sendTankJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client);
 static void handleConfigPost(EthernetClient &client, const String &body);
@@ -2639,7 +2640,6 @@ enum class ConfigDispatchStatus : uint8_t {
 static void handlePinPost(EthernetClient &client, const String &body);
 static void handleRefreshPost(EthernetClient &client, const String &body);
 static void handleRelayPost(EthernetClient &client, const String &body);
-static void sendConfigGenerator(EthernetClient &client);
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
 static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state, const char *source);
 static void pollNotecard();
