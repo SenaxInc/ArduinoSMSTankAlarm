@@ -235,12 +235,10 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
       <table>
         <thead>
           <tr>
-            <th>Client</th>
             <th>Site</th>
             <th>Tank</th>
             <th>Level (in)</th>
-            <th>% Full</th>
-            <th>Status</th>
+            <th>24hr Change</th>
             <th>Updated</th>
           </tr>
         </thead>
@@ -374,7 +372,7 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
         const rows = state.selected ? state.tanks.filter(t => t.client === state.selected) : state.tanks;
         if (!rows.length) {
           const tr = document.createElement('tr');
-          tr.innerHTML = '<td colspan="7">No tank data available</td>';
+          tr.innerHTML = '<td colspan="5">No tank data available</td>';
           tbody.appendChild(tr);
           return;
         }
@@ -382,12 +380,10 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
           const tr = document.createElement('tr');
           if (tank.alarm) tr.classList.add('alarm');
           tr.innerHTML = `
-            <td><code>${escapeHtml(tank.client, '--')}</code></td>
             <td>${escapeHtml(tank.site, '--')}</td>
             <td>${escapeHtml(tank.label || 'Tank')} #${escapeHtml((tank.tank ?? '?'))}</td>
             <td>${formatNumber(tank.levelInches)}</td>
-            <td>${formatNumber(tank.percent)}</td>
-            <td>${statusBadge(tank)}</td>
+            <td>--</td>
             <td>${formatEpoch(tank.lastUpdate)}</td>`;
           tbody.appendChild(tr);
         });
