@@ -194,6 +194,8 @@ jobs:
           mkdir -p /tmp/html-112025-viewer
           python3 << 'EOF'
           import re
+          import json
+          import time
           
           ino_file = 'TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino'
           output_dir = '/tmp/html-112025-viewer'
@@ -201,21 +203,142 @@ jobs:
           with open(ino_file, 'r', encoding='utf-8', errors='ignore') as f:
               content = f.read()
           
-          # Find the VIEWER_DASHBOARD_HTML constant
-          html_pattern = r'static const char VIEWER_DASHBOARD_HTML\[\] PROGMEM = R"HTML\((.*?)\)HTML"'
-          match = re.search(html_pattern, content, re.DOTALL)
+          # Find the VIEWER_DASHBOARD_HTML constant - need to handle macro splits
+          # The HTML is split into multiple R"HTML()HTML" sections with STR() macros in between
+          start_pattern = r'static const char VIEWER_DASHBOARD_HTML\[\] PROGMEM = R"HTML\('
+          start_match = re.search(start_pattern, content)
           
-          if match:
-              html_content = match.group(1)
+          if start_match:
+              # Find the end - look for the final )HTML"; that ends the declaration
+              start_pos = start_match.end()
+              # Find the position after the HTML definition ends
+              end_pattern = r'\)HTML";'
+              remaining = content[start_pos:]
               
-              # Replace the STR(WEB_REFRESH_SECONDS) macro with a placeholder value
-              html_content = re.sub(r'\)HTML" STR\(WEB_REFRESH_SECONDS\) R"HTML\(', '30', html_content)
+              # Collect all parts, handling the macro splits
+              html_parts = []
+              current_pos = 0
+              
+              while True:
+                  # Find next )HTML"
+                  end_match = re.search(r'\)HTML"', remaining[current_pos:])
+                  if not end_match:
+                      break
+                  
+                  # Extract the HTML part
+                  html_parts.append(remaining[current_pos:current_pos + end_match.start()])
+                  
+                  # Check if this is the final terminator
+                  check_pos = current_pos + end_match.end()
+                  if check_pos < len(remaining) and remaining[check_pos:check_pos+1] == ';':
+                      # This is the final terminator
+                      break
+                  
+                  # Look for the next R"HTML(
+                  next_start = re.search(r'R"HTML\(', remaining[check_pos:])
+                  if next_start:
+                      # Extract the macro value in between
+                      macro_section = remaining[check_pos:check_pos + next_start.start()]
+                      # Replace STR(WEB_REFRESH_SECONDS) with 30
+                      if 'STR(WEB_REFRESH_SECONDS)' in macro_section:
+                          html_parts.append('30')
+                      current_pos = check_pos + next_start.end()
+                  else:
+                      break
+              
+              html_content = ''.join(html_parts)
+              
+              # Create sample data for the viewer
+              current_time = int(time.time())
+              sample_data = {
+                  "viewerName": "Demo Tank Alarm Viewer",
+                  "viewerUid": "dev:viewer001",
+                  "sourceServerName": "Demo Server",
+                  "sourceServerUid": "dev:server001",
+                  "generatedEpoch": current_time - 300,  # 5 minutes ago
+                  "lastFetchEpoch": current_time - 120,  # 2 minutes ago
+                  "nextFetchEpoch": current_time + 21480,  # ~6 hours from now
+                  "refreshSeconds": 21600,  # 6 hours
+                  "baseHour": 6,
+                  "tanks": [
+                      {
+                          "client": "dev:client001",
+                          "site": "North Facility",
+                          "label": "Primary",
+                          "tank": 1,
+                          "levelInches": 78.5,
+                          "percent": 85.3,
+                          "alarm": False,
+                          "lastUpdate": current_time - 180
+                      },
+                      {
+                          "client": "dev:client001",
+                          "site": "North Facility",
+                          "label": "Secondary",
+                          "tank": 2,
+                          "levelInches": 45.2,
+                          "percent": 52.1,
+                          "alarm": False,
+                          "lastUpdate": current_time - 180
+                      },
+                      {
+                          "client": "dev:client002",
+                          "site": "South Facility",
+                          "label": "Storage",
+                          "tank": 1,
+                          "levelInches": 18.3,
+                          "percent": 22.5,
+                          "alarm": True,
+                          "alarmType": "LOW",
+                          "lastUpdate": current_time - 240
+                      },
+                      {
+                          "client": "dev:client003",
+                          "site": "East Facility",
+                          "label": "Main",
+                          "tank": 1,
+                          "levelInches": 92.1,
+                          "percent": 95.8,
+                          "alarm": False,
+                          "lastUpdate": current_time - 150
+                      },
+                      {
+                          "client": "dev:client004",
+                          "site": "West Facility",
+                          "label": "Backup",
+                          "tank": 1,
+                          "levelInches": 12.7,
+                          "percent": 15.2,
+                          "alarm": True,
+                          "alarmType": "CRITICAL",
+                          "lastUpdate": current_time - 90
+                      }
+                  ]
+              }
+              
+              # Inject the sample data into the HTML by replacing the fetchTanks call
+              # Find the fetchTanks() call at the end of the script and replace it with data injection
+              sample_data_json = json.dumps(sample_data)
+              
+              # Replace the async fetchTanks call with synchronous data application
+              html_content = html_content.replace(
+                  'fetchTanks();',
+                  f'applyTankData({sample_data_json}, null);'
+              )
+              
+              # Also remove the setInterval call to prevent attempts to fetch from non-existent API
+              html_content = re.sub(
+                  r'setInterval\(\(\) => fetchTanks\(state\.selected\), REFRESH_SECONDS \* 1000\);',
+                  '// Auto-refresh disabled for static preview',
+                  html_content
+              )
               
               output_file = output_dir + '/dashboard.html'
               with open(output_file, 'w', encoding='utf-8') as out:
                   out.write(html_content)
               
               print(f'Extracted viewer dashboard HTML: {len(html_content)} bytes')
+              print(f'Injected sample data with {len(sample_data["tanks"])} tanks')
           EOF
 
       - name: Take screenshots with Playwright
