@@ -321,7 +321,6 @@ Ethernet.begin(mac, ip, dns, gateway, subnet);
 
 - **[INSTALLATION.md](INSTALLATION.md)** - Complete setup guide with Arduino IDE and library installation
 - **[FLEET_SETUP.md](FLEET_SETUP.md)** - Simplified fleet-based configuration
-- **[SETUP.md](SETUP.md)** - Legacy route-based setup (deprecated)
 - **[WEBSITE_PREVIEW.md](WEBSITE_PREVIEW.md)** - Dashboard features and screenshots
 
 ## Additional Resources

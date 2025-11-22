@@ -373,7 +373,6 @@ The server requires Blues Notehub configuration to receive data from clients:
 
 For detailed Blues Notehub setup, see:
 - [FLEET_SETUP.md](FLEET_SETUP.md)
-- [SETUP.md](SETUP.md) (legacy route-based setup)
 - [Blues Notehub Documentation](https://dev.blues.io/notehub/notehub-walkthrough/)
 
 ## Client Configuration via Web Interface
@@ -460,7 +459,6 @@ The web interface is designed for **intranet use only**:
 
 ### Project Documentation
 - [Fleet Setup Guide](FLEET_SETUP.md)
-- [Setup Guide (Legacy)](SETUP.md)
 - [Website Preview](WEBSITE_PREVIEW.md)
 
 ## Getting Help
