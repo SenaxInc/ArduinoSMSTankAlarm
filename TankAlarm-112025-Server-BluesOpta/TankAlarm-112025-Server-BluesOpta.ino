@@ -896,40 +896,6 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       margin-top: 8px;
       font-size: 1.8rem;
     }
-    .filter-bar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 16px;
-      align-items: flex-end;
-      background: var(--surface);
-      border: 1px solid var(--card-border);
-      border-radius: 20px;
-      padding: 16px;
-      box-shadow: 0 18px 40px var(--card-shadow);
-      margin-bottom: 20px;
-    }
-    .filter-bar label {
-      display: flex;
-      flex-direction: column;
-      font-size: 0.9rem;
-      color: var(--muted);
-      min-width: 220px;
-    }
-    select {
-      appearance: none;
-      border-radius: 10px;
-      border: 1px solid var(--card-border);
-      padding: 10px 12px;
-      margin-top: 6px;
-      background: var(--bg);
-      color: var(--text);
-    }
-    .filter-actions {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
     .btn {
       border: none;
       border-radius: 999px;
@@ -1046,32 +1012,6 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
     #toast.show {
       opacity: 1;
     }
-    .relay-btn {
-      padding: 4px 8px;
-      margin: 0 2px;
-      border: 1px solid var(--card-border);
-      border-radius: 4px;
-      background: var(--surface);
-      color: var(--text);
-      font-size: 0.75rem;
-      cursor: pointer;
-      transition: all 0.2s ease;
-    }
-    .relay-btn:hover {
-      background: var(--accent);
-      color: var(--accent-contrast);
-      border-color: var(--accent);
-    }
-    .relay-btn.active {
-      background: var(--accent);
-      color: var(--accent-contrast);
-      border-color: var(--accent);
-      font-weight: bold;
-    }
-    .relay-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
   </style>
 </head>
 <body data-theme="light">
@@ -1108,10 +1048,6 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         <strong id="lastSync">--</strong>
       </div>
       <div class="meta-card">
-        <span>PIN Status</span>
-        <strong id="pinStatus">--</strong>
-      </div>
-      <div class="meta-card">
         <span>Last Dashboard Refresh</span>
         <strong id="lastRefresh">--</strong>
       </div>
@@ -1136,19 +1072,6 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         <strong id="statStale">0</strong>
       </div>
     </div>
-    <section class="filter-bar">
-      <label>
-        Site Filter
-        <select id="siteFilter">
-          <option value="">All Sites</option>
-        </select>
-      </label>
-      <div class="filter-actions">
-        <button class="btn" id="refreshSiteBtn">Refresh Selected Site</button>
-        <button class="btn secondary" id="refreshAllBtn">Refresh All Sites</button>
-        <span class="badge" id="autoRefreshHint">UI refresh 60 s · Server cadence 6 h</span>
-      </div>
-    </section>
     <section class="card">
       <div class="card-head">
         <h2 style="margin:0;">Fleet Telemetry</h2>
@@ -1161,10 +1084,9 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <th>Site</th>
             <th>Tank</th>
             <th>Level (in)</th>
-            <th>% Full</th>
             <th>Status</th>
             <th>Updated</th>
-            <th>Relays</th>
+            <th>Refresh</th>
           </tr>
         </thead>
         <tbody id="tankBody"></tbody>
@@ -1186,11 +1108,6 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         nextEmail: document.getElementById('nextEmail'),
         lastSync: document.getElementById('lastSync'),
         lastRefresh: document.getElementById('lastRefresh'),
-        pinStatus: document.getElementById('pinStatus'),
-        autoRefreshHint: document.getElementById('autoRefreshHint'),
-        siteFilter: document.getElementById('siteFilter'),
-        refreshSiteBtn: document.getElementById('refreshSiteBtn'),
-        refreshAllBtn: document.getElementById('refreshAllBtn'),
         tankBody: document.getElementById('tankBody'),
         statClients: document.getElementById('statClients'),
         statTanks: document.getElementById('statTanks'),
@@ -1202,7 +1119,6 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       const state = {
         clients: [],
         tanks: [],
-        selected: '',
         refreshing: false,
         timer: null,
         uiRefreshSeconds: DEFAULT_REFRESH_SECONDS
@@ -1283,40 +1199,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         return rows;
       }
 
-      function populateSiteFilter(preferredUid) {
-        const select = els.siteFilter;
-        const map = new Map();
-        state.clients.forEach(client => {
-          if (!client.client) return;
-          const suffix = client.client.length > 6 ? client.client.slice(-6) : client.client;
-          const label = client.site ? `${client.site} (${suffix})` : `Client ${suffix}`;
-          map.set(client.client, label);
-        });
-        const previous = select.value;
-        select.innerHTML = '<option value="">All Sites</option>';
-        map.forEach((label, uid) => {
-          const option = document.createElement('option');
-          option.value = uid;
-          option.textContent = label;
-          select.appendChild(option);
-        });
-        const desired = preferredUid || previous;
-        if (desired && map.has(desired)) {
-          select.value = desired;
-          state.selected = desired;
-        } else if (!map.has(state.selected)) {
-          state.selected = '';
-          select.value = '';
-        } else {
-          select.value = state.selected || '';
-        }
-        updateButtonState();
-      }
-
       function renderTankRows() {
         const tbody = els.tankBody;
         tbody.innerHTML = '';
-        const rows = state.selected ? state.tanks.filter(t => t.client === state.selected) : state.tanks;
+        const rows = state.tanks;
         if (!rows.length) {
           const tr = document.createElement('tr');
           tr.innerHTML = '<td colspan="7">No telemetry available</td>';
@@ -1331,10 +1217,9 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <td>${row.site || '--'}</td>
             <td>${row.label || 'Tank'} #${row.tank || '?'}</td>
             <td>${formatNumber(row.levelInches)}</td>
-            <td>${formatNumber(row.percent)}</td>
             <td>${statusBadge(row)}</td>
             <td>${formatEpoch(row.lastUpdate)}</td>
-            <td>${relayButtons(row)}</td>`;
+            <td>${refreshButton(row)}</td>`;
           tbody.appendChild(tr);
         });
       }
@@ -1343,8 +1228,13 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         if (!row.alarm) {
           return '<span class="status-pill ok">Normal</span>';
         }
-        const label = row.alarmType ? row.alarmType : 'Alarm';
-        return `<span class="status-pill alarm">${label}</span>`;
+        return '<span class="status-pill alarm">ALARM</span>';
+      }
+
+      function refreshButton(row) {
+        if (!row.client || row.client === '--') return '--';
+        const escapedClient = escapeHtml(row.client);
+        return `<button class="icon-button" onclick="refreshTank('${escapedClient}')" title="Refresh Tank" style="width:32px;height:32px;font-size:1rem;">🔄</button>`;
       }
 
       function escapeHtml(unsafe) {
@@ -1357,45 +1247,29 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           .replace(/'/g, '&#039;');
       }
 
-      function relayButtons(row) {
-        if (!row.client || row.client === '--') return '--';
-        const MAX_RELAYS = 4;
-        const relays = Array.from({length: MAX_RELAYS}, (_, i) => i + 1);
-        const escapedClient = escapeHtml(row.client);
-        return relays.map(num => 
-          `<button class="relay-btn" onclick="toggleRelay('${escapedClient}', ${num}, event)" title="Toggle Relay ${num}">R${num}</button>`
-        ).join(' ');
-      }
-
-      async function toggleRelay(clientUid, relayNum, event) {
-        const btn = event.target;
-        const wasActive = btn.classList.contains('active');
-        const newState = !wasActive;
-        
-        btn.disabled = true;
+      async function refreshTank(clientUid) {
+        if (state.refreshing) return;
+        state.refreshing = true;
         try {
-          const res = await fetch('/api/relay', {
+          const res = await fetch('/api/refresh', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              clientUid: clientUid,
-              relay: relayNum,
-              state: newState
-            })
+            body: JSON.stringify({ client: clientUid })
           });
           if (!res.ok) {
             const text = await res.text();
-            throw new Error(text || 'Relay command failed');
+            throw new Error(text || 'Refresh failed');
           }
-          btn.classList.toggle('active', newState);
-          showToast(`Relay ${relayNum} ${newState ? 'ON' : 'OFF'} command sent`);
+          const data = await res.json();
+          applyServerData(data);
+          showToast('Tank refreshed');
         } catch (err) {
-          showToast(err.message || 'Relay control failed', true);
+          showToast(err.message || 'Refresh failed', true);
         } finally {
-          btn.disabled = false;
+          state.refreshing = false;
         }
       }
-      window.toggleRelay = toggleRelay;
+      window.refreshTank = refreshTank;
 
       function updateStats() {
         const clientIds = new Set();
@@ -1412,100 +1286,43 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         els.statStale.textContent = stale;
       }
 
-      function updateButtonState() {
-        els.refreshAllBtn.disabled = state.refreshing;
-        els.refreshSiteBtn.disabled = state.refreshing || !state.selected;
-      }
-
       function scheduleUiRefresh() {
         if (state.timer) {
           clearInterval(state.timer);
         }
         state.timer = setInterval(() => {
-          refreshData(state.selected);
+          refreshData();
         }, state.uiRefreshSeconds * 1000);
       }
 
-      function updateRefreshHint(serverInfo) {
-        const cadence = describeCadence(serverInfo && serverInfo.webRefreshSeconds);
-        els.autoRefreshHint.textContent = `UI refresh ${state.uiRefreshSeconds} s · Server cadence ${cadence}`;
-      }
-
-      function applyServerData(data, preferredUid) {
+      function applyServerData(data) {
         state.clients = data.clients || [];
         state.tanks = flattenTanks(state.clients);
-        if (preferredUid) {
-          state.selected = preferredUid;
-        }
         const serverInfo = data.server || {};
         els.serverName.textContent = serverInfo.name || 'Tank Alarm Server';
         els.serverUid.textContent = data.serverUid || '--';
         els.fleetName.textContent = serverInfo.clientFleet || 'tankalarm-clients';
         els.nextEmail.textContent = formatEpoch(data.nextDailyEmailEpoch);
         els.lastSync.textContent = formatEpoch(data.lastSyncEpoch);
-        els.pinStatus.textContent = serverInfo.pinConfigured ? 'Configured' : 'Not Set';
         els.lastRefresh.textContent = new Date().toLocaleString();
         state.uiRefreshSeconds = DEFAULT_REFRESH_SECONDS;
-        updateRefreshHint(serverInfo);
-        populateSiteFilter(preferredUid);
         renderTankRows();
         updateStats();
         scheduleUiRefresh();
       }
 
-      async function refreshData(preferredUid) {
+      async function refreshData() {
         try {
           const res = await fetch('/api/clients');
           if (!res.ok) {
             throw new Error('Failed to fetch fleet data');
           }
           const data = await res.json();
-          applyServerData(data, preferredUid || state.selected);
+          applyServerData(data);
         } catch (err) {
           showToast(err.message || 'Fleet refresh failed', true);
         }
       }
-
-      async function triggerManualRefresh(targetUid) {
-        const payload = targetUid ? { client: targetUid } : {};
-        state.refreshing = true;
-        updateButtonState();
-        try {
-          const res = await fetch('/api/refresh', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-          if (!res.ok) {
-            const text = await res.text();
-            throw new Error(text || 'Refresh failed');
-          }
-          const data = await res.json();
-          applyServerData(data, targetUid || state.selected);
-          showToast(targetUid ? 'Selected site refreshed' : 'Fleet refresh queued');
-        } catch (err) {
-          showToast(err.message || 'Refresh failed', true);
-        } finally {
-          state.refreshing = false;
-          updateButtonState();
-        }
-      }
-
-      els.siteFilter.addEventListener('change', event => {
-        state.selected = event.target.value;
-        renderTankRows();
-        updateButtonState();
-      });
-      els.refreshSiteBtn.addEventListener('click', () => {
-        if (!state.selected) {
-          showToast('Pick a site first.', true);
-          return;
-        }
-        triggerManualRefresh(state.selected);
-      });
-      els.refreshAllBtn.addEventListener('click', () => {
-        triggerManualRefresh(null);
-      });
 
       refreshData();
     })();
