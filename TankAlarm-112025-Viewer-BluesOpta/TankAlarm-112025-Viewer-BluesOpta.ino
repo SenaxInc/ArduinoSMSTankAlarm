@@ -237,7 +237,7 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
           <tr>
             <th>Site</th>
             <th>Tank</th>
-            <th>Level (in)</th>
+            <th>Level (ft/in)</th>
             <th>24hr Change</th>
             <th>Updated</th>
           </tr>
@@ -382,7 +382,7 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
           tr.innerHTML = `
             <td>${escapeHtml(tank.site, '--')}</td>
             <td>${escapeHtml(tank.label || 'Tank')} #${escapeHtml((tank.tank ?? '?'))}</td>
-            <td>${formatNumber(tank.levelInches)}</td>
+            <td>${formatFeetInches(tank.levelInches)}</td>
             <td>--</td>
             <td>${formatEpoch(tank.lastUpdate)}</td>`;
           tbody.appendChild(tr);
@@ -399,6 +399,13 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
 
       function formatNumber(val) {
         return (typeof val === 'number' && isFinite(val)) ? val.toFixed(1) : '--';
+      }
+
+      function formatFeetInches(inches) {
+        if (typeof inches !== 'number' || !isFinite(inches)) return '--';
+        const feet = Math.floor(inches / 12);
+        const remainingInches = inches % 12;
+        return `${feet}' ${remainingInches.toFixed(1)}"`;
       }
 
       function formatEpoch(epoch) {
