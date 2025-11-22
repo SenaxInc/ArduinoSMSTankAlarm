@@ -112,23 +112,56 @@ jobs:
                   
                   # Add sample data for dynamic content
                   if page_name == 'dashboard':
-                      # Add sample tank data at the end before closing body tag
+                      # Add sample tank data grouped by sites
                       sample_data = '''
+          <h2>North Facility</h2>
           <div class="tank-container">
             <div class="tank-card">
-              <div class="tank-header">Site A - Tank #1</div>
-              <div class="tank-level">Level: 75%</div>
-              <div class="tank-change positive">Change: +5%</div>
-              <div class="status-normal">Status: Normal</div>
+              <div class="tank-header">Tank #1</div>
+              <div class="tank-level">Level: 85.3%</div>
+              <div class="tank-change positive">24hr Change: +2.1%</div>
+              <div class="status status-normal">Status: Normal</div>
+              <div style="font-size: 12px; color: #666; margin-top: 10px;">Updated: 11/22/2025, 4:55:56 AM</div>
             </div>
             <div class="tank-card">
-              <div class="tank-header">Site B - Tank #2</div>
-              <div class="tank-level">Level: 30%</div>
-              <div class="tank-change negative">Change: -10%</div>
-              <div class="status-alarm">Status: LOW ALARM</div>
+              <div class="tank-header">Tank #2</div>
+              <div class="tank-level">Level: 52.1%</div>
+              <div class="tank-change negative">24hr Change: -3.2%</div>
+              <div class="status status-normal">Status: Normal</div>
+              <div style="font-size: 12px; color: #666; margin-top: 10px;">Updated: 11/22/2025, 4:55:56 AM</div>
             </div>
           </div>
-          <div class="footer">Last updated: 2025-11-12 18:00:00 UTC</div>
+          <h2>South Facility</h2>
+          <div class="tank-container">
+            <div class="tank-card">
+              <div class="tank-header">Tank #1</div>
+              <div class="tank-level">Level: 22.5%</div>
+              <div class="tank-change negative">24hr Change: -8.5%</div>
+              <div class="status status-alarm">Status: LOW</div>
+              <div style="font-size: 12px; color: #666; margin-top: 10px;">Updated: 11/22/2025, 4:54:56 AM</div>
+            </div>
+          </div>
+          <h2>East Facility</h2>
+          <div class="tank-container">
+            <div class="tank-card">
+              <div class="tank-header">Tank #1</div>
+              <div class="tank-level">Level: 95.8%</div>
+              <div class="tank-change positive">24hr Change: +1.2%</div>
+              <div class="status status-normal">Status: Normal</div>
+              <div style="font-size: 12px; color: #666; margin-top: 10px;">Updated: 11/22/2025, 4:56:26 AM</div>
+            </div>
+          </div>
+          <h2>West Facility</h2>
+          <div class="tank-container">
+            <div class="tank-card">
+              <div class="tank-header">Tank #1</div>
+              <div class="tank-level">Level: 15.2%</div>
+              <div class="tank-change negative">24hr Change: -12.8%</div>
+              <div class="status status-alarm">Status: CRITICAL</div>
+              <div style="font-size: 12px; color: #666; margin-top: 10px;">Updated: 11/22/2025, 4:57:26 AM</div>
+            </div>
+          </div>
+          <div class="footer">Last updated: 2025-11-22 18:00:00 UTC</div>
           </body>
           </html>
           '''
@@ -155,6 +188,8 @@ jobs:
           mkdir -p /tmp/html-112025
           python3 << 'EOF'
           import re
+          import json
+          import time
           
           ino_file = 'TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino'
           output_dir = '/tmp/html-112025'
@@ -169,11 +204,107 @@ jobs:
           if match:
               html_content = match.group(1)
               
+              # Create sample data for the server dashboard
+              current_time = int(time.time())
+              sample_data = {
+                  "serverUid": "dev:server001",
+                  "server": {
+                      "name": "Demo Tank Alarm Server",
+                      "clientFleet": "demo-tankalarm-clients",
+                      "webRefreshSeconds": 60,
+                      "pinConfigured": True
+                  },
+                  "nextDailyEmailEpoch": current_time + 43200,  # 12 hours from now
+                  "lastSyncEpoch": current_time - 180,  # 3 minutes ago
+                  "clients": [
+                      {
+                          "uid": "dev:client001",
+                          "site": "North Facility",
+                          "lastUpdate": current_time - 180,
+                          "tanks": [
+                              {
+                                  "tank": 1,
+                                  "label": "Primary",
+                                  "levelInches": 78.5,
+                                  "percent": 85.3,
+                                  "alarm": False,
+                                  "lastUpdate": current_time - 180
+                              },
+                              {
+                                  "tank": 2,
+                                  "label": "Secondary",
+                                  "levelInches": 45.2,
+                                  "percent": 52.1,
+                                  "alarm": False,
+                                  "lastUpdate": current_time - 180
+                              }
+                          ]
+                      },
+                      {
+                          "uid": "dev:client002",
+                          "site": "South Facility",
+                          "lastUpdate": current_time - 240,
+                          "tanks": [
+                              {
+                                  "tank": 1,
+                                  "label": "Storage",
+                                  "levelInches": 18.3,
+                                  "percent": 22.5,
+                                  "alarm": True,
+                                  "alarmType": "LOW",
+                                  "lastUpdate": current_time - 240
+                              }
+                          ]
+                      },
+                      {
+                          "uid": "dev:client003",
+                          "site": "East Facility",
+                          "lastUpdate": current_time - 150,
+                          "tanks": [
+                              {
+                                  "tank": 1,
+                                  "label": "Main",
+                                  "levelInches": 92.1,
+                                  "percent": 95.8,
+                                  "alarm": False,
+                                  "lastUpdate": current_time - 150
+                              }
+                          ]
+                      },
+                      {
+                          "uid": "dev:client004",
+                          "site": "West Facility",
+                          "lastUpdate": current_time - 90,
+                          "tanks": [
+                              {
+                                  "tank": 1,
+                                  "label": "Backup",
+                                  "levelInches": 12.7,
+                                  "percent": 15.2,
+                                  "alarm": True,
+                                  "alarmType": "CRITICAL",
+                                  "lastUpdate": current_time - 90
+                              }
+                          ]
+                      }
+                  ]
+              }
+              
+              # Inject the sample data
+              sample_data_json = json.dumps(sample_data)
+              
+              # Replace the refreshData() call with data injection
+              html_content = html_content.replace(
+                  'refreshData();',
+                  f'applyServerData({sample_data_json}, null);'
+              )
+              
               output_file = output_dir + '/dashboard.html'
               with open(output_file, 'w', encoding='utf-8') as out:
                   out.write(html_content)
               
               print(f'Extracted dashboard HTML: {len(html_content)} bytes')
+              print(f'Injected sample data with {len(sample_data["clients"])} clients')
           
           # Find the CONFIG_GENERATOR_HTML constant
           config_pattern = r'static const char CONFIG_GENERATOR_HTML\[\] PROGMEM = R"HTML\((.*?)\)HTML"'
