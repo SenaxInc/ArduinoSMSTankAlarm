@@ -1149,8 +1149,8 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       }
 
       function formatLevel(inches) {
-        if (typeof inches !== 'number' || !isFinite(inches)) {
-          return '--';
+        if (typeof inches !== 'number' || !isFinite(inches) || inches <= 0) {
+          return '';
         }
         const feet = Math.floor(inches / 12);
         const remainingInches = inches % 12;
