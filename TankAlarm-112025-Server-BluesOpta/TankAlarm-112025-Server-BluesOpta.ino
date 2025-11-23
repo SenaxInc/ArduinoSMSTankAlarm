@@ -1164,7 +1164,14 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         if (!epoch) return '--';
         const date = new Date(epoch * 1000);
         if (isNaN(date.getTime())) return '--';
-        return date.toLocaleString();
+        return date.toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'numeric',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true
+        });
       }
 
       function describeCadence(seconds) {
@@ -2031,7 +2038,14 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
         if (!epoch) return '--';
         const date = new Date(epoch * 1000);
         if (isNaN(date.getTime())) return '--';
-        return date.toLocaleString();
+        return date.toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'numeric',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true
+        });
       }
 
       function rowHtml(value) {
