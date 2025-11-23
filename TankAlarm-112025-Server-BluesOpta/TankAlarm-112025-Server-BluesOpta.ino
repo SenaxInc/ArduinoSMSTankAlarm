@@ -1253,7 +1253,9 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       function refreshButton(row) {
         if (!row.client || row.client === '--') return '--';
         const escapedClient = escapeHtml(row.client);
-        return `<button class="icon-button" onclick="refreshTank('${escapedClient}')" title="Refresh Tank" style="width:32px;height:32px;font-size:1rem;">🔄</button>`;
+        const disabled = state.refreshing ? 'disabled' : '';
+        const opacity = state.refreshing ? 'opacity:0.4;' : '';
+        return `<button class="icon-button refresh-btn" onclick="refreshTank('${escapedClient}')" title="Refresh Tank" style="width:32px;height:32px;font-size:1rem;${opacity}" ${disabled}>🔄</button>`;
       }
 
       function escapeHtml(unsafe) {
@@ -1269,6 +1271,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       async function refreshTank(clientUid) {
         if (state.refreshing) return;
         state.refreshing = true;
+        renderTankRows();
         try {
           const res = await fetch('/api/refresh', {
             method: 'POST',
@@ -1286,6 +1289,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           showToast(err.message || 'Refresh failed', true);
         } finally {
           state.refreshing = false;
+          renderTankRows();
         }
       }
       window.refreshTank = refreshTank;
@@ -1323,7 +1327,14 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         els.fleetName.textContent = serverInfo.clientFleet || 'tankalarm-clients';
         els.nextEmail.textContent = formatEpoch(data.nextDailyEmailEpoch);
         els.lastSync.textContent = formatEpoch(data.lastSyncEpoch);
-        els.lastRefresh.textContent = new Date().toLocaleString();
+        els.lastRefresh.textContent = new Date().toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'numeric',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true
+        });
         state.uiRefreshSeconds = DEFAULT_REFRESH_SECONDS;
         renderTankRows();
         updateStats();
