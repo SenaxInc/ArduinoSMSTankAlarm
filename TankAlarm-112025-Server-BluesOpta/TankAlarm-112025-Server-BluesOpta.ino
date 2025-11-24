@@ -21,7 +21,12 @@
 #include <Wire.h>
 #include <ArduinoJson.h>
 #include <Notecard.h>
-#include <Ethernet.h>
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_PORTENTA_H7_M7) || defined(ARDUINO_PORTENTA_H7_M4)
+  #include <PortentaEthernet.h>
+  #include <Ethernet.h>
+#else
+  #include <Ethernet.h>
+#endif
 #include <math.h>
 #include <string.h>
 #include <ctype.h>
@@ -2578,6 +2583,9 @@ void loop() {
   IWatchdog.reload();
 #endif
 
+  // Maintain DHCP lease and check link status
+  Ethernet.maintain();
+
   handleWebRequests();
 
   unsigned long now = millis();
@@ -2879,6 +2887,16 @@ static void scheduleNextViewerSummary() {
 
 static void initializeEthernet() {
   Serial.print(F("Initializing Ethernet..."));
+  
+  // Check if Ethernet hardware is present
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    Serial.println(F(" FAILED - No Ethernet hardware detected!"));
+    Serial.println(F("ERROR: Cannot continue without Ethernet. Please check hardware."));
+    while (true) {
+      delay(1000);
+    }
+  }
+  
   int status;
   if (gConfig.useStaticIp) {
     status = Ethernet.begin(gMacAddress, gStaticIp, gStaticDns, gStaticGateway, gStaticSubnet);
@@ -2887,11 +2905,29 @@ static void initializeEthernet() {
   }
 
   if (status == 0) {
-    Serial.println(F(" failed"));
+    Serial.println(F(" FAILED - Could not configure Ethernet!"));
+    if (!gConfig.useStaticIp) {
+      Serial.println(F("ERROR: DHCP failed. Check network cable and DHCP server."));
+    } else {
+      Serial.println(F("ERROR: Static IP configuration failed."));
+    }
+    while (true) {
+      delay(1000);
+    }
+  }
+  
+  // Check link status
+  if (Ethernet.linkStatus() == LinkOFF) {
+    Serial.println(F(" WARNING - No network cable connected!"));
+    Serial.println(F("Continuing, but web server will not be accessible."));
   } else {
     Serial.println(F(" ok"));
     Serial.print(F("IP Address: "));
     Serial.println(Ethernet.localIP());
+    Serial.print(F("Gateway: "));
+    Serial.println(Ethernet.gatewayIP());
+    Serial.print(F("Subnet: "));
+    Serial.println(Ethernet.subnetMask());
   }
 }
 
