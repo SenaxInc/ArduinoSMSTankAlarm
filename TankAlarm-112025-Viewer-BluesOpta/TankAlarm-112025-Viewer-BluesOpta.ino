@@ -570,6 +570,15 @@ static void ensureTimeSync() {
     if (!rsp) {
       return;
     }
+    // Check for error response (e.g., "time is not yet set {no-time}")
+    // This is normal during startup before Notecard syncs with cloud
+    const char *err = JGetString(rsp, "err");
+    if (err && strlen(err) > 0) {
+      // Time not yet available - this is expected during startup
+      // Will retry on next call
+      notecard.deleteResponse(rsp);
+      return;
+    }
     double time = JGetNumber(rsp, "time");
     if (time > 0) {
       gLastSyncedEpoch = time;
