@@ -2538,6 +2538,8 @@ static void loadClientConfigSnapshots();
 static void saveClientConfigSnapshots();
 static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffer);
 static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
+static ClientMetadata *findClientMetadata(const char *clientUid);
+static ClientMetadata *findOrCreateClientMetadata(const char *clientUid);
 static bool checkSmsRateLimit(TankRecord *rec);
 static void publishViewerSummary();
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
@@ -3237,14 +3239,10 @@ static void sendClientDataJson(EthernetClient &client) {
       clientObj["lastUpdate"] = 0.0;
       
       // Add VIN voltage from client metadata if available
-      for (uint8_t j = 0; j < gClientMetadataCount; ++j) {
-        if (strcmp(gClientMetadata[j].clientUid, rec.clientUid) == 0) {
-          if (gClientMetadata[j].vinVoltage > 0.0f) {
-            clientObj["vinVoltage"] = gClientMetadata[j].vinVoltage;
-            clientObj["vinVoltageEpoch"] = gClientMetadata[j].vinVoltageEpoch;
-          }
-          break;
-        }
+      ClientMetadata *meta = findClientMetadata(rec.clientUid);
+      if (meta && meta->vinVoltage > 0.0f) {
+        clientObj["vinVoltage"] = meta->vinVoltage;
+        clientObj["vinVoltageEpoch"] = meta->vinVoltageEpoch;
       }
     }
 
@@ -3645,6 +3643,44 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   }
 }
 
+// Helper function to find client metadata entry (read-only, does not create)
+static ClientMetadata *findClientMetadata(const char *clientUid) {
+  if (!clientUid || strlen(clientUid) == 0) {
+    return nullptr;
+  }
+  
+  for (uint8_t i = 0; i < gClientMetadataCount; ++i) {
+    if (strcmp(gClientMetadata[i].clientUid, clientUid) == 0) {
+      return &gClientMetadata[i];
+    }
+  }
+  
+  return nullptr;
+}
+
+// Helper function to find or create client metadata entry
+static ClientMetadata *findOrCreateClientMetadata(const char *clientUid) {
+  if (!clientUid || strlen(clientUid) == 0) {
+    return nullptr;
+  }
+  
+  // Search for existing entry
+  ClientMetadata *existing = findClientMetadata(clientUid);
+  if (existing) {
+    return existing;
+  }
+  
+  // Create new entry if space available
+  if (gClientMetadataCount < MAX_CLIENT_METADATA) {
+    ClientMetadata *meta = &gClientMetadata[gClientMetadataCount++];
+    memset(meta, 0, sizeof(ClientMetadata));
+    strlcpy(meta->clientUid, clientUid, sizeof(meta->clientUid));
+    return meta;
+  }
+  
+  return nullptr;
+}
+
 static void handleDaily(JsonDocument &doc, double epoch) {
   // Extract VIN voltage from daily report if present
   const char *clientUid = doc["client"] | "";
@@ -3654,19 +3690,7 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     if (part == 1 && doc.containsKey("vinVoltage")) {
       float vinVoltage = doc["vinVoltage"].as<float>();
       if (vinVoltage > 0.0f) {
-        // Find or create client metadata entry
-        ClientMetadata *meta = nullptr;
-        for (uint8_t i = 0; i < gClientMetadataCount; ++i) {
-          if (strcmp(gClientMetadata[i].clientUid, clientUid) == 0) {
-            meta = &gClientMetadata[i];
-            break;
-          }
-        }
-        if (!meta && gClientMetadataCount < MAX_CLIENT_METADATA) {
-          meta = &gClientMetadata[gClientMetadataCount++];
-          memset(meta, 0, sizeof(ClientMetadata));
-          strlcpy(meta->clientUid, clientUid, sizeof(meta->clientUid));
-        }
+        ClientMetadata *meta = findOrCreateClientMetadata(clientUid);
         if (meta) {
           meta->vinVoltage = vinVoltage;
           meta->vinVoltageEpoch = (epoch > 0.0) ? epoch : currentEpoch();
@@ -3872,13 +3896,9 @@ static void publishViewerSummary() {
     obj["lastUpdate"] = gTankRecords[i].lastUpdateEpoch;
     
     // Add VIN voltage from client metadata if available
-    for (uint8_t j = 0; j < gClientMetadataCount; ++j) {
-      if (strcmp(gClientMetadata[j].clientUid, gTankRecords[i].clientUid) == 0) {
-        if (gClientMetadata[j].vinVoltage > 0.0f) {
-          obj["vinVoltage"] = gClientMetadata[j].vinVoltage;
-        }
-        break;
-      }
+    ClientMetadata *meta = findClientMetadata(gTankRecords[i].clientUid);
+    if (meta && meta->vinVoltage > 0.0f) {
+      obj["vinVoltage"] = meta->vinVoltage;
     }
   }
 
