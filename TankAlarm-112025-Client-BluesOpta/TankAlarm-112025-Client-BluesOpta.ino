@@ -277,6 +277,7 @@ static void setRelayState(uint8_t relayNum, bool state);
 static void initializeRelays();
 static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, bool activate);
 static int getRelayPin(uint8_t relayIndex);
+static float readNotecardVinVoltage();
 
 void setup() {
   Serial.begin(115200);
@@ -1368,6 +1369,9 @@ static void sendDailyReport() {
   uint8_t part = 0;
   bool queuedAny = false;
 
+  // Read VIN voltage once for the daily report
+  float vinVoltage = readNotecardVinVoltage();
+
   while (tankCursor < eligibleCount) {
     DynamicJsonDocument doc(1024);
     doc["client"] = gDeviceUID;
@@ -1375,6 +1379,11 @@ static void sendDailyReport() {
     doc["email"] = gConfig.dailyEmail;
     doc["time"] = reportEpoch;
     doc["part"] = static_cast<uint8_t>(part + 1);
+
+    // Include VIN voltage in the first part of the daily report
+    if (part == 0 && vinVoltage > 0.0f) {
+      doc["vinVoltage"] = vinVoltage;
+    }
 
     JsonArray tanks = doc.createNestedArray("tanks");
     bool addedTank = false;
@@ -1843,4 +1852,42 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
       }
     }
   }
+}
+
+// ============================================================================
+// Notecard VIN Voltage Reading
+// ============================================================================
+
+static float readNotecardVinVoltage() {
+  J *req = notecard.newRequest("card.voltage");
+  if (!req) {
+    Serial.println(F("Failed to create card.voltage request"));
+    return -1.0f;
+  }
+
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    Serial.println(F("No response from card.voltage"));
+    return -1.0f;
+  }
+
+  // Check for error response
+  const char *err = JGetString(rsp, "err");
+  if (err && strlen(err) > 0) {
+    Serial.print(F("card.voltage error: "));
+    Serial.println(err);
+    notecard.deleteResponse(rsp);
+    return -1.0f;
+  }
+
+  float voltage = (float)JGetNumber(rsp, "value");
+  notecard.deleteResponse(rsp);
+
+  if (voltage > 0.0f) {
+    Serial.print(F("Notecard VIN voltage: "));
+    Serial.print(voltage);
+    Serial.println(F(" V"));
+  }
+
+  return voltage;
 }
