@@ -1203,6 +1203,9 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         return `${hours} h`;
       }
 
+      // Flatten client/tank hierarchy into rows for display.
+      // VIN voltage is a per-client value (from Blues Notecard), so it's only
+      // shown on the first tank row for each client to avoid redundancy.
       function flattenTanks(clients) {
         const rows = [];
         clients.forEach(client => {
@@ -3678,6 +3681,12 @@ static ClientMetadata *findOrCreateClientMetadata(const char *clientUid) {
     return meta;
   }
   
+  // Maximum client metadata capacity reached
+  Serial.print(F("Warning: Cannot create client metadata for "));
+  Serial.print(clientUid);
+  Serial.print(F(" - max capacity ("));
+  Serial.print(MAX_CLIENT_METADATA);
+  Serial.println(F(") reached"));
   return nullptr;
 }
 

@@ -1880,7 +1880,7 @@ static float readNotecardVinVoltage() {
     return -1.0f;
   }
 
-  float voltage = (float)JGetNumber(rsp, "value");
+  float voltage = JGetNumber(rsp, "value");
   notecard.deleteResponse(rsp);
 
   if (voltage > 0.0f) {
