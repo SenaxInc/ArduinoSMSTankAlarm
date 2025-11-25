@@ -669,6 +669,7 @@ static void syncTimeFromNotecard() {
     gNotecardFailureCount++;
     return;
   }
+  JAddStringToObject(req, "mode", "auto");
   J *rsp = notecard.requestAndResponse(req);
   if (!rsp) {
     gNotecardFailureCount++;

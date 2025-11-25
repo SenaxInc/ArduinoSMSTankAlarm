@@ -2833,6 +2833,7 @@ static void ensureTimeSync() {
     if (!req) {
       return;
     }
+    JAddStringToObject(req, "mode", "auto");
     J *rsp = notecard.requestAndResponse(req);
     if (!rsp) {
       return;
