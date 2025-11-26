@@ -2651,7 +2651,6 @@ void loop() {
 
   handleWebRequests();
 
-  unsigned long now = millis();
   if (now - gLastPollMillis > 5000UL) {
     gLastPollMillis = now;
     pollNotecard();
