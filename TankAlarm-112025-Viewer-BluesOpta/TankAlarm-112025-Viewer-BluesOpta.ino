@@ -113,6 +113,7 @@ struct TankRecord {
   bool alarmActive;
   char alarmType[24];
   double lastUpdateEpoch;
+  float vinVoltage;  // Blues Notecard VIN voltage
 };
 
 static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(10)) + 768;
@@ -238,6 +239,7 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
             <th>Site</th>
             <th>Tank</th>
             <th>Level (ft/in)</th>
+            <th>VIN Voltage</th>
             <th>24hr Change</th>
             <th>Updated</th>
           </tr>
@@ -372,7 +374,7 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
         const rows = state.selected ? state.tanks.filter(t => t.client === state.selected) : state.tanks;
         if (!rows.length) {
           const tr = document.createElement('tr');
-          tr.innerHTML = '<td colspan="5">No tank data available</td>';
+          tr.innerHTML = '<td colspan="6">No tank data available</td>';
           tbody.appendChild(tr);
           return;
         }
@@ -383,10 +385,18 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
             <td>${escapeHtml(tank.site, '--')}</td>
             <td>${escapeHtml(tank.label || 'Tank')} #${escapeHtml((tank.tank ?? '?'))}</td>
             <td>${formatFeetInches(tank.levelInches)}</td>
+            <td>${formatVoltage(tank.vinVoltage)}</td>
             <td>--</td>
             <td>${formatEpoch(tank.lastUpdate)}</td>`;
           tbody.appendChild(tr);
         });
+      }
+
+      function formatVoltage(voltage) {
+        if (typeof voltage !== 'number' || !isFinite(voltage) || voltage <= 0) {
+          return '--';
+        }
+        return voltage.toFixed(2) + ' V';
       }
 
       function statusBadge(tank) {
@@ -815,6 +825,9 @@ static void sendTankJson(EthernetClient &client) {
     obj["alarm"] = gTankRecords[i].alarmActive;
     obj["alarmType"] = gTankRecords[i].alarmType;
     obj["lastUpdate"] = gTankRecords[i].lastUpdateEpoch;
+    if (gTankRecords[i].vinVoltage > 0.0f) {
+      obj["vinVoltage"] = gTankRecords[i].vinVoltage;
+    }
   }
 
   String body;
@@ -900,6 +913,7 @@ static void handleViewerSummary(JsonDocument &doc, double epoch) {
       rec.alarmActive = item["alarm"].as<bool>();
       strlcpy(rec.alarmType, item["alarmType"] | (rec.alarmActive ? "alarm" : "clear"), sizeof(rec.alarmType));
       rec.lastUpdateEpoch = item["lastUpdate"].as<double>();
+      rec.vinVoltage = item["vinVoltage"].as<float>();
     }
   }
 

@@ -182,6 +182,20 @@ struct TankRecord {
   double smsAlertTimestamps[10];  // Track last 10 SMS alerts per tank
 };
 
+// Per-client metadata (VIN voltage, etc.)
+#ifndef MAX_CLIENT_METADATA
+#define MAX_CLIENT_METADATA 20
+#endif
+
+struct ClientMetadata {
+  char clientUid[48];
+  float vinVoltage;          // Blues Notecard VIN voltage from daily report
+  double vinVoltageEpoch;    // When the VIN voltage was last updated
+};
+
+static ClientMetadata gClientMetadata[MAX_CLIENT_METADATA];
+static uint8_t gClientMetadataCount = 0;
+
 static ServerConfig gConfig;
 static bool gConfigDirty = false;
 
@@ -1089,6 +1103,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <th>Site</th>
             <th>Tank</th>
             <th>Level</th>
+            <th>VIN Voltage</th>
             <th>Status</th>
             <th>Updated</th>
             <th>Refresh</th>
@@ -1188,6 +1203,9 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         return `${hours} h`;
       }
 
+      // Flatten client/tank hierarchy into rows for display.
+      // VIN voltage is a per-client value (from Blues Notecard), so it's only
+      // shown on the first tank row for each client to avoid redundancy.
       function flattenTanks(clients) {
         const rows = [];
         clients.forEach(client => {
@@ -1202,11 +1220,12 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
               percent: client.percent,
               alarm: client.alarm,
               alarmType: client.alarmType,
-              lastUpdate: client.lastUpdate
+              lastUpdate: client.lastUpdate,
+              vinVoltage: client.vinVoltage
             });
             return;
           }
-          tanks.forEach(tank => {
+          tanks.forEach((tank, idx) => {
             rows.push({
               client: client.client,
               site: client.site,
@@ -1216,11 +1235,19 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
               percent: tank.percent,
               alarm: tank.alarm,
               alarmType: tank.alarmType || client.alarmType,
-              lastUpdate: tank.lastUpdate
+              lastUpdate: tank.lastUpdate,
+              vinVoltage: idx === 0 ? client.vinVoltage : null  // Only show VIN on first tank per client
             });
           });
         });
         return rows;
+      }
+
+      function formatVoltage(voltage) {
+        if (typeof voltage !== 'number' || !isFinite(voltage) || voltage <= 0) {
+          return '--';
+        }
+        return voltage.toFixed(2) + ' V';
       }
 
       function renderTankRows() {
@@ -1229,7 +1256,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         const rows = state.tanks;
         if (!rows.length) {
           const tr = document.createElement('tr');
-          tr.innerHTML = '<td colspan="7">No telemetry available</td>';
+          tr.innerHTML = '<td colspan="8">No telemetry available</td>';
           tbody.appendChild(tr);
           return;
         }
@@ -1241,6 +1268,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <td>${row.site || '--'}</td>
             <td>${row.label || 'Tank'} #${row.tank || '?'}</td>
             <td>${formatLevel(row.levelInches)}</td>
+            <td>${formatVoltage(row.vinVoltage)}</td>
             <td>${statusBadge(row)}</td>
             <td>${formatEpoch(row.lastUpdate)}</td>
             <td>${refreshButton(row)}</td>`;
@@ -2513,6 +2541,8 @@ static void loadClientConfigSnapshots();
 static void saveClientConfigSnapshots();
 static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffer);
 static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
+static ClientMetadata *findClientMetadata(const char *clientUid);
+static ClientMetadata *findOrCreateClientMetadata(const char *clientUid);
 static bool checkSmsRateLimit(TankRecord *rec);
 static void publishViewerSummary();
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
@@ -3210,6 +3240,13 @@ static void sendClientDataJson(EthernetClient &client) {
       clientObj["site"] = rec.site;
       clientObj["alarm"] = false;
       clientObj["lastUpdate"] = 0.0;
+      
+      // Add VIN voltage from client metadata if available
+      ClientMetadata *meta = findClientMetadata(rec.clientUid);
+      if (meta && meta->vinVoltage > 0.0f) {
+        clientObj["vinVoltage"] = meta->vinVoltage;
+        clientObj["vinVoltageEpoch"] = meta->vinVoltageEpoch;
+      }
     }
 
     const char *existingSite = clientObj.containsKey("site") ? clientObj["site"].as<const char *>() : nullptr;
@@ -3609,10 +3646,72 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   }
 }
 
+// Helper function to find client metadata entry (read-only, does not create)
+static ClientMetadata *findClientMetadata(const char *clientUid) {
+  if (!clientUid || strlen(clientUid) == 0) {
+    return nullptr;
+  }
+  
+  for (uint8_t i = 0; i < gClientMetadataCount; ++i) {
+    if (strcmp(gClientMetadata[i].clientUid, clientUid) == 0) {
+      return &gClientMetadata[i];
+    }
+  }
+  
+  return nullptr;
+}
+
+// Helper function to find or create client metadata entry
+static ClientMetadata *findOrCreateClientMetadata(const char *clientUid) {
+  if (!clientUid || strlen(clientUid) == 0) {
+    return nullptr;
+  }
+  
+  // Search for existing entry
+  ClientMetadata *existing = findClientMetadata(clientUid);
+  if (existing) {
+    return existing;
+  }
+  
+  // Create new entry if space available
+  if (gClientMetadataCount < MAX_CLIENT_METADATA) {
+    ClientMetadata *meta = &gClientMetadata[gClientMetadataCount++];
+    memset(meta, 0, sizeof(ClientMetadata));
+    strlcpy(meta->clientUid, clientUid, sizeof(meta->clientUid));
+    return meta;
+  }
+  
+  // Maximum client metadata capacity reached
+  Serial.print(F("Warning: Cannot create client metadata for "));
+  Serial.print(clientUid);
+  Serial.print(F(" - max capacity ("));
+  Serial.print(MAX_CLIENT_METADATA);
+  Serial.println(F(") reached"));
+  return nullptr;
+}
+
 static void handleDaily(JsonDocument &doc, double epoch) {
-  (void)doc;
-  (void)epoch;
-  // Daily reports are persisted in sendDailyEmail; nothing to do for inbound ack
+  // Extract VIN voltage from daily report if present
+  const char *clientUid = doc["client"] | "";
+  if (clientUid && strlen(clientUid) > 0) {
+    // Check if this is part 1 of the daily report (which contains vinVoltage)
+    uint8_t part = doc["part"].as<uint8_t>();
+    if (part == 1 && doc.containsKey("vinVoltage")) {
+      float vinVoltage = doc["vinVoltage"].as<float>();
+      if (vinVoltage > 0.0f) {
+        ClientMetadata *meta = findOrCreateClientMetadata(clientUid);
+        if (meta) {
+          meta->vinVoltage = vinVoltage;
+          meta->vinVoltageEpoch = (epoch > 0.0) ? epoch : currentEpoch();
+          Serial.print(F("VIN voltage received from "));
+          Serial.print(clientUid);
+          Serial.print(F(": "));
+          Serial.print(vinVoltage);
+          Serial.println(F(" V"));
+        }
+      }
+    }
+  }
 }
 
 static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber) {
@@ -3804,6 +3903,12 @@ static void publishViewerSummary() {
     obj["alarm"] = gTankRecords[i].alarmActive;
     obj["alarmType"] = gTankRecords[i].alarmType;
     obj["lastUpdate"] = gTankRecords[i].lastUpdateEpoch;
+    
+    // Add VIN voltage from client metadata if available
+    ClientMetadata *meta = findClientMetadata(gTankRecords[i].clientUid);
+    if (meta && meta->vinVoltage > 0.0f) {
+      obj["vinVoltage"] = meta->vinVoltage;
+    }
   }
 
   String json;
