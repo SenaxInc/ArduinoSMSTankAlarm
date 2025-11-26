@@ -222,6 +222,8 @@ static double gNextViewerSummaryEpoch = 0.0;
 static double gLastViewerSummaryEpoch = 0.0;
 
 static unsigned long gLastPollMillis = 0;
+static unsigned long gLastLinkCheckMillis = 0;
+static bool gLastLinkState = false;
 
 // Email rate limiting
 static double gLastDailyEmailSentEpoch = 0.0;
@@ -2605,6 +2607,14 @@ void setup() {
 #endif
 
   Serial.println(F("Server setup complete"));
+  Serial.println(F("----------------------------------"));
+  Serial.print(F("Local IP Address: "));
+  Serial.println(Ethernet.localIP());
+  Serial.print(F("Gateway: "));
+  Serial.println(Ethernet.gatewayIP());
+  Serial.print(F("Subnet Mask: "));
+  Serial.println(Ethernet.subnetMask());
+  Serial.println(F("----------------------------------"));
 }
 
 void loop() {
@@ -2615,6 +2625,29 @@ void loop() {
 
   // Maintain DHCP lease and check link status
   Ethernet.maintain();
+
+  // Check for link state changes and display IP when link comes up
+  unsigned long now = millis();
+  if (now - gLastLinkCheckMillis > 5000UL) {
+    gLastLinkCheckMillis = now;
+    bool linkUp = (Ethernet.linkStatus() == LinkON);
+    if (linkUp && !gLastLinkState) {
+      // Link just came up
+      Serial.println(F("----------------------------------"));
+      Serial.println(F("Network link established!"));
+      Serial.print(F("Local IP Address: "));
+      Serial.println(Ethernet.localIP());
+      Serial.print(F("Gateway: "));
+      Serial.println(Ethernet.gatewayIP());
+      Serial.print(F("Subnet Mask: "));
+      Serial.println(Ethernet.subnetMask());
+      Serial.println(F("----------------------------------"));
+    } else if (!linkUp && gLastLinkState) {
+      // Link just went down
+      Serial.println(F("WARNING: Network link lost!"));
+    }
+    gLastLinkState = linkUp;
+  }
 
   handleWebRequests();
 
@@ -2677,7 +2710,7 @@ static void createDefaultConfig(ServerConfig &cfg) {
   cfg.dailyHour = DAILY_EMAIL_HOUR_DEFAULT;
   cfg.dailyMinute = DAILY_EMAIL_MINUTE_DEFAULT;
   cfg.webRefreshSeconds = 21600;
-  cfg.useStaticIp = true;
+  cfg.useStaticIp = false;  // Use DHCP by default for easier deployment
   cfg.smsOnHigh = true;
   cfg.smsOnLow = true;
   cfg.smsOnClear = false;
