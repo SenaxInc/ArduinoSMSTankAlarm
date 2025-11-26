@@ -1880,14 +1880,14 @@ static float readNotecardVinVoltage() {
     return -1.0f;
   }
 
-  float voltage = JGetNumber(rsp, "value");
+  double voltage = JGetNumber(rsp, "value");
   notecard.deleteResponse(rsp);
 
-  if (voltage > 0.0f) {
+  if (voltage > 0.0) {
     Serial.print(F("Notecard VIN voltage: "));
     Serial.print(voltage);
     Serial.println(F(" V"));
   }
 
-  return voltage;
+  return (float)voltage;
 }
