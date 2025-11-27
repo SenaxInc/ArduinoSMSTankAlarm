@@ -606,9 +606,16 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
             <label class="field"><span>High Alarm</span><input type="number" class="high-alarm" value="100"></label>
             <label class="field"><span>Low Alarm</span><input type="number" class="low-alarm" value="20"></label>
           </div>
-          <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">Relay Switch Control</h4>
+          <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">Relay Switch Control (Triggered by This Sensor's Alarm)</h4>
           <div class="form-grid">
             <label class="field"><span>Target Client UID</span><input type="text" class="relay-target" placeholder="dev:IMEI (optional)"></label>
+            <label class="field"><span>Trigger On</span>
+              <select class="relay-trigger">
+                <option value="any">Any Alarm (High or Low)</option>
+                <option value="high">High Alarm Only</option>
+                <option value="low">Low Alarm Only</option>
+              </select>
+            </label>
             <label class="field"><span>Relay Outputs</span>
               <div style="display: flex; gap: 12px; padding: 8px 0;">
                 <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-1" value="1"> R1</label>
@@ -743,6 +750,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         if (card.querySelector('.relay-4').checked) relayMask |= 8;
         
         const relayTarget = card.querySelector('.relay-target').value.trim();
+        const relayTrigger = card.querySelector('.relay-trigger').value;
 
         const tank = {
           id: String.fromCharCode(65 + index), // A, B, C...
@@ -765,6 +773,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         if (relayTarget || relayMask) {
           tank.relayTargetClient = relayTarget;
           tank.relayMask = relayMask;
+          tank.relayTrigger = relayTrigger;  // 'any', 'high', or 'low'
         }
         config.tanks.push(tank);
       });

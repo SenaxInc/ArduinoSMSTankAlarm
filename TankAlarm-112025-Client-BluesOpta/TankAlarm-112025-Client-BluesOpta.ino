@@ -157,6 +157,13 @@ enum SensorType : uint8_t {
   SENSOR_HALL_EFFECT_RPM = 3
 };
 
+// Relay trigger conditions - which alarm type triggers the relay
+enum RelayTrigger : uint8_t {
+  RELAY_TRIGGER_ANY = 0,   // Trigger on any alarm (high or low)
+  RELAY_TRIGGER_HIGH = 1,  // Trigger only on high alarm
+  RELAY_TRIGGER_LOW = 2    // Trigger only on low alarm
+};
+
 struct TankConfig {
   char id;                 // Friendly identifier (A, B, C ...)
   char name[24];           // Site/tank label shown in reports
@@ -175,6 +182,7 @@ struct TankConfig {
   bool enableServerUpload; // Send telemetry to server
   char relayTargetClient[48]; // Client UID to trigger relays on (empty = none)
   uint8_t relayMask;       // Bitmask of relays to trigger (bit 0=relay 1, etc.)
+  RelayTrigger relayTrigger; // Which alarm type triggers the relay (any, high, low)
 };
 
 struct ClientConfig {
@@ -447,6 +455,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].enableServerUpload = true;
   cfg.tanks[0].relayTargetClient[0] = '\0'; // No relay target by default
   cfg.tanks[0].relayMask = 0; // No relays triggered by default
+  cfg.tanks[0].relayTrigger = RELAY_TRIGGER_ANY; // Default: trigger on any alarm
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -516,6 +525,15 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     const char *relayTarget = t["relayTargetClient"].as<const char *>();
     strlcpy(cfg.tanks[i].relayTargetClient, relayTarget ? relayTarget : "", sizeof(cfg.tanks[i].relayTargetClient));
     cfg.tanks[i].relayMask = t["relayMask"].is<uint8_t>() ? t["relayMask"].as<uint8_t>() : 0;
+    // Load relay trigger condition (defaults to 'any' for backwards compatibility)
+    const char *relayTriggerStr = t["relayTrigger"].as<const char *>();
+    if (relayTriggerStr && strcmp(relayTriggerStr, "high") == 0) {
+      cfg.tanks[i].relayTrigger = RELAY_TRIGGER_HIGH;
+    } else if (relayTriggerStr && strcmp(relayTriggerStr, "low") == 0) {
+      cfg.tanks[i].relayTrigger = RELAY_TRIGGER_LOW;
+    } else {
+      cfg.tanks[i].relayTrigger = RELAY_TRIGGER_ANY;
+    }
   }
 
   return true;
@@ -563,6 +581,12 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     // Save relay control settings
     t["relayTargetClient"] = cfg.tanks[i].relayTargetClient;
     t["relayMask"] = cfg.tanks[i].relayMask;
+    // Save relay trigger condition as string
+    switch (cfg.tanks[i].relayTrigger) {
+      case RELAY_TRIGGER_HIGH: t["relayTrigger"] = "high"; break;
+      case RELAY_TRIGGER_LOW: t["relayTrigger"] = "low"; break;
+      default: t["relayTrigger"] = "any"; break;
+    }
   }
 
   File file = LittleFS.open(CLIENT_CONFIG_PATH, "w");
@@ -930,6 +954,16 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       }
       if (t.containsKey("relayMask")) {
         gConfig.tanks[i].relayMask = t["relayMask"].as<uint8_t>();
+      }
+      if (t.containsKey("relayTrigger")) {
+        const char *triggerStr = t["relayTrigger"].as<const char *>();
+        if (triggerStr && strcmp(triggerStr, "high") == 0) {
+          gConfig.tanks[i].relayTrigger = RELAY_TRIGGER_HIGH;
+        } else if (triggerStr && strcmp(triggerStr, "low") == 0) {
+          gConfig.tanks[i].relayTrigger = RELAY_TRIGGER_LOW;
+        } else {
+          gConfig.tanks[i].relayTrigger = RELAY_TRIGGER_ANY;
+        }
       }
     }
   }
@@ -1425,9 +1459,25 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     Serial.print(F(" type "));
     Serial.println(alarmType);
     
-    // Trigger remote relays if configured
+    // Trigger remote relays if configured and alarm type matches trigger condition
     if (isAlarm && cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
-      triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, isAlarm);
+      bool shouldTriggerRelay = false;
+      
+      // Check if this alarm type matches the relay trigger condition
+      if (cfg.relayTrigger == RELAY_TRIGGER_ANY) {
+        shouldTriggerRelay = true;
+      } else if (cfg.relayTrigger == RELAY_TRIGGER_HIGH && strcmp(alarmType, "high") == 0) {
+        shouldTriggerRelay = true;
+      } else if (cfg.relayTrigger == RELAY_TRIGGER_LOW && strcmp(alarmType, "low") == 0) {
+        shouldTriggerRelay = true;
+      }
+      
+      if (shouldTriggerRelay) {
+        triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, isAlarm);
+        Serial.print(F("Relay triggered for "));
+        Serial.print(alarmType);
+        Serial.println(F(" alarm"));
+      }
     }
   } else {
     Serial.print(F("Network offline - local alarm only for tank "));
