@@ -602,6 +602,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
                 ${optaPins.map(p => `<option value="${p.value}">${p.label}</option>`).join('')}
               </select>
             </label>
+            <label class="field pulses-per-rev-field" style="display: none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label>
             <label class="field"><span><span class="height-label">Height (in)</span></span><input type="number" class="tank-height" value="120"></label>
             <label class="field"><span>High Alarm</span><input type="number" class="high-alarm" value="100"></label>
             <label class="field"><span>Low Alarm</span><input type="number" class="low-alarm" value="20"></label>
@@ -614,6 +615,13 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
                 <option value="any">Any Alarm (High or Low)</option>
                 <option value="high">High Alarm Only</option>
                 <option value="low">Low Alarm Only</option>
+              </select>
+            </label>
+            <label class="field"><span>Relay Mode</span>
+              <select class="relay-mode">
+                <option value="momentary">Momentary (30 min on, then auto-off)</option>
+                <option value="until_clear">Stay On Until Alarm Clears</option>
+                <option value="manual_reset">Stay On Until Manual Server Reset</option>
               </select>
             </label>
             <label class="field"><span>Relay Outputs</span>
@@ -649,15 +657,18 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const nameLabel = card.querySelector('.name-label');
       const heightLabel = card.querySelector('.height-label');
       const sensorTypeSelect = card.querySelector('.sensor-type');
+      const pulsesPerRevField = card.querySelector('.pulses-per-rev-field');
       
       if (type === 'gas') {
         numField.style.display = 'none';
         nameLabel.textContent = 'System Name';
         heightLabel.textContent = 'Max Pressure';
+        pulsesPerRevField.style.display = 'none';
       } else if (type === 'rpm') {
         numField.style.display = 'none';
         nameLabel.textContent = 'System Name';
         heightLabel.textContent = 'Max RPM';
+        pulsesPerRevField.style.display = 'flex';
         // Auto-select Hall Effect RPM sensor type
         sensorTypeSelect.value = '3';
         updatePinOptions(id);
@@ -665,6 +676,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         numField.style.display = 'flex';
         nameLabel.textContent = 'Tank Name';
         heightLabel.textContent = 'Height (in)';
+        pulsesPerRevField.style.display = 'none';
       }
     };
 
@@ -751,6 +763,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         
         const relayTarget = card.querySelector('.relay-target').value.trim();
         const relayTrigger = card.querySelector('.relay-trigger').value;
+        const relayMode = card.querySelector('.relay-mode').value;
+        const pulsesPerRev = parseInt(card.querySelector('.pulses-per-rev').value) || 1;
 
         const tank = {
           id: String.fromCharCode(65 + index), // A, B, C...
@@ -761,7 +775,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           secondaryPin: -1,
           loopChannel: sensor === 'current' ? pin : -1,
           rpmPin: sensor === 'rpm' ? pin : -1,
-          heightInches: parseFloat(card.querySelector('.tank-height').value) || 120,
+          pulsesPerRev: sensor === 'rpm' ? pulsesPerRev : 1,
+          maxValue: parseFloat(card.querySelector('.tank-height').value) || 120,
           highAlarm: parseFloat(card.querySelector('.high-alarm').value) || 100,
           lowAlarm: parseFloat(card.querySelector('.low-alarm').value) || 20,
           hysteresis: 2.0,
@@ -770,10 +785,11 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           upload: true
         };
         // Only include relay control fields when configured
-        if (relayTarget || relayMask) {
+        if (relayTarget && relayMask) {
           tank.relayTargetClient = relayTarget;
           tank.relayMask = relayMask;
           tank.relayTrigger = relayTrigger;  // 'any', 'high', or 'low'
+          tank.relayMode = relayMode;  // 'momentary', 'until_clear', or 'manual_reset'
         }
         config.tanks.push(tank);
       });
