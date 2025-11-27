@@ -757,12 +757,12 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         
         const sensor = sensorKeyFromValue(type);
 
-        // Calculate relay mask from checkboxes
+        // Calculate relay mask from checkboxes using their value attributes
         let relayMask = 0;
-        if (card.querySelector('.relay-1').checked) relayMask |= 1;
-        if (card.querySelector('.relay-2').checked) relayMask |= 2;
-        if (card.querySelector('.relay-3').checked) relayMask |= 4;
-        if (card.querySelector('.relay-4').checked) relayMask |= 8;
+        ['relay-1', 'relay-2', 'relay-3', 'relay-4'].forEach(cls => {
+          const checkbox = card.querySelector('.' + cls);
+          if (checkbox.checked) relayMask |= parseInt(checkbox.value);
+        });
         
         const relayTarget = card.querySelector('.relay-target').value.trim();
         const relayTrigger = card.querySelector('.relay-trigger').value;
@@ -778,7 +778,6 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           secondaryPin: -1,
           loopChannel: sensor === 'current' ? pin : -1,
           rpmPin: sensor === 'rpm' ? pin : -1,
-          pulsesPerRev: sensor === 'rpm' ? pulsesPerRev : 1,
           maxValue: parseFloat(card.querySelector('.tank-height').value) || 120,
           highAlarm: parseFloat(card.querySelector('.high-alarm').value) || 100,
           lowAlarm: parseFloat(card.querySelector('.low-alarm').value) || 20,
@@ -787,6 +786,10 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           alarmSms: true,
           upload: true
         };
+        // Only include pulsesPerRev for RPM sensors
+        if (sensor === 'rpm') {
+          tank.pulsesPerRev = pulsesPerRev;
+        }
         // Only include relay control fields when configured
         if (relayTarget && relayMask) {
           tank.relayTargetClient = relayTarget;

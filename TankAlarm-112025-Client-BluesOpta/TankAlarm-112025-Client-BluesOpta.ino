@@ -1243,6 +1243,11 @@ static float readTankSensor(uint8_t idx) {
         lastState = currentState;
         // Small delay to allow other processing and avoid excessive polling
         delay(1);
+        
+#ifdef WATCHDOG_AVAILABLE
+        // Reset watchdog during long sampling to prevent timeout
+        IWatchdog.reload();
+#endif
       }
       
       // Save last pin state for next sample
