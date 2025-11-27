@@ -271,10 +271,9 @@ static bool gRelayActiveForTank[MAX_TANKS] = {false};
 
 // RPM sensor state for Hall effect pulse counting
 // We track pulses per tank that uses an RPM sensor
-static uint32_t gRpmPulseCount[MAX_TANKS] = {0};
 static unsigned long gRpmLastSampleMillis[MAX_TANKS] = {0};
 static float gRpmLastReading[MAX_TANKS] = {0.0f};
-static int gRpmLastPinState[MAX_TANKS] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
+static int gRpmLastPinState[MAX_TANKS];  // Initialized dynamically in setup()
 
 // RPM sampling duration in milliseconds (sample for a few seconds each period)
 #ifndef RPM_SAMPLE_DURATION_MS
@@ -348,6 +347,13 @@ void setup() {
 #else
   Serial.println(F("Warning: Watchdog timer not available on this platform"));
 #endif
+
+  // Initialize RPM sensor state arrays dynamically
+  for (uint8_t i = 0; i < MAX_TANKS; ++i) {
+    gRpmLastPinState[i] = HIGH;
+    gRpmLastSampleMillis[i] = 0;
+    gRpmLastReading[i] = 0.0f;
+  }
 
   for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
     gTankState[i].currentInches = 0.0f;
