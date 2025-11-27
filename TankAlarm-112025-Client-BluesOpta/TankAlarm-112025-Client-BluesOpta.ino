@@ -1107,7 +1107,7 @@ static float readTankSensor(uint8_t idx) {
       return linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.heightInches);
     }
     case SENSOR_HALL_EFFECT_RPM: {
-      // Hall effect RPM sensor - count pulses over a sample period
+      // Hall effect RPM sensor - non-blocking pulse counting
       // Use rpmPin if available, otherwise use primaryPin
       int pin = (cfg.rpmPin >= 0 && cfg.rpmPin < 255) ? cfg.rpmPin : 
                 ((cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx));
@@ -1115,33 +1115,54 @@ static float readTankSensor(uint8_t idx) {
       // Configure pin as input with pullup for Hall effect sensor
       pinMode(pin, INPUT_PULLUP);
       
-      // Count pulses over a 1-second sample period
-      unsigned long sampleStart = millis();
-      const unsigned long sampleDurationMs = 1000;
-      uint32_t pulseCount = 0;
-      int lastState = digitalRead(pin);
+      unsigned long now = millis();
+      unsigned long lastSample = gRpmLastSampleMillis[idx];
       
-      while (millis() - sampleStart < sampleDurationMs) {
-        int currentState = digitalRead(pin);
-        // Count falling edges (HIGH to LOW transitions)
-        if (lastState == HIGH && currentState == LOW) {
-          pulseCount++;
-        }
-        lastState = currentState;
-        // Small delay to avoid missing transitions
-        delayMicroseconds(100);
+      // First reading - initialize and return 0
+      if (lastSample == 0) {
+        gRpmLastSampleMillis[idx] = now;
+        gRpmPulseCount[idx] = 0;
+        return 0.0f;
       }
       
-      // Calculate RPM from pulse count
-      // Assuming 1 pulse per revolution (adjust divisor for multi-pole magnets)
-      // RPM = pulses per second * 60
-      float rpm = (float)pulseCount * 60.0f;
+      // Count pulses since last reading (non-blocking quick scan)
+      // This reads the current state and counts any transition
+      // Note: Static array initialized to HIGH (pullup default state)
+      static int lastPinState[MAX_TANKS];
+      static bool lastPinStateInit = false;
+      if (!lastPinStateInit) {
+        for (uint8_t j = 0; j < MAX_TANKS; ++j) {
+          lastPinState[j] = HIGH;
+        }
+        lastPinStateInit = true;
+      }
+      int currentState = digitalRead(pin);
       
-      // Store the reading for reference
+      // Count falling edges (HIGH to LOW transitions)
+      if (lastPinState[idx] == HIGH && currentState == LOW) {
+        gRpmPulseCount[idx]++;
+      }
+      lastPinState[idx] = currentState;
+      
+      // Calculate RPM only when sufficient time has passed (1 second minimum)
+      unsigned long elapsed = now - lastSample;
+      if (elapsed < 1000) {
+        // Not enough time elapsed, return last calculated RPM
+        return gRpmLastReading[idx];
+      }
+      
+      // Calculate RPM from accumulated pulse count
+      // Note: Assumes 1 pulse per revolution (modify divisor for multi-pole magnets)
+      // For multi-pole magnets, divide pulse count by number of poles
+      uint32_t pulses = gRpmPulseCount[idx];
+      float rpm = ((float)pulses * 60000.0f) / (float)elapsed;
+      
+      // Reset for next measurement period
+      gRpmLastSampleMillis[idx] = now;
+      gRpmPulseCount[idx] = 0;
       gRpmLastReading[idx] = rpm;
-      gRpmLastSampleMillis[idx] = millis();
       
-      // Return RPM value (heightInches is used as max RPM for scaling/alarms)
+      // Return RPM value (heightInches field is used as max RPM for scaling/alarms)
       return rpm;
     }
     default:

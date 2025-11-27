@@ -749,7 +749,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           name: name,
           number: tankNum,
           sensor: sensor,
-          primaryPin: (sensor === 'current' || sensor === 'rpm') ? 0 : pin,
+          primaryPin: sensor === 'current' ? 0 : pin,
           secondaryPin: -1,
           loopChannel: sensor === 'current' ? pin : -1,
           rpmPin: sensor === 'rpm' ? pin : -1,
