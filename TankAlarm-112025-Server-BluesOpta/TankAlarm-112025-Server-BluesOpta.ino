@@ -654,6 +654,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const card = document.getElementById(`sensor-${id}`);
       const type = card.querySelector('.monitor-type').value;
       const numField = card.querySelector('.tank-num-field');
+      const numFieldLabel = numField.querySelector('span');
       const nameLabel = card.querySelector('.name-label');
       const heightLabel = card.querySelector('.height-label');
       const sensorTypeSelect = card.querySelector('.sensor-type');
@@ -665,8 +666,9 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         heightLabel.textContent = 'Max Pressure';
         pulsesPerRevField.style.display = 'none';
       } else if (type === 'rpm') {
-        numField.style.display = 'none';
-        nameLabel.textContent = 'System Name';
+        numField.style.display = 'flex';
+        numFieldLabel.textContent = 'Engine Number';
+        nameLabel.textContent = 'Engine Name';
         heightLabel.textContent = 'Max RPM';
         pulsesPerRevField.style.display = 'flex';
         // Auto-select Hall Effect RPM sensor type
@@ -674,6 +676,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         updatePinOptions(id);
       } else {
         numField.style.display = 'flex';
+        numFieldLabel.textContent = 'Tank Number';
         nameLabel.textContent = 'Tank Name';
         heightLabel.textContent = 'Height (in)';
         pulsesPerRevField.style.display = 'none';
@@ -739,15 +742,15 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         const type = parseInt(card.querySelector('.sensor-type').value);
         const pin = parseInt(card.querySelector('.sensor-pin').value);
         
-        // For gas and rpm sensors, we hide the number but still need one for the firmware.
-        // We'll use the index + 1.
+        // For gas and RPM sensors, we still use the number field for the firmware.
+        // For gas sensors, we use index + 1 as default. For RPM, user can enter engine number.
         let tankNum = parseInt(card.querySelector('.tank-num').value) || (index + 1);
         let name = card.querySelector('.tank-name').value;
         
         if (monitorType === 'gas') {
            if (!name) name = `Gas System ${index + 1}`;
         } else if (monitorType === 'rpm') {
-           if (!name) name = `RPM Sensor ${index + 1}`;
+           if (!name) name = `Engine ${tankNum}`;
         } else {
            if (!name) name = `Tank ${index + 1}`;
         }

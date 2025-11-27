@@ -1547,7 +1547,7 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
         }
       }
       
-      if (shouldActivateRelay) {
+      if (shouldActivateRelay && !gRelayActiveForTank[idx]) {
         triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, true);
         gRelayActiveForTank[idx] = true;
         gRelayActivationTime[idx] = millis();
