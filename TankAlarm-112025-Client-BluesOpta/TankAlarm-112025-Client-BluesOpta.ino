@@ -153,18 +153,20 @@ static const uint32_t NOTECARD_I2C_FREQUENCY = 400000UL;
 enum SensorType : uint8_t {
   SENSOR_DIGITAL = 0,
   SENSOR_ANALOG = 1,
-  SENSOR_CURRENT_LOOP = 2
+  SENSOR_CURRENT_LOOP = 2,
+  SENSOR_HALL_EFFECT_RPM = 3
 };
 
 struct TankConfig {
   char id;                 // Friendly identifier (A, B, C ...)
   char name[24];           // Site/tank label shown in reports
   uint8_t tankNumber;      // Numeric tank reference for legacy formatting
-  SensorType sensorType;   // Digital, analog, or current loop
+  SensorType sensorType;   // Digital, analog, current loop, or Hall effect RPM
   int16_t primaryPin;      // Digital pin or analog channel
   int16_t secondaryPin;    // Optional secondary pin (unused by default)
   int16_t currentLoopChannel; // 4-20mA channel index (-1 if unused)
-  float heightInches;      // Tank height for conversions
+  int16_t rpmPin;          // Hall effect RPM sensor pin (-1 if unused)
+  float heightInches;      // Tank height for conversions (or max RPM for rpm sensors)
   float highAlarmInches;   // High threshold for triggering alarm
   float lowAlarmInches;    // Low threshold for triggering alarm
   float hysteresisInches;  // Hysteresis band (default 2.0 inches)
@@ -242,6 +244,12 @@ static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
 #define MAX_RELAYS 4
 static bool gRelayState[MAX_RELAYS] = {false, false, false, false};
 static unsigned long gLastRelayCheckMillis = 0;
+
+// RPM sensor state for Hall effect pulse counting
+// We track pulses per tank that uses an RPM sensor
+static volatile uint32_t gRpmPulseCount[MAX_TANKS] = {0};
+static unsigned long gRpmLastSampleMillis[MAX_TANKS] = {0};
+static float gRpmLastReading[MAX_TANKS] = {0.0f};
 
 // Forward declarations
 static void initializeStorage();
@@ -423,6 +431,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].primaryPin = 0; // A0 on Opta Ext
   cfg.tanks[0].secondaryPin = -1;
   cfg.tanks[0].currentLoopChannel = -1;
+  cfg.tanks[0].rpmPin = -1; // No RPM sensor by default
   cfg.tanks[0].heightInches = 120.0f;
   cfg.tanks[0].highAlarmInches = 100.0f;
   cfg.tanks[0].lowAlarmInches = 20.0f;
@@ -481,12 +490,15 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
       cfg.tanks[i].sensorType = SENSOR_DIGITAL;
     } else if (sensor && strcmp(sensor, "current") == 0) {
       cfg.tanks[i].sensorType = SENSOR_CURRENT_LOOP;
+    } else if (sensor && strcmp(sensor, "rpm") == 0) {
+      cfg.tanks[i].sensorType = SENSOR_HALL_EFFECT_RPM;
     } else {
       cfg.tanks[i].sensorType = SENSOR_ANALOG;
     }
     cfg.tanks[i].primaryPin = t["primaryPin"].is<int>() ? t["primaryPin"].as<int>() : (cfg.tanks[i].sensorType == SENSOR_DIGITAL ? 2 : 0);
     cfg.tanks[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : -1;
     cfg.tanks[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : -1;
+    cfg.tanks[i].rpmPin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : -1;
     cfg.tanks[i].heightInches = t["heightInches"].is<float>() ? t["heightInches"].as<float>() : 120.0f;
     cfg.tanks[i].highAlarmInches = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : 100.0f;
     cfg.tanks[i].lowAlarmInches = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : 20.0f;
@@ -494,6 +506,10 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     cfg.tanks[i].enableDailyReport = t["daily"].is<bool>() ? t["daily"].as<bool>() : true;
     cfg.tanks[i].enableAlarmSms = t["alarmSms"].is<bool>() ? t["alarmSms"].as<bool>() : true;
     cfg.tanks[i].enableServerUpload = t["upload"].is<bool>() ? t["upload"].as<bool>() : true;
+    // Load relay control settings
+    const char *relayTarget = t["relayTargetClient"].as<const char *>();
+    strlcpy(cfg.tanks[i].relayTargetClient, relayTarget ? relayTarget : "", sizeof(cfg.tanks[i].relayTargetClient));
+    cfg.tanks[i].relayMask = t["relayMask"].is<uint8_t>() ? t["relayMask"].as<uint8_t>() : 0;
   }
 
   return true;
@@ -524,11 +540,13 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     switch (cfg.tanks[i].sensorType) {
       case SENSOR_DIGITAL: t["sensor"] = "digital"; break;
       case SENSOR_CURRENT_LOOP: t["sensor"] = "current"; break;
+      case SENSOR_HALL_EFFECT_RPM: t["sensor"] = "rpm"; break;
       default: t["sensor"] = "analog"; break;
     }
     t["primaryPin"] = cfg.tanks[i].primaryPin;
     t["secondaryPin"] = cfg.tanks[i].secondaryPin;
     t["loopChannel"] = cfg.tanks[i].currentLoopChannel;
+    t["rpmPin"] = cfg.tanks[i].rpmPin;
     t["heightInches"] = cfg.tanks[i].heightInches;
     t["highAlarm"] = cfg.tanks[i].highAlarmInches;
     t["lowAlarm"] = cfg.tanks[i].lowAlarmInches;
@@ -536,6 +554,9 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     t["daily"] = cfg.tanks[i].enableDailyReport;
     t["alarmSms"] = cfg.tanks[i].enableAlarmSms;
     t["upload"] = cfg.tanks[i].enableServerUpload;
+    // Save relay control settings
+    t["relayTargetClient"] = cfg.tanks[i].relayTargetClient;
+    t["relayMask"] = cfg.tanks[i].relayMask;
   }
 
   File file = LittleFS.open(CLIENT_CONFIG_PATH, "w");
@@ -566,6 +587,7 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   bool needsAnalogExpansion = false;
   bool needsCurrentLoop = false;
   bool needsRelayOutput = false;
+  bool needsRpmSensor = false;
 
   for (uint8_t i = 0; i < cfg.tankCount; ++i) {
     if (cfg.tanks[i].sensorType == SENSOR_ANALOG) {
@@ -573,6 +595,9 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
     }
     if (cfg.tanks[i].sensorType == SENSOR_CURRENT_LOOP) {
       needsCurrentLoop = true;
+    }
+    if (cfg.tanks[i].sensorType == SENSOR_HALL_EFFECT_RPM) {
+      needsRpmSensor = true;
     }
     if (cfg.tanks[i].enableAlarmSms) {
       needsRelayOutput = true; // indicates coil notifications on Opta outputs
@@ -587,6 +612,9 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   }
   if (needsCurrentLoop) {
     Serial.println(F("Current loop interface required (4-20mA module)"));
+  }
+  if (needsRpmSensor) {
+    Serial.println(F("Hall effect RPM sensor connected to digital input"));
   }
   if (needsRelayOutput) {
     Serial.println(F("Relay outputs wired for audible/visual alarm"));
@@ -867,12 +895,15 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         gConfig.tanks[i].sensorType = SENSOR_DIGITAL;
       } else if (sensor && strcmp(sensor, "current") == 0) {
         gConfig.tanks[i].sensorType = SENSOR_CURRENT_LOOP;
+      } else if (sensor && strcmp(sensor, "rpm") == 0) {
+        gConfig.tanks[i].sensorType = SENSOR_HALL_EFFECT_RPM;
       } else {
         gConfig.tanks[i].sensorType = SENSOR_ANALOG;
       }
       gConfig.tanks[i].primaryPin = t["primaryPin"].is<int>() ? t["primaryPin"].as<int>() : gConfig.tanks[i].primaryPin;
       gConfig.tanks[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : gConfig.tanks[i].secondaryPin;
       gConfig.tanks[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : gConfig.tanks[i].currentLoopChannel;
+      gConfig.tanks[i].rpmPin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : gConfig.tanks[i].rpmPin;
       gConfig.tanks[i].heightInches = t["heightInches"].is<float>() ? t["heightInches"].as<float>() : gConfig.tanks[i].heightInches;
       gConfig.tanks[i].highAlarmInches = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : gConfig.tanks[i].highAlarmInches;
       gConfig.tanks[i].lowAlarmInches = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : gConfig.tanks[i].lowAlarmInches;
@@ -1074,6 +1105,44 @@ static float readTankSensor(uint8_t idx) {
         return gTankState[idx].currentInches; // keep previous on failure
       }
       return linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.heightInches);
+    }
+    case SENSOR_HALL_EFFECT_RPM: {
+      // Hall effect RPM sensor - count pulses over a sample period
+      // Use rpmPin if available, otherwise use primaryPin
+      int pin = (cfg.rpmPin >= 0 && cfg.rpmPin < 255) ? cfg.rpmPin : 
+                ((cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx));
+      
+      // Configure pin as input with pullup for Hall effect sensor
+      pinMode(pin, INPUT_PULLUP);
+      
+      // Count pulses over a 1-second sample period
+      unsigned long sampleStart = millis();
+      const unsigned long sampleDurationMs = 1000;
+      uint32_t pulseCount = 0;
+      int lastState = digitalRead(pin);
+      
+      while (millis() - sampleStart < sampleDurationMs) {
+        int currentState = digitalRead(pin);
+        // Count falling edges (HIGH to LOW transitions)
+        if (lastState == HIGH && currentState == LOW) {
+          pulseCount++;
+        }
+        lastState = currentState;
+        // Small delay to avoid missing transitions
+        delayMicroseconds(100);
+      }
+      
+      // Calculate RPM from pulse count
+      // Assuming 1 pulse per revolution (adjust divisor for multi-pole magnets)
+      // RPM = pulses per second * 60
+      float rpm = (float)pulseCount * 60.0f;
+      
+      // Store the reading for reference
+      gRpmLastReading[idx] = rpm;
+      gRpmLastSampleMillis[idx] = millis();
+      
+      // Return RPM value (heightInches is used as max RPM for scaling/alarms)
+      return rpm;
     }
     default:
       return 0.0f;
