@@ -759,10 +759,13 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           hysteresis: 2.0,
           daily: true,
           alarmSms: true,
-          upload: true,
-          relayTargetClient: relayTarget,
-          relayMask: relayMask
+          upload: true
         };
+        // Only include relay control fields when configured
+        if (relayTarget || relayMask) {
+          tank.relayTargetClient = relayTarget;
+          tank.relayMask = relayMask;
+        }
         config.tanks.push(tank);
       });
 
