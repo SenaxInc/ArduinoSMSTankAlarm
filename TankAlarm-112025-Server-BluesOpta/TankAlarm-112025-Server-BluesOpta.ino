@@ -790,12 +790,15 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         if (sensor === 'rpm') {
           tank.pulsesPerRev = pulsesPerRev;
         }
-        // Only include relay control fields when configured
-        if (relayTarget && relayMask) {
+        // Always include relay control fields if relayTarget is set, even if relayMask is 0
+        if (relayTarget) {
           tank.relayTargetClient = relayTarget;
           tank.relayMask = relayMask;
           tank.relayTrigger = relayTrigger;  // 'any', 'high', or 'low'
           tank.relayMode = relayMode;  // 'momentary', 'until_clear', or 'manual_reset'
+          if (relayMask === 0) {
+            alert("You have set a relay target but have not selected any relay outputs for " + name + ". The configuration will be incomplete.");
+          }
         }
         config.tanks.push(tank);
       });
