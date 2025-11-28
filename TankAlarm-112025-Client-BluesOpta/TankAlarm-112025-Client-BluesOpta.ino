@@ -1234,7 +1234,8 @@ static float readTankSensor(uint8_t idx) {
       }
       
       // Count pulses over the sampling duration
-      while (millis() - sampleStart < RPM_SAMPLE_DURATION_MS) {
+      // Use unsigned subtraction to handle millis() overflow correctly
+      while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS) {
         int currentState = digitalRead(pin);
         // Count falling edges (HIGH to LOW transitions)
         if (lastState == HIGH && currentState == LOW) {
