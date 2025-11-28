@@ -989,7 +989,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       gConfig.tanks[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : gConfig.tanks[i].currentLoopChannel;
       gConfig.tanks[i].rpmPin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : gConfig.tanks[i].rpmPin;
       if (t.containsKey("pulsesPerRev")) {
-        gConfig.tanks[i].pulsesPerRevolution = t["pulsesPerRev"].as<uint8_t>();
+        gConfig.tanks[i].pulsesPerRevolution = max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>());
       }
       // Support both old field name (heightInches) and new (maxValue)
       if (t.containsKey("maxValue")) {
