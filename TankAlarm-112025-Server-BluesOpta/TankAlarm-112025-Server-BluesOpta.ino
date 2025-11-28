@@ -767,7 +767,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         const relayTarget = card.querySelector('.relay-target').value.trim();
         const relayTrigger = card.querySelector('.relay-trigger').value;
         const relayMode = card.querySelector('.relay-mode').value;
-        const pulsesPerRev = parseInt(card.querySelector('.pulses-per-rev').value) || 1;
+        const pulsesPerRev = Math.max(1, Math.min(255, parseInt(card.querySelector('.pulses-per-rev').value) || 1));
 
         const tank = {
           id: String.fromCharCode(65 + index), // A, B, C...

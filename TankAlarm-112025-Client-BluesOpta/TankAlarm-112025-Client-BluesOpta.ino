@@ -355,6 +355,12 @@ void setup() {
     gRpmLastReading[i] = 0.0f;
   }
 
+  // Explicitly initialize relay state tracking arrays for clarity and consistency
+  for (uint8_t i = 0; i < MAX_TANKS; ++i) {
+    gRelayActivationTime[i] = 0;
+    gRelayActiveForTank[i] = false;
+  }
+
   for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
     gTankState[i].currentInches = 0.0f;
     gTankState[i].lastReportedInches = -9999.0f;
@@ -543,7 +549,7 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     cfg.tanks[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : -1;
     cfg.tanks[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : -1;
     cfg.tanks[i].rpmPin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : -1;
-    cfg.tanks[i].pulsesPerRevolution = t["pulsesPerRev"].is<uint8_t>() ? t["pulsesPerRev"].as<uint8_t>() : 1;
+    cfg.tanks[i].pulsesPerRevolution = t["pulsesPerRev"].is<uint8_t>() ? max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>()) : 1;
     // Support both old field names (heightInches) and new (maxValue) for backwards compatibility
     cfg.tanks[i].maxValue = t["maxValue"].is<float>() ? t["maxValue"].as<float>() : 
                             (t["heightInches"].is<float>() ? t["heightInches"].as<float>() : 120.0f);
@@ -1225,21 +1231,25 @@ static float readTankSensor(uint8_t idx) {
       // This provides accurate RPM measurement by counting multiple pulses
       unsigned long sampleStart = millis();
       uint32_t pulseCount = 0;
-      int lastState = gRpmLastPinState[idx];
       
-      // Initialize lastState from current pin on first reading
-      if (gRpmLastSampleMillis[idx] == 0) {
-        lastState = digitalRead(pin);
-        gRpmLastPinState[idx] = lastState;
-      }
+      // Always read current pin state first to establish baseline
+      // This prevents false pulse counts on first reading
+      int lastState = digitalRead(pin);
+      gRpmLastPinState[idx] = lastState;
       
-      // Count pulses over the sampling duration
+      // Count pulses over the sampling duration, with debounce
       // Use unsigned subtraction to handle millis() overflow correctly
+      const unsigned long DEBOUNCE_MS = 2; // Minimum time between pulses to filter bounce
+      unsigned long lastPulseTime = 0;
       while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS) {
         int currentState = digitalRead(pin);
-        // Count falling edges (HIGH to LOW transitions)
+        // Count falling edges (HIGH to LOW transitions) with debounce
         if (lastState == HIGH && currentState == LOW) {
-          pulseCount++;
+          unsigned long now = millis();
+          if (now - lastPulseTime >= DEBOUNCE_MS) {
+            pulseCount++;
+            lastPulseTime = now;
+          }
         }
         lastState = currentState;
         // Small delay to allow other processing and avoid excessive polling
@@ -1257,7 +1267,7 @@ static float readTankSensor(uint8_t idx) {
       
       // Calculate RPM from pulse count
       // Formula: RPM = (pulses / sample_duration_seconds) * 60 seconds/minute / pulses_per_revolution
-      // Simplified: RPM = pulses * 60000 / sample_duration_ms / pulses_per_rev
+      // Simplified: RPM = (pulses * 60000) / (sample_duration_ms * pulses_per_rev)
       const float MS_PER_MINUTE = 60000.0f;
       uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
       float rpm = ((float)pulseCount * MS_PER_MINUTE) / ((float)RPM_SAMPLE_DURATION_MS * (float)pulsesPerRev);
@@ -1984,7 +1994,18 @@ static void pollForRelayCommands() {
 }
 
 static void processRelayCommand(const JsonDocument &doc) {
-  // Command format:
+  // Handle tank relay reset command from server first
+  // Command format: { "relay_reset_tank": 0-7 }
+  // This is a standalone command that doesn't require relay/state fields
+  if (doc.containsKey("relay_reset_tank")) {
+    uint8_t tankIdx = doc["relay_reset_tank"].as<uint8_t>();
+    if (tankIdx < MAX_TANKS) {
+      resetRelayForTank(tankIdx);
+    }
+    return;  // This is a complete command
+  }
+  
+  // Command format for standard relay control:
   // {
   //   "relay": 1-4,           // Relay number (1-based)
   //   "state": true/false,    // ON/OFF
@@ -2028,15 +2049,6 @@ static void processRelayCommand(const JsonDocument &doc) {
       Serial.print(F("Note: Auto-off duration requested ("));
       Serial.print(duration);
       Serial.println(F(" sec) but not yet implemented"));
-    }
-  }
-  
-  // Handle tank relay reset command from server
-  // Command format: { "relay_reset_tank": 0-7 }
-  if (doc.containsKey("relay_reset_tank")) {
-    uint8_t tankIdx = doc["relay_reset_tank"].as<uint8_t>();
-    if (tankIdx < MAX_TANKS) {
-      resetRelayForTank(tankIdx);
     }
   }
 }
