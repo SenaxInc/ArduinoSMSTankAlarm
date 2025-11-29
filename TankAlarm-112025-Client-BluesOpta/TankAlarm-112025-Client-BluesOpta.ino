@@ -1557,9 +1557,19 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
         }
       } else {
         // Alarm cleared - check if we should deactivate relay
-        // Only deactivate if mode is UNTIL_CLEAR
+        // Only deactivate if mode is UNTIL_CLEAR and the clearing alarm matches trigger
         if (cfg.relayMode == RELAY_MODE_UNTIL_CLEAR && gRelayActiveForTank[idx]) {
-          shouldDeactivateRelay = true;
+          bool shouldClear = false;
+          if (cfg.relayTrigger == RELAY_TRIGGER_ANY) {
+            shouldClear = true; // Any alarm clearing will deactivate
+          } else if (cfg.relayTrigger == RELAY_TRIGGER_HIGH && strcmp(alarmType, "high") == 0) {
+            shouldClear = true;
+          } else if (cfg.relayTrigger == RELAY_TRIGGER_LOW && strcmp(alarmType, "low") == 0) {
+            shouldClear = true;
+          }
+          if (shouldClear) {
+            shouldDeactivateRelay = true;
+          }
         }
       }
       
