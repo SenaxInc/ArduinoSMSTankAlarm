@@ -528,6 +528,62 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       gap: 12px;
       flex-wrap: wrap;
     }
+    .collapsible-section {
+      display: none;
+    }
+    .collapsible-section.visible {
+      display: block;
+    }
+    .add-section-btn {
+      background: transparent;
+      border: 1px dashed var(--input-border);
+      color: var(--accent);
+      padding: 8px 14px;
+      font-size: 0.85rem;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+    .add-section-btn:hover {
+      background: var(--pill-bg);
+    }
+    .add-section-btn.hidden {
+      display: none;
+    }
+    .tooltip-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--muted);
+      color: var(--surface);
+      font-size: 0.7rem;
+      font-weight: 700;
+      cursor: help;
+      margin-left: 4px;
+      position: relative;
+    }
+    .tooltip-icon:hover::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--text);
+      color: var(--bg);
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 400;
+      white-space: nowrap;
+      max-width: 280px;
+      white-space: normal;
+      z-index: 100;
+      margin-bottom: 4px;
+      box-shadow: 0 4px 12px var(--card-shadow);
+    }
     button {
       border: none;
       border-radius: 10px;
@@ -577,10 +633,9 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           <label class="field"><span>Site Name</span><input id="siteName" type="text" placeholder="Site Name" required></label>
           <label class="field"><span>Device Label</span><input id="deviceLabel" type="text" placeholder="Device Label" required></label>
           <label class="field"><span>Server Fleet</span><input id="serverFleet" type="text" value="tankalarm-server"></label>
-          <label class="field"><span>Sample Seconds</span><input id="sampleSeconds" type="number" value="1800"></label>
-          <label class="field"><span>Level Change Threshold (in)</span><input id="levelChangeThreshold" type="number" step="0.1" value="0" placeholder="0 = disabled"></label>
-          <label class="field"><span>Report Hour</span><input id="reportHour" type="number" value="5"></label>
-          <label class="field"><span>Report Minute</span><input id="reportMinute" type="number" value="0"></label>
+          <label class="field"><span>Sample Minutes</span><input id="sampleMinutes" type="number" value="30" min="1" max="1440"></label>
+          <label class="field"><span>Level Change Threshold (in)<span class="tooltip-icon" data-tooltip="Minimum level change in inches required before sending telemetry. Set to 0 to send all readings. Useful to reduce data usage by only reporting significant changes.">?</span></span><input id="levelChangeThreshold" type="number" step="0.1" value="0" placeholder="0 = disabled"></label>
+          <label class="field"><span>Report Time</span><input id="reportTime" type="time" value="05:00"></label>
           <label class="field"><span>Daily Email</span><input id="dailyEmail" type="email"></label>
         </div>
         
@@ -626,24 +681,26 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       { value: 'rpm', label: 'RPM Sensor' }
     ];
     
+    // Arduino Opta built-in digital/analog inputs
     const optaPins = [
-      { value: 0, label: 'I1' },
-      { value: 1, label: 'I2' },
-      { value: 2, label: 'I3' },
-      { value: 3, label: 'I4' },
-      { value: 4, label: 'I5' },
-      { value: 5, label: 'I6' },
-      { value: 6, label: 'I7' },
-      { value: 7, label: 'I8' }
+      { value: 0, label: 'Opta I1' },
+      { value: 1, label: 'Opta I2' },
+      { value: 2, label: 'Opta I3' },
+      { value: 3, label: 'Opta I4' },
+      { value: 4, label: 'Opta I5' },
+      { value: 5, label: 'Opta I6' },
+      { value: 6, label: 'Opta I7' },
+      { value: 7, label: 'Opta I8' }
     ];
 
+    // Arduino Pro Opta Ext A0602 expansion module channels (4-20mA current loop)
     const expansionChannels = [
-      { value: 0, label: 'I1' },
-      { value: 1, label: 'I2' },
-      { value: 2, label: 'I3' },
-      { value: 3, label: 'I4' },
-      { value: 4, label: 'I5' },
-      { value: 5, label: 'I6' }
+      { value: 0, label: 'AFX0007 Ch1' },
+      { value: 1, label: 'AFX0007 Ch2' },
+      { value: 2, label: 'AFX0007 Ch3' },
+      { value: 3, label: 'AFX0007 Ch4' },
+      { value: 4, label: 'AFX0007 Ch5' },
+      { value: 5, label: 'AFX0007 Ch6' }
     ];
 
     let sensorCount = 0;
@@ -675,34 +732,45 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
             </label>
             <label class="field pulses-per-rev-field" style="display: none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label>
             <label class="field"><span><span class="height-label">Height (in)</span></span><input type="number" class="tank-height" value="120"></label>
-            <label class="field"><span>High Alarm</span><input type="number" class="high-alarm" value="100"></label>
-            <label class="field"><span>Low Alarm</span><input type="number" class="low-alarm" value="20"></label>
           </div>
-          <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">Relay Switch Control (Triggered by This Sensor's Alarm)</h4>
-          <div class="form-grid">
-            <label class="field"><span>Target Client UID</span><input type="text" class="relay-target" placeholder="dev:IMEI (optional)"></label>
-            <label class="field"><span>Trigger On</span>
-              <select class="relay-trigger">
-                <option value="any">Any Alarm (High or Low)</option>
-                <option value="high">High Alarm Only</option>
-                <option value="low">Low Alarm Only</option>
-              </select>
-            </label>
-            <label class="field"><span>Relay Mode</span>
-              <select class="relay-mode">
-                <option value="momentary">Momentary (30 min on, then auto-off)</option>
-                <option value="until_clear">Stay On Until Alarm Clears</option>
-                <option value="manual_reset">Stay On Until Manual Server Reset</option>
-              </select>
-            </label>
-            <label class="field"><span>Relay Outputs</span>
-              <div style="display: flex; gap: 12px; padding: 8px 0;">
-                <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-1" value="1"> R1</label>
-                <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-2" value="2"> R2</label>
-                <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-3" value="4"> R3</label>
-                <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-4" value="8"> R4</label>
-              </div>
-            </label>
+          
+          <button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button>
+          <div class="collapsible-section alarm-section">
+            <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">Alarm Thresholds <button type="button" class="remove-btn" onclick="removeAlarmSection(${id})" style="float: right;">Remove Alarm</button></h4>
+            <div class="form-grid">
+              <label class="field"><span>High Alarm</span><input type="number" class="high-alarm" value="100"></label>
+              <label class="field"><span>Low Alarm</span><input type="number" class="low-alarm" value="20"></label>
+            </div>
+          </div>
+
+          <button type="button" class="add-section-btn add-relay-btn" onclick="toggleRelaySection(${id})">+ Add Relay Control</button>
+          <div class="collapsible-section relay-section">
+            <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">Relay Switch Control (Triggered by This Sensor's Alarm) <button type="button" class="remove-btn" onclick="removeRelaySection(${id})" style="float: right;">Remove Relay</button></h4>
+            <div class="form-grid">
+              <label class="field"><span>Target Client UID</span><input type="text" class="relay-target" placeholder="dev:IMEI (optional)"></label>
+              <label class="field"><span>Trigger On</span>
+                <select class="relay-trigger">
+                  <option value="any">Any Alarm (High or Low)</option>
+                  <option value="high">High Alarm Only</option>
+                  <option value="low">Low Alarm Only</option>
+                </select>
+              </label>
+              <label class="field"><span>Relay Mode</span>
+                <select class="relay-mode">
+                  <option value="momentary">Momentary (30 min on, then auto-off)</option>
+                  <option value="until_clear">Stay On Until Alarm Clears</option>
+                  <option value="manual_reset">Stay On Until Manual Server Reset</option>
+                </select>
+              </label>
+              <label class="field"><span>Relay Outputs</span>
+                <div style="display: flex; gap: 12px; padding: 8px 0;">
+                  <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-1" value="1"> R1</label>
+                  <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-2" value="2"> R2</label>
+                  <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-3" value="4"> R3</label>
+                  <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-4" value="8"> R4</label>
+                </div>
+              </label>
+            </div>
           </div>
         </div>
       `;
@@ -719,6 +787,48 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
     window.removeSensor = function(id) {
       const el = document.getElementById(`sensor-${id}`);
       if (el) el.remove();
+    };
+
+    window.toggleAlarmSection = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const alarmSection = card.querySelector('.alarm-section');
+      const addBtn = card.querySelector('.add-alarm-btn');
+      alarmSection.classList.add('visible');
+      addBtn.classList.add('hidden');
+    };
+
+    window.removeAlarmSection = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const alarmSection = card.querySelector('.alarm-section');
+      const addBtn = card.querySelector('.add-alarm-btn');
+      alarmSection.classList.remove('visible');
+      addBtn.classList.remove('hidden');
+      // Reset alarm values
+      card.querySelector('.high-alarm').value = '';
+      card.querySelector('.low-alarm').value = '';
+    };
+
+    window.toggleRelaySection = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const relaySection = card.querySelector('.relay-section');
+      const addBtn = card.querySelector('.add-relay-btn');
+      relaySection.classList.add('visible');
+      addBtn.classList.add('hidden');
+    };
+
+    window.removeRelaySection = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const relaySection = card.querySelector('.relay-section');
+      const addBtn = card.querySelector('.add-relay-btn');
+      relaySection.classList.remove('visible');
+      addBtn.classList.remove('hidden');
+      // Reset relay values
+      card.querySelector('.relay-target').value = '';
+      card.querySelector('.relay-trigger').value = 'any';
+      card.querySelector('.relay-mode').value = 'momentary';
+      ['relay-1', 'relay-2', 'relay-3', 'relay-4'].forEach(cls => {
+        card.querySelector('.' + cls).checked = false;
+      });
     };
 
     window.updateMonitorFields = function(id) {
@@ -790,14 +900,20 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
 
     document.getElementById('downloadBtn').addEventListener('click', () => {
       const levelChange = parseFloat(document.getElementById('levelChangeThreshold').value);
+      const sampleMinutes = parseInt(document.getElementById('sampleMinutes').value, 10) || 30;
+      const reportTimeValue = document.getElementById('reportTime').value || '05:00';
+      const [reportHourStr, reportMinuteStr] = reportTimeValue.split(':');
+      const reportHour = parseInt(reportHourStr, 10) || 5;
+      const reportMinute = parseInt(reportMinuteStr, 10) || 0;
+      
       const config = {
         site: document.getElementById('siteName').value.trim(),
         deviceLabel: document.getElementById('deviceLabel').value.trim() || 'Client-112025',
         serverFleet: document.getElementById('serverFleet').value.trim() || 'tankalarm-server',
-        sampleSeconds: parseInt(document.getElementById('sampleSeconds').value, 10) || 1800,
+        sampleSeconds: sampleMinutes * 60,
         levelChangeThreshold: Math.max(0, isNaN(levelChange) ? 0 : levelChange),
-        reportHour: parseInt(document.getElementById('reportHour').value, 10) || 5,
-        reportMinute: parseInt(document.getElementById('reportMinute').value, 10) || 0,
+        reportHour: reportHour,
+        reportMinute: reportMinute,
         dailyEmail: document.getElementById('dailyEmail').value.trim(),
         tanks: []
       };
@@ -827,18 +943,12 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         }
         
         const sensor = sensorKeyFromValue(type);
-
-        // Calculate relay mask from checkboxes using their value attributes
-        let relayMask = 0;
-        ['relay-1', 'relay-2', 'relay-3', 'relay-4'].forEach(cls => {
-          const checkbox = card.querySelector('.' + cls);
-          if (checkbox.checked) relayMask |= parseInt(checkbox.value);
-        });
-        
-        const relayTarget = card.querySelector('.relay-target').value.trim();
-        const relayTrigger = card.querySelector('.relay-trigger').value;
-        const relayMode = card.querySelector('.relay-mode').value;
         const pulsesPerRev = Math.max(1, Math.min(255, parseInt(card.querySelector('.pulses-per-rev').value) || 1));
+
+        // Check if alarm section is enabled
+        const alarmSectionVisible = card.querySelector('.alarm-section').classList.contains('visible');
+        const highAlarmValue = card.querySelector('.high-alarm').value;
+        const lowAlarmValue = card.querySelector('.low-alarm').value;
 
         const tank = {
           id: String.fromCharCode(65 + index), // A, B, C...
@@ -850,27 +960,52 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           loopChannel: sensor === 'current' ? pin : -1,
           rpmPin: sensor === 'rpm' ? pin : -1,
           maxValue: parseFloat(card.querySelector('.tank-height').value) || 120,
-          highAlarm: parseFloat(card.querySelector('.high-alarm').value) || 100,
-          lowAlarm: parseFloat(card.querySelector('.low-alarm').value) || 20,
           hysteresis: 2.0,
           daily: true,
-          alarmSms: true,
           upload: true
         };
+
+        // Only include alarm values if alarm section is visible and values are set
+        if (alarmSectionVisible && (highAlarmValue || lowAlarmValue)) {
+          tank.highAlarm = parseFloat(highAlarmValue) || 100;
+          tank.lowAlarm = parseFloat(lowAlarmValue) || 20;
+          tank.alarmSms = true;
+        } else {
+          // No alarm configured - disable SMS alerts
+          tank.alarmSms = false;
+        }
+
         // Only include pulsesPerRev for RPM sensors
         if (sensor === 'rpm') {
           tank.pulsesPerRev = pulsesPerRev;
         }
-        // Always include relay control fields if relayTarget is set, even if relayMask is 0
-        if (relayTarget) {
-          tank.relayTargetClient = relayTarget;
-          tank.relayMask = relayMask;
-          tank.relayTrigger = relayTrigger;  // 'any', 'high', or 'low'
-          tank.relayMode = relayMode;  // 'momentary', 'until_clear', or 'manual_reset'
-          if (relayMask === 0) {
-            alert("You have set a relay target but have not selected any relay outputs for " + name + ". The configuration will be incomplete.");
+
+        // Check if relay section is enabled
+        const relaySectionVisible = card.querySelector('.relay-section').classList.contains('visible');
+        if (relaySectionVisible) {
+          // Calculate relay mask from checkboxes using their value attributes
+          let relayMask = 0;
+          ['relay-1', 'relay-2', 'relay-3', 'relay-4'].forEach(cls => {
+            const checkbox = card.querySelector('.' + cls);
+            if (checkbox.checked) relayMask |= parseInt(checkbox.value);
+          });
+          
+          const relayTarget = card.querySelector('.relay-target').value.trim();
+          const relayTrigger = card.querySelector('.relay-trigger').value;
+          const relayMode = card.querySelector('.relay-mode').value;
+
+          // Include relay control fields if relayTarget is set
+          if (relayTarget) {
+            tank.relayTargetClient = relayTarget;
+            tank.relayMask = relayMask;
+            tank.relayTrigger = relayTrigger;  // 'any', 'high', or 'low'
+            tank.relayMode = relayMode;  // 'momentary', 'until_clear', or 'manual_reset'
+            if (relayMask === 0) {
+              alert("You have set a relay target but have not selected any relay outputs for " + name + ". The configuration will be incomplete.");
+            }
           }
         }
+
         config.tanks.push(tank);
       });
 
