@@ -784,8 +784,12 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
       return false;
     }
     
-    fwrite(jsonStr.c_str(), 1, jsonStr.length(), file);
+    size_t written = fwrite(jsonStr.c_str(), 1, jsonStr.length(), file);
     fclose(file);
+    if (written != jsonStr.length()) {
+      Serial.println(F("Failed to write config (incomplete)"));
+      return false;
+    }
     return true;
   #else
     File file = LittleFS.open(CLIENT_CONFIG_PATH, "w");
