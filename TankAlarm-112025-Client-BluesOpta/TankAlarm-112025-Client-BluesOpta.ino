@@ -327,6 +327,9 @@ void setup() {
   Serial.println();
   Serial.println(F("Tank Alarm Client 112025 starting"));
 
+  // Set analog resolution to 12-bit to match the /4095.0f divisor used in readTankSensor
+  analogReadResolution(12);
+
   initializeStorage();
   ensureConfigLoaded();
   printHardwareRequirements(gConfig);
@@ -1268,6 +1271,7 @@ static float readTankSensor(uint8_t idx) {
       // Calculate RPM from pulse count
       // Formula: RPM = (pulses / sample_duration_seconds) * 60 seconds/minute / pulses_per_revolution
       // Simplified: RPM = (pulses * 60000) / (sample_duration_ms * pulses_per_rev)
+      // Note: Max RPM is limited by the polling loop speed (approx 30,000 RPM at 1 pulse/rev), which is sufficient.
       const float MS_PER_MINUTE = 60000.0f;
       uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
       float rpm = ((float)pulseCount * MS_PER_MINUTE) / ((float)RPM_SAMPLE_DURATION_MS * (float)pulsesPerRev);

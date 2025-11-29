@@ -3308,7 +3308,13 @@ static void sendTankJson(EthernetClient &client) {
 }
 
 static void sendClientDataJson(EthernetClient &client) {
-  DynamicJsonDocument doc(CLIENT_JSON_CAPACITY);
+  // Allocate large JSON document on heap instead of stack to prevent overflow
+  DynamicJsonDocument *docPtr = new DynamicJsonDocument(CLIENT_JSON_CAPACITY);
+  if (!docPtr) {
+    respondStatus(client, 500, F("Server Out of Memory"));
+    return;
+  }
+  DynamicJsonDocument &doc = *docPtr;
 
   JsonObject serverObj = doc.createNestedObject("server");
   serverObj["name"] = gConfig.serverName;
@@ -3407,9 +3413,11 @@ static void sendClientDataJson(EthernetClient &client) {
   String json;
   if (serializeJson(doc, json) == 0) {
     respondStatus(client, 500, F("Failed to encode client data"));
+    delete docPtr;
     return;
   }
   respondJson(client, json);
+  delete docPtr;
 }
 
 static void handleConfigPost(EthernetClient &client, const String &body) {
@@ -3605,7 +3613,7 @@ static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state
 }
 
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
-  char buffer[1536];
+  char buffer[4096];
   size_t len = serializeJson(cfgObj, buffer, sizeof(buffer));
   if (len == 0 || len >= sizeof(buffer)) {
     Serial.println(F("Client config payload too large"));
