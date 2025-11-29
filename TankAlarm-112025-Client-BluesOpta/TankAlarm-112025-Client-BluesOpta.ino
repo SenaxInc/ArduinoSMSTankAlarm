@@ -115,6 +115,18 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define RELAY_CONTROL_FILE "relay.qi"
 #endif
 
+#ifndef SERIAL_LOG_FILE
+#define SERIAL_LOG_FILE "serial_log.qi"  // Send serial logs to server
+#endif
+
+#ifndef SERIAL_REQUEST_FILE
+#define SERIAL_REQUEST_FILE "serial_request.qi"  // Receive serial log requests
+#endif
+
+#ifndef CLIENT_SERIAL_BUFFER_SIZE
+#define CLIENT_SERIAL_BUFFER_SIZE 50  // Buffer up to 50 log messages
+#endif
+
 #ifndef NOTE_BUFFER_PATH
 #define NOTE_BUFFER_PATH "/pending_notes.log"
 #endif
@@ -308,6 +320,21 @@ static int gRpmLastPinState[MAX_TANKS];  // Initialized dynamically in setup()
 #define RPM_SAMPLE_DURATION_MS 3000
 #endif
 
+// Serial log buffer structure for client
+struct SerialLogEntry {
+  double timestamp;
+  char message[160];
+};
+
+struct ClientSerialLog {
+  SerialLogEntry entries[CLIENT_SERIAL_BUFFER_SIZE];
+  uint8_t writeIndex;
+  uint8_t count;
+};
+
+static ClientSerialLog gSerialLog;
+static unsigned long gLastSerialRequestCheckMillis = 0;
+
 // Forward declarations
 static void initializeStorage();
 static void ensureConfigLoaded();
@@ -345,6 +372,9 @@ static int getRelayPin(uint8_t relayIndex);
 static float readNotecardVinVoltage();
 static void checkRelayMomentaryTimeout(unsigned long now);
 static void resetRelayForTank(uint8_t idx);
+static void addSerialLog(const char *message);
+static void pollForSerialRequests();
+static void sendSerialLogs();
 
 void setup() {
   Serial.begin(115200);
@@ -354,6 +384,9 @@ void setup() {
 
   Serial.println();
   Serial.println(F("Tank Alarm Client 112025 starting"));
+
+  // Initialize serial log buffer
+  memset(&gSerialLog, 0, sizeof(ClientSerialLog));
 
   // Set analog resolution to 12-bit to match the /4095.0f divisor used in readTankSensor
   analogReadResolution(12);
@@ -434,6 +467,7 @@ void setup() {
   initializeRelays();
 
   Serial.println(F("Client setup complete"));
+  addSerialLog("Client started successfully");
 }
 
 void loop() {
@@ -470,6 +504,11 @@ void loop() {
   if (now - gLastRelayCheckMillis >= 600000UL) {  // Check every 10 minutes
     gLastRelayCheckMillis = now;
     pollForRelayCommands();
+  }
+
+  if (now - gLastSerialRequestCheckMillis >= 600000UL) {  // Check every 10 minutes
+    gLastSerialRequestCheckMillis = now;
+    pollForSerialRequests();
   }
 
   // Check for momentary relay timeout (30 minutes)
@@ -1205,6 +1244,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   printHardwareRequirements(gConfig);
   scheduleNextDailyReport();
   Serial.println(F("Configuration updated from server"));
+  addSerialLog("Config updated from server");
 }
 
 static void persistConfigIfDirty() {
@@ -1702,6 +1742,10 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     Serial.print(cfg.name);
     Serial.print(F(" type "));
     Serial.println(alarmType);
+    
+    char logMsg[128];
+    snprintf(logMsg, sizeof(logMsg), "Alarm: %s - %s - %.1fin", cfg.name, alarmType, inches);
+    addSerialLog(logMsg);
     
     // Handle relay control based on mode
     if (cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
@@ -2483,6 +2527,129 @@ static void resetRelayForTank(uint8_t idx) {
   }
   gRelayActiveForTank[idx] = false;
   gRelayActivationTime[idx] = 0;
+}
+
+// ============================================================================
+// Serial Logging for Remote Debugging
+// ============================================================================
+
+static void addSerialLog(const char *message) {
+  if (!message || strlen(message) == 0) {
+    return;
+  }
+
+  SerialLogEntry &entry = gSerialLog.entries[gSerialLog.writeIndex];
+  entry.timestamp = currentEpoch();
+  
+  // Truncate if necessary
+  size_t len = strlen(message);
+  if (len >= sizeof(entry.message)) {
+    len = sizeof(entry.message) - 1;
+  }
+  memcpy(entry.message, message, len);
+  entry.message[len] = '\0';
+
+  gSerialLog.writeIndex = (gSerialLog.writeIndex + 1) % CLIENT_SERIAL_BUFFER_SIZE;
+  if (gSerialLog.count < CLIENT_SERIAL_BUFFER_SIZE) {
+    gSerialLog.count++;
+  }
+}
+
+static void pollForSerialRequests() {
+  // Check for serial log requests from server
+  while (true) {
+    J *req = notecard.newRequest("note.get");
+    if (!req) {
+      return;
+    }
+    
+    JAddStringToObject(req, "file", SERIAL_REQUEST_FILE);
+    JAddBoolToObject(req, "delete", true);
+    
+    J *rsp = notecard.requestAndResponse(req);
+    if (!rsp) {
+      return;
+    }
+
+    J *body = JGetObject(rsp, "body");
+    if (!body) {
+      notecard.deleteResponse(rsp);
+      break;
+    }
+
+    const char *request = JGetString(body, "request");
+    if (request && strcmp(request, "send_logs") == 0) {
+      DEBUG_PRINTLN(F("Serial log request received from server"));
+      addSerialLog("Serial log request received");
+      sendSerialLogs();
+    }
+
+    notecard.deleteResponse(rsp);
+  }
+}
+
+static void sendSerialLogs() {
+  if (gSerialLog.count == 0) {
+    DEBUG_PRINTLN(F("No serial logs to send"));
+    return;
+  }
+
+  // Create a note with an array of log entries
+  J *req = notecard.newRequest("note.add");
+  if (!req) {
+    return;
+  }
+
+  JAddStringToObject(req, "file", SERIAL_LOG_FILE);
+  JAddBoolToObject(req, "sync", true);
+
+  J *body = JCreateObject();
+  if (!body) {
+    return;
+  }
+
+  JAddStringToObject(body, "client", gDeviceUID);
+
+  J *logsArray = JCreateArray();
+  if (!logsArray) {
+    JDelete(body);
+    return;
+  }
+
+  // Add logs from oldest to newest (circular buffer)
+  uint8_t startIdx = (gSerialLog.count < CLIENT_SERIAL_BUFFER_SIZE) ? 0 : gSerialLog.writeIndex;
+  uint8_t sentCount = 0;
+  
+  for (uint8_t i = 0; i < gSerialLog.count && sentCount < 20; ++i) {  // Limit to 20 most recent logs
+    uint8_t idx = (startIdx + i) % CLIENT_SERIAL_BUFFER_SIZE;
+    SerialLogEntry &entry = gSerialLog.entries[idx];
+    
+    if (entry.message[0] == '\0') {
+      continue;
+    }
+
+    J *logEntry = JCreateObject();
+    if (!logEntry) {
+      break;
+    }
+
+    JAddNumberToObject(logEntry, "timestamp", entry.timestamp);
+    JAddStringToObject(logEntry, "message", entry.message);
+    JAddItemToArray(logsArray, logEntry);
+    sentCount++;
+  }
+
+  JAddItemToObject(body, "logs", logsArray);
+  JAddItemToObject(req, "body", body);
+
+  bool queued = notecard.sendRequest(req);
+  if (queued) {
+    DEBUG_PRINT(F("Sent "));
+    DEBUG_PRINT(sentCount);
+    DEBUG_PRINTLN(F(" serial logs to server"));
+  } else {
+    DEBUG_PRINTLN(F("Failed to queue serial logs"));
+  }
 }
 
 // ============================================================================

@@ -150,6 +150,38 @@
 #define MAX_RELAYS 4  // Arduino Opta has 4 relay outputs (D0-D3)
 #endif
 
+#ifndef SERVER_SERIAL_BUFFER_SIZE
+#define SERVER_SERIAL_BUFFER_SIZE 100  // Keep last 100 server serial messages
+#endif
+
+#ifndef CLIENT_SERIAL_BUFFER_SIZE
+#define CLIENT_SERIAL_BUFFER_SIZE 50  // Keep last 50 messages per client
+#endif
+
+#ifndef MAX_CLIENT_SERIAL_LOGS
+#define MAX_CLIENT_SERIAL_LOGS 10  // Track serial logs for up to 10 clients
+#endif
+
+#ifndef SERIAL_LOG_FILE
+#define SERIAL_LOG_FILE "serial_log.qi"  // Client serial logs sent to server
+#endif
+
+#ifndef SERIAL_REQUEST_FILE
+#define SERIAL_REQUEST_FILE "serial_request.qi"  // Server requests for client logs
+#endif
+
+#ifndef SERIAL_ACK_FILE
+#define SERIAL_ACK_FILE "serial_ack.qi"  // Client acknowledgments for log requests
+#endif
+
+#ifndef SERIAL_DEFAULT_MAX_ENTRIES
+#define SERIAL_DEFAULT_MAX_ENTRIES 50
+#endif
+
+#ifndef SERIAL_STALE_SECONDS
+#define SERIAL_STALE_SECONDS 1800  // 30 minutes
+#endif
+
 static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(10)) + 512;
 static const size_t CLIENT_JSON_CAPACITY = 24576;
 
@@ -203,8 +235,37 @@ struct ClientMetadata {
   double vinVoltageEpoch;    // When the VIN voltage was last updated
 };
 
+struct SerialLogEntry {
+  double timestamp;          // Epoch timestamp
+  char message[160];         // Log message
+  char level[8];             // Log level (info, warn, error)
+  char source[16];           // Source module identifier
+};
+
+struct ServerSerialBuffer {
+  SerialLogEntry entries[SERVER_SERIAL_BUFFER_SIZE];
+  uint8_t writeIndex;
+  uint8_t count;
+};
+
+struct ClientSerialBuffer {
+  char clientUid[48];
+  SerialLogEntry entries[CLIENT_SERIAL_BUFFER_SIZE];
+  uint8_t writeIndex;
+  uint8_t count;
+  double lastRequestEpoch;
+  double lastAckEpoch;
+  double lastLogEpoch;
+  bool awaitingLogs;
+  char lastAckStatus[24];
+};
+
 static ClientMetadata gClientMetadata[MAX_CLIENT_METADATA];
 static uint8_t gClientMetadataCount = 0;
+
+static ServerSerialBuffer gServerSerial;
+static ClientSerialBuffer gClientSerialBuffers[MAX_CLIENT_SERIAL_LOGS];
+static uint8_t gClientSerialBufferCount = 0;
 
 static ServerConfig gConfig;
 static bool gConfigDirty = false;
@@ -831,6 +892,844 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
 </html>
 )HTML";
 
+static const char SERIAL_MONITOR_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Serial Monitor - Tank Alarm Server</title>
+  <style>
+    :root {
+      font-family: "Segoe UI", Arial, sans-serif;
+      color-scheme: light dark;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    body[data-theme="light"] {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --text: #1f2933;
+      --muted: #475569;
+      --header-bg: #e2e8f0;
+      --card-border: rgba(15,23,42,0.08);
+      --card-shadow: rgba(15,23,42,0.08);
+      --accent: #2563eb;
+      --accent-strong: #1d4ed8;
+      --accent-contrast: #f8fafc;
+      --chip: #eceff7;
+      --pill-bg: rgba(37,99,235,0.12);
+      --log-bg: #f1f5f9;
+      --log-border: #cbd5e1;
+    }
+    body[data-theme="dark"] {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --header-bg: #16213d;
+      --card-border: rgba(15,23,42,0.55);
+      --card-shadow: rgba(0,0,0,0.55);
+      --accent: #38bdf8;
+      --accent-strong: #22d3ee;
+      --accent-contrast: #0f172a;
+      --chip: rgba(148,163,184,0.15);
+      --pill-bg: rgba(56,189,248,0.18);
+      --log-bg: #0f172a;
+      --log-border: #334155;
+    }
+    header {
+      background: var(--header-bg);
+      padding: 28px 24px;
+      box-shadow: 0 20px 45px var(--card-shadow);
+    }
+    header .bar {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.9rem;
+    }
+    header p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 640px;
+      line-height: 1.4;
+    }
+    .header-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .pill {
+      border-radius: 999px;
+      padding: 10px 20px;
+      text-decoration: none;
+      font-weight: 600;
+      background: var(--pill-bg);
+      color: var(--accent);
+      border: 1px solid transparent;
+      transition: transform 0.15s ease;
+    }
+    .pill:hover {
+      transform: translateY(-1px);
+    }
+    .icon-button {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      border: 1px solid var(--card-border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 1.2rem;
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+    .icon-button:hover {
+      transform: translateY(-1px);
+    }
+    main {
+      padding: 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .card {
+      background: var(--surface);
+      border-radius: 24px;
+      border: 1px solid var(--card-border);
+      padding: 20px;
+      box-shadow: 0 25px 55px var(--card-shadow);
+      margin-bottom: 20px;
+    }
+    h2 {
+      margin-top: 0;
+      font-size: 1.3rem;
+    }
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .controls-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: flex-end;
+      margin-bottom: 12px;
+    }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 200px;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .control-group select,
+    .control-group button {
+      width: 100%;
+    }
+    .control-group.compact {
+      flex-direction: row;
+      align-items: stretch;
+      gap: 10px;
+    }
+    select, button {
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 0.95rem;
+      border: 1px solid var(--card-border);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+    }
+    button {
+      background: var(--accent);
+      color: var(--accent-contrast);
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    button.secondary {
+      background: transparent;
+      color: var(--text);
+      border-color: var(--card-border);
+    }
+    button.ghost {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--muted);
+      padding: 4px 8px;
+      font-size: 1.1rem;
+      min-width: 32px;
+    }
+    .log-container {
+      background: var(--log-bg);
+      border: 1px solid var(--log-border);
+      border-radius: 12px;
+      padding: 16px;
+      font-family: "Courier New", monospace;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      max-height: 600px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .log-container.slim {
+      max-height: 360px;
+    }
+    .log-entry {
+      margin-bottom: 8px;
+      padding: 4px 0;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .log-entry:last-child {
+      border-bottom: none;
+    }
+    .log-time {
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-right: 8px;
+    }
+    .log-meta {
+      display: inline-block;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-right: 8px;
+    }
+    .log-message {
+      color: var(--text);
+    }
+    .empty-state {
+      text-align: center;
+      color: var(--muted);
+      padding: 40px;
+    }
+    .panel-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+    }
+    .client-panel {
+      border: 1px solid var(--card-border);
+      border-radius: 18px;
+      padding: 16px;
+      background: var(--surface);
+      box-shadow: 0 15px 40px var(--card-shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .panel-title {
+      font-size: 1rem;
+      font-weight: 600;
+    }
+    .panel-subtitle {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .panel-meta {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .panel-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .chip {
+      background: var(--chip);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    #toast {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%);
+      background: #0284c7;
+      color: #fff;
+      padding: 12px 18px;
+      border-radius: 999px;
+      box-shadow: 0 10px 30px rgba(15,23,42,0.25);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+      font-weight: 600;
+    }
+    #toast.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body data-theme="light">
+  <header>
+    <div class="bar">
+      <div>
+        <h1>Serial Monitor</h1>
+        <p>
+          View serial debug output from the server and remote client devices. Server logs update automatically, client logs can be pinned side-by-side for easier comparisons.
+        </p>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
+        <a class="pill" href="/">&larr; Back to Dashboard</a>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="card">
+      <h2>Server Serial Output</h2>
+      <div class="controls">
+        <button id="refreshServerBtn">Refresh Server Logs</button>
+        <button class="secondary" id="clearServerBtn">Clear Display</button>
+        <span style="color: var(--muted); font-size: 0.9rem;">Auto-refreshes every 5 seconds</span>
+      </div>
+      <div class="log-container" id="serverLogs">
+        <div class="empty-state">Loading server logs...</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Client Serial Output</h2>
+      <div class="controls-grid">
+        <label class="control-group">
+          <span>Site Filter</span>
+          <select id="siteSelect">
+            <option value="all">All sites</option>
+          </select>
+        </label>
+        <label class="control-group">
+          <span>Client</span>
+          <select id="clientSelect">
+            <option value="">-- Select a client --</option>
+          </select>
+        </label>
+        <div class="control-group compact" style="flex: 1 1 340px;">
+          <button id="pinClientBtn" disabled>Add Client Panel</button>
+          <button id="pinSiteBtn" class="secondary" disabled>Add Site Clients</button>
+          <button id="refreshAllBtn" class="secondary">Refresh All</button>
+          <button id="clearClientBtn" class="secondary">Clear Panels</button>
+        </div>
+      </div>
+      <div class="panel-grid" id="clientPanels">
+        <div class="empty-state">Pin one or more clients to view their serial output alongside the server.</div>
+      </div>
+    </div>
+  </main>
+  <div id="toast"></div>
+  <script>
+    (() => {
+      const THEME_KEY = 'tankalarmTheme';
+      const state = {
+        siteFilter: 'all',
+        clients: [],
+        clientsByUid: new Map(),
+        clientsBySite: new Map()
+      };
+      const clientPanels = new Map();
+
+      const themeToggle = document.getElementById('themeToggle');
+      const els = {
+        serverLogs: document.getElementById('serverLogs'),
+        refreshServerBtn: document.getElementById('refreshServerBtn'),
+        clearServerBtn: document.getElementById('clearServerBtn'),
+        siteSelect: document.getElementById('siteSelect'),
+        clientSelect: document.getElementById('clientSelect'),
+        pinClientBtn: document.getElementById('pinClientBtn'),
+        pinSiteBtn: document.getElementById('pinSiteBtn'),
+        refreshAllBtn: document.getElementById('refreshAllBtn'),
+        clearClientBtn: document.getElementById('clearClientBtn'),
+        clientPanels: document.getElementById('clientPanels'),
+        toast: document.getElementById('toast')
+      };
+
+      function applyTheme(next) {
+        const theme = next === 'dark' ? 'dark' : 'light';
+        document.body.dataset.theme = theme;
+        themeToggle.textContent = theme === 'dark' ? '☀' : '☾';
+        themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+        localStorage.setItem(THEME_KEY, theme);
+      }
+
+      applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+      themeToggle.addEventListener('click', () => {
+        applyTheme(document.body.dataset.theme === 'dark' ? 'light' : 'dark');
+      });
+
+      let serverRefreshTimer = null;
+
+      function showToast(message, isError) {
+        els.toast.textContent = message;
+        els.toast.style.background = isError ? '#dc2626' : '#0284c7';
+        els.toast.classList.add('show');
+        setTimeout(() => els.toast.classList.remove('show'), 2500);
+      }
+
+      function formatTime(epoch) {
+        if (!epoch) return '--';
+        const date = new Date(epoch * 1000);
+        return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      }
+
+      function formatRelative(epoch) {
+        if (!epoch) return '';
+        const diff = Math.max(0, (Date.now() / 1000) - epoch);
+        if (diff < 60) return `${Math.floor(diff)}s ago`;
+        if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+        if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+        return `${Math.floor(diff / 86400)}d ago`;
+      }
+
+      function renderLogs(container, logs) {
+        if (!logs || logs.length === 0) {
+          container.innerHTML = '<div class="empty-state">No logs available</div>';
+          return;
+        }
+
+        container.innerHTML = '';
+        logs.forEach(entry => {
+          const div = document.createElement('div');
+          div.className = 'log-entry';
+
+          const time = document.createElement('span');
+          time.className = 'log-time';
+          time.textContent = formatTime(entry.timestamp);
+
+          const meta = document.createElement('span');
+          meta.className = 'log-meta';
+          const level = (entry.level || 'info').toUpperCase();
+          const source = entry.source ? ` · ${entry.source}` : '';
+          meta.textContent = `[${level}${source}]`;
+
+          const msg = document.createElement('span');
+          msg.className = 'log-message';
+          msg.textContent = entry.message;
+
+          div.appendChild(time);
+          div.appendChild(meta);
+          div.appendChild(msg);
+          container.appendChild(div);
+        });
+
+        container.scrollTop = container.scrollHeight;
+      }
+
+      async function refreshServerLogs() {
+        try {
+          const res = await fetch('/api/serial-logs?source=server');
+          if (!res.ok) throw new Error('Failed to fetch server logs');
+          const data = await res.json();
+          renderLogs(els.serverLogs, data.logs || []);
+        } catch (err) {
+          console.error('Server logs error:', err);
+        }
+      }
+
+      function ensureClientPanelPlaceholder() {
+        if (clientPanels.size === 0) {
+          els.clientPanels.innerHTML = '<div class="empty-state">Pin one or more clients to view their serial output alongside the server.</div>';
+        }
+      }
+
+      function clearClientPanelPlaceholder() {
+        if (clientPanels.size === 0) {
+          els.clientPanels.innerHTML = '';
+        }
+      }
+
+      function setClients(list) {
+        state.clients = list;
+        state.clientsByUid = new Map(list.map(c => [c.uid, c]));
+        state.clientsBySite = new Map();
+        list.forEach(c => {
+          const site = c.site || 'Unassigned';
+          if (!state.clientsBySite.has(site)) {
+            state.clientsBySite.set(site, []);
+          }
+          state.clientsBySite.get(site).push(c);
+        });
+      }
+
+      function renderSiteOptions() {
+        const current = state.siteFilter;
+        const sites = Array.from(state.clientsBySite.keys()).sort((a, b) => a.localeCompare(b));
+        els.siteSelect.innerHTML = '';
+
+        const allOption = document.createElement('option');
+        allOption.value = 'all';
+        allOption.textContent = 'All sites';
+        els.siteSelect.appendChild(allOption);
+
+        sites.forEach(site => {
+          const opt = document.createElement('option');
+          opt.value = site;
+          opt.textContent = site;
+          els.siteSelect.appendChild(opt);
+        });
+
+        if (current !== 'all' && sites.includes(current)) {
+          els.siteSelect.value = current;
+        } else {
+          state.siteFilter = 'all';
+          els.siteSelect.value = 'all';
+        }
+        updateSiteButtons();
+      }
+
+      function renderClientOptions() {
+        const previous = els.clientSelect.value;
+        const candidates = state.siteFilter === 'all'
+          ? state.clients
+          : (state.clientsBySite.get(state.siteFilter) || []);
+
+        els.clientSelect.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '-- Select a client --';
+        els.clientSelect.appendChild(placeholder);
+
+        candidates.forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c.uid;
+          const label = c.label ? `${c.label} (${c.uid})` : c.uid;
+          opt.textContent = `${c.site || 'Unassigned'} · ${label}`;
+          els.clientSelect.appendChild(opt);
+        });
+
+        if (previous && candidates.some(c => c.uid === previous)) {
+          els.clientSelect.value = previous;
+          els.pinClientBtn.disabled = false;
+        } else {
+          els.clientSelect.value = '';
+          els.pinClientBtn.disabled = true;
+        }
+      }
+
+      function getClientInfo(uid) {
+        return state.clientsByUid.get(uid);
+      }
+
+      function updatePanelHeader(uid) {
+        const info = getClientInfo(uid);
+        const panelState = clientPanels.get(uid);
+        if (!info || !panelState) {
+          return;
+        }
+        panelState.title.textContent = info.site || 'Unknown Site';
+        panelState.subtitle.textContent = info.label || uid;
+        panelState.meta.textContent = info.uid || uid;
+      }
+
+      function updateSiteButtons() {
+        if (state.siteFilter === 'all') {
+          els.pinSiteBtn.disabled = true;
+          return;
+        }
+        const count = state.clientsBySite.get(state.siteFilter)?.length || 0;
+        els.pinSiteBtn.disabled = count === 0;
+      }
+
+      function pinClient(uid) {
+        if (!uid) {
+          showToast('Select a client first', true);
+          return;
+        }
+        if (clientPanels.has(uid)) {
+          showToast('Client already pinned');
+          refreshClientLogs(uid);
+          return;
+        }
+        createClientPanel(uid);
+      }
+
+      async function pinSiteClients() {
+        if (state.siteFilter === 'all') {
+          showToast('Select a specific site first', true);
+          return;
+        }
+        const clients = state.clientsBySite.get(state.siteFilter) || [];
+        if (!clients.length) {
+          showToast('No clients found for that site', true);
+          return;
+        }
+        
+        els.pinSiteBtn.disabled = true;
+        for (const c of clients) {
+          if (!clientPanels.has(c.uid)) {
+            createClientPanel(c.uid);
+            // Stagger requests to avoid flooding the single-threaded server
+            await new Promise(r => setTimeout(r, 500)); 
+          }
+        }
+        els.pinSiteBtn.disabled = false;
+      }
+
+      async function refreshAllClients() {
+        const uids = Array.from(clientPanels.keys());
+        if (uids.length === 0) return;
+        
+        els.refreshAllBtn.disabled = true;
+        for (const uid of uids) {
+          await refreshClientLogs(uid);
+          await new Promise(r => setTimeout(r, 200)); // Stagger
+        }
+        els.refreshAllBtn.disabled = false;
+      }
+
+      function clearClientPanels() {
+        clientPanels.forEach(panel => panel.root.remove());
+        clientPanels.clear();
+        ensureClientPanelPlaceholder();
+      }
+
+      function createClientPanel(uid) {
+        const info = getClientInfo(uid);
+        if (!info) {
+          showToast('Client metadata not available yet', true);
+          return;
+        }
+
+        if (clientPanels.size === 0) {
+          clearClientPanelPlaceholder();
+        }
+
+        const panel = document.createElement('div');
+        panel.className = 'client-panel';
+        panel.dataset.client = uid;
+        panel.innerHTML = `
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">${info.site || 'Unknown Site'}</div>
+              <div class="panel-subtitle">${info.label || uid}</div>
+              <div class="panel-meta">${uid}</div>
+            </div>
+            <div class="panel-actions">
+              <button class="secondary" data-action="refresh">Refresh</button>
+              <button data-action="request">Request Logs</button>
+              <button class="ghost" data-action="close" title="Remove panel">&times;</button>
+            </div>
+          </div>
+          <div class="chip-row">
+            <span class="chip" data-role="lastLog">Last log: --</span>
+            <span class="chip" data-role="lastAck">Ack: --</span>
+            <span class="chip" data-role="status">Status: idle</span>
+          </div>
+          <div class="log-container slim"><div class="empty-state">No logs yet</div></div>
+        `;
+
+        els.clientPanels.appendChild(panel);
+
+        const panelState = {
+          root: panel,
+          logs: panel.querySelector('.log-container'),
+          title: panel.querySelector('.panel-title'),
+          subtitle: panel.querySelector('.panel-subtitle'),
+          meta: panel.querySelector('.panel-meta'),
+          requestBtn: panel.querySelector('[data-action="request"]'),
+          refreshBtn: panel.querySelector('[data-action="refresh"]'),
+          chips: {
+            lastLog: panel.querySelector('[data-role="lastLog"]'),
+            lastAck: panel.querySelector('[data-role="lastAck"]'),
+            status: panel.querySelector('[data-role="status"]')
+          }
+        };
+
+        panelState.refreshBtn.addEventListener('click', () => refreshClientLogs(uid));
+        panelState.requestBtn.addEventListener('click', () => requestClientLogs(uid, panelState));
+        panel.querySelector('[data-action="close"]').addEventListener('click', () => removeClientPanel(uid));
+
+        clientPanels.set(uid, panelState);
+        refreshClientLogs(uid);
+      }
+
+      function removeClientPanel(uid) {
+        const panelState = clientPanels.get(uid);
+        if (!panelState) {
+          return;
+        }
+        panelState.root.remove();
+        clientPanels.delete(uid);
+        ensureClientPanelPlaceholder();
+      }
+
+      function updatePanelMeta(panelState, meta = {}) {
+        const lastLog = meta.lastLogEpoch || meta.lastLog;
+        const lastAck = meta.lastAckEpoch;
+        const ackStatus = meta.lastAckStatus || 'n/a';
+
+        panelState.chips.lastLog.textContent = lastLog
+          ? `Last log: ${formatTime(lastLog)} (${formatRelative(lastLog)})`
+          : 'Last log: --';
+
+        panelState.chips.lastAck.textContent = lastAck
+          ? `Ack: ${formatTime(lastAck)} (${ackStatus})`
+          : 'Ack: --';
+
+        panelState.chips.status.textContent = meta.awaitingLogs
+          ? 'Status: awaiting client response'
+          : 'Status: ready';
+      }
+
+      async function refreshClientLogs(clientUid) {
+        const panelState = clientPanels.get(clientUid);
+        if (!panelState) {
+          return;
+        }
+        panelState.refreshBtn.disabled = true;
+        panelState.chips.status.textContent = 'Status: refreshing…';
+        try {
+          const res = await fetch(`/api/serial-logs?source=client&client=${encodeURIComponent(clientUid)}`);
+          if (!res.ok) throw new Error('Failed to fetch client logs');
+          const data = await res.json();
+          renderLogs(panelState.logs, data.logs || []);
+          updatePanelMeta(panelState, data.meta || {});
+        } catch (err) {
+          console.error('Client logs error:', err);
+          panelState.logs.innerHTML = '<div class="empty-state">Error loading client logs</div>';
+          panelState.chips.status.textContent = 'Status: error fetching logs';
+        } finally {
+          panelState.refreshBtn.disabled = false;
+        }
+      }
+
+      async function requestClientLogs(clientUid, panelState) {
+        if (!clientUid) {
+          showToast('Select a client first', true);
+          return;
+        }
+
+        if (panelState) {
+          panelState.requestBtn.disabled = true;
+          panelState.chips.status.textContent = 'Status: requesting logs…';
+        }
+
+        try {
+          const res = await fetch('/api/serial-request', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client: clientUid })
+          });
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || 'Request failed');
+          }
+          showToast(`Log request sent to ${clientUid}`);
+          if (panelState) {
+            panelState.chips.status.textContent = 'Status: awaiting client response';
+            setTimeout(() => refreshClientLogs(clientUid), 3500);
+          }
+        } catch (err) {
+          console.error('Client request error:', err);
+          showToast(err.message || 'Request failed', true);
+          if (panelState) {
+            panelState.chips.status.textContent = 'Status: request failed';
+          }
+        } finally {
+          if (panelState) {
+            setTimeout(() => {
+              panelState.requestBtn.disabled = false;
+            }, 4000);
+          }
+        }
+      }
+
+      async function loadClients() {
+        try {
+          const res = await fetch('/api/clients');
+          if (!res.ok) throw new Error('Failed to fetch clients');
+          const data = await res.json();
+          const rawClients = data.clients || [];
+          const unique = new Map();
+          rawClients.forEach(c => {
+            if (c.client) {
+              unique.set(c.client, {
+                uid: c.client,
+                site: c.site || 'Unassigned',
+                label: c.label || c.client
+              });
+            }
+          });
+          setClients(Array.from(unique.values()));
+          renderSiteOptions();
+          renderClientOptions();
+          clientPanels.forEach((_, uid) => updatePanelHeader(uid));
+        } catch (err) {
+          console.error('Failed to load clients:', err);
+        }
+      }
+
+      els.refreshServerBtn.addEventListener('click', refreshServerLogs);
+      els.clearServerBtn.addEventListener('click', () => {
+        els.serverLogs.innerHTML = '<div class="empty-state">Logs cleared</div>';
+      });
+
+      els.siteSelect.addEventListener('change', () => {
+        state.siteFilter = els.siteSelect.value;
+        renderClientOptions();
+        updateSiteButtons();
+      });
+
+      els.clientSelect.addEventListener('change', () => {
+        els.pinClientBtn.disabled = !els.clientSelect.value;
+      });
+
+      els.pinClientBtn.addEventListener('click', () => pinClient(els.clientSelect.value));
+      els.pinSiteBtn.addEventListener('click', pinSiteClients);
+      els.refreshAllBtn.addEventListener('click', refreshAllClients);
+      els.clearClientBtn.addEventListener('click', clearClientPanels);
+
+      themeToggle.addEventListener('keyup', e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          themeToggle.click();
+        }
+      });
+
+      serverRefreshTimer = setInterval(refreshServerLogs, 5000);
+      refreshServerLogs();
+      ensureClientPanelPlaceholder();
+      loadClients();
+    })();
+  </script>
+</body>
+</html>
+)HTML";
+
 static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html lang="en">
@@ -1133,6 +2032,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
         <a class="pill" href="/client-console">Client Console</a>
         <a class="pill secondary" href="/config-generator">Config Generator</a>
+        <a class="pill secondary" href="/serial-monitor">Serial Monitor</a>
       </div>
     </div>
     <div class="meta-grid">
@@ -2609,10 +3509,20 @@ enum class ConfigDispatchStatus : uint8_t {
   NotecardFailure
 };
 
+enum class SerialRequestResult : uint8_t {
+  Sent = 0,
+  Throttled,
+  NotecardFailure
+};
+
 // Forward declarations
 static void handlePinPost(EthernetClient &client, const String &body);
 static void handleRefreshPost(EthernetClient &client, const String &body);
 static void handleRelayPost(EthernetClient &client, const String &body);
+static void handleSerialLogsGet(EthernetClient &client, const String &queryString);
+static void handleSerialLogsDownload(EthernetClient &client, const String &queryString);
+static void handleSerialRequestPost(EthernetClient &client, const String &body);
+static void sendSerialMonitor(EthernetClient &client);
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
 static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state, const char *source);
 static void pollNotecard();
@@ -2620,6 +3530,12 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
 static void handleTelemetry(JsonDocument &doc, double epoch);
 static void handleAlarm(JsonDocument &doc, double epoch);
 static void handleDaily(JsonDocument &doc, double epoch);
+static void handleSerialLog(JsonDocument &doc, double epoch);
+static void handleSerialAck(JsonDocument &doc, double epoch);
+static void addServerSerialLog(const char *message, const char *level = "info", const char *source = "server");
+static ClientSerialBuffer *findOrCreateClientSerialBuffer(const char *clientUid);
+static void addClientSerialLog(const char *clientUid, const char *message, double timestamp, const char *level = "info", const char *source = "client");
+static SerialRequestResult requestClientSerialLogs(const char *clientUid, String &errorMessage);
 static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber);
 static void sendSmsAlert(const char *message);
 static void sendDailyEmail();
@@ -2656,6 +3572,407 @@ static void handleRefreshPost(EthernetClient &client, const String &body) {
   sendClientDataJson(client);
 }
 
+static void handleSerialLogsGet(EthernetClient &client, const String &queryString) {
+  String source = getQueryParam(queryString, "source");
+  source.toLowerCase();
+  if (source.length() == 0) {
+    source = "server";
+  }
+
+  String clientUid = getQueryParam(queryString, "client");
+  int maxEntries = SERIAL_DEFAULT_MAX_ENTRIES;
+  String maxParam = getQueryParam(queryString, "max");
+  if (maxParam.length()) {
+    int requested = maxParam.toInt();
+    if (requested > 0) {
+      int cap = (source == "server") ? SERVER_SERIAL_BUFFER_SIZE : CLIENT_SERIAL_BUFFER_SIZE;
+      maxEntries = min(requested, cap);
+    }
+  }
+
+  double sinceEpoch = 0.0;
+  String sinceParam = getQueryParam(queryString, "since");
+  if (sinceParam.length()) {
+    sinceEpoch = sinceParam.toDouble();
+  }
+
+  DynamicJsonDocument doc(8192);
+  JsonArray logsArray = doc.createNestedArray("logs");
+  JsonObject meta = doc.createNestedObject("meta");
+  meta["source"] = source;
+  meta["requestedClient"] = clientUid;
+  meta["staleSeconds"] = SERIAL_STALE_SECONDS;
+  meta["max"] = maxEntries;
+  meta["since"] = sinceEpoch;
+
+  int added = 0;
+
+  if (source == "server") {
+    uint8_t startIdx = (gServerSerial.count < SERVER_SERIAL_BUFFER_SIZE) ? 0 : gServerSerial.writeIndex;
+    for (uint8_t i = 0; i < gServerSerial.count; ++i) {
+      uint8_t idx = (startIdx + i) % SERVER_SERIAL_BUFFER_SIZE;
+      SerialLogEntry &entry = gServerSerial.entries[idx];
+      if (entry.message[0] == '\0') {
+        continue;
+      }
+      if (sinceEpoch > 0.0 && entry.timestamp <= sinceEpoch) {
+        continue;
+      }
+      JsonObject row = logsArray.createNestedObject();
+      row["timestamp"] = entry.timestamp;
+      row["message"] = entry.message;
+      row["level"] = entry.level;
+      row["source"] = entry.source;
+      row["client"] = "server";
+      added++;
+      if (maxEntries > 0 && added >= maxEntries) {
+        break;
+      }
+    }
+    meta["total"] = gServerSerial.count;
+  } else if (source == "client" && clientUid.length() > 0) {
+    ClientSerialBuffer *buf = nullptr;
+    for (uint8_t b = 0; b < gClientSerialBufferCount; ++b) {
+      if (strcmp(gClientSerialBuffers[b].clientUid, clientUid.c_str()) == 0) {
+        buf = &gClientSerialBuffers[b];
+        break;
+      }
+    }
+
+    if (buf) {
+      meta["lastAckEpoch"] = buf->lastAckEpoch;
+      meta["lastAckStatus"] = buf->lastAckStatus;
+      meta["lastRequestEpoch"] = buf->lastRequestEpoch;
+      meta["lastLogEpoch"] = buf->lastLogEpoch;
+      meta["awaitingLogs"] = buf->awaitingLogs;
+      uint8_t startIdx = (buf->count < CLIENT_SERIAL_BUFFER_SIZE) ? 0 : buf->writeIndex;
+      for (uint8_t i = 0; i < buf->count; ++i) {
+        uint8_t idx = (startIdx + i) % CLIENT_SERIAL_BUFFER_SIZE;
+        SerialLogEntry &entry = buf->entries[idx];
+        if (entry.message[0] == '\0') {
+          continue;
+        }
+        if (sinceEpoch > 0.0 && entry.timestamp <= sinceEpoch) {
+          continue;
+        }
+        JsonObject row = logsArray.createNestedObject();
+        row["timestamp"] = entry.timestamp;
+        row["message"] = entry.message;
+        row["level"] = entry.level;
+        row["source"] = entry.source;
+        row["client"] = buf->clientUid;
+        added++;
+        if (maxEntries > 0 && added >= maxEntries) {
+          break;
+        }
+      }
+    } else {
+      meta["lastAckEpoch"] = 0;
+      meta["awaitingLogs"] = false;
+    }
+  }
+
+  String json;
+  serializeJson(doc, json);
+  respondJson(client, json);
+}
+
+static void handleSerialLogsDownload(EthernetClient &client, const String &queryString) {
+  String source = getQueryParam(queryString, "source");
+  source.toLowerCase();
+  if (source.length() == 0) {
+    source = "server";
+  }
+  String clientUid = getQueryParam(queryString, "client");
+  int maxEntries = SERIAL_DEFAULT_MAX_ENTRIES;
+  String maxParam = getQueryParam(queryString, "max");
+  if (maxParam.length()) {
+    int requested = maxParam.toInt();
+    if (requested > 0) {
+      int cap = (source == "server") ? SERVER_SERIAL_BUFFER_SIZE : CLIENT_SERIAL_BUFFER_SIZE;
+      maxEntries = min(requested, cap);
+    }
+  }
+  double sinceEpoch = 0.0;
+  String sinceParam = getQueryParam(queryString, "since");
+  if (sinceParam.length()) {
+    sinceEpoch = sinceParam.toDouble();
+  }
+
+  String csv = "timestamp,level,source,client,message\n";
+  int added = 0;
+
+  auto appendCsvLine = [&](const SerialLogEntry &entry, const char *clientLabel) {
+    if (entry.message[0] == '\0') {
+      return;
+    }
+    csv += String(entry.timestamp, 3);
+    csv += ',';
+    csv += entry.level;
+    csv += ',';
+    csv += entry.source;
+    csv += ',';
+    csv += clientLabel;
+    csv += ",\"";
+    String msg(entry.message);
+    msg.replace("\"", "\"\"");
+    csv += msg;
+    csv += "\"\n";
+  };
+
+  if (source == "server") {
+    uint8_t startIdx = (gServerSerial.count < SERVER_SERIAL_BUFFER_SIZE) ? 0 : gServerSerial.writeIndex;
+    for (uint8_t i = 0; i < gServerSerial.count; ++i) {
+      uint8_t idx = (startIdx + i) % SERVER_SERIAL_BUFFER_SIZE;
+      SerialLogEntry &entry = gServerSerial.entries[idx];
+      if (sinceEpoch > 0.0 && entry.timestamp <= sinceEpoch) {
+        continue;
+      }
+      appendCsvLine(entry, "server");
+      added++;
+      if (maxEntries > 0 && added >= maxEntries) {
+        break;
+      }
+    }
+  } else if (source == "client" && clientUid.length() > 0) {
+    for (uint8_t b = 0; b < gClientSerialBufferCount; ++b) {
+      if (strcmp(gClientSerialBuffers[b].clientUid, clientUid.c_str()) == 0) {
+        ClientSerialBuffer &buf = gClientSerialBuffers[b];
+        uint8_t startIdx = (buf.count < CLIENT_SERIAL_BUFFER_SIZE) ? 0 : buf.writeIndex;
+        for (uint8_t i = 0; i < buf.count; ++i) {
+          uint8_t idx = (startIdx + i) % CLIENT_SERIAL_BUFFER_SIZE;
+          SerialLogEntry &entry = buf.entries[idx];
+          if (sinceEpoch > 0.0 && entry.timestamp <= sinceEpoch) {
+            continue;
+          }
+          appendCsvLine(entry, buf.clientUid);
+          added++;
+          if (maxEntries > 0 && added >= maxEntries) {
+            break;
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: text/csv"));
+  client.print(F("Content-Disposition: attachment; filename=\""));
+  client.print(source == "client" && clientUid.length() ? clientUid : source);
+  client.println(F("-serial.csv\""));
+  client.print(F("Content-Length: "));
+  client.println(csv.length());
+  client.println();
+  client.print(csv);
+}
+
+static void handleSerialRequestPost(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(256);
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *clientUid = doc["client"].as<const char *>();
+  if (!clientUid || strlen(clientUid) == 0) {
+    respondStatus(client, 400, F("Missing client UID"));
+    return;
+  }
+
+  String error;
+  SerialRequestResult result = requestClientSerialLogs(clientUid, error);
+  if (result == SerialRequestResult::Sent) {
+    respondStatus(client, 200, F("OK"));
+    return;
+  }
+
+  if (result == SerialRequestResult::Throttled) {
+    respondStatus(client, 429, error.length() ? error : F("Request throttled"));
+  } else {
+    respondStatus(client, 500, error.length() ? error : F("Failed to send request"));
+  }
+}
+
+static void addServerSerialLog(const char *message, const char *level, const char *source) {
+  if (!message || strlen(message) == 0) {
+    return;
+  }
+
+  SerialLogEntry &entry = gServerSerial.entries[gServerSerial.writeIndex];
+  entry.timestamp = currentEpoch();
+  strlcpy(entry.message, message, sizeof(entry.message));
+  strlcpy(entry.level, level ? level : "info", sizeof(entry.level));
+  strlcpy(entry.source, source ? source : "server", sizeof(entry.source));
+
+  gServerSerial.writeIndex = (gServerSerial.writeIndex + 1) % SERVER_SERIAL_BUFFER_SIZE;
+  if (gServerSerial.count < SERVER_SERIAL_BUFFER_SIZE) {
+    gServerSerial.count++;
+  }
+}
+
+static ClientSerialBuffer *findOrCreateClientSerialBuffer(const char *clientUid) {
+  if (!clientUid || strlen(clientUid) == 0) {
+    return nullptr;
+  }
+
+  // Search for existing buffer
+  for (uint8_t i = 0; i < gClientSerialBufferCount; ++i) {
+    if (strcmp(gClientSerialBuffers[i].clientUid, clientUid) == 0) {
+      return &gClientSerialBuffers[i];
+    }
+  }
+
+  // Create new buffer if space available
+  if (gClientSerialBufferCount < MAX_CLIENT_SERIAL_LOGS) {
+    ClientSerialBuffer &buf = gClientSerialBuffers[gClientSerialBufferCount++];
+    memset(&buf, 0, sizeof(ClientSerialBuffer));
+    strlcpy(buf.clientUid, clientUid, sizeof(buf.clientUid));
+    return &buf;
+  }
+
+  return nullptr;
+}
+
+static void addClientSerialLog(const char *clientUid, const char *message, double timestamp, const char *level, const char *source) {
+  if (!message || strlen(message) == 0) {
+    return;
+  }
+
+  ClientSerialBuffer *buf = findOrCreateClientSerialBuffer(clientUid);
+  if (!buf) {
+    return;
+  }
+
+  double serverEpoch = currentEpoch();
+  SerialLogEntry &entry = buf->entries[buf->writeIndex];
+  entry.timestamp = timestamp;
+  strlcpy(entry.message, message, sizeof(entry.message));
+  strlcpy(entry.level, level ? level : "info", sizeof(entry.level));
+  strlcpy(entry.source, source ? source : clientUid, sizeof(entry.source));
+
+  buf->writeIndex = (buf->writeIndex + 1) % CLIENT_SERIAL_BUFFER_SIZE;
+  if (buf->count < CLIENT_SERIAL_BUFFER_SIZE) {
+    buf->count++;
+  }
+  buf->lastLogEpoch = timestamp;
+  buf->lastAckEpoch = serverEpoch;
+  buf->awaitingLogs = false;
+  strlcpy(buf->lastAckStatus, "logs_received", sizeof(buf->lastAckStatus));
+}
+
+static void handleSerialLog(JsonDocument &doc, double epoch) {
+  const char *clientUid = doc["client"] | "";
+  if (!clientUid || strlen(clientUid) == 0) {
+    return;
+  }
+
+  const char *defaultLevel = doc["level"] | "info";
+  const char *defaultSource = doc["source"] | clientUid;
+
+  // Handle single log entry or array of entries
+  if (doc.containsKey("message")) {
+    const char *message = doc["message"] | "";
+    if (strlen(message) > 0) {
+      const char *level = doc["level"] | defaultLevel;
+      const char *source = doc["source"] | defaultSource;
+      addClientSerialLog(clientUid, message, epoch, level, source);
+    }
+  } else if (doc.containsKey("logs")) {
+    JsonArray logs = doc["logs"].as<JsonArray>();
+    for (JsonVariant v : logs) {
+      JsonObject logObj = v.as<JsonObject>();
+      const char *message = logObj["message"] | "";
+      double ts = logObj["timestamp"] | epoch;
+      if (strlen(message) > 0) {
+        const char *level = logObj["level"] | defaultLevel;
+        const char *source = logObj["source"] | defaultSource;
+        addClientSerialLog(clientUid, message, ts, level, source);
+      }
+    }
+  }
+}
+
+static void handleSerialAck(JsonDocument &doc, double epoch) {
+  const char *clientUid = doc["client"] | "";
+  if (!clientUid || strlen(clientUid) == 0) {
+    return;
+  }
+
+  ClientSerialBuffer *buf = findOrCreateClientSerialBuffer(clientUid);
+  if (!buf) {
+    return;
+  }
+
+  const char *status = doc["status"] | "ack";
+  strlcpy(buf->lastAckStatus, status, sizeof(buf->lastAckStatus));
+  buf->lastAckEpoch = (epoch > 0.0) ? epoch : currentEpoch();
+  
+  // If we received an explicit ack, we can clear the awaiting flag
+  // unless the status indicates otherwise (e.g. "processing")
+  if (strcmp(status, "processing") != 0) {
+    buf->awaitingLogs = false;
+  }
+}
+
+static SerialRequestResult requestClientSerialLogs(const char *clientUid, String &errorMessage) {
+  errorMessage = "";
+
+  if (!clientUid || strlen(clientUid) == 0) {
+    errorMessage = F("Missing client UID");
+    return SerialRequestResult::NotecardFailure;
+  }
+
+  double now = currentEpoch();
+  ClientSerialBuffer *buf = findOrCreateClientSerialBuffer(clientUid);
+  if (buf && buf->awaitingLogs) {
+    double sinceLastRequest = (buf->lastRequestEpoch > 0.0) ? (now - buf->lastRequestEpoch) : 0.0;
+    if (sinceLastRequest < SERIAL_STALE_SECONDS) {
+      errorMessage = F("Client log request already pending");
+      return SerialRequestResult::Throttled;
+    }
+    buf->awaitingLogs = false;
+  }
+
+  J *req = notecard.newRequest("note.add");
+  if (!req) {
+    errorMessage = F("Unable to allocate Notecard request");
+    return SerialRequestResult::NotecardFailure;
+  }
+
+  char targetFile[80];
+  snprintf(targetFile, sizeof(targetFile), "device:%s:%s", clientUid, SERIAL_REQUEST_FILE);
+  JAddStringToObject(req, "file", targetFile);
+  JAddBoolToObject(req, "sync", true);
+
+  J *body = JCreateObject();
+  if (!body) {
+    errorMessage = F("Unable to allocate Notecard body");
+    return SerialRequestResult::NotecardFailure;
+  }
+
+  JAddStringToObject(body, "request", "send_logs");
+  JAddNumberToObject(body, "timestamp", now);
+  JAddItemToObject(req, "body", body);
+
+  if (!notecard.sendRequest(req)) {
+    errorMessage = F("Failed to queue Notecard request");
+    return SerialRequestResult::NotecardFailure;
+  }
+
+  Serial.print(F("Serial log request sent to client: "));
+  Serial.println(clientUid);
+  addServerSerialLog("Serial log request sent", "info", "serial");
+
+  if (buf) {
+    buf->lastRequestEpoch = now;
+    buf->awaitingLogs = true;
+    strlcpy(buf->lastAckStatus, "request_sent", sizeof(buf->lastAckStatus));
+  }
+
+  return SerialRequestResult::Sent;
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial && millis() < 2000) {
@@ -2664,6 +3981,10 @@ void setup() {
 
   Serial.println();
   Serial.println(F("Tank Alarm Server 112025 starting"));
+
+  // Initialize serial log buffers
+  memset(&gServerSerial, 0, sizeof(ServerSerialBuffer));
+  gClientSerialBufferCount = 0;
 
   initializeStorage();
   ensureConfigLoaded();
@@ -2710,6 +4031,8 @@ void setup() {
   Serial.print(F("Subnet Mask: "));
   Serial.println(Ethernet.subnetMask());
   Serial.println(F("----------------------------------"));
+  
+  addServerSerialLog("Server started", "info", "lifecycle");
 }
 
 void loop() {
@@ -3217,10 +4540,32 @@ static void handleWebRequests() {
     sendClientConsole(client);
   } else if (method == "GET" && path == "/config-generator") {
     sendConfigGenerator(client);
+  } else if (method == "GET" && path == "/serial-monitor") {
+    sendSerialMonitor(client);
   } else if (method == "GET" && path == "/api/tanks") {
     sendTankJson(client);
   } else if (method == "GET" && path == "/api/clients") {
     sendClientDataJson(client);
+  } else if (method == "GET" && path.startsWith("/api/serial-logs")) {
+    String queryString = "";
+    int queryStart = path.indexOf('?');
+    if (queryStart >= 0) {
+      queryString = path.substring(queryStart + 1);
+    }
+    handleSerialLogsGet(client, queryString);
+  } else if (method == "GET" && path.startsWith("/api/serial-export")) {
+    String queryString = "";
+    int queryStart = path.indexOf('?');
+    if (queryStart >= 0) {
+      queryString = path.substring(queryStart + 1);
+    }
+    handleSerialLogsDownload(client, queryString);
+  } else if (method == "POST" && path == "/api/serial-request") {
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleSerialRequestPost(client, body);
+    }
   } else if (method == "POST" && path == "/api/config") {
     if (contentLength > 8192) {
       respondStatus(client, 413, "Payload Too Large");
@@ -3324,6 +4669,53 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
   return true;
 }
 
+static String urlDecode(const String &value) {
+  String decoded;
+  decoded.reserve(value.length());
+  for (size_t i = 0; i < value.length(); ++i) {
+    char c = value.charAt(i);
+    if (c == '+') {
+      decoded += ' ';
+    } else if (c == '%' && i + 2 < value.length()) {
+      char hi = value.charAt(i + 1);
+      char lo = value.charAt(i + 2);
+      char hex[3] = {hi, lo, '\0'};
+      decoded += (char)strtol(hex, nullptr, 16);
+      i += 2;
+    } else {
+      decoded += c;
+    }
+  }
+  return decoded;
+}
+
+static String getQueryParam(const String &query, const char *key) {
+  size_t keyLen = strlen(key);
+  size_t start = 0;
+  while (start < query.length()) {
+    size_t end = query.indexOf('&', start);
+    if (end == (size_t)-1) {
+      end = query.length();
+    }
+    String pair = query.substring(start, end);
+    size_t eq = pair.indexOf('=');
+    if (eq != (size_t)-1) {
+      String k = pair.substring(0, eq);
+      if (k == key) {
+        String value = pair.substring(eq + 1);
+        return urlDecode(value);
+      }
+    } else if (pair == key) {
+      return String("true");
+    }
+    if (end == query.length()) {
+      break;
+    }
+    start = end + 1;
+  }
+  return String();
+}
+
 static void respondHtml(EthernetClient &client, const String &body) {
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: text/html"));
@@ -3411,6 +4803,21 @@ static void sendConfigGenerator(EthernetClient &client) {
 
   for (size_t i = 0; i < htmlLen; ++i) {
     char c = pgm_read_byte_near(CONFIG_GENERATOR_HTML + i);
+    client.write(c);
+  }
+}
+
+static void sendSerialMonitor(EthernetClient &client) {
+  size_t htmlLen = strlen_P(SERIAL_MONITOR_HTML);
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: text/html; charset=utf-8"));
+  client.print(F("Content-Length: "));
+  client.println(htmlLen);
+  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
+  client.println();
+
+  for (size_t i = 0; i < htmlLen; ++i) {
+    char c = pgm_read_byte_near(SERIAL_MONITOR_HTML + i);
     client.write(c);
   }
 }
@@ -3786,6 +5193,8 @@ static void pollNotecard() {
   processNotefile(TELEMETRY_FILE, handleTelemetry);
   processNotefile(ALARM_FILE, handleAlarm);
   processNotefile(DAILY_FILE, handleDaily);
+  processNotefile(SERIAL_LOG_FILE, handleSerialLog);
+  processNotefile(SERIAL_ACK_FILE, handleSerialAck);
 }
 
 static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double)) {
