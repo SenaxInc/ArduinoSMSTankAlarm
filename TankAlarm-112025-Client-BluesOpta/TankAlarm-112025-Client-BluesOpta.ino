@@ -767,20 +767,42 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     }
   }
 
-  File file = LittleFS.open(CLIENT_CONFIG_PATH, "w");
-  if (!file) {
-    Serial.println(F("Failed to open config for writing"));
-    return false;
-  }
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Mbed OS file operations
+    FILE *file = fopen("/fs/client_config.json", "w");
+    if (!file) {
+      Serial.println(F("Failed to open config for writing"));
+      return false;
+    }
+    
+    // Serialize to buffer first, then write
+    String jsonStr;
+    size_t len = serializeJson(doc, jsonStr);
+    if (len == 0) {
+      fclose(file);
+      Serial.println(F("Failed to serialize config"));
+      return false;
+    }
+    
+    fwrite(jsonStr.c_str(), 1, jsonStr.length(), file);
+    fclose(file);
+    return true;
+  #else
+    File file = LittleFS.open(CLIENT_CONFIG_PATH, "w");
+    if (!file) {
+      Serial.println(F("Failed to open config for writing"));
+      return false;
+    }
 
-  if (serializeJson(doc, file) == 0) {
+    if (serializeJson(doc, file) == 0) {
+      file.close();
+      Serial.println(F("Failed to serialize config"));
+      return false;
+    }
+
     file.close();
-    Serial.println(F("Failed to serialize config"));
-    return false;
-  }
-
-  file.close();
-  return true;
+    return true;
+  #endif
 #else
   return false; // Filesystem not available
 #endif
@@ -1926,125 +1948,254 @@ static void flushBufferedNotes() {
   if (!gNotecardAvailable) {
     return;
   }
-  if (!LittleFS.exists(NOTE_BUFFER_PATH)) {
-    return;
-  }
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) {
+      return;
+    }
+    
+    FILE *src = fopen("/fs/pending_notes.log", "r");
+    if (!src) {
+      return;
+    }
+    
+    FILE *tmp = fopen("/fs/pending_notes.tmp", "w");
+    if (!tmp) {
+      fclose(src);
+      return;
+    }
+    
+    bool wroteFailures = false;
+    char lineBuffer[512];
+    while (fgets(lineBuffer, sizeof(lineBuffer), src) != nullptr) {
+      String line = String(lineBuffer);
+      line.trim();
+      if (line.length() == 0) {
+        continue;
+      }
 
-  File src = LittleFS.open(NOTE_BUFFER_PATH, "r");
-  if (!src) {
-    return;
-  }
+      int firstTab = line.indexOf('\t');
+      int secondTab = (firstTab >= 0) ? line.indexOf('\t', firstTab + 1) : -1;
+      if (firstTab < 0 || secondTab < 0) {
+        continue;
+      }
 
-  File tmp = LittleFS.open(NOTE_BUFFER_TEMP_PATH, "w");
-  if (!tmp) {
+      String fileName = line.substring(0, firstTab);
+      String syncToken = line.substring(firstTab + 1, secondTab);
+      bool syncNow = (syncToken == "1");
+      String payload = line.substring(secondTab + 1);
+
+      J *req = notecard.newRequest("note.add");
+      if (!req) {
+        wroteFailures = true;
+        fprintf(tmp, "%s\n", line.c_str());
+        continue;
+      }
+      JAddStringToObject(req, "file", fileName.c_str());
+      if (syncNow) {
+        JAddBoolToObject(req, "sync", true);
+      }
+
+      J *body = JParse(payload.c_str());
+      if (!body) {
+        JDelete(req);
+        continue;
+      }
+      JAddItemToObject(req, "body", body);
+
+      if (!notecard.sendRequest(req)) {
+        wroteFailures = true;
+        fprintf(tmp, "%s\n", line.c_str());
+      }
+    }
+    
+    fclose(src);
+    fclose(tmp);
+    
+    if (wroteFailures) {
+      remove("/fs/pending_notes.log");
+      rename("/fs/pending_notes.tmp", "/fs/pending_notes.log");
+    } else {
+      remove("/fs/pending_notes.log");
+      remove("/fs/pending_notes.tmp");
+    }
+  #else
+    if (!LittleFS.exists(NOTE_BUFFER_PATH)) {
+      return;
+    }
+
+    File src = LittleFS.open(NOTE_BUFFER_PATH, "r");
+    if (!src) {
+      return;
+    }
+
+    File tmp = LittleFS.open(NOTE_BUFFER_TEMP_PATH, "w");
+    if (!tmp) {
+      src.close();
+      return;
+    }
+
+    bool wroteFailures = false;
+    while (src.available()) {
+      String line = src.readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0) {
+        continue;
+      }
+
+      int firstTab = line.indexOf('\t');
+      int secondTab = (firstTab >= 0) ? line.indexOf('\t', firstTab + 1) : -1;
+      if (firstTab < 0 || secondTab < 0) {
+        continue;
+      }
+
+      String fileName = line.substring(0, firstTab);
+      String syncToken = line.substring(firstTab + 1, secondTab);
+      bool syncNow = (syncToken == "1");
+      String payload = line.substring(secondTab + 1);
+
+      J *req = notecard.newRequest("note.add");
+      if (!req) {
+        wroteFailures = true;
+        tmp.println(line);
+        continue;
+      }
+      JAddStringToObject(req, "file", fileName.c_str());
+      if (syncNow) {
+        JAddBoolToObject(req, "sync", true);
+      }
+
+      J *body = JParse(payload.c_str());
+      if (!body) {
+        JDelete(req);
+        continue;
+      }
+      JAddItemToObject(req, "body", body);
+
+      if (!notecard.sendRequest(req)) {
+        wroteFailures = true;
+        tmp.println(line);
+      }
+    }
+
     src.close();
-    return;
-  }
+    tmp.close();
 
-  bool wroteFailures = false;
-  while (src.available()) {
-    String line = src.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) {
-      continue;
+    if (wroteFailures) {
+      LittleFS.remove(NOTE_BUFFER_PATH);
+      LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
+    } else {
+      LittleFS.remove(NOTE_BUFFER_PATH);
+      LittleFS.remove(NOTE_BUFFER_TEMP_PATH);
     }
-
-    int firstTab = line.indexOf('\t');
-    int secondTab = (firstTab >= 0) ? line.indexOf('\t', firstTab + 1) : -1;
-    if (firstTab < 0 || secondTab < 0) {
-      continue;
-    }
-
-    String fileName = line.substring(0, firstTab);
-    String syncToken = line.substring(firstTab + 1, secondTab);
-    bool syncNow = (syncToken == "1");
-    String payload = line.substring(secondTab + 1);
-
-    J *req = notecard.newRequest("note.add");
-    if (!req) {
-      wroteFailures = true;
-      tmp.println(line);
-      continue;
-    }
-    JAddStringToObject(req, "file", fileName.c_str());
-    if (syncNow) {
-      JAddBoolToObject(req, "sync", true);
-    }
-
-    J *body = JParse(payload.c_str());
-    if (!body) {
-      notecard.deleteRequest(req);
-      continue;
-    }
-    JAddItemToObject(req, "body", body);
-
-    if (!notecard.sendRequest(req)) {
-      wroteFailures = true;
-      tmp.println(line);
-    }
-  }
-
-  src.close();
-  tmp.close();
-
-  if (wroteFailures) {
-    LittleFS.remove(NOTE_BUFFER_PATH);
-    LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
-  } else {
-    LittleFS.remove(NOTE_BUFFER_PATH);
-    LittleFS.remove(NOTE_BUFFER_TEMP_PATH);
-  }
+  #endif
 #endif
 }
 
 static void pruneNoteBufferIfNeeded() {
 #ifdef FILESYSTEM_AVAILABLE
-  if (!LittleFS.exists(NOTE_BUFFER_PATH)) {
-    return;
-  }
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) {
+      return;
+    }
+    
+    FILE *file = fopen("/fs/pending_notes.log", "r");
+    if (!file) {
+      return;
+    }
+    
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
+    if (size <= NOTE_BUFFER_MAX_BYTES) {
+      fclose(file);
+      return;
+    }
+    
+    size_t targetSize = NOTE_BUFFER_MAX_BYTES > NOTE_BUFFER_MIN_HEADROOM ? (NOTE_BUFFER_MAX_BYTES - NOTE_BUFFER_MIN_HEADROOM) : (NOTE_BUFFER_MAX_BYTES / 2);
+    if (targetSize == 0) {
+      targetSize = NOTE_BUFFER_MAX_BYTES / 2;
+    }
+    long startOffset = (size > (long)targetSize) ? (size - (long)targetSize) : 0;
 
-  File file = LittleFS.open(NOTE_BUFFER_PATH, "r");
-  if (!file) {
-    return;
-  }
+    if (fseek(file, startOffset, SEEK_SET) != 0) {
+      fclose(file);
+      remove("/fs/pending_notes.log");
+      return;
+    }
 
-  size_t size = file.size();
-  if (size <= NOTE_BUFFER_MAX_BYTES) {
+    // Skip partial line if we seeked into the middle
+    if (startOffset > 0) {
+      char ch;
+      while (fread(&ch, 1, 1, file) == 1 && ch != '\n') {
+        // consume until newline
+      }
+    }
+
+    FILE *tmp = fopen("/fs/pending_notes.tmp", "w");
+    if (!tmp) {
+      fclose(file);
+      return;
+    }
+
+    char ch;
+    while (fread(&ch, 1, 1, file) == 1) {
+      fwrite(&ch, 1, 1, tmp);
+    }
+
+    fclose(file);
+    fclose(tmp);
+    remove("/fs/pending_notes.log");
+    rename("/fs/pending_notes.tmp", "/fs/pending_notes.log");
+    Serial.println(F("Note buffer pruned"));
+  #else
+    if (!LittleFS.exists(NOTE_BUFFER_PATH)) {
+      return;
+    }
+
+    File file = LittleFS.open(NOTE_BUFFER_PATH, "r");
+    if (!file) {
+      return;
+    }
+
+    size_t size = file.size();
+    if (size <= NOTE_BUFFER_MAX_BYTES) {
+      file.close();
+      return;
+    }
+
+    size_t targetSize = NOTE_BUFFER_MAX_BYTES > NOTE_BUFFER_MIN_HEADROOM ? (NOTE_BUFFER_MAX_BYTES - NOTE_BUFFER_MIN_HEADROOM) : (NOTE_BUFFER_MAX_BYTES / 2);
+    if (targetSize == 0) {
+      targetSize = NOTE_BUFFER_MAX_BYTES / 2;
+    }
+    size_t startOffset = (size > targetSize) ? (size - targetSize) : 0;
+
+    if (!file.seek(startOffset)) {
+      file.close();
+      LittleFS.remove(NOTE_BUFFER_PATH);
+      return;
+    }
+
+    if (startOffset > 0) {
+      file.readStringUntil('\n');
+    }
+
+    File tmp = LittleFS.open(NOTE_BUFFER_TEMP_PATH, "w");
+    if (!tmp) {
+      file.close();
+      return;
+    }
+
+    while (file.available()) {
+      tmp.write(file.read());
+    }
+
     file.close();
-    return;
-  }
-
-  size_t targetSize = NOTE_BUFFER_MAX_BYTES > NOTE_BUFFER_MIN_HEADROOM ? (NOTE_BUFFER_MAX_BYTES - NOTE_BUFFER_MIN_HEADROOM) : (NOTE_BUFFER_MAX_BYTES / 2);
-  if (targetSize == 0) {
-    targetSize = NOTE_BUFFER_MAX_BYTES / 2;
-  }
-  size_t startOffset = (size > targetSize) ? (size - targetSize) : 0;
-
-  if (!file.seek(startOffset)) {
-    file.close();
+    tmp.close();
     LittleFS.remove(NOTE_BUFFER_PATH);
-    return;
-  }
-
-  if (startOffset > 0) {
-    file.readStringUntil('\n');
-  }
-
-  File tmp = LittleFS.open(NOTE_BUFFER_TEMP_PATH, "w");
-  if (!tmp) {
-    file.close();
-    return;
-  }
-
-  while (file.available()) {
-    tmp.write(file.read());
-  }
-
-  file.close();
-  tmp.close();
-  LittleFS.remove(NOTE_BUFFER_PATH);
-  LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
-  Serial.println(F("Note buffer pruned"));
+    LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
+    Serial.println(F("Note buffer pruned"));
+  #endif
 #endif
 }
 
