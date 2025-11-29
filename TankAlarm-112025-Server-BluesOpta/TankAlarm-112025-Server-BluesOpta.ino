@@ -4215,8 +4215,18 @@ static void loadClientConfigSnapshots() {
       return;
     }
     
-    char lineBuffer[640];  // Should be large enough for uid + tab + payload
+    // Buffer size: uid + tab + payload + newline + null terminator
+    char lineBuffer[sizeof(((ClientConfigSnapshot*)0)->uid) + 1 + sizeof(((ClientConfigSnapshot*)0)->payload) + 2];
     while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && gClientConfigCount < MAX_CLIENT_CONFIG_SNAPSHOTS) {
+      // Check if line was truncated (no newline at end of non-empty buffer)
+      size_t buflen = strlen(lineBuffer);
+      if (buflen == sizeof(lineBuffer) - 1 && lineBuffer[sizeof(lineBuffer) - 2] != '\n') {
+        Serial.println(F("Warning: truncated line in client config cache"));
+        // Skip the rest of the truncated line
+        int c;
+        while ((c = fgetc(file)) != '\n' && c != EOF) { }
+        continue;
+      }
       String line = String(lineBuffer);
       line.trim();
       if (line.length() == 0) {
@@ -4313,7 +4323,12 @@ static void saveClientConfigSnapshots() {
     }
 
     for (uint8_t i = 0; i < gClientConfigCount; ++i) {
-      fprintf(file, "%s\t%s\n", gClientConfigs[i].uid, gClientConfigs[i].payload);
+      if (fprintf(file, "%s\t%s\n", gClientConfigs[i].uid, gClientConfigs[i].payload) < 0) {
+        Serial.println(F("Failed to write client config cache"));
+        fclose(file);
+        remove("/fs/client_config_cache.txt");
+        return;
+      }
     }
 
     fclose(file);

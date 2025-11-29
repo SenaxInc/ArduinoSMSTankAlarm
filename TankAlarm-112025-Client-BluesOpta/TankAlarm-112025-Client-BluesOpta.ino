@@ -1969,8 +1969,19 @@ static void flushBufferedNotes() {
     }
     
     bool wroteFailures = false;
-    char lineBuffer[512];
+    char lineBuffer[1024];  // Larger buffer to accommodate payload data
     while (fgets(lineBuffer, sizeof(lineBuffer), src) != nullptr) {
+      // Check if line was truncated (no newline at end of non-empty buffer)
+      size_t len = strlen(lineBuffer);
+      if (len == sizeof(lineBuffer) - 1 && lineBuffer[len - 1] != '\n') {
+        #ifdef DEBUG_MODE
+        Serial.println(F("Warning: truncated line in note buffer, skipping"));
+        #endif
+        // Skip rest of the truncated line
+        int ch;
+        while ((ch = fgetc(src)) != EOF && ch != '\n') {}
+        continue;
+      }
       String line = String(lineBuffer);
       line.trim();
       if (line.length() == 0) {
@@ -2142,13 +2153,25 @@ static void pruneNoteBufferIfNeeded() {
       return;
     }
 
-    char ch;
-    while (fread(&ch, 1, 1, file) == 1) {
-      fwrite(&ch, 1, 1, tmp);
+    // Use buffered copy for better performance
+    char copyBuffer[256];
+    size_t bytesRead;
+    bool writeError = false;
+    while ((bytesRead = fread(copyBuffer, 1, sizeof(copyBuffer), file)) > 0) {
+      if (fwrite(copyBuffer, 1, bytesRead, tmp) != bytesRead) {
+        writeError = true;
+        break;
+      }
     }
 
     fclose(file);
     fclose(tmp);
+    
+    if (writeError) {
+      remove("/fs/pending_notes.tmp");
+      Serial.println(F("Failed to copy note buffer"));
+      return;
+    }
     remove("/fs/pending_notes.log");
     rename("/fs/pending_notes.tmp", "/fs/pending_notes.log");
     Serial.println(F("Note buffer pruned"));
