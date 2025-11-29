@@ -577,7 +577,6 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       border-radius: 6px;
       font-size: 0.75rem;
       font-weight: 400;
-      white-space: nowrap;
       max-width: 280px;
       white-space: normal;
       z-index: 100;
@@ -803,9 +802,9 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const addBtn = card.querySelector('.add-alarm-btn');
       alarmSection.classList.remove('visible');
       addBtn.classList.remove('hidden');
-      // Reset alarm values
-      card.querySelector('.high-alarm').value = '';
-      card.querySelector('.low-alarm').value = '';
+      // Reset alarm values to defaults
+      card.querySelector('.high-alarm').value = '100';
+      card.querySelector('.low-alarm').value = '20';
     };
 
     window.toggleRelaySection = function(id) {
