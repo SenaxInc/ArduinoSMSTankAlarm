@@ -3548,6 +3548,7 @@ static ClientMetadata *findOrCreateClientMetadata(const char *clientUid);
 static bool checkSmsRateLimit(TankRecord *rec);
 static void publishViewerSummary();
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
+static String getQueryParam(const String &query, const char *key);
 
 static void handleRefreshPost(EthernetClient &client, const String &body) {
   char clientUid[64] = {0};
