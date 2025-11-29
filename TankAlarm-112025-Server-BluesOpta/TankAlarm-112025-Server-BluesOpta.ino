@@ -2750,7 +2750,7 @@ void loop() {
 
   handleWebRequests();
 
-  unsigned long now = millis();
+  now = millis();
   if (now - gLastPollMillis > 5000UL) {
     gLastPollMillis = now;
     pollNotecard();
@@ -2845,18 +2845,52 @@ static void createDefaultConfig(ServerConfig &cfg) {
 
 static bool loadConfig(ServerConfig &cfg) {
 #ifdef FILESYSTEM_AVAILABLE
-  if (!LittleFS.exists(SERVER_CONFIG_PATH)) {
-    return false;
-  }
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return false;
+    
+    FILE *file = fopen("/fs/server_config.json", "r");
+    if (!file) {
+      return false;
+    }
+    
+    // Read file into buffer
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
+    if (fileSize <= 0 || fileSize > 4096) {
+      fclose(file);
+      return false;
+    }
+    
+    char *buffer = (char *)malloc(fileSize + 1);
+    if (!buffer) {
+      fclose(file);
+      return false;
+    }
+    
+    size_t bytesRead = fread(buffer, 1, fileSize, file);
+    buffer[bytesRead] = '\0';
+    fclose(file);
+    
+    DynamicJsonDocument doc(2048);
+    DeserializationError err = deserializeJson(doc, buffer);
+    free(buffer);
+  #else
+    if (!LittleFS.exists(SERVER_CONFIG_PATH)) {
+      return false;
+    }
 
-  File file = LittleFS.open(SERVER_CONFIG_PATH, "r");
-  if (!file) {
-    return false;
-  }
+    File file = LittleFS.open(SERVER_CONFIG_PATH, "r");
+    if (!file) {
+      return false;
+    }
 
-  DynamicJsonDocument doc(2048);
-  DeserializationError err = deserializeJson(doc, file);
-  file.close();
+    DynamicJsonDocument doc(2048);
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+  #endif
+
   if (err) {
     Serial.println(F("Server config parse failed"));
     return false;
@@ -2919,6 +2953,10 @@ static bool loadConfig(ServerConfig &cfg) {
 
 static bool saveConfig(const ServerConfig &cfg) {
 #ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return false;
+  #endif
+  
   DynamicJsonDocument doc(2048);
   doc["serverName"] = cfg.serverName;
   doc["clientFleet"] = cfg.clientFleet;
@@ -2958,20 +2996,46 @@ static bool saveConfig(const ServerConfig &cfg) {
   dns.add(gStaticDns[2]);
   dns.add(gStaticDns[3]);
 
-  File file = LittleFS.open(SERVER_CONFIG_PATH, "w");
-  if (!file) {
-    Serial.println(F("Failed to open server config for write"));
-    return false;
-  }
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Mbed OS file operations
+    FILE *file = fopen("/fs/server_config.json", "w");
+    if (!file) {
+      Serial.println(F("Failed to open server config for write"));
+      return false;
+    }
+    
+    // Serialize to buffer first, then write
+    String jsonStr;
+    size_t len = serializeJson(doc, jsonStr);
+    if (len == 0) {
+      fclose(file);
+      Serial.println(F("Failed to serialize server config"));
+      return false;
+    }
+    
+    size_t written = fwrite(jsonStr.c_str(), 1, jsonStr.length(), file);
+    fclose(file);
+    if (written != jsonStr.length()) {
+      Serial.println(F("Failed to write server config (incomplete)"));
+      return false;
+    }
+    return true;
+  #else
+    File file = LittleFS.open(SERVER_CONFIG_PATH, "w");
+    if (!file) {
+      Serial.println(F("Failed to open server config for write"));
+      return false;
+    }
 
-  if (serializeJson(doc, file) == 0) {
+    if (serializeJson(doc, file) == 0) {
+      file.close();
+      Serial.println(F("Failed to serialize server config"));
+      return false;
+    }
+
     file.close();
-    Serial.println(F("Failed to serialize server config"));
-    return false;
-  }
-
-  file.close();
-  return true;
+    return true;
+  #endif
 #else
   return false; // Filesystem not available
 #endif
@@ -4141,67 +4205,147 @@ static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid) {
 static void loadClientConfigSnapshots() {
   gClientConfigCount = 0;
 #ifdef FILESYSTEM_AVAILABLE
-  if (!LittleFS.exists(CLIENT_CONFIG_CACHE_PATH)) {
-    return;
-  }
-
-  File file = LittleFS.open(CLIENT_CONFIG_CACHE_PATH, "r");
-  if (!file) {
-    return;
-  }
-
-  while (file.available() && gClientConfigCount < MAX_CLIENT_CONFIG_SNAPSHOTS) {
-    String line = file.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) {
-      continue;
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) {
+      return;
     }
-    int sep = line.indexOf('\t');
-    if (sep <= 0) {
-      continue;
+    
+    FILE *file = fopen("/fs/client_config_cache.txt", "r");
+    if (!file) {
+      return;
+    }
+    
+    // Buffer size: uid + tab + payload + newline + null terminator
+    char lineBuffer[sizeof(((ClientConfigSnapshot*)0)->uid) + 1 + sizeof(((ClientConfigSnapshot*)0)->payload) + 2];
+    while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && gClientConfigCount < MAX_CLIENT_CONFIG_SNAPSHOTS) {
+      // Check if line was truncated (no newline at end of non-empty buffer)
+      size_t buflen = strlen(lineBuffer);
+      if (buflen == sizeof(lineBuffer) - 1 && lineBuffer[sizeof(lineBuffer) - 2] != '\n') {
+        Serial.println(F("Warning: truncated line in client config cache"));
+        // Skip the rest of the truncated line
+        int c;
+        while ((c = fgetc(file)) != '\n' && c != EOF) { }
+        continue;
+      }
+      String line = String(lineBuffer);
+      line.trim();
+      if (line.length() == 0) {
+        continue;
+      }
+      int sep = line.indexOf('\t');
+      if (sep <= 0) {
+        continue;
+      }
+
+      String uid = line.substring(0, sep);
+      String json = line.substring(sep + 1);
+
+      ClientConfigSnapshot &snap = gClientConfigs[gClientConfigCount++];
+      memset(&snap, 0, sizeof(ClientConfigSnapshot));
+      strlcpy(snap.uid, uid.c_str(), sizeof(snap.uid));
+
+      size_t len = json.length();
+      if (len >= sizeof(snap.payload)) {
+        len = sizeof(snap.payload) - 1;
+      }
+      memcpy(snap.payload, json.c_str(), len);
+      snap.payload[len] = '\0';
+
+      DynamicJsonDocument doc(512);
+      if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
+        const char *site = doc["site"] | "";
+        strlcpy(snap.site, site, sizeof(snap.site));
+      } else {
+        snap.site[0] = '\0';
+      }
     }
 
-    String uid = line.substring(0, sep);
-    String json = line.substring(sep + 1);
-
-    ClientConfigSnapshot &snap = gClientConfigs[gClientConfigCount++];
-    memset(&snap, 0, sizeof(ClientConfigSnapshot));
-    strlcpy(snap.uid, uid.c_str(), sizeof(snap.uid));
-
-    size_t len = json.length();
-    if (len >= sizeof(snap.payload)) {
-      len = sizeof(snap.payload) - 1;
+    fclose(file);
+  #else
+    if (!LittleFS.exists(CLIENT_CONFIG_CACHE_PATH)) {
+      return;
     }
-    memcpy(snap.payload, json.c_str(), len);
-    snap.payload[len] = '\0';
 
-    DynamicJsonDocument doc(512);
-    if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
-      const char *site = doc["site"] | "";
-      strlcpy(snap.site, site, sizeof(snap.site));
-    } else {
-      snap.site[0] = '\0';
+    File file = LittleFS.open(CLIENT_CONFIG_CACHE_PATH, "r");
+    if (!file) {
+      return;
     }
-  }
 
-  file.close();
+    while (file.available() && gClientConfigCount < MAX_CLIENT_CONFIG_SNAPSHOTS) {
+      String line = file.readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0) {
+        continue;
+      }
+      int sep = line.indexOf('\t');
+      if (sep <= 0) {
+        continue;
+      }
+
+      String uid = line.substring(0, sep);
+      String json = line.substring(sep + 1);
+
+      ClientConfigSnapshot &snap = gClientConfigs[gClientConfigCount++];
+      memset(&snap, 0, sizeof(ClientConfigSnapshot));
+      strlcpy(snap.uid, uid.c_str(), sizeof(snap.uid));
+
+      size_t len = json.length();
+      if (len >= sizeof(snap.payload)) {
+        len = sizeof(snap.payload) - 1;
+      }
+      memcpy(snap.payload, json.c_str(), len);
+      snap.payload[len] = '\0';
+
+      DynamicJsonDocument doc(512);
+      if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
+        const char *site = doc["site"] | "";
+        strlcpy(snap.site, site, sizeof(snap.site));
+      } else {
+        snap.site[0] = '\0';
+      }
+    }
+
+    file.close();
+  #endif
 #endif
 }
 
 static void saveClientConfigSnapshots() {
 #ifdef FILESYSTEM_AVAILABLE
-  File file = LittleFS.open(CLIENT_CONFIG_CACHE_PATH, "w");
-  if (!file) {
-    return;
-  }
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) {
+      return;
+    }
+    
+    FILE *file = fopen("/fs/client_config_cache.txt", "w");
+    if (!file) {
+      return;
+    }
 
-  for (uint8_t i = 0; i < gClientConfigCount; ++i) {
-    file.print(gClientConfigs[i].uid);
-    file.print('\t');
-    file.println(gClientConfigs[i].payload);
-  }
+    for (uint8_t i = 0; i < gClientConfigCount; ++i) {
+      if (fprintf(file, "%s\t%s\n", gClientConfigs[i].uid, gClientConfigs[i].payload) < 0) {
+        Serial.println(F("Failed to write client config cache"));
+        fclose(file);
+        remove("/fs/client_config_cache.txt");
+        return;
+      }
+    }
 
-  file.close();
+    fclose(file);
+  #else
+    File file = LittleFS.open(CLIENT_CONFIG_CACHE_PATH, "w");
+    if (!file) {
+      return;
+    }
+
+    for (uint8_t i = 0; i < gClientConfigCount; ++i) {
+      file.print(gClientConfigs[i].uid);
+      file.print('\t');
+      file.println(gClientConfigs[i].payload);
+    }
+
+    file.close();
+  #endif
 #endif
 }
 
