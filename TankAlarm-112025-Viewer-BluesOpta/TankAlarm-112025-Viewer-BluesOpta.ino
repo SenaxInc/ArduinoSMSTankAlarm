@@ -40,9 +40,12 @@
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
 #elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  // Arduino Opta with Mbed OS - watchdog disabled for now
-  // TODO: Implement Mbed OS mbed::Watchdog support
-  #warning "Watchdog features disabled on Mbed OS platform"
+  // Arduino Opta with Mbed OS - use Mbed OS Watchdog API
+  #include <mbed.h>
+  using namespace mbed;
+  #define WATCHDOG_AVAILABLE
+  #define WATCHDOG_TIMEOUT_SECONDS 30
+  static Watchdog &mbedWatchdog = Watchdog::get_instance();
 #endif
 
 #ifndef VIEWER_PRODUCT_UID
@@ -378,16 +381,24 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
           tbody.appendChild(tr);
           return;
         }
+        const now = Date.now();
+        const staleThresholdMs = 93600000; // 26 hours
         rows.forEach(tank => {
           const tr = document.createElement('tr');
           if (tank.alarm) tr.classList.add('alarm');
+          const isStale = tank.lastUpdate && ((now - (tank.lastUpdate * 1000)) > staleThresholdMs);
+          const staleWarning = isStale ? ' ⚠️' : '';
           tr.innerHTML = `
             <td>${escapeHtml(tank.site, '--')}</td>
             <td>${escapeHtml(tank.label || 'Tank')} #${escapeHtml((tank.tank ?? '?'))}</td>
             <td>${formatFeetInches(tank.levelInches)}</td>
             <td>${formatVoltage(tank.vinVoltage)}</td>
             <td>--</td>
-            <td>${formatEpoch(tank.lastUpdate)}</td>`;
+            <td>${formatEpoch(tank.lastUpdate)}${staleWarning}</td>`;
+          if (isStale) {
+            tr.style.opacity = '0.6';
+            tr.title = 'Data is over 26 hours old';
+          }
           tbody.appendChild(tr);
         });
       }
@@ -513,10 +524,21 @@ void setup() {
   gWebServer.begin();
 
 #ifdef WATCHDOG_AVAILABLE
-  IWatchdog.begin(WATCHDOG_TIMEOUT_SECONDS * 1000000UL);
-  Serial.print(F("Watchdog enabled ("));
-  Serial.print(WATCHDOG_TIMEOUT_SECONDS);
-  Serial.println(F(" s)"));
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    uint32_t timeoutMs = WATCHDOG_TIMEOUT_SECONDS * 1000;
+    if (mbedWatchdog.start(timeoutMs)) {
+      Serial.print(F("Mbed Watchdog enabled ("));
+      Serial.print(WATCHDOG_TIMEOUT_SECONDS);
+      Serial.println(F(" s)"));
+    } else {
+      Serial.println(F("Warning: Watchdog initialization failed"));
+    }
+  #else
+    IWatchdog.begin(WATCHDOG_TIMEOUT_SECONDS * 1000000UL);
+    Serial.print(F("Watchdog enabled ("));
+    Serial.print(WATCHDOG_TIMEOUT_SECONDS);
+    Serial.println(F(" s)"));
+  #endif
 #else
   Serial.println(F("Watchdog not available on this platform"));
 #endif
@@ -526,7 +548,11 @@ void setup() {
 
 void loop() {
 #ifdef WATCHDOG_AVAILABLE
-  IWatchdog.reload();
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
 #endif
 
   handleWebRequests();

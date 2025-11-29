@@ -36,9 +36,37 @@
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
 #elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  // Arduino Opta with Mbed OS - filesystem and watchdog disabled for now
-  // TODO: Implement Mbed OS LittleFileSystem and mbed::Watchdog support
-  #warning "LittleFS and Watchdog features disabled on Mbed OS platform"
+  // Arduino Opta with Mbed OS - use Mbed OS APIs
+  #include <LittleFileSystem.h>
+  #include <BlockDevice.h>
+  #include <mbed.h>
+  using namespace mbed;
+  #define FILESYSTEM_AVAILABLE
+  #define WATCHDOG_AVAILABLE
+  #define WATCHDOG_TIMEOUT_SECONDS 30
+  
+  // Mbed OS filesystem instance
+  static LittleFileSystem *mbedFS = nullptr;
+  static BlockDevice *mbedBD = nullptr;
+  static Watchdog &mbedWatchdog = Watchdog::get_instance();
+#endif
+
+// Debug mode - controls Serial output and Notecard debug logging
+// For PRODUCTION: Leave commented out (default) to save 5-10% power consumption
+// For DEVELOPMENT: Uncomment the line below for troubleshooting and monitoring
+//#define DEBUG_MODE
+
+// Debug output macros - no-op when DEBUG_MODE is disabled
+#ifdef DEBUG_MODE
+  #define DEBUG_BEGIN(baud) Serial.begin(baud)
+  #define DEBUG_PRINT(x) Serial.print(x)
+  #define DEBUG_PRINTLN(x) Serial.println(x)
+  #define DEBUG_PRINTF(x, y) Serial.print(x, y)
+#else
+  #define DEBUG_BEGIN(baud)
+  #define DEBUG_PRINT(x)
+  #define DEBUG_PRINTLN(x)
+  #define DEBUG_PRINTF(x, y)
 #endif
 
 // strlcpy is provided by Notecard library on Mbed platforms
@@ -153,26 +181,48 @@ static const uint32_t NOTECARD_I2C_FREQUENCY = 400000UL;
 enum SensorType : uint8_t {
   SENSOR_DIGITAL = 0,
   SENSOR_ANALOG = 1,
-  SENSOR_CURRENT_LOOP = 2
+  SENSOR_CURRENT_LOOP = 2,
+  SENSOR_HALL_EFFECT_RPM = 3
 };
+
+// Relay trigger conditions - which alarm type triggers the relay
+enum RelayTrigger : uint8_t {
+  RELAY_TRIGGER_ANY = 0,   // Trigger on any alarm (high or low)
+  RELAY_TRIGGER_HIGH = 1,  // Trigger only on high alarm
+  RELAY_TRIGGER_LOW = 2    // Trigger only on low alarm
+};
+
+// Relay engagement mode - how long the relay stays on
+enum RelayMode : uint8_t {
+  RELAY_MODE_MOMENTARY = 0,     // Momentary on for 30 minutes, then auto-off
+  RELAY_MODE_UNTIL_CLEAR = 1,   // Stay on until alarm clears
+  RELAY_MODE_MANUAL_RESET = 2   // Stay on until manually reset from server
+};
+
+// Default relay engagement duration (30 minutes in milliseconds)
+#define RELAY_MOMENTARY_DURATION_MS (30UL * 60UL * 1000UL)
 
 struct TankConfig {
   char id;                 // Friendly identifier (A, B, C ...)
   char name[24];           // Site/tank label shown in reports
   uint8_t tankNumber;      // Numeric tank reference for legacy formatting
-  SensorType sensorType;   // Digital, analog, or current loop
+  SensorType sensorType;   // Digital, analog, current loop, or Hall effect RPM
   int16_t primaryPin;      // Digital pin or analog channel
   int16_t secondaryPin;    // Optional secondary pin (unused by default)
   int16_t currentLoopChannel; // 4-20mA channel index (-1 if unused)
-  float heightInches;      // Tank height for conversions
-  float highAlarmInches;   // High threshold for triggering alarm
-  float lowAlarmInches;    // Low threshold for triggering alarm
-  float hysteresisInches;  // Hysteresis band (default 2.0 inches)
+  int16_t rpmPin;          // Hall effect RPM sensor pin (-1 if unused)
+  uint8_t pulsesPerRevolution; // For RPM sensors: pulses per revolution (default 1)
+  float maxValue;          // Tank height (inches) for level sensors, or max RPM for RPM sensors
+  float highAlarmThreshold;   // High threshold for triggering alarm (inches or RPM)
+  float lowAlarmThreshold;    // Low threshold for triggering alarm (inches or RPM)
+  float hysteresisValue;   // Hysteresis band (default 2.0)
   bool enableDailyReport;  // Include in daily summary
   bool enableAlarmSms;     // Escalate SMS when alarms trigger
   bool enableServerUpload; // Send telemetry to server
   char relayTargetClient[48]; // Client UID to trigger relays on (empty = none)
   uint8_t relayMask;       // Bitmask of relays to trigger (bit 0=relay 1, etc.)
+  RelayTrigger relayTrigger; // Which alarm type triggers the relay (any, high, low)
+  RelayMode relayMode;     // How long relay stays on (momentary, until_clear, manual_reset)
 };
 
 struct ClientConfig {
@@ -243,6 +293,21 @@ static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
 static bool gRelayState[MAX_RELAYS] = {false, false, false, false};
 static unsigned long gLastRelayCheckMillis = 0;
 
+// Per-tank relay activation tracking for momentary mode timeout
+static unsigned long gRelayActivationTime[MAX_TANKS] = {0};
+static bool gRelayActiveForTank[MAX_TANKS] = {false};
+
+// RPM sensor state for Hall effect pulse counting
+// We track pulses per tank that uses an RPM sensor
+static unsigned long gRpmLastSampleMillis[MAX_TANKS] = {0};
+static float gRpmLastReading[MAX_TANKS] = {0.0f};
+static int gRpmLastPinState[MAX_TANKS];  // Initialized dynamically in setup()
+
+// RPM sampling duration in milliseconds (sample for a few seconds each period)
+#ifndef RPM_SAMPLE_DURATION_MS
+#define RPM_SAMPLE_DURATION_MS 3000
+#endif
+
 // Forward declarations
 static void initializeStorage();
 static void ensureConfigLoaded();
@@ -278,6 +343,8 @@ static void initializeRelays();
 static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, bool activate);
 static int getRelayPin(uint8_t relayIndex);
 static float readNotecardVinVoltage();
+static void checkRelayMomentaryTimeout(unsigned long now);
+static void resetRelayForTank(uint8_t idx);
 
 void setup() {
   Serial.begin(115200);
@@ -287,6 +354,9 @@ void setup() {
 
   Serial.println();
   Serial.println(F("Tank Alarm Client 112025 starting"));
+
+  // Set analog resolution to 12-bit to match the /4095.0f divisor used in readTankSensor
+  analogReadResolution(12);
 
   initializeStorage();
   ensureConfigLoaded();
@@ -301,13 +371,39 @@ void setup() {
 
 #ifdef WATCHDOG_AVAILABLE
   // Initialize watchdog timer
-  IWatchdog.begin(WATCHDOG_TIMEOUT_SECONDS * 1000000UL);  // Timeout in microseconds
-  Serial.print(F("Watchdog timer enabled: "));
-  Serial.print(WATCHDOG_TIMEOUT_SECONDS);
-  Serial.println(F(" seconds"));
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Mbed OS Watchdog
+    uint32_t timeoutMs = WATCHDOG_TIMEOUT_SECONDS * 1000;
+    if (mbedWatchdog.start(timeoutMs)) {
+      Serial.print(F("Mbed Watchdog enabled: "));
+      Serial.print(WATCHDOG_TIMEOUT_SECONDS);
+      Serial.println(F(" seconds"));
+    } else {
+      Serial.println(F("Warning: Watchdog initialization failed"));
+    }
+  #else
+    // STM32duino Watchdog
+    IWatchdog.begin(WATCHDOG_TIMEOUT_SECONDS * 1000000UL);
+    Serial.print(F("Watchdog timer enabled: "));
+    Serial.print(WATCHDOG_TIMEOUT_SECONDS);
+    Serial.println(F(" seconds"));
+  #endif
 #else
   Serial.println(F("Warning: Watchdog timer not available on this platform"));
 #endif
+
+  // Initialize RPM sensor state arrays dynamically
+  for (uint8_t i = 0; i < MAX_TANKS; ++i) {
+    gRpmLastPinState[i] = HIGH;
+    gRpmLastSampleMillis[i] = 0;
+    gRpmLastReading[i] = 0.0f;
+  }
+
+  // Explicitly initialize relay state tracking arrays for clarity and consistency
+  for (uint8_t i = 0; i < MAX_TANKS; ++i) {
+    gRelayActivationTime[i] = 0;
+    gRelayActiveForTank[i] = false;
+  }
 
   for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
     gTankState[i].currentInches = 0.0f;
@@ -345,12 +441,16 @@ void loop() {
 
 #ifdef WATCHDOG_AVAILABLE
   // Reset watchdog timer to prevent system reset
-  IWatchdog.reload();
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
 #endif
 
   // Check notecard health periodically
   static unsigned long lastHealthCheck = 0;
-  if (now - lastHealthCheck > 30000UL) {  // Check every 30 seconds
+  if (now - lastHealthCheck > 300000UL) {  // Check every 5 minutes
     lastHealthCheck = now;
     if (!gNotecardAvailable) {
       checkNotecardHealth();
@@ -362,7 +462,7 @@ void loop() {
     sampleTanks();
   }
 
-  if (now - gLastConfigCheckMillis >= 15000UL) {
+  if (now - gLastConfigCheckMillis >= 600000UL) {  // Check every 10 minutes
     gLastConfigCheckMillis = now;
     pollForConfigUpdates();
   }
@@ -372,6 +472,9 @@ void loop() {
     pollForRelayCommands();
   }
 
+  // Check for momentary relay timeout (30 minutes)
+  checkRelayMomentaryTimeout(now);
+
   persistConfigIfDirty();
   ensureTimeSync();
   updateDailyScheduleIfNeeded();
@@ -380,28 +483,65 @@ void loop() {
     sendDailyReport();
     scheduleNextDailyReport();
   }
+
+  // Sleep to reduce power consumption between loop iterations
+  delay(100);
 }
 
 static void initializeStorage() {
 #ifdef FILESYSTEM_AVAILABLE
-  if (!LittleFS.begin()) {
-    Serial.println(F("LittleFS init failed; halting"));
-    while (true) {
-      delay(1000);
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Mbed OS LittleFileSystem initialization
+    mbedBD = BlockDevice::get_default_instance();
+    if (!mbedBD) {
+      Serial.println(F("Error: No default block device found"));
+      Serial.println(F("Warning: Filesystem not available - configuration will not persist"));
+      return;
     }
-  }
+    
+    mbedFS = new LittleFileSystem("fs");
+    int err = mbedFS->mount(mbedBD);
+    if (err) {
+      // Try to reformat if mount fails
+      Serial.println(F("Filesystem mount failed, attempting to reformat..."));
+      err = mbedFS->reformat(mbedBD);
+      if (err) {
+        Serial.println(F("LittleFS format failed; halting"));
+        delete mbedFS;
+        mbedFS = nullptr;
+        while (true) {
+          delay(1000);
+        }
+      }
+    }
+    Serial.println(F("Mbed OS LittleFileSystem initialized"));
+  #else
+    // STM32duino LittleFS
+    if (!LittleFS.begin()) {
+      Serial.println(F("LittleFS init failed; halting"));
+      while (true) {
+        delay(1000);
+      }
+    }
+  #endif
 #else
   Serial.println(F("Warning: Filesystem not available on this platform - configuration will not persist"));
 #endif
 }
 
 static void ensureConfigLoaded() {
+#ifdef FILESYSTEM_AVAILABLE
   if (!loadConfigFromFlash(gConfig)) {
     createDefaultConfig(gConfig);
     gConfigDirty = true;
     persistConfigIfDirty();
     Serial.println(F("Default configuration written to flash"));
   }
+#else
+  // Filesystem not available - create default config in RAM only
+  createDefaultConfig(gConfig);
+  Serial.println(F("Warning: Using default config (no persistence available)"));
+#endif
 }
 
 static void createDefaultConfig(ClientConfig &cfg) {
@@ -423,31 +563,70 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].primaryPin = 0; // A0 on Opta Ext
   cfg.tanks[0].secondaryPin = -1;
   cfg.tanks[0].currentLoopChannel = -1;
-  cfg.tanks[0].heightInches = 120.0f;
-  cfg.tanks[0].highAlarmInches = 100.0f;
-  cfg.tanks[0].lowAlarmInches = 20.0f;
-  cfg.tanks[0].hysteresisInches = 2.0f; // 2 inch hysteresis band
+  cfg.tanks[0].rpmPin = -1; // No RPM sensor by default
+  cfg.tanks[0].pulsesPerRevolution = 1; // Default: 1 pulse per revolution
+  cfg.tanks[0].maxValue = 120.0f;
+  cfg.tanks[0].highAlarmThreshold = 100.0f;
+  cfg.tanks[0].lowAlarmThreshold = 20.0f;
+  cfg.tanks[0].hysteresisValue = 2.0f; // 2 unit hysteresis band
   cfg.tanks[0].enableDailyReport = true;
   cfg.tanks[0].enableAlarmSms = true;
   cfg.tanks[0].enableServerUpload = true;
   cfg.tanks[0].relayTargetClient[0] = '\0'; // No relay target by default
   cfg.tanks[0].relayMask = 0; // No relays triggered by default
+  cfg.tanks[0].relayTrigger = RELAY_TRIGGER_ANY; // Default: trigger on any alarm
+  cfg.tanks[0].relayMode = RELAY_MODE_MOMENTARY; // Default: momentary 30 min activation
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
 #ifdef FILESYSTEM_AVAILABLE
-  if (!LittleFS.exists(CLIENT_CONFIG_PATH)) {
-    return false;
-  }
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Mbed OS file operations
+    if (!mbedFS) return false;
+    
+    FILE *file = fopen("/fs/client_config.json", "r");
+    if (!file) {
+      return false;
+    }
+    
+    // Read file into buffer
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
+    if (fileSize <= 0 || fileSize > 8192) {
+      fclose(file);
+      return false;
+    }
+    
+    char *buffer = (char *)malloc(fileSize + 1);
+    if (!buffer) {
+      fclose(file);
+      return false;
+    }
+    
+    size_t bytesRead = fread(buffer, 1, fileSize, file);
+    buffer[bytesRead] = '\0';
+    fclose(file);
+    
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, buffer);
+    free(buffer);
+  #else
+    // STM32duino file operations
+    if (!LittleFS.exists(CLIENT_CONFIG_PATH)) {
+      return false;
+    }
 
-  File file = LittleFS.open(CLIENT_CONFIG_PATH, "r");
-  if (!file) {
-    return false;
-  }
+    File file = LittleFS.open(CLIENT_CONFIG_PATH, "r");
+    if (!file) {
+      return false;
+    }
 
-  DynamicJsonDocument doc(4096);
-  DeserializationError err = deserializeJson(doc, file);
-  file.close();
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+  #endif
 
   if (err) {
     Serial.println(F("Config deserialization failed"));
@@ -481,19 +660,47 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
       cfg.tanks[i].sensorType = SENSOR_DIGITAL;
     } else if (sensor && strcmp(sensor, "current") == 0) {
       cfg.tanks[i].sensorType = SENSOR_CURRENT_LOOP;
+    } else if (sensor && strcmp(sensor, "rpm") == 0) {
+      cfg.tanks[i].sensorType = SENSOR_HALL_EFFECT_RPM;
     } else {
       cfg.tanks[i].sensorType = SENSOR_ANALOG;
     }
     cfg.tanks[i].primaryPin = t["primaryPin"].is<int>() ? t["primaryPin"].as<int>() : (cfg.tanks[i].sensorType == SENSOR_DIGITAL ? 2 : 0);
     cfg.tanks[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : -1;
     cfg.tanks[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : -1;
-    cfg.tanks[i].heightInches = t["heightInches"].is<float>() ? t["heightInches"].as<float>() : 120.0f;
-    cfg.tanks[i].highAlarmInches = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : 100.0f;
-    cfg.tanks[i].lowAlarmInches = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : 20.0f;
-    cfg.tanks[i].hysteresisInches = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : 2.0f;
+    cfg.tanks[i].rpmPin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : -1;
+    cfg.tanks[i].pulsesPerRevolution = t["pulsesPerRev"].is<uint8_t>() ? max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>()) : 1;
+    // Support both old field names (heightInches) and new (maxValue) for backwards compatibility
+    cfg.tanks[i].maxValue = t["maxValue"].is<float>() ? t["maxValue"].as<float>() : 
+                            (t["heightInches"].is<float>() ? t["heightInches"].as<float>() : 120.0f);
+    cfg.tanks[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : 100.0f;
+    cfg.tanks[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : 20.0f;
+    cfg.tanks[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : 2.0f;
     cfg.tanks[i].enableDailyReport = t["daily"].is<bool>() ? t["daily"].as<bool>() : true;
     cfg.tanks[i].enableAlarmSms = t["alarmSms"].is<bool>() ? t["alarmSms"].as<bool>() : true;
     cfg.tanks[i].enableServerUpload = t["upload"].is<bool>() ? t["upload"].as<bool>() : true;
+    // Load relay control settings
+    const char *relayTarget = t["relayTargetClient"].as<const char *>();
+    strlcpy(cfg.tanks[i].relayTargetClient, relayTarget ? relayTarget : "", sizeof(cfg.tanks[i].relayTargetClient));
+    cfg.tanks[i].relayMask = t["relayMask"].is<uint8_t>() ? t["relayMask"].as<uint8_t>() : 0;
+    // Load relay trigger condition (defaults to 'any' for backwards compatibility)
+    const char *relayTriggerStr = t["relayTrigger"].as<const char *>();
+    if (relayTriggerStr && strcmp(relayTriggerStr, "high") == 0) {
+      cfg.tanks[i].relayTrigger = RELAY_TRIGGER_HIGH;
+    } else if (relayTriggerStr && strcmp(relayTriggerStr, "low") == 0) {
+      cfg.tanks[i].relayTrigger = RELAY_TRIGGER_LOW;
+    } else {
+      cfg.tanks[i].relayTrigger = RELAY_TRIGGER_ANY;
+    }
+    // Load relay mode (defaults to momentary for backwards compatibility)
+    const char *relayModeStr = t["relayMode"].as<const char *>();
+    if (relayModeStr && strcmp(relayModeStr, "until_clear") == 0) {
+      cfg.tanks[i].relayMode = RELAY_MODE_UNTIL_CLEAR;
+    } else if (relayModeStr && strcmp(relayModeStr, "manual_reset") == 0) {
+      cfg.tanks[i].relayMode = RELAY_MODE_MANUAL_RESET;
+    } else {
+      cfg.tanks[i].relayMode = RELAY_MODE_MOMENTARY;
+    }
   }
 
   return true;
@@ -504,6 +711,10 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
 
 static bool saveConfigToFlash(const ClientConfig &cfg) {
 #ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return false;
+  #endif
+  
   DynamicJsonDocument doc(4096);
   doc["site"] = cfg.siteName;
   doc["deviceLabel"] = cfg.deviceLabel;
@@ -524,18 +735,36 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     switch (cfg.tanks[i].sensorType) {
       case SENSOR_DIGITAL: t["sensor"] = "digital"; break;
       case SENSOR_CURRENT_LOOP: t["sensor"] = "current"; break;
+      case SENSOR_HALL_EFFECT_RPM: t["sensor"] = "rpm"; break;
       default: t["sensor"] = "analog"; break;
     }
     t["primaryPin"] = cfg.tanks[i].primaryPin;
     t["secondaryPin"] = cfg.tanks[i].secondaryPin;
     t["loopChannel"] = cfg.tanks[i].currentLoopChannel;
-    t["heightInches"] = cfg.tanks[i].heightInches;
-    t["highAlarm"] = cfg.tanks[i].highAlarmInches;
-    t["lowAlarm"] = cfg.tanks[i].lowAlarmInches;
-    t["hysteresis"] = cfg.tanks[i].hysteresisInches;
+    t["rpmPin"] = cfg.tanks[i].rpmPin;
+    t["pulsesPerRev"] = cfg.tanks[i].pulsesPerRevolution;
+    t["maxValue"] = cfg.tanks[i].maxValue;
+    t["highAlarm"] = cfg.tanks[i].highAlarmThreshold;
+    t["lowAlarm"] = cfg.tanks[i].lowAlarmThreshold;
+    t["hysteresis"] = cfg.tanks[i].hysteresisValue;
     t["daily"] = cfg.tanks[i].enableDailyReport;
     t["alarmSms"] = cfg.tanks[i].enableAlarmSms;
     t["upload"] = cfg.tanks[i].enableServerUpload;
+    // Save relay control settings
+    t["relayTargetClient"] = cfg.tanks[i].relayTargetClient;
+    t["relayMask"] = cfg.tanks[i].relayMask;
+    // Save relay trigger condition as string
+    switch (cfg.tanks[i].relayTrigger) {
+      case RELAY_TRIGGER_HIGH: t["relayTrigger"] = "high"; break;
+      case RELAY_TRIGGER_LOW: t["relayTrigger"] = "low"; break;
+      default: t["relayTrigger"] = "any"; break;
+    }
+    // Save relay mode as string
+    switch (cfg.tanks[i].relayMode) {
+      case RELAY_MODE_UNTIL_CLEAR: t["relayMode"] = "until_clear"; break;
+      case RELAY_MODE_MANUAL_RESET: t["relayMode"] = "manual_reset"; break;
+      default: t["relayMode"] = "momentary"; break;
+    }
   }
 
   File file = LittleFS.open(CLIENT_CONFIG_PATH, "w");
@@ -566,6 +795,7 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   bool needsAnalogExpansion = false;
   bool needsCurrentLoop = false;
   bool needsRelayOutput = false;
+  bool needsRpmSensor = false;
 
   for (uint8_t i = 0; i < cfg.tankCount; ++i) {
     if (cfg.tanks[i].sensorType == SENSOR_ANALOG) {
@@ -573,6 +803,9 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
     }
     if (cfg.tanks[i].sensorType == SENSOR_CURRENT_LOOP) {
       needsCurrentLoop = true;
+    }
+    if (cfg.tanks[i].sensorType == SENSOR_HALL_EFFECT_RPM) {
+      needsRpmSensor = true;
     }
     if (cfg.tanks[i].enableAlarmSms) {
       needsRelayOutput = true; // indicates coil notifications on Opta outputs
@@ -588,6 +821,9 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   if (needsCurrentLoop) {
     Serial.println(F("Current loop interface required (4-20mA module)"));
   }
+  if (needsRpmSensor) {
+    Serial.println(F("Hall effect RPM sensor connected to digital input"));
+  }
   if (needsRelayOutput) {
     Serial.println(F("Relay outputs wired for audible/visual alarm"));
   }
@@ -595,7 +831,9 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
 }
 
 static void initializeNotecard() {
+#ifdef DEBUG_MODE
   notecard.setDebugOutputStream(Serial);
+#endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
   J *req = notecard.newRequest("card.wire");
@@ -607,7 +845,9 @@ static void initializeNotecard() {
   req = notecard.newRequest("hub.set");
   if (req) {
     JAddStringToObject(req, "product", PRODUCT_UID);
-    JAddStringToObject(req, "mode", "continuous");
+    JAddStringToObject(req, "mode", "periodic");
+    JAddIntToObject(req, "outbound", 360);  // Sync every 6 hours
+    JAddIntToObject(req, "inbound", 10);     // Check for inbound every 10 minutes
     // No route needed - using fleet-based targeting
     notecard.sendRequest(req);
   }
@@ -867,16 +1107,27 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         gConfig.tanks[i].sensorType = SENSOR_DIGITAL;
       } else if (sensor && strcmp(sensor, "current") == 0) {
         gConfig.tanks[i].sensorType = SENSOR_CURRENT_LOOP;
+      } else if (sensor && strcmp(sensor, "rpm") == 0) {
+        gConfig.tanks[i].sensorType = SENSOR_HALL_EFFECT_RPM;
       } else {
         gConfig.tanks[i].sensorType = SENSOR_ANALOG;
       }
       gConfig.tanks[i].primaryPin = t["primaryPin"].is<int>() ? t["primaryPin"].as<int>() : gConfig.tanks[i].primaryPin;
       gConfig.tanks[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : gConfig.tanks[i].secondaryPin;
       gConfig.tanks[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : gConfig.tanks[i].currentLoopChannel;
-      gConfig.tanks[i].heightInches = t["heightInches"].is<float>() ? t["heightInches"].as<float>() : gConfig.tanks[i].heightInches;
-      gConfig.tanks[i].highAlarmInches = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : gConfig.tanks[i].highAlarmInches;
-      gConfig.tanks[i].lowAlarmInches = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : gConfig.tanks[i].lowAlarmInches;
-      gConfig.tanks[i].hysteresisInches = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : gConfig.tanks[i].hysteresisInches;
+      gConfig.tanks[i].rpmPin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : gConfig.tanks[i].rpmPin;
+      if (t.containsKey("pulsesPerRev")) {
+        gConfig.tanks[i].pulsesPerRevolution = max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>());
+      }
+      // Support both old field name (heightInches) and new (maxValue)
+      if (t.containsKey("maxValue")) {
+        gConfig.tanks[i].maxValue = t["maxValue"].as<float>();
+      } else if (t.containsKey("heightInches")) {
+        gConfig.tanks[i].maxValue = t["heightInches"].as<float>();
+      }
+      gConfig.tanks[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : gConfig.tanks[i].highAlarmThreshold;
+      gConfig.tanks[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : gConfig.tanks[i].lowAlarmThreshold;
+      gConfig.tanks[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : gConfig.tanks[i].hysteresisValue;
       if (t.containsKey("daily")) {
         gConfig.tanks[i].enableDailyReport = t["daily"].as<bool>();
       }
@@ -893,6 +1144,26 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       }
       if (t.containsKey("relayMask")) {
         gConfig.tanks[i].relayMask = t["relayMask"].as<uint8_t>();
+      }
+      if (t.containsKey("relayTrigger")) {
+        const char *triggerStr = t["relayTrigger"].as<const char *>();
+        if (triggerStr && strcmp(triggerStr, "high") == 0) {
+          gConfig.tanks[i].relayTrigger = RELAY_TRIGGER_HIGH;
+        } else if (triggerStr && strcmp(triggerStr, "low") == 0) {
+          gConfig.tanks[i].relayTrigger = RELAY_TRIGGER_LOW;
+        } else {
+          gConfig.tanks[i].relayTrigger = RELAY_TRIGGER_ANY;
+        }
+      }
+      if (t.containsKey("relayMode")) {
+        const char *modeStr = t["relayMode"].as<const char *>();
+        if (modeStr && strcmp(modeStr, "until_clear") == 0) {
+          gConfig.tanks[i].relayMode = RELAY_MODE_UNTIL_CLEAR;
+        } else if (modeStr && strcmp(modeStr, "manual_reset") == 0) {
+          gConfig.tanks[i].relayMode = RELAY_MODE_MANUAL_RESET;
+        } else {
+          gConfig.tanks[i].relayMode = RELAY_MODE_MOMENTARY;
+        }
       }
     }
   }
@@ -956,8 +1227,8 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   TankRuntime &state = gTankState[idx];
 
   // Check for out-of-range values (allow 10% margin)
-  float minValid = -cfg.heightInches * 0.1f;
-  float maxValid = cfg.heightInches * 1.1f;
+  float minValid = -cfg.maxValue * 0.1f;
+  float maxValid = cfg.maxValue * 1.1f;
   if (reading < minValid || reading > maxValid) {
     state.consecutiveFailures++;
     if (state.consecutiveFailures >= SENSOR_FAILURE_THRESHOLD) {
@@ -1044,13 +1315,13 @@ static float readTankSensor(uint8_t idx) {
       int pin = (cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx);
       pinMode(pin, INPUT_PULLUP);
       int level = digitalRead(pin);
-      return level == HIGH ? cfg.heightInches : 0.0f;
+      return level == HIGH ? cfg.maxValue : 0.0f;
     }
     case SENSOR_ANALOG: {
       // Use explicit bounds check for channel (A0602 has channels 0-7)
       int channel = (cfg.primaryPin >= 0 && cfg.primaryPin < 8) ? cfg.primaryPin : 0;
       // Opta analog channels use analogRead with index 0..7 for extension A0602
-      if (cfg.heightInches < 0.1f) {
+      if (cfg.maxValue < 0.1f) {
         return 0.0f;
       }
       float total = 0.0f;
@@ -1061,19 +1332,86 @@ static float readTankSensor(uint8_t idx) {
         delay(2);
       }
       float avg = total / samples;
-      return linearMap(avg, 0.05f, 0.95f, 0.0f, cfg.heightInches);
+      return linearMap(avg, 0.05f, 0.95f, 0.0f, cfg.maxValue);
     }
     case SENSOR_CURRENT_LOOP: {
       // Use explicit bounds check for current loop channel
       int16_t channel = (cfg.currentLoopChannel >= 0 && cfg.currentLoopChannel < 8) ? cfg.currentLoopChannel : 0;
-      if (cfg.heightInches < 0.1f) {
+      if (cfg.maxValue < 0.1f) {
         return 0.0f;
       }
       float milliamps = readCurrentLoopMilliamps(channel);
       if (milliamps < 0.0f) {
         return gTankState[idx].currentInches; // keep previous on failure
       }
-      return linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.heightInches);
+      return linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.maxValue);
+    }
+    case SENSOR_HALL_EFFECT_RPM: {
+      // Hall effect RPM sensor - sample pulses for a few seconds each measurement period
+      // Use rpmPin if available, otherwise use primaryPin
+      int pin = (cfg.rpmPin >= 0 && cfg.rpmPin < 255) ? cfg.rpmPin : 
+                ((cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx));
+      
+      // Configure pin as input with pullup for Hall effect sensor
+      pinMode(pin, INPUT_PULLUP);
+      
+      // Sample pulses for RPM_SAMPLE_DURATION_MS (default 3 seconds)
+      // This provides accurate RPM measurement by counting multiple pulses
+      unsigned long sampleStart = millis();
+      uint32_t pulseCount = 0;
+      
+      // Always read current pin state first to establish baseline
+      // This prevents false pulse counts on first reading
+      int lastState = digitalRead(pin);
+      gRpmLastPinState[idx] = lastState;
+      
+      // Count pulses over the sampling duration, with debounce
+      // Use unsigned subtraction to handle millis() overflow correctly
+      const unsigned long DEBOUNCE_MS = 2; // Minimum time between pulses to filter bounce
+      const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2; // Safety limit: 2x expected iterations
+      unsigned long lastPulseTime = 0;
+      uint32_t iterationCount = 0;
+      while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS && iterationCount < MAX_ITERATIONS) {
+        int currentState = digitalRead(pin);
+        // Count falling edges (HIGH to LOW transitions) with debounce
+        if (lastState == HIGH && currentState == LOW) {
+          unsigned long now = millis();
+          if (now - lastPulseTime >= DEBOUNCE_MS) {
+            pulseCount++;
+            lastPulseTime = now;
+          }
+        }
+        lastState = currentState;
+        // Small delay to allow other processing and avoid excessive polling
+        delay(1);
+        iterationCount++;
+        
+#ifdef WATCHDOG_AVAILABLE
+        // Reset watchdog during long sampling to prevent timeout
+        #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+          mbedWatchdog.kick();
+        #else
+          IWatchdog.reload();
+        #endif
+#endif
+      }
+      
+      // Save last pin state for next sample
+      gRpmLastPinState[idx] = lastState;
+      gRpmLastSampleMillis[idx] = millis();
+      
+      // Calculate RPM from pulse count
+      // Formula: RPM = (pulses / sample_duration_seconds) * 60 seconds/minute / pulses_per_revolution
+      // Simplified: RPM = (pulses * 60000) / (sample_duration_ms * pulses_per_rev)
+      // Note: Max RPM is limited by the polling loop speed (approx 30,000 RPM at 1 pulse/rev), which is sufficient.
+      const float MS_PER_MINUTE = 60000.0f;
+      uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
+      float rpm = ((float)pulseCount * MS_PER_MINUTE) / ((float)RPM_SAMPLE_DURATION_MS * (float)pulsesPerRev);
+      
+      gRpmLastReading[idx] = rpm;
+      
+      // Return RPM value (maxValue field is used as max RPM for scaling/alarms)
+      return rpm;
     }
     default:
       return 0.0f;
@@ -1117,10 +1455,10 @@ static void evaluateAlarms(uint8_t idx) {
   }
 
   // Apply hysteresis: use different thresholds for triggering vs clearing
-  float highTrigger = cfg.highAlarmInches;
-  float highClear = cfg.highAlarmInches - cfg.hysteresisInches;
-  float lowTrigger = cfg.lowAlarmInches;
-  float lowClear = cfg.lowAlarmInches + cfg.hysteresisInches;
+  float highTrigger = cfg.highAlarmThreshold;
+  float highClear = cfg.highAlarmThreshold - cfg.hysteresisValue;
+  float lowTrigger = cfg.lowAlarmThreshold;
+  float lowClear = cfg.lowAlarmThreshold + cfg.hysteresisValue;
 
   bool highCondition = state.currentInches >= highTrigger;
   bool lowCondition = state.currentInches <= lowTrigger;
@@ -1194,9 +1532,9 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   doc["label"] = cfg.name;
   doc["tank"] = cfg.tankNumber;
   doc["id"] = String(cfg.id);
-  doc["heightInches"] = cfg.heightInches;
+  doc["maxValue"] = cfg.maxValue;
   doc["levelInches"] = state.currentInches;
-  doc["percent"] = (cfg.heightInches > 0.1f) ? (state.currentInches / cfg.heightInches * 100.0f) : 0.0f;
+  doc["percent"] = (cfg.maxValue > 0.1f) ? (state.currentInches / cfg.maxValue * 100.0f) : 0.0f;
   doc["reason"] = reason;
   doc["time"] = currentEpoch();
 
@@ -1328,8 +1666,8 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     doc["tank"] = cfg.tankNumber;
     doc["type"] = alarmType;
     doc["levelInches"] = inches;
-    doc["highThreshold"] = cfg.highAlarmInches;
-    doc["lowThreshold"] = cfg.lowAlarmInches;
+    doc["highThreshold"] = cfg.highAlarmThreshold;
+    doc["lowThreshold"] = cfg.lowAlarmThreshold;
     doc["smsEnabled"] = allowSmsEscalation;
     doc["time"] = currentEpoch();
 
@@ -1339,9 +1677,57 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     Serial.print(F(" type "));
     Serial.println(alarmType);
     
-    // Trigger remote relays if configured
-    if (isAlarm && cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
-      triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, isAlarm);
+    // Handle relay control based on mode
+    if (cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
+      bool shouldActivateRelay = false;
+      bool shouldDeactivateRelay = false;
+      
+      // Check if this alarm type matches the relay trigger condition
+      if (isAlarm) {
+        if (cfg.relayTrigger == RELAY_TRIGGER_ANY) {
+          shouldActivateRelay = true;
+        } else if (cfg.relayTrigger == RELAY_TRIGGER_HIGH && strcmp(alarmType, "high") == 0) {
+          shouldActivateRelay = true;
+        } else if (cfg.relayTrigger == RELAY_TRIGGER_LOW && strcmp(alarmType, "low") == 0) {
+          shouldActivateRelay = true;
+        }
+      } else {
+        // Alarm cleared - check if we should deactivate relay
+        // Only deactivate if mode is UNTIL_CLEAR and the clearing alarm matches trigger
+        if (cfg.relayMode == RELAY_MODE_UNTIL_CLEAR && gRelayActiveForTank[idx]) {
+          bool shouldClear = false;
+          if (cfg.relayTrigger == RELAY_TRIGGER_ANY) {
+            shouldClear = true; // Any alarm clearing will deactivate
+          } else if (cfg.relayTrigger == RELAY_TRIGGER_HIGH && strcmp(alarmType, "high") == 0) {
+            shouldClear = true;
+          } else if (cfg.relayTrigger == RELAY_TRIGGER_LOW && strcmp(alarmType, "low") == 0) {
+            shouldClear = true;
+          }
+          if (shouldClear) {
+            shouldDeactivateRelay = true;
+          }
+        }
+      }
+      
+      if (shouldActivateRelay && !gRelayActiveForTank[idx]) {
+        triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, true);
+        gRelayActiveForTank[idx] = true;
+        gRelayActivationTime[idx] = millis();
+        Serial.print(F("Relay activated for "));
+        Serial.print(alarmType);
+        Serial.print(F(" alarm (mode: "));
+        switch (cfg.relayMode) {
+          case RELAY_MODE_MOMENTARY: Serial.print(F("momentary 30min")); break;
+          case RELAY_MODE_UNTIL_CLEAR: Serial.print(F("until clear")); break;
+          case RELAY_MODE_MANUAL_RESET: Serial.print(F("manual reset")); break;
+        }
+        Serial.println(F(")"));
+      } else if (shouldDeactivateRelay) {
+        triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
+        gRelayActiveForTank[idx] = false;
+        gRelayActivationTime[idx] = 0;
+        Serial.println(F("Relay deactivated on alarm clear"));
+      }
     }
   } else {
     Serial.print(F("Network offline - local alarm only for tank "));
@@ -1436,9 +1822,9 @@ static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t 
   t["label"] = cfg.name;
   t["tank"] = cfg.tankNumber;
   t["levelInches"] = state.currentInches;
-  t["percent"] = (cfg.heightInches > 0.1f) ? (state.currentInches / cfg.heightInches * 100.0f) : 0.0f;
-  t["high"] = cfg.highAlarmInches;
-  t["low"] = cfg.lowAlarmInches;
+  t["percent"] = (cfg.maxValue > 0.1f) ? (state.currentInches / cfg.maxValue * 100.0f) : 0.0f;
+  t["high"] = cfg.highAlarmThreshold;
+  t["low"] = cfg.lowAlarmThreshold;
 
   if (measureJson(doc) > payloadLimit) {
     size_t currentSize = array.size();
@@ -1503,17 +1889,31 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
 
 static void bufferNoteForRetry(const char *fileName, const char *payload, bool syncNow) {
 #ifdef FILESYSTEM_AVAILABLE
-  File file = LittleFS.open(NOTE_BUFFER_PATH, "a");
-  if (!file) {
-    Serial.println(F("Failed to open note buffer; dropping payload"));
-    return;
-  }
-  file.print(fileName);
-  file.print('\t');
-  file.print(syncNow ? '1' : '0');
-  file.print('\t');
-  file.println(payload);
-  file.close();
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) {
+      Serial.println(F("Warning: Filesystem not available; note dropped"));
+      return;
+    }
+    FILE *file = fopen("/fs/pending_notes.log", "a");
+    if (!file) {
+      Serial.println(F("Failed to open note buffer; dropping payload"));
+      return;
+    }
+    fprintf(file, "%s\t%c\t%s\n", fileName, syncNow ? '1' : '0', payload);
+    fclose(file);
+  #else
+    File file = LittleFS.open(NOTE_BUFFER_PATH, "a");
+    if (!file) {
+      Serial.println(F("Failed to open note buffer; dropping payload"));
+      return;
+    }
+    file.print(fileName);
+    file.print('\t');
+    file.print(syncNow ? '1' : '0');
+    file.print('\t');
+    file.println(payload);
+    file.close();
+  #endif
   Serial.println(F("Note buffered for retry"));
   pruneNoteBufferIfNeeded();
 #else
@@ -1754,7 +2154,18 @@ static void pollForRelayCommands() {
 }
 
 static void processRelayCommand(const JsonDocument &doc) {
-  // Command format:
+  // Handle tank relay reset command from server first
+  // Command format: { "relay_reset_tank": 0-7 }
+  // This is a standalone command that doesn't require relay/state fields
+  if (doc.containsKey("relay_reset_tank")) {
+    uint8_t tankIdx = doc["relay_reset_tank"].as<uint8_t>();
+    if (tankIdx < MAX_TANKS) {
+      resetRelayForTank(tankIdx);
+    }
+    return;  // This is a complete command
+  }
+  
+  // Command format for standard relay control:
   // {
   //   "relay": 1-4,           // Relay number (1-based)
   //   "state": true/false,    // ON/OFF
@@ -1852,6 +2263,48 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
       }
     }
   }
+}
+
+// Check and deactivate relays that have exceeded the momentary timeout (30 minutes)
+static void checkRelayMomentaryTimeout(unsigned long now) {
+  for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
+    const TankConfig &cfg = gConfig.tanks[i];
+    
+    // Only check tanks with active relays in momentary mode
+    if (!gRelayActiveForTank[i] || cfg.relayMode != RELAY_MODE_MOMENTARY) {
+      continue;
+    }
+    
+    // Check if 30 minutes have elapsed
+    // Note: Unsigned subtraction correctly handles millis() overflow due to modular arithmetic
+    if (now - gRelayActivationTime[i] >= RELAY_MOMENTARY_DURATION_MS) {
+      // Deactivate the relay
+      if (cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
+        triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
+        Serial.print(F("Momentary relay timeout (30 min) for tank "));
+        Serial.println(i);
+      }
+      gRelayActiveForTank[i] = false;
+      gRelayActivationTime[i] = 0;
+    }
+  }
+}
+
+// Reset relay for a specific tank (called from server manual reset command)
+static void resetRelayForTank(uint8_t idx) {
+  if (idx >= gConfig.tankCount) {
+    return;
+  }
+  
+  const TankConfig &cfg = gConfig.tanks[idx];
+  
+  if (gRelayActiveForTank[idx] && cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
+    triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
+    Serial.print(F("Manual relay reset for tank "));
+    Serial.println(idx);
+  }
+  gRelayActiveForTank[idx] = false;
+  gRelayActivationTime[idx] = 0;
 }
 
 // ============================================================================

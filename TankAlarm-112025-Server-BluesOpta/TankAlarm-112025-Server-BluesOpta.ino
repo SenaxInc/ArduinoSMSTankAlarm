@@ -51,9 +51,19 @@
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
 #elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  // Arduino Opta with Mbed OS - filesystem and watchdog disabled for now
-  // TODO: Implement Mbed OS LittleFileSystem and mbed::Watchdog support
-  #warning "LittleFS and Watchdog features disabled on Mbed OS platform"
+  // Arduino Opta with Mbed OS - use Mbed OS APIs
+  #include <LittleFileSystem.h>
+  #include <BlockDevice.h>
+  #include <mbed.h>
+  using namespace mbed;
+  #define FILESYSTEM_AVAILABLE
+  #define WATCHDOG_AVAILABLE
+  #define WATCHDOG_TIMEOUT_SECONDS 30
+  
+  // Mbed OS filesystem instance
+  static LittleFileSystem *mbedFS = nullptr;
+  static BlockDevice *mbedBD = nullptr;
+  static Watchdog &mbedWatchdog = Watchdog::get_instance();
 #endif
 
 #ifndef SERVER_PRODUCT_UID
@@ -545,12 +555,14 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
     const sensorTypes = [
       { value: 0, label: 'Digital Input' },
       { value: 1, label: 'Analog Input (0-10V)' },
-      { value: 2, label: 'Current Loop (4-20mA)' }
+      { value: 2, label: 'Current Loop (4-20mA)' },
+      { value: 3, label: 'Hall Effect RPM' }
     ];
 
     const monitorTypes = [
       { value: 'tank', label: 'Tank Level' },
-      { value: 'gas', label: 'Gas Pressure' }
+      { value: 'gas', label: 'Gas Pressure' },
+      { value: 'rpm', label: 'RPM Sensor' }
     ];
     
     const optaPins = [
@@ -600,9 +612,36 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
                 ${optaPins.map(p => `<option value="${p.value}">${p.label}</option>`).join('')}
               </select>
             </label>
+            <label class="field pulses-per-rev-field" style="display: none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label>
             <label class="field"><span><span class="height-label">Height (in)</span></span><input type="number" class="tank-height" value="120"></label>
             <label class="field"><span>High Alarm</span><input type="number" class="high-alarm" value="100"></label>
             <label class="field"><span>Low Alarm</span><input type="number" class="low-alarm" value="20"></label>
+          </div>
+          <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">Relay Switch Control (Triggered by This Sensor's Alarm)</h4>
+          <div class="form-grid">
+            <label class="field"><span>Target Client UID</span><input type="text" class="relay-target" placeholder="dev:IMEI (optional)"></label>
+            <label class="field"><span>Trigger On</span>
+              <select class="relay-trigger">
+                <option value="any">Any Alarm (High or Low)</option>
+                <option value="high">High Alarm Only</option>
+                <option value="low">Low Alarm Only</option>
+              </select>
+            </label>
+            <label class="field"><span>Relay Mode</span>
+              <select class="relay-mode">
+                <option value="momentary">Momentary (30 min on, then auto-off)</option>
+                <option value="until_clear">Stay On Until Alarm Clears</option>
+                <option value="manual_reset">Stay On Until Manual Server Reset</option>
+              </select>
+            </label>
+            <label class="field"><span>Relay Outputs</span>
+              <div style="display: flex; gap: 12px; padding: 8px 0;">
+                <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-1" value="1"> R1</label>
+                <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-2" value="2"> R2</label>
+                <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-3" value="4"> R3</label>
+                <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-4" value="8"> R4</label>
+              </div>
+            </label>
           </div>
         </div>
       `;
@@ -625,17 +664,32 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const card = document.getElementById(`sensor-${id}`);
       const type = card.querySelector('.monitor-type').value;
       const numField = card.querySelector('.tank-num-field');
+      const numFieldLabel = numField.querySelector('span');
       const nameLabel = card.querySelector('.name-label');
       const heightLabel = card.querySelector('.height-label');
+      const sensorTypeSelect = card.querySelector('.sensor-type');
+      const pulsesPerRevField = card.querySelector('.pulses-per-rev-field');
       
       if (type === 'gas') {
         numField.style.display = 'none';
         nameLabel.textContent = 'System Name';
         heightLabel.textContent = 'Max Pressure';
+        pulsesPerRevField.style.display = 'none';
+      } else if (type === 'rpm') {
+        numField.style.display = 'flex';
+        numFieldLabel.textContent = 'Engine Number';
+        nameLabel.textContent = 'Engine Name';
+        heightLabel.textContent = 'Max RPM';
+        pulsesPerRevField.style.display = 'flex';
+        // Auto-select Hall Effect RPM sensor type
+        sensorTypeSelect.value = '3';
+        updatePinOptions(id);
       } else {
         numField.style.display = 'flex';
+        numFieldLabel.textContent = 'Tank Number';
         nameLabel.textContent = 'Tank Name';
         heightLabel.textContent = 'Height (in)';
+        pulsesPerRevField.style.display = 'none';
       }
     };
 
@@ -668,6 +722,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       switch (value) {
         case 0: return 'digital';
         case 2: return 'current';
+        case 3: return 'rpm';
         default: return 'analog';
       }
     }
@@ -697,18 +752,32 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         const type = parseInt(card.querySelector('.sensor-type').value);
         const pin = parseInt(card.querySelector('.sensor-pin').value);
         
-        // For gas sensors, we hide the number but still need one for the firmware.
-        // We'll use the index + 1.
+        // For gas and RPM sensors, we still use the number field for the firmware.
+        // For gas sensors, we use index + 1 as default. For RPM, user can enter engine number.
         let tankNum = parseInt(card.querySelector('.tank-num').value) || (index + 1);
         let name = card.querySelector('.tank-name').value;
         
         if (monitorType === 'gas') {
            if (!name) name = `Gas System ${index + 1}`;
+        } else if (monitorType === 'rpm') {
+           if (!name) name = `Engine ${tankNum}`;
         } else {
            if (!name) name = `Tank ${index + 1}`;
         }
         
         const sensor = sensorKeyFromValue(type);
+
+        // Calculate relay mask from checkboxes using their value attributes
+        let relayMask = 0;
+        ['relay-1', 'relay-2', 'relay-3', 'relay-4'].forEach(cls => {
+          const checkbox = card.querySelector('.' + cls);
+          if (checkbox.checked) relayMask |= parseInt(checkbox.value);
+        });
+        
+        const relayTarget = card.querySelector('.relay-target').value.trim();
+        const relayTrigger = card.querySelector('.relay-trigger').value;
+        const relayMode = card.querySelector('.relay-mode').value;
+        const pulsesPerRev = Math.max(1, Math.min(255, parseInt(card.querySelector('.pulses-per-rev').value) || 1));
 
         const tank = {
           id: String.fromCharCode(65 + index), // A, B, C...
@@ -718,7 +787,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           primaryPin: sensor === 'current' ? 0 : pin,
           secondaryPin: -1,
           loopChannel: sensor === 'current' ? pin : -1,
-          heightInches: parseFloat(card.querySelector('.tank-height').value) || 120,
+          rpmPin: sensor === 'rpm' ? pin : -1,
+          maxValue: parseFloat(card.querySelector('.tank-height').value) || 120,
           highAlarm: parseFloat(card.querySelector('.high-alarm').value) || 100,
           lowAlarm: parseFloat(card.querySelector('.low-alarm').value) || 20,
           hysteresis: 2.0,
@@ -726,6 +796,20 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           alarmSms: true,
           upload: true
         };
+        // Only include pulsesPerRev for RPM sensors
+        if (sensor === 'rpm') {
+          tank.pulsesPerRev = pulsesPerRev;
+        }
+        // Always include relay control fields if relayTarget is set, even if relayMask is 0
+        if (relayTarget) {
+          tank.relayTargetClient = relayTarget;
+          tank.relayMask = relayMask;
+          tank.relayTrigger = relayTrigger;  // 'any', 'high', or 'low'
+          tank.relayMode = relayMode;  // 'momentary', 'until_clear', or 'manual_reset'
+          if (relayMask === 0) {
+            alert("You have set a relay target but have not selected any relay outputs for " + name + ". The configuration will be incomplete.");
+          }
+        }
         config.tanks.push(tank);
       });
 
@@ -2598,10 +2682,21 @@ void setup() {
 
 #ifdef WATCHDOG_AVAILABLE
   // Initialize watchdog timer
-  IWatchdog.begin(WATCHDOG_TIMEOUT_SECONDS * 1000000UL);  // Timeout in microseconds
-  Serial.print(F("Watchdog timer enabled: "));
-  Serial.print(WATCHDOG_TIMEOUT_SECONDS);
-  Serial.println(F(" seconds"));
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    uint32_t timeoutMs = WATCHDOG_TIMEOUT_SECONDS * 1000;
+    if (mbedWatchdog.start(timeoutMs)) {
+      Serial.print(F("Mbed Watchdog enabled: "));
+      Serial.print(WATCHDOG_TIMEOUT_SECONDS);
+      Serial.println(F(" seconds"));
+    } else {
+      Serial.println(F("Warning: Watchdog initialization failed"));
+    }
+  #else
+    IWatchdog.begin(WATCHDOG_TIMEOUT_SECONDS * 1000000UL);
+    Serial.print(F("Watchdog timer enabled: "));
+    Serial.print(WATCHDOG_TIMEOUT_SECONDS);
+    Serial.println(F(" seconds"));
+  #endif
 #else
   Serial.println(F("Warning: Watchdog timer not available on this platform"));
 #endif
@@ -2620,7 +2715,11 @@ void setup() {
 void loop() {
 #ifdef WATCHDOG_AVAILABLE
   // Reset watchdog timer to prevent system reset
-  IWatchdog.reload();
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
 #endif
 
   // Maintain DHCP lease and check link status
@@ -2651,6 +2750,7 @@ void loop() {
 
   handleWebRequests();
 
+  unsigned long now = millis();
   if (now - gLastPollMillis > 5000UL) {
     gLastPollMillis = now;
     pollNotecard();
@@ -2677,12 +2777,40 @@ void loop() {
 
 static void initializeStorage() {
 #ifdef FILESYSTEM_AVAILABLE
-  if (!LittleFS.begin()) {
-    Serial.println(F("LittleFS init failed; halting"));
-    while (true) {
-      delay(1000);
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Mbed OS LittleFileSystem initialization
+    mbedBD = BlockDevice::get_default_instance();
+    if (!mbedBD) {
+      Serial.println(F("Error: No default block device found"));
+      Serial.println(F("Warning: Filesystem not available - configuration will not persist"));
+      return;
     }
-  }
+    
+    mbedFS = new LittleFileSystem("fs");
+    int err = mbedFS->mount(mbedBD);
+    if (err) {
+      // Try to reformat if mount fails
+      Serial.println(F("Filesystem mount failed, attempting to reformat..."));
+      err = mbedFS->reformat(mbedBD);
+      if (err) {
+        Serial.println(F("LittleFS format failed; halting"));
+        delete mbedFS;
+        mbedFS = nullptr;
+        while (true) {
+          delay(1000);
+        }
+      }
+    }
+    Serial.println(F("Mbed OS LittleFileSystem initialized"));
+  #else
+    // STM32duino LittleFS
+    if (!LittleFS.begin()) {
+      Serial.println(F("LittleFS init failed; halting"));
+      while (true) {
+        delay(1000);
+      }
+    }
+  #endif
 #else
   Serial.println(F("Warning: Filesystem not available on this platform - configuration will not persist"));
 #endif
@@ -3030,13 +3158,29 @@ static void handleWebRequests() {
   } else if (method == "GET" && path == "/api/clients") {
     sendClientDataJson(client);
   } else if (method == "POST" && path == "/api/config") {
-    handleConfigPost(client, body);
+    if (contentLength > 8192) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleConfigPost(client, body);
+    }
   } else if (method == "POST" && path == "/api/pin") {
-    handlePinPost(client, body);
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handlePinPost(client, body);
+    }
   } else if (method == "POST" && path == "/api/refresh") {
-    handleRefreshPost(client, body);
+    if (contentLength > 512) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleRefreshPost(client, body);
+    }
   } else if (method == "POST" && path == "/api/relay") {
-    handleRelayPost(client, body);
+    if (contentLength > 512) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleRelayPost(client, body);
+    }
   } else {
     respondStatus(client, 404, F("Not Found"));
   }
@@ -3233,7 +3377,13 @@ static void sendTankJson(EthernetClient &client) {
 }
 
 static void sendClientDataJson(EthernetClient &client) {
-  DynamicJsonDocument doc(CLIENT_JSON_CAPACITY);
+  // Allocate large JSON document on heap instead of stack to prevent overflow
+  DynamicJsonDocument *docPtr = new DynamicJsonDocument(CLIENT_JSON_CAPACITY);
+  if (!docPtr) {
+    respondStatus(client, 500, F("Server Out of Memory"));
+    return;
+  }
+  DynamicJsonDocument &doc = *docPtr;
 
   JsonObject serverObj = doc.createNestedObject("server");
   serverObj["name"] = gConfig.serverName;
@@ -3332,9 +3482,11 @@ static void sendClientDataJson(EthernetClient &client) {
   String json;
   if (serializeJson(doc, json) == 0) {
     respondStatus(client, 500, F("Failed to encode client data"));
+    delete docPtr;
     return;
   }
   respondJson(client, json);
+  delete docPtr;
 }
 
 static void handleConfigPost(EthernetClient &client, const String &body) {
@@ -3530,7 +3682,7 @@ static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state
 }
 
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
-  char buffer[1536];
+  char buffer[4096];
   size_t len = serializeJson(cfgObj, buffer, sizeof(buffer));
   if (len == 0 || len >= sizeof(buffer)) {
     Serial.println(F("Client config payload too large"));
@@ -3582,6 +3734,8 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
     JAddBoolToObject(req, "delete", true);
     J *rsp = notecard.requestAndResponse(req);
     if (!rsp) {
+      // Note: notecard.requestAndResponse() internally cleans up the request
+      // so we don't need to explicitly delete it here
       return;
     }
 
@@ -3790,7 +3944,9 @@ static bool checkSmsRateLimit(TankRecord *rec) {
   // Clean up old timestamps (older than 1 hour)
   double oneHourAgo = now - 3600.0;
   uint8_t validCount = 0;
-  for (uint8_t i = 0; i < rec->smsAlertsInLastHour; ++i) {
+  // Ensure we don't exceed array bounds (smsAlertTimestamps has 10 elements)
+  uint8_t countToCheck = (rec->smsAlertsInLastHour > 10) ? 10 : rec->smsAlertsInLastHour;
+  for (uint8_t i = 0; i < countToCheck; ++i) {
     if (rec->smsAlertTimestamps[i] > oneHourAgo) {
       rec->smsAlertTimestamps[validCount++] = rec->smsAlertTimestamps[i];
     }
