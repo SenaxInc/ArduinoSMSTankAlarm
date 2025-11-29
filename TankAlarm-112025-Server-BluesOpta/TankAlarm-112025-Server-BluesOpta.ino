@@ -51,9 +51,19 @@
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
 #elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  // Arduino Opta with Mbed OS - filesystem and watchdog disabled for now
-  // TODO: Implement Mbed OS LittleFileSystem and mbed::Watchdog support
-  #warning "LittleFS and Watchdog features disabled on Mbed OS platform"
+  // Arduino Opta with Mbed OS - use Mbed OS APIs
+  #include <LittleFileSystem.h>
+  #include <BlockDevice.h>
+  #include <mbed.h>
+  using namespace mbed;
+  #define FILESYSTEM_AVAILABLE
+  #define WATCHDOG_AVAILABLE
+  #define WATCHDOG_TIMEOUT_SECONDS 30
+  
+  // Mbed OS filesystem instance
+  static LittleFileSystem *mbedFS = nullptr;
+  static BlockDevice *mbedBD = nullptr;
+  static Watchdog &mbedWatchdog = Watchdog::get_instance();
 #endif
 
 #ifndef SERVER_PRODUCT_UID
@@ -2672,10 +2682,21 @@ void setup() {
 
 #ifdef WATCHDOG_AVAILABLE
   // Initialize watchdog timer
-  IWatchdog.begin(WATCHDOG_TIMEOUT_SECONDS * 1000000UL);  // Timeout in microseconds
-  Serial.print(F("Watchdog timer enabled: "));
-  Serial.print(WATCHDOG_TIMEOUT_SECONDS);
-  Serial.println(F(" seconds"));
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    uint32_t timeoutMs = WATCHDOG_TIMEOUT_SECONDS * 1000;
+    if (mbedWatchdog.start(timeoutMs)) {
+      Serial.print(F("Mbed Watchdog enabled: "));
+      Serial.print(WATCHDOG_TIMEOUT_SECONDS);
+      Serial.println(F(" seconds"));
+    } else {
+      Serial.println(F("Warning: Watchdog initialization failed"));
+    }
+  #else
+    IWatchdog.begin(WATCHDOG_TIMEOUT_SECONDS * 1000000UL);
+    Serial.print(F("Watchdog timer enabled: "));
+    Serial.print(WATCHDOG_TIMEOUT_SECONDS);
+    Serial.println(F(" seconds"));
+  #endif
 #else
   Serial.println(F("Warning: Watchdog timer not available on this platform"));
 #endif
@@ -2694,7 +2715,11 @@ void setup() {
 void loop() {
 #ifdef WATCHDOG_AVAILABLE
   // Reset watchdog timer to prevent system reset
-  IWatchdog.reload();
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
 #endif
 
   // Maintain DHCP lease and check link status
@@ -2752,12 +2777,40 @@ void loop() {
 
 static void initializeStorage() {
 #ifdef FILESYSTEM_AVAILABLE
-  if (!LittleFS.begin()) {
-    Serial.println(F("LittleFS init failed; halting"));
-    while (true) {
-      delay(1000);
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Mbed OS LittleFileSystem initialization
+    mbedBD = BlockDevice::get_default_instance();
+    if (!mbedBD) {
+      Serial.println(F("Error: No default block device found"));
+      Serial.println(F("Warning: Filesystem not available - configuration will not persist"));
+      return;
     }
-  }
+    
+    mbedFS = new LittleFileSystem("fs");
+    int err = mbedFS->mount(mbedBD);
+    if (err) {
+      // Try to reformat if mount fails
+      Serial.println(F("Filesystem mount failed, attempting to reformat..."));
+      err = mbedFS->reformat(mbedBD);
+      if (err) {
+        Serial.println(F("LittleFS format failed; halting"));
+        delete mbedFS;
+        mbedFS = nullptr;
+        while (true) {
+          delay(1000);
+        }
+      }
+    }
+    Serial.println(F("Mbed OS LittleFileSystem initialized"));
+  #else
+    // STM32duino LittleFS
+    if (!LittleFS.begin()) {
+      Serial.println(F("LittleFS init failed; halting"));
+      while (true) {
+        delay(1000);
+      }
+    }
+  #endif
 #else
   Serial.println(F("Warning: Filesystem not available on this platform - configuration will not persist"));
 #endif
@@ -3105,13 +3158,29 @@ static void handleWebRequests() {
   } else if (method == "GET" && path == "/api/clients") {
     sendClientDataJson(client);
   } else if (method == "POST" && path == "/api/config") {
-    handleConfigPost(client, body);
+    if (contentLength > 8192) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleConfigPost(client, body);
+    }
   } else if (method == "POST" && path == "/api/pin") {
-    handlePinPost(client, body);
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handlePinPost(client, body);
+    }
   } else if (method == "POST" && path == "/api/refresh") {
-    handleRefreshPost(client, body);
+    if (contentLength > 512) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleRefreshPost(client, body);
+    }
   } else if (method == "POST" && path == "/api/relay") {
-    handleRelayPost(client, body);
+    if (contentLength > 512) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleRelayPost(client, body);
+    }
   } else {
     respondStatus(client, 404, F("Not Found"));
   }
@@ -3665,6 +3734,8 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
     JAddBoolToObject(req, "delete", true);
     J *rsp = notecard.requestAndResponse(req);
     if (!rsp) {
+      // Note: notecard.requestAndResponse() internally cleans up the request
+      // so we don't need to explicitly delete it here
       return;
     }
 
@@ -3873,7 +3944,9 @@ static bool checkSmsRateLimit(TankRecord *rec) {
   // Clean up old timestamps (older than 1 hour)
   double oneHourAgo = now - 3600.0;
   uint8_t validCount = 0;
-  for (uint8_t i = 0; i < rec->smsAlertsInLastHour; ++i) {
+  // Ensure we don't exceed array bounds (smsAlertTimestamps has 10 elements)
+  uint8_t countToCheck = (rec->smsAlertsInLastHour > 10) ? 10 : rec->smsAlertsInLastHour;
+  for (uint8_t i = 0; i < countToCheck; ++i) {
     if (rec->smsAlertTimestamps[i] > oneHourAgo) {
       rec->smsAlertTimestamps[validCount++] = rec->smsAlertTimestamps[i];
     }

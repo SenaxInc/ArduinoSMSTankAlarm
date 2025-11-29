@@ -36,9 +36,37 @@
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
 #elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  // Arduino Opta with Mbed OS - filesystem and watchdog disabled for now
-  // TODO: Implement Mbed OS LittleFileSystem and mbed::Watchdog support
-  #warning "LittleFS and Watchdog features disabled on Mbed OS platform"
+  // Arduino Opta with Mbed OS - use Mbed OS APIs
+  #include <LittleFileSystem.h>
+  #include <BlockDevice.h>
+  #include <mbed.h>
+  using namespace mbed;
+  #define FILESYSTEM_AVAILABLE
+  #define WATCHDOG_AVAILABLE
+  #define WATCHDOG_TIMEOUT_SECONDS 30
+  
+  // Mbed OS filesystem instance
+  static LittleFileSystem *mbedFS = nullptr;
+  static BlockDevice *mbedBD = nullptr;
+  static Watchdog &mbedWatchdog = Watchdog::get_instance();
+#endif
+
+// Debug mode - controls Serial output and Notecard debug logging
+// For PRODUCTION: Leave commented out (default) to save 5-10% power consumption
+// For DEVELOPMENT: Uncomment the line below for troubleshooting and monitoring
+//#define DEBUG_MODE
+
+// Debug output macros - no-op when DEBUG_MODE is disabled
+#ifdef DEBUG_MODE
+  #define DEBUG_BEGIN(baud) Serial.begin(baud)
+  #define DEBUG_PRINT(x) Serial.print(x)
+  #define DEBUG_PRINTLN(x) Serial.println(x)
+  #define DEBUG_PRINTF(x, y) Serial.print(x, y)
+#else
+  #define DEBUG_BEGIN(baud)
+  #define DEBUG_PRINT(x)
+  #define DEBUG_PRINTLN(x)
+  #define DEBUG_PRINTF(x, y)
 #endif
 
 // strlcpy is provided by Notecard library on Mbed platforms
@@ -343,10 +371,23 @@ void setup() {
 
 #ifdef WATCHDOG_AVAILABLE
   // Initialize watchdog timer
-  IWatchdog.begin(WATCHDOG_TIMEOUT_SECONDS * 1000000UL);  // Timeout in microseconds
-  Serial.print(F("Watchdog timer enabled: "));
-  Serial.print(WATCHDOG_TIMEOUT_SECONDS);
-  Serial.println(F(" seconds"));
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Mbed OS Watchdog
+    uint32_t timeoutMs = WATCHDOG_TIMEOUT_SECONDS * 1000;
+    if (mbedWatchdog.start(timeoutMs)) {
+      Serial.print(F("Mbed Watchdog enabled: "));
+      Serial.print(WATCHDOG_TIMEOUT_SECONDS);
+      Serial.println(F(" seconds"));
+    } else {
+      Serial.println(F("Warning: Watchdog initialization failed"));
+    }
+  #else
+    // STM32duino Watchdog
+    IWatchdog.begin(WATCHDOG_TIMEOUT_SECONDS * 1000000UL);
+    Serial.print(F("Watchdog timer enabled: "));
+    Serial.print(WATCHDOG_TIMEOUT_SECONDS);
+    Serial.println(F(" seconds"));
+  #endif
 #else
   Serial.println(F("Warning: Watchdog timer not available on this platform"));
 #endif
@@ -400,12 +441,16 @@ void loop() {
 
 #ifdef WATCHDOG_AVAILABLE
   // Reset watchdog timer to prevent system reset
-  IWatchdog.reload();
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
 #endif
 
   // Check notecard health periodically
   static unsigned long lastHealthCheck = 0;
-  if (now - lastHealthCheck > 30000UL) {  // Check every 30 seconds
+  if (now - lastHealthCheck > 300000UL) {  // Check every 5 minutes
     lastHealthCheck = now;
     if (!gNotecardAvailable) {
       checkNotecardHealth();
@@ -417,7 +462,7 @@ void loop() {
     sampleTanks();
   }
 
-  if (now - gLastConfigCheckMillis >= 15000UL) {
+  if (now - gLastConfigCheckMillis >= 600000UL) {  // Check every 10 minutes
     gLastConfigCheckMillis = now;
     pollForConfigUpdates();
   }
@@ -438,28 +483,65 @@ void loop() {
     sendDailyReport();
     scheduleNextDailyReport();
   }
+
+  // Sleep to reduce power consumption between loop iterations
+  delay(100);
 }
 
 static void initializeStorage() {
 #ifdef FILESYSTEM_AVAILABLE
-  if (!LittleFS.begin()) {
-    Serial.println(F("LittleFS init failed; halting"));
-    while (true) {
-      delay(1000);
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Mbed OS LittleFileSystem initialization
+    mbedBD = BlockDevice::get_default_instance();
+    if (!mbedBD) {
+      Serial.println(F("Error: No default block device found"));
+      Serial.println(F("Warning: Filesystem not available - configuration will not persist"));
+      return;
     }
-  }
+    
+    mbedFS = new LittleFileSystem("fs");
+    int err = mbedFS->mount(mbedBD);
+    if (err) {
+      // Try to reformat if mount fails
+      Serial.println(F("Filesystem mount failed, attempting to reformat..."));
+      err = mbedFS->reformat(mbedBD);
+      if (err) {
+        Serial.println(F("LittleFS format failed; halting"));
+        delete mbedFS;
+        mbedFS = nullptr;
+        while (true) {
+          delay(1000);
+        }
+      }
+    }
+    Serial.println(F("Mbed OS LittleFileSystem initialized"));
+  #else
+    // STM32duino LittleFS
+    if (!LittleFS.begin()) {
+      Serial.println(F("LittleFS init failed; halting"));
+      while (true) {
+        delay(1000);
+      }
+    }
+  #endif
 #else
   Serial.println(F("Warning: Filesystem not available on this platform - configuration will not persist"));
 #endif
 }
 
 static void ensureConfigLoaded() {
+#ifdef FILESYSTEM_AVAILABLE
   if (!loadConfigFromFlash(gConfig)) {
     createDefaultConfig(gConfig);
     gConfigDirty = true;
     persistConfigIfDirty();
     Serial.println(F("Default configuration written to flash"));
   }
+#else
+  // Filesystem not available - create default config in RAM only
+  createDefaultConfig(gConfig);
+  Serial.println(F("Warning: Using default config (no persistence available)"));
+#endif
 }
 
 static void createDefaultConfig(ClientConfig &cfg) {
@@ -498,18 +580,53 @@ static void createDefaultConfig(ClientConfig &cfg) {
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
 #ifdef FILESYSTEM_AVAILABLE
-  if (!LittleFS.exists(CLIENT_CONFIG_PATH)) {
-    return false;
-  }
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Mbed OS file operations
+    if (!mbedFS) return false;
+    
+    FILE *file = fopen("/fs/client_config.json", "r");
+    if (!file) {
+      return false;
+    }
+    
+    // Read file into buffer
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
+    if (fileSize <= 0 || fileSize > 8192) {
+      fclose(file);
+      return false;
+    }
+    
+    char *buffer = (char *)malloc(fileSize + 1);
+    if (!buffer) {
+      fclose(file);
+      return false;
+    }
+    
+    size_t bytesRead = fread(buffer, 1, fileSize, file);
+    buffer[bytesRead] = '\0';
+    fclose(file);
+    
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, buffer);
+    free(buffer);
+  #else
+    // STM32duino file operations
+    if (!LittleFS.exists(CLIENT_CONFIG_PATH)) {
+      return false;
+    }
 
-  File file = LittleFS.open(CLIENT_CONFIG_PATH, "r");
-  if (!file) {
-    return false;
-  }
+    File file = LittleFS.open(CLIENT_CONFIG_PATH, "r");
+    if (!file) {
+      return false;
+    }
 
-  DynamicJsonDocument doc(4096);
-  DeserializationError err = deserializeJson(doc, file);
-  file.close();
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+  #endif
 
   if (err) {
     Serial.println(F("Config deserialization failed"));
@@ -594,6 +711,10 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
 
 static bool saveConfigToFlash(const ClientConfig &cfg) {
 #ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return false;
+  #endif
+  
   DynamicJsonDocument doc(4096);
   doc["site"] = cfg.siteName;
   doc["deviceLabel"] = cfg.deviceLabel;
@@ -710,7 +831,9 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
 }
 
 static void initializeNotecard() {
+#ifdef DEBUG_MODE
   notecard.setDebugOutputStream(Serial);
+#endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
   J *req = notecard.newRequest("card.wire");
@@ -722,7 +845,9 @@ static void initializeNotecard() {
   req = notecard.newRequest("hub.set");
   if (req) {
     JAddStringToObject(req, "product", PRODUCT_UID);
-    JAddStringToObject(req, "mode", "continuous");
+    JAddStringToObject(req, "mode", "periodic");
+    JAddIntToObject(req, "outbound", 360);  // Sync every 6 hours
+    JAddIntToObject(req, "inbound", 10);     // Check for inbound every 10 minutes
     // No route needed - using fleet-based targeting
     notecard.sendRequest(req);
   }
@@ -1243,8 +1368,10 @@ static float readTankSensor(uint8_t idx) {
       // Count pulses over the sampling duration, with debounce
       // Use unsigned subtraction to handle millis() overflow correctly
       const unsigned long DEBOUNCE_MS = 2; // Minimum time between pulses to filter bounce
+      const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2; // Safety limit: 2x expected iterations
       unsigned long lastPulseTime = 0;
-      while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS) {
+      uint32_t iterationCount = 0;
+      while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS && iterationCount < MAX_ITERATIONS) {
         int currentState = digitalRead(pin);
         // Count falling edges (HIGH to LOW transitions) with debounce
         if (lastState == HIGH && currentState == LOW) {
@@ -1257,10 +1384,15 @@ static float readTankSensor(uint8_t idx) {
         lastState = currentState;
         // Small delay to allow other processing and avoid excessive polling
         delay(1);
+        iterationCount++;
         
 #ifdef WATCHDOG_AVAILABLE
         // Reset watchdog during long sampling to prevent timeout
-        IWatchdog.reload();
+        #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+          mbedWatchdog.kick();
+        #else
+          IWatchdog.reload();
+        #endif
 #endif
       }
       
@@ -1757,17 +1889,31 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
 
 static void bufferNoteForRetry(const char *fileName, const char *payload, bool syncNow) {
 #ifdef FILESYSTEM_AVAILABLE
-  File file = LittleFS.open(NOTE_BUFFER_PATH, "a");
-  if (!file) {
-    Serial.println(F("Failed to open note buffer; dropping payload"));
-    return;
-  }
-  file.print(fileName);
-  file.print('\t');
-  file.print(syncNow ? '1' : '0');
-  file.print('\t');
-  file.println(payload);
-  file.close();
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) {
+      Serial.println(F("Warning: Filesystem not available; note dropped"));
+      return;
+    }
+    FILE *file = fopen("/fs/pending_notes.log", "a");
+    if (!file) {
+      Serial.println(F("Failed to open note buffer; dropping payload"));
+      return;
+    }
+    fprintf(file, "%s\t%c\t%s\n", fileName, syncNow ? '1' : '0', payload);
+    fclose(file);
+  #else
+    File file = LittleFS.open(NOTE_BUFFER_PATH, "a");
+    if (!file) {
+      Serial.println(F("Failed to open note buffer; dropping payload"));
+      return;
+    }
+    file.print(fileName);
+    file.print('\t');
+    file.print(syncNow ? '1' : '0');
+    file.print('\t');
+    file.println(payload);
+    file.close();
+  #endif
   Serial.println(F("Note buffered for retry"));
   pruneNoteBufferIfNeeded();
 #else
@@ -2130,6 +2276,7 @@ static void checkRelayMomentaryTimeout(unsigned long now) {
     }
     
     // Check if 30 minutes have elapsed
+    // Note: Unsigned subtraction correctly handles millis() overflow due to modular arithmetic
     if (now - gRelayActivationTime[i] >= RELAY_MOMENTARY_DURATION_MS) {
       // Deactivate the relay
       if (cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
