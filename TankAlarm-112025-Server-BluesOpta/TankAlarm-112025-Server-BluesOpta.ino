@@ -1041,6 +1041,13 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
             if (relayMask === 0) {
               alert("You have set a relay target but have not selected any relay outputs for " + name + ". The configuration will be incomplete.");
             }
+            // Validation: warn if relay trigger is set to an alarm type that is not enabled
+            const highAlarmEnabled = card.querySelector('.high-alarm-checkbox')?.checked;
+            const lowAlarmEnabled = card.querySelector('.low-alarm-checkbox')?.checked;
+            if ((relayTrigger === 'high' && !highAlarmEnabled) ||
+                (relayTrigger === 'low' && !lowAlarmEnabled)) {
+              alert(`Warning: Relay for ${name} is set to trigger on "${relayTrigger}" alarm, but that alarm type is not enabled.`);
+            }
           }
         }
 
