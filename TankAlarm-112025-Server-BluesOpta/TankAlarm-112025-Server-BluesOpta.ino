@@ -786,6 +786,22 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
               </label>
             </div>
           </div>
+
+          <button type="button" class="add-section-btn add-sms-btn hidden" onclick="toggleSmsSection(${id})">+ Add SMS Alert</button>
+          <div class="collapsible-section sms-section">
+            <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">SMS Alert Notifications <button type="button" class="remove-btn" onclick="removeSmsSection(${id})" style="float: right;">Remove SMS Alert</button></h4>
+            <div class="form-grid">
+              <label class="field" style="grid-column: 1 / -1;"><span>Phone Numbers<span class="tooltip-icon" tabindex="0" data-tooltip="Enter phone numbers with country code (e.g., +15551234567). Separate multiple numbers with commas.">?</span></span><input type="text" class="sms-phones" placeholder="+15551234567, +15559876543"></label>
+              <label class="field"><span>Trigger On</span>
+                <select class="sms-trigger">
+                  <option value="any">Any Alarm (High or Low)</option>
+                  <option value="high">High Alarm Only</option>
+                  <option value="low">Low Alarm Only</option>
+                </select>
+              </label>
+              <label class="field" style="grid-column: span 2;"><span>Custom Message (optional)</span><input type="text" class="sms-message" placeholder="Tank alarm triggered"></label>
+            </div>
+          </div>
         </div>
       `;
     }
@@ -808,10 +824,12 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const alarmSection = card.querySelector('.alarm-section');
       const addAlarmBtn = card.querySelector('.add-alarm-btn');
       const addRelayBtn = card.querySelector('.add-relay-btn');
+      const addSmsBtn = card.querySelector('.add-sms-btn');
       alarmSection.classList.add('visible');
       addAlarmBtn.classList.add('hidden');
-      // Show relay button now that alarms are configured
+      // Show relay and SMS buttons now that alarms are configured
       addRelayBtn.classList.remove('hidden');
+      addSmsBtn.classList.remove('hidden');
     };
 
     window.removeAlarmSection = function(id) {
@@ -819,12 +837,16 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const alarmSection = card.querySelector('.alarm-section');
       const addAlarmBtn = card.querySelector('.add-alarm-btn');
       const addRelayBtn = card.querySelector('.add-relay-btn');
+      const addSmsBtn = card.querySelector('.add-sms-btn');
       const relaySection = card.querySelector('.relay-section');
+      const smsSection = card.querySelector('.sms-section');
       alarmSection.classList.remove('visible');
       addAlarmBtn.classList.remove('hidden');
-      // Hide relay button and section when alarms are removed
+      // Hide relay and SMS buttons and sections when alarms are removed
       addRelayBtn.classList.add('hidden');
+      addSmsBtn.classList.add('hidden');
       relaySection.classList.remove('visible');
+      smsSection.classList.remove('visible');
       // Reset alarm values to defaults
       card.querySelector('.high-alarm').value = '100';
       card.querySelector('.low-alarm').value = '20';
@@ -837,6 +859,10 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       ['relay-1', 'relay-2', 'relay-3', 'relay-4'].forEach(cls => {
         card.querySelector('.' + cls).checked = false;
       });
+      // Reset SMS values
+      card.querySelector('.sms-phones').value = '';
+      card.querySelector('.sms-trigger').value = 'any';
+      card.querySelector('.sms-message').value = '';
     };
 
     window.toggleRelaySection = function(id) {
@@ -860,6 +886,26 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       ['relay-1', 'relay-2', 'relay-3', 'relay-4'].forEach(cls => {
         card.querySelector('.' + cls).checked = false;
       });
+    };
+
+    window.toggleSmsSection = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const smsSection = card.querySelector('.sms-section');
+      const addBtn = card.querySelector('.add-sms-btn');
+      smsSection.classList.add('visible');
+      addBtn.classList.add('hidden');
+    };
+
+    window.removeSmsSection = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const smsSection = card.querySelector('.sms-section');
+      const addBtn = card.querySelector('.add-sms-btn');
+      smsSection.classList.remove('visible');
+      addBtn.classList.remove('hidden');
+      // Reset SMS values
+      card.querySelector('.sms-phones').value = '';
+      card.querySelector('.sms-trigger').value = 'any';
+      card.querySelector('.sms-message').value = '';
     };
 
     window.updateMonitorFields = function(id) {
@@ -1045,6 +1091,31 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
             if ((relayTrigger === 'high' && !highAlarmEnabled) ||
                 (relayTrigger === 'low' && !lowAlarmEnabled)) {
               alert(`Warning: Relay for ${name} is set to trigger on "${relayTrigger}" alarm, but that alarm type is not enabled.`);
+            }
+          }
+        }
+
+        // Check if SMS section is enabled
+        const smsSectionVisible = card.querySelector('.sms-section').classList.contains('visible');
+        if (smsSectionVisible) {
+          const smsPhones = card.querySelector('.sms-phones').value.trim();
+          const smsTrigger = card.querySelector('.sms-trigger').value;
+          const smsMessage = card.querySelector('.sms-message').value.trim();
+
+          if (smsPhones) {
+            // Parse phone numbers (comma separated) into array
+            const phoneArray = smsPhones.split(',').map(p => p.trim()).filter(p => p.length > 0);
+            if (phoneArray.length > 0) {
+              tank.smsAlert = {
+                phones: phoneArray,
+                trigger: smsTrigger,  // 'any', 'high', or 'low'
+                message: smsMessage || 'Tank alarm triggered'
+              };
+              // Validation: warn if SMS trigger is set to an alarm type that is not enabled
+              if ((smsTrigger === 'high' && !highAlarmEnabled) ||
+                  (smsTrigger === 'low' && !lowAlarmEnabled)) {
+                alert(`Warning: SMS Alert for ${name} is set to trigger on "${smsTrigger}" alarm, but that alarm type is not enabled.`);
+              }
             }
           }
         }
