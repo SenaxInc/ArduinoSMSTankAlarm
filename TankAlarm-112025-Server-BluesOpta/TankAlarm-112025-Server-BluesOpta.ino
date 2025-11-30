@@ -776,14 +776,14 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
                   <option value="manual_reset">Stay On Until Manual Server Reset</option>
                 </select>
               </label>
-              <label class="field"><span>Relay Outputs</span>
+              <div class="field"><span>Relay Outputs</span>
                 <div style="display: flex; gap: 12px; padding: 8px 0;">
                   <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-1" value="1"> R1</label>
                   <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-2" value="2"> R2</label>
                   <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-3" value="4"> R3</label>
                   <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-4" value="8"> R4</label>
                 </div>
-              </label>
+              </div>
             </div>
           </div>
 
@@ -981,8 +981,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const reportTimeValue = document.getElementById('reportTime').value || '05:00';
       // Validate time format is HH:MM, fallback to 05:00 if not
       const timeParts = reportTimeValue.split(':');
-      const reportHour = timeParts.length === 2 ? (parseInt(timeParts[0], 10) || 5) : 5;
-      const reportMinute = timeParts.length === 2 ? (parseInt(timeParts[1], 10) || 0) : 0;
+      const reportHour = timeParts.length === 2 ? (isNaN(parseInt(timeParts[0], 10)) ? 5 : parseInt(timeParts[0], 10)) : 5;
+      const reportMinute = timeParts.length === 2 ? (isNaN(parseInt(timeParts[1], 10)) ? 0 : parseInt(timeParts[1], 10)) : 0;
       
       const config = {
         site: document.getElementById('siteName').value.trim(),
@@ -1048,10 +1048,16 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         // Only include alarm values if alarm section is visible and individual alarms are enabled
         if (alarmSectionVisible && (highAlarmEnabled || lowAlarmEnabled)) {
           if (highAlarmEnabled && highAlarmValue !== '') {
-            tank.highAlarm = parseFloat(highAlarmValue);
+            const highAlarmFloat = parseFloat(highAlarmValue);
+            if (!isNaN(highAlarmFloat)) {
+              tank.highAlarm = highAlarmFloat;
+            }
           }
           if (lowAlarmEnabled && lowAlarmValue !== '') {
-            tank.lowAlarm = parseFloat(lowAlarmValue);
+            const lowAlarmFloat = parseFloat(lowAlarmValue);
+            if (!isNaN(lowAlarmFloat)) {
+              tank.lowAlarm = lowAlarmFloat;
+            }
           }
           tank.alarmSms = true;
         } else {
@@ -1087,10 +1093,10 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
             if (relayMask === 0) {
               alert("You have set a relay target but have not selected any relay outputs for " + name + ". The configuration will be incomplete.");
             }
-            // Validation: warn if relay trigger is set to an alarm type that is not enabled
-            if ((relayTrigger === 'high' && !highAlarmEnabled) ||
-                (relayTrigger === 'low' && !lowAlarmEnabled)) {
-              alert(`Warning: Relay for ${name} is set to trigger on "${relayTrigger}" alarm, but that alarm type is not enabled.`);
+            // Validation: warn if relay trigger is set to an alarm type that is not enabled or value is missing
+            if ((relayTrigger === 'high' && (!highAlarmEnabled || highAlarmValue === '')) ||
+                (relayTrigger === 'low' && (!lowAlarmEnabled || lowAlarmValue === ''))) {
+              alert(`Warning: Relay for ${name} is set to trigger on "${relayTrigger}" alarm, but that alarm type is not fully configured (either not enabled or value is missing).`);
             }
           }
         }
@@ -1111,10 +1117,10 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
                 trigger: smsTrigger,  // 'any', 'high', or 'low'
                 message: smsMessage || 'Tank alarm triggered'
               };
-              // Validation: warn if SMS trigger is set to an alarm type that is not enabled
-              if ((smsTrigger === 'high' && !highAlarmEnabled) ||
-                  (smsTrigger === 'low' && !lowAlarmEnabled)) {
-                alert(`Warning: SMS Alert for ${name} is set to trigger on "${smsTrigger}" alarm, but that alarm type is not enabled.`);
+              // Validation: warn if SMS trigger is set to an alarm type that is not enabled or value is missing
+              if ((smsTrigger === 'high' && (!highAlarmEnabled || highAlarmValue === '')) ||
+                  (smsTrigger === 'low' && (!lowAlarmEnabled || lowAlarmValue === ''))) {
+                alert(`Warning: SMS Alert for ${name} is set to trigger on "${smsTrigger}" alarm, but that alarm type is not fully configured (either not enabled or value is missing).`);
               }
             }
           }
