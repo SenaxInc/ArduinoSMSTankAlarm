@@ -242,7 +242,6 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
             <th>Site</th>
             <th>Tank</th>
             <th>Level (ft/in)</th>
-            <th>VIN Voltage</th>
             <th>24hr Change</th>
             <th>Updated</th>
           </tr>
@@ -377,7 +376,7 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
         const rows = state.selected ? state.tanks.filter(t => t.client === state.selected) : state.tanks;
         if (!rows.length) {
           const tr = document.createElement('tr');
-          tr.innerHTML = '<td colspan="6">No tank data available</td>';
+          tr.innerHTML = '<td colspan="5">No tank data available</td>';
           tbody.appendChild(tr);
           return;
         }
@@ -392,7 +391,6 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
             <td>${escapeHtml(tank.site, '--')}</td>
             <td>${escapeHtml(tank.label || 'Tank')} #${escapeHtml((tank.tank ?? '?'))}</td>
             <td>${formatFeetInches(tank.levelInches)}</td>
-            <td>${formatVoltage(tank.vinVoltage)}</td>
             <td>--</td>
             <td>${formatEpoch(tank.lastUpdate)}${staleWarning}</td>`;
           if (isStale) {
@@ -401,13 +399,6 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
           }
           tbody.appendChild(tr);
         });
-      }
-
-      function formatVoltage(voltage) {
-        if (typeof voltage !== 'number' || !isFinite(voltage) || voltage <= 0) {
-          return '--';
-        }
-        return voltage.toFixed(2) + ' V';
       }
 
       function statusBadge(tank) {
