@@ -80,6 +80,10 @@
 #define WEB_REFRESH_SECONDS 21600
 #endif
 
+#ifndef WEB_REFRESH_MINUTES
+#define WEB_REFRESH_MINUTES 360
+#endif
+
 #ifndef SUMMARY_FETCH_INTERVAL_SECONDS
 #define SUMMARY_FETCH_INTERVAL_SECONDS 21600UL
 #endif
@@ -213,7 +217,7 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
     <section class="card">
       <div style="display:flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;">
         <h2 style="margin:0; font-size:1.2rem;">Fleet Snapshot</h2>
-        <span class="timestamp">Dashboard auto-refresh: )HTML" STR(WEB_REFRESH_SECONDS) R"HTML( s</span>
+        <span class="timestamp">Dashboard auto-refresh: )HTML" STR(WEB_REFRESH_MINUTES) R"HTML( min</span>
       </div>
       <table>
         <thead>
