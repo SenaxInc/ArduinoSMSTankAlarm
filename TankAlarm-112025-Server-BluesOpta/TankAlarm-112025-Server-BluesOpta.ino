@@ -565,7 +565,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       margin-left: 4px;
       position: relative;
     }
-    .tooltip-icon:hover::after {
+    .tooltip-icon:hover::after,
+    .tooltip-icon:focus::after {
       content: attr(data-tooltip);
       position: absolute;
       bottom: 100%;
@@ -633,7 +634,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           <label class="field"><span>Device Label</span><input id="deviceLabel" type="text" placeholder="Device Label" required></label>
           <label class="field"><span>Server Fleet</span><input id="serverFleet" type="text" value="tankalarm-server"></label>
           <label class="field"><span>Sample Minutes</span><input id="sampleMinutes" type="number" value="30" min="1" max="1440"></label>
-          <label class="field"><span>Level Change Threshold (in)<span class="tooltip-icon" data-tooltip="Minimum level change in inches required before sending telemetry. Set to 0 to send all readings. Useful to reduce data usage by only reporting significant changes.">?</span></span><input id="levelChangeThreshold" type="number" step="0.1" value="0" placeholder="0 = disabled"></label>
+          <label class="field"><span>Level Change Threshold (in)<span class="tooltip-icon" tabindex="0" data-tooltip="Minimum level change in inches required before sending telemetry. Set to 0 to send all readings. Useful to reduce data usage by only reporting significant changes.">?</span></span><input id="levelChangeThreshold" type="number" step="0.1" value="0" placeholder="0 = disabled"></label>
           <label class="field"><span>Report Time</span><input id="reportTime" type="time" value="05:00"></label>
           <label class="field"><span>Daily Email</span><input id="dailyEmail" type="email"></label>
         </div>
@@ -694,12 +695,12 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
 
     // Arduino Pro Opta Ext A0602 expansion module channels (4-20mA current loop)
     const expansionChannels = [
-      { value: 0, label: 'AFX0007 Ch1' },
-      { value: 1, label: 'AFX0007 Ch2' },
-      { value: 2, label: 'AFX0007 Ch3' },
-      { value: 3, label: 'AFX0007 Ch4' },
-      { value: 4, label: 'AFX0007 Ch5' },
-      { value: 5, label: 'AFX0007 Ch6' }
+      { value: 0, label: 'A0602 Ch1' },
+      { value: 1, label: 'A0602 Ch2' },
+      { value: 2, label: 'A0602 Ch3' },
+      { value: 3, label: 'A0602 Ch4' },
+      { value: 4, label: 'A0602 Ch5' },
+      { value: 5, label: 'A0602 Ch6' }
     ];
 
     let sensorCount = 0;
@@ -737,12 +738,26 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           <div class="collapsible-section alarm-section">
             <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">Alarm Thresholds <button type="button" class="remove-btn" onclick="removeAlarmSection(${id})" style="float: right;">Remove Alarm</button></h4>
             <div class="form-grid">
-              <label class="field"><span><label style="display: flex; align-items: center; gap: 6px;"><input type="checkbox" class="high-alarm-enabled" checked> High Alarm</label></span><input type="number" class="high-alarm" value="100"></label>
-              <label class="field"><span><label style="display: flex; align-items: center; gap: 6px;"><input type="checkbox" class="low-alarm-enabled" checked> Low Alarm</label></span><input type="number" class="low-alarm" value="20"></label>
+              <div class="field">
+                <span>
+                  <label style="display: flex; align-items: center; gap: 6px;">
+                    <input type="checkbox" class="high-alarm-enabled" checked> High Alarm
+                  </label>
+                </span>
+                <input type="number" class="high-alarm" value="100">
+              </div>
+              <div class="field">
+                <span>
+                  <label style="display: flex; align-items: center; gap: 6px;">
+                    <input type="checkbox" class="low-alarm-enabled" checked> Low Alarm
+                  </label>
+                </span>
+                <input type="number" class="low-alarm" value="20">
+              </div>
             </div>
           </div>
 
-          <button type="button" class="add-section-btn add-relay-btn" onclick="toggleRelaySection(${id})">+ Add Relay Control</button>
+          <button type="button" class="add-section-btn add-relay-btn hidden" onclick="toggleRelaySection(${id})">+ Add Relay Control</button>
           <div class="collapsible-section relay-section">
             <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">Relay Switch Control (Triggered by This Sensor's Alarm) <button type="button" class="remove-btn" onclick="removeRelaySection(${id})" style="float: right;">Remove Relay</button></h4>
             <div class="form-grid">
@@ -791,22 +806,37 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
     window.toggleAlarmSection = function(id) {
       const card = document.getElementById(`sensor-${id}`);
       const alarmSection = card.querySelector('.alarm-section');
-      const addBtn = card.querySelector('.add-alarm-btn');
+      const addAlarmBtn = card.querySelector('.add-alarm-btn');
+      const addRelayBtn = card.querySelector('.add-relay-btn');
       alarmSection.classList.add('visible');
-      addBtn.classList.add('hidden');
+      addAlarmBtn.classList.add('hidden');
+      // Show relay button now that alarms are configured
+      addRelayBtn.classList.remove('hidden');
     };
 
     window.removeAlarmSection = function(id) {
       const card = document.getElementById(`sensor-${id}`);
       const alarmSection = card.querySelector('.alarm-section');
-      const addBtn = card.querySelector('.add-alarm-btn');
+      const addAlarmBtn = card.querySelector('.add-alarm-btn');
+      const addRelayBtn = card.querySelector('.add-relay-btn');
+      const relaySection = card.querySelector('.relay-section');
       alarmSection.classList.remove('visible');
-      addBtn.classList.remove('hidden');
+      addAlarmBtn.classList.remove('hidden');
+      // Hide relay button and section when alarms are removed
+      addRelayBtn.classList.add('hidden');
+      relaySection.classList.remove('visible');
       // Reset alarm values to defaults
       card.querySelector('.high-alarm').value = '100';
       card.querySelector('.low-alarm').value = '20';
       card.querySelector('.high-alarm-enabled').checked = true;
       card.querySelector('.low-alarm-enabled').checked = true;
+      // Reset relay values
+      card.querySelector('.relay-target').value = '';
+      card.querySelector('.relay-trigger').value = 'any';
+      card.querySelector('.relay-mode').value = 'momentary';
+      ['relay-1', 'relay-2', 'relay-3', 'relay-4'].forEach(cls => {
+        card.querySelector('.' + cls).checked = false;
+      });
     };
 
     window.toggleRelaySection = function(id) {
@@ -901,11 +931,12 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
 
     document.getElementById('downloadBtn').addEventListener('click', () => {
       const levelChange = parseFloat(document.getElementById('levelChangeThreshold').value);
-      const sampleMinutes = parseInt(document.getElementById('sampleMinutes').value, 10) || 30;
+      const sampleMinutes = Math.max(1, Math.min(1440, parseInt(document.getElementById('sampleMinutes').value, 10) || 30));
       const reportTimeValue = document.getElementById('reportTime').value || '05:00';
-      const [reportHourStr, reportMinuteStr] = reportTimeValue.split(':');
-      const reportHour = parseInt(reportHourStr, 10) || 5;
-      const reportMinute = parseInt(reportMinuteStr, 10) || 0;
+      // Validate time format is HH:MM, fallback to 05:00 if not
+      const timeParts = reportTimeValue.split(':');
+      const reportHour = timeParts.length === 2 ? (parseInt(timeParts[0], 10) || 5) : 5;
+      const reportMinute = timeParts.length === 2 ? (parseInt(timeParts[1], 10) || 0) : 0;
       
       const config = {
         site: document.getElementById('siteName').value.trim(),
@@ -970,11 +1001,11 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
 
         // Only include alarm values if alarm section is visible and individual alarms are enabled
         if (alarmSectionVisible && (highAlarmEnabled || lowAlarmEnabled)) {
-          if (highAlarmEnabled && highAlarmValue) {
-            tank.highAlarm = parseFloat(highAlarmValue) || 100;
+          if (highAlarmEnabled && highAlarmValue !== '') {
+            tank.highAlarm = parseFloat(highAlarmValue);
           }
-          if (lowAlarmEnabled && lowAlarmValue) {
-            tank.lowAlarm = parseFloat(lowAlarmValue) || 20;
+          if (lowAlarmEnabled && lowAlarmValue !== '') {
+            tank.lowAlarm = parseFloat(lowAlarmValue);
           }
           tank.alarmSms = true;
         } else {
