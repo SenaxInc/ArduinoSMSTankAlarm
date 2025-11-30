@@ -636,7 +636,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           <label class="field"><span>Sample Minutes</span><input id="sampleMinutes" type="number" value="30" min="1" max="1440"></label>
           <label class="field"><span>Level Change Threshold (in)<span class="tooltip-icon" tabindex="0" data-tooltip="Minimum level change in inches required before sending telemetry. Set to 0 to send all readings. Useful to reduce data usage by only reporting significant changes.">?</span></span><input id="levelChangeThreshold" type="number" step="0.1" value="0" placeholder="0 = disabled"></label>
           <label class="field"><span>Report Time</span><input id="reportTime" type="time" value="05:00"></label>
-          <label class="field"><span>Daily Email</span><input id="dailyEmail" type="email"></label>
+          <label class="field"><span>Daily Report Email Recipient</span><input id="dailyEmail" type="email"></label>
         </div>
         
         <h3>Sensors</h3>
@@ -731,7 +731,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
               </select>
             </label>
             <label class="field pulses-per-rev-field" style="display: none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label>
-            <label class="field"><span><span class="height-label">Height (in)</span></span><input type="number" class="tank-height" value="120"></label>
+            <label class="field"><span><span class="height-label">Height (in)</span><span class="tooltip-icon" tabindex="0" data-tooltip="Maximum height or capacity of the tank in inches. Used to calculate fill percentage and set alarm thresholds relative to tank size.">?</span></span><input type="number" class="tank-height" value="120"></label>
           </div>
           
           <button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button>
