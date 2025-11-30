@@ -158,7 +158,6 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
       --header-bg: #ffffff;
       --meta-color: #475569;
       --card-bg: #ffffff;
-      --filter-bg: #ffffff;
       --table-border: rgba(15,23,42,0.08);
     }
     body[data-theme="dark"] {
@@ -167,7 +166,6 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
       --header-bg: #1e293b;
       --meta-color: #94a3b8;
       --card-bg: #1e293b;
-      --filter-bg: #1e293b;
       --table-border: rgba(255,255,255,0.08);
     }
     body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); transition: background 0.3s, color 0.3s; }
@@ -179,13 +177,6 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
     .icon-button { width: 40px; height: 40px; border-radius: 50%; border: 1px solid rgba(148,163,184,0.4); background: var(--card-bg); color: var(--text); font-size: 1.1rem; cursor: pointer; }
     main { padding: 24px; max-width: 1400px; margin: 0 auto; }
     .card { background: var(--card-bg); border-radius: 16px; padding: 20px; box-shadow: 0 25px 60px rgba(15,23,42,0.15); border: 1px solid rgba(15,23,42,0.08); }
-    .filter-bar { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin-bottom: 20px; background: var(--filter-bg); padding: 12px 16px; border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,0.15); border: 1px solid rgba(15,23,42,0.08); }
-    .filter-bar label { display: flex; flex-direction: column; font-size: 0.9rem; color: var(--meta-color); }
-    .filter-bar select { margin-top: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.4); background: var(--bg); color: var(--text); min-width: 220px; }
-    .filter-actions { display: flex; gap: 12px; flex-wrap: wrap; }
-    .btn { padding: 10px 16px; border-radius: 999px; border: none; background: linear-gradient(135deg,#22d3ee,#818cf8); color: #0f172a; font-weight: 600; cursor: pointer; box-shadow: 0 15px 30px rgba(14,165,233,0.25); transition: transform 0.15s ease, box-shadow 0.15s ease; }
-    .btn:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; }
-    .btn:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 20px 40px rgba(14,165,233,0.45); }
     table { width: 100%; border-collapse: collapse; margin-top: 12px; }
     th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--table-border); }
     th { text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.75rem; color: var(--meta-color); }
@@ -219,18 +210,6 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
     </div>
   </header>
   <main>
-    <div class="filter-bar">
-      <label>
-        Site Filter
-        <select id="siteFilter">
-          <option value="">All Sites</option>
-        </select>
-      </label>
-      <div class="filter-actions">
-        <button class="btn" id="refreshSiteBtn">Refresh Selected Site</button>
-        <button class="btn" id="refreshAllBtn">Refresh All Sites</button>
-      </div>
-    </div>
     <section class="card">
       <div style="display:flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;">
         <h2 style="margin:0; font-size:1.2rem;">Fleet Snapshot</h2>
@@ -280,19 +259,14 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
         lastFetch: document.getElementById('lastFetch'),
         nextFetch: document.getElementById('nextFetch'),
         refreshHint: document.getElementById('refreshHint'),
-        tankBody: document.getElementById('tankBody'),
-        siteFilter: document.getElementById('siteFilter'),
-        refreshSiteBtn: document.getElementById('refreshSiteBtn'),
-        refreshAllBtn: document.getElementById('refreshAllBtn')
+        tankBody: document.getElementById('tankBody')
       };
 
       const state = {
-        tanks: [],
-        selected: '',
-        refreshing: false
+        tanks: []
       };
 
-      function applyTankData(data, preferredUid) {
+      function applyTankData(data) {
         els.viewerName.textContent = data.viewerName || 'Tank Alarm Viewer';
         els.viewerUid.textContent = data.viewerUid || '--';
         els.sourceServer.textContent = data.sourceServerName || 'Server';
@@ -302,78 +276,24 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
         els.nextFetch.textContent = formatEpoch(data.nextFetchEpoch);
         els.refreshHint.textContent = describeCadence(data.refreshSeconds, data.baseHour);
         state.tanks = data.tanks || [];
-        const desired = preferredUid || state.selected;
-        populateSiteFilter(desired);
         renderTankRows();
       }
 
-      async function fetchTanks(preferredUid) {
+      async function fetchTanks() {
         try {
           const res = await fetch('/api/tanks');
           if (!res.ok) throw new Error('HTTP ' + res.status);
           const data = await res.json();
-          applyTankData(data, preferredUid);
+          applyTankData(data);
         } catch (err) {
           console.error('Viewer refresh failed', err);
         }
       }
 
-      async function triggerManualRefresh(targetUid) {
-        const payload = targetUid ? { client: targetUid } : {};
-        setRefreshBusy(true);
-        try {
-          const res = await fetch('/api/refresh', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-          if (!res.ok) {
-            const text = await res.text();
-            throw new Error(text || 'Refresh failed');
-          }
-          const data = await res.json();
-          applyTankData(data, targetUid || state.selected);
-        } catch (err) {
-          console.error('Manual refresh failed', err);
-        } finally {
-          setRefreshBusy(false);
-        }
-      }
-
-      function populateSiteFilter(preferredUid) {
-        const uniqueClients = new Map();
-        state.tanks.forEach(tank => {
-          if (!tank.client) return;
-          if (!uniqueClients.has(tank.client)) {
-            const label = tank.site || `Client ${tank.client.slice(-4)}`;
-            uniqueClients.set(tank.client, label);
-          }
-        });
-        const select = els.siteFilter;
-        select.innerHTML = '<option value="">All Sites</option>';
-        uniqueClients.forEach((label, uid) => {
-          const option = document.createElement('option');
-          const suffix = uid.length > 6 ? uid.slice(-6) : uid;
-          option.value = uid;
-          option.textContent = `${label} (${suffix})`;
-          select.appendChild(option);
-        });
-        if (preferredUid && uniqueClients.has(preferredUid)) {
-          select.value = preferredUid;
-          state.selected = preferredUid;
-        } else if (!uniqueClients.has(state.selected)) {
-          select.value = '';
-          state.selected = '';
-        } else {
-          select.value = state.selected;
-        }
-        updateButtonState();
-      }
-
       function renderTankRows() {
         const tbody = els.tankBody;
         tbody.innerHTML = '';
-        const rows = state.selected ? state.tanks.filter(t => t.client === state.selected) : state.tanks;
+        const rows = state.tanks;
         if (!rows.length) {
           const tr = document.createElement('tr');
           tr.innerHTML = '<td colspan="5">No tank data available</td>';
@@ -443,36 +363,8 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
         return String(value).replace(/[&<>"']/g, c => entityMap[c] || c);
       }
 
-      function setRefreshBusy(busy) {
-        state.refreshing = busy;
-        updateButtonState();
-      }
-
-      function updateButtonState() {
-        els.refreshAllBtn.disabled = state.refreshing;
-        els.refreshSiteBtn.disabled = state.refreshing || !state.selected;
-      }
-
-      els.siteFilter.addEventListener('change', event => {
-        state.selected = event.target.value;
-        renderTankRows();
-        updateButtonState();
-      });
-
-      els.refreshSiteBtn.addEventListener('click', () => {
-        if (!state.selected) {
-          alert('Select a site to refresh.');
-          return;
-        }
-        triggerManualRefresh(state.selected);
-      });
-
-      els.refreshAllBtn.addEventListener('click', () => {
-        triggerManualRefresh(null);
-      });
-
       fetchTanks();
-      setInterval(() => fetchTanks(state.selected), REFRESH_SECONDS * 1000);
+      setInterval(() => fetchTanks(), REFRESH_SECONDS * 1000);
     })();
   </script>
 </body>
