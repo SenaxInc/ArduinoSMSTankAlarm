@@ -737,8 +737,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           <div class="collapsible-section alarm-section">
             <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">Alarm Thresholds <button type="button" class="remove-btn" onclick="removeAlarmSection(${id})" style="float: right;">Remove Alarm</button></h4>
             <div class="form-grid">
-              <label class="field"><span>High Alarm</span><input type="number" class="high-alarm" value="100"></label>
-              <label class="field"><span>Low Alarm</span><input type="number" class="low-alarm" value="20"></label>
+              <label class="field"><span><label style="display: flex; align-items: center; gap: 6px;"><input type="checkbox" class="high-alarm-enabled" checked> High Alarm</label></span><input type="number" class="high-alarm" value="100"></label>
+              <label class="field"><span><label style="display: flex; align-items: center; gap: 6px;"><input type="checkbox" class="low-alarm-enabled" checked> Low Alarm</label></span><input type="number" class="low-alarm" value="20"></label>
             </div>
           </div>
 
@@ -805,6 +805,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       // Reset alarm values to defaults
       card.querySelector('.high-alarm').value = '100';
       card.querySelector('.low-alarm').value = '20';
+      card.querySelector('.high-alarm-enabled').checked = true;
+      card.querySelector('.low-alarm-enabled').checked = true;
     };
 
     window.toggleRelaySection = function(id) {
@@ -946,6 +948,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
 
         // Check if alarm section is enabled
         const alarmSectionVisible = card.querySelector('.alarm-section').classList.contains('visible');
+        const highAlarmEnabled = card.querySelector('.high-alarm-enabled').checked;
+        const lowAlarmEnabled = card.querySelector('.low-alarm-enabled').checked;
         const highAlarmValue = card.querySelector('.high-alarm').value;
         const lowAlarmValue = card.querySelector('.low-alarm').value;
 
@@ -964,10 +968,14 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           upload: true
         };
 
-        // Only include alarm values if alarm section is visible and values are set
-        if (alarmSectionVisible && (highAlarmValue || lowAlarmValue)) {
-          tank.highAlarm = parseFloat(highAlarmValue) || 100;
-          tank.lowAlarm = parseFloat(lowAlarmValue) || 20;
+        // Only include alarm values if alarm section is visible and individual alarms are enabled
+        if (alarmSectionVisible && (highAlarmEnabled || lowAlarmEnabled)) {
+          if (highAlarmEnabled && highAlarmValue) {
+            tank.highAlarm = parseFloat(highAlarmValue) || 100;
+          }
+          if (lowAlarmEnabled && lowAlarmValue) {
+            tank.lowAlarm = parseFloat(lowAlarmValue) || 20;
+          }
           tank.alarmSms = true;
         } else {
           // No alarm configured - disable SMS alerts
