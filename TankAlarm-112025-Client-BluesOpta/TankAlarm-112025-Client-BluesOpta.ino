@@ -187,6 +187,19 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define MIN_ALARM_INTERVAL_SECONDS 300  // Minimum 5 minutes between same alarm type
 #endif
 
+// Digital sensor (float switch) constants
+#ifndef DIGITAL_SWITCH_THRESHOLD
+#define DIGITAL_SWITCH_THRESHOLD 0.5f  // Threshold to determine activated vs not-activated state
+#endif
+
+#ifndef DIGITAL_SENSOR_ACTIVATED_VALUE
+#define DIGITAL_SENSOR_ACTIVATED_VALUE 1.0f  // Value returned when switch is activated
+#endif
+
+#ifndef DIGITAL_SENSOR_NOT_ACTIVATED_VALUE
+#define DIGITAL_SENSOR_NOT_ACTIVATED_VALUE 0.0f  // Value returned when switch is not activated
+#endif
+
 static const uint8_t NOTECARD_I2C_ADDRESS = 0x17;
 static const uint32_t NOTECARD_I2C_FREQUENCY = 400000UL;
 
@@ -235,6 +248,8 @@ struct TankConfig {
   uint8_t relayMask;       // Bitmask of relays to trigger (bit 0=relay 1, etc.)
   RelayTrigger relayTrigger; // Which alarm type triggers the relay (any, high, low)
   RelayMode relayMode;     // How long relay stays on (momentary, until_clear, manual_reset)
+  // Digital sensor (float switch) specific settings
+  char digitalTrigger[16]; // 'activated' or 'not_activated' - when to trigger alarm for digital sensors
 };
 
 struct ClientConfig {
@@ -615,6 +630,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].relayMask = 0; // No relays triggered by default
   cfg.tanks[0].relayTrigger = RELAY_TRIGGER_ANY; // Default: trigger on any alarm
   cfg.tanks[0].relayMode = RELAY_MODE_MOMENTARY; // Default: momentary 30 min activation
+  cfg.tanks[0].digitalTrigger[0] = '\0'; // Not a digital sensor by default
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -740,6 +756,9 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     } else {
       cfg.tanks[i].relayMode = RELAY_MODE_MOMENTARY;
     }
+    // Load digital sensor trigger state (for float switches)
+    const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
+    strlcpy(cfg.tanks[i].digitalTrigger, digitalTriggerStr ? digitalTriggerStr : "", sizeof(cfg.tanks[i].digitalTrigger));
   }
 
   return true;
@@ -803,6 +822,10 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
       case RELAY_MODE_UNTIL_CLEAR: t["relayMode"] = "until_clear"; break;
       case RELAY_MODE_MANUAL_RESET: t["relayMode"] = "manual_reset"; break;
       default: t["relayMode"] = "momentary"; break;
+    }
+    // Save digital sensor trigger state (for float switches)
+    if (cfg.tanks[i].digitalTrigger[0] != '\0') {
+      t["digitalTrigger"] = cfg.tanks[i].digitalTrigger;
     }
   }
 
@@ -1230,6 +1253,13 @@ static void applyConfigUpdate(const JsonDocument &doc) {
           gConfig.tanks[i].relayMode = RELAY_MODE_MOMENTARY;
         }
       }
+      // Handle digital sensor trigger state (for float switches)
+      if (t.containsKey("digitalTrigger")) {
+        const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
+        strlcpy(gConfig.tanks[i].digitalTrigger,
+                digitalTriggerStr ? digitalTriggerStr : "",
+                sizeof(gConfig.tanks[i].digitalTrigger));
+      }
     }
   }
 
@@ -1377,11 +1407,16 @@ static float readTankSensor(uint8_t idx) {
 
   switch (cfg.sensorType) {
     case SENSOR_DIGITAL: {
-      // Use explicit bounds check for pin
+      // Float switch sensor - returns activated/not-activated state
+      // This implementation assumes normally-open (NO) float switches with INPUT_PULLUP:
+      // - Default state is HIGH (switch open, no fluid)
+      // - When fluid is present, switch closes and pulls pin LOW
+      // For normally-closed (NC) switches, invert the trigger condition in config
       int pin = (cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx);
       pinMode(pin, INPUT_PULLUP);
       int level = digitalRead(pin);
-      return level == HIGH ? cfg.maxValue : 0.0f;
+      // Return activated value when switch is closed (LOW), not-activated when open (HIGH)
+      return (level == LOW) ? DIGITAL_SENSOR_ACTIVATED_VALUE : DIGITAL_SENSOR_NOT_ACTIVATED_VALUE;
     }
     case SENSOR_ANALOG: {
       // Use explicit bounds check for channel (A0602 has channels 0-7)
@@ -1520,7 +1555,71 @@ static void evaluateAlarms(uint8_t idx) {
     return;
   }
 
-  // Apply hysteresis: use different thresholds for triggering vs clearing
+  // Handle digital sensors (float switches) differently
+  if (cfg.sensorType == SENSOR_DIGITAL) {
+    // For digital sensors, currentInches is either DIGITAL_SENSOR_ACTIVATED_VALUE (1.0) or DIGITAL_SENSOR_NOT_ACTIVATED_VALUE (0.0)
+    bool isActivated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
+    bool shouldAlarm = false;
+    bool triggerOnActivated = true;  // Track what condition triggers the alarm
+    
+    // Determine if we should alarm based on trigger configuration
+    if (cfg.digitalTrigger[0] != '\0') {
+      if (strcmp(cfg.digitalTrigger, "activated") == 0) {
+        shouldAlarm = isActivated;  // Alarm when switch is activated
+        triggerOnActivated = true;
+      } else if (strcmp(cfg.digitalTrigger, "not_activated") == 0) {
+        shouldAlarm = !isActivated;  // Alarm when switch is NOT activated
+        triggerOnActivated = false;
+      }
+    } else {
+      // Legacy behavior: use highAlarm/lowAlarm thresholds
+      // Only one of these should be configured for a digital sensor
+      // highAlarm = 1 means trigger when reading is 1.0 (switch activated)
+      // lowAlarm = 0 means trigger when reading is 0.0 (switch not activated)
+      bool hasHighAlarm = (cfg.highAlarmThreshold >= DIGITAL_SENSOR_ACTIVATED_VALUE);
+      bool hasLowAlarm = (cfg.lowAlarmThreshold == DIGITAL_SENSOR_NOT_ACTIVATED_VALUE);
+      
+      if (hasHighAlarm && !hasLowAlarm) {
+        shouldAlarm = isActivated;
+        triggerOnActivated = true;
+      } else if (hasLowAlarm && !hasHighAlarm) {
+        shouldAlarm = !isActivated;
+        triggerOnActivated = false;
+      } else if (hasHighAlarm) {
+        // Default to high alarm behavior if both are set
+        shouldAlarm = isActivated;
+        triggerOnActivated = true;
+      }
+    }
+    
+    // Handle alarm state with debouncing
+    if (shouldAlarm && !state.highAlarmLatched) {
+      state.highAlarmDebounceCount++;
+      state.clearDebounceCount = 0;
+      if (state.highAlarmDebounceCount >= ALARM_DEBOUNCE_COUNT) {
+        state.highAlarmLatched = true;
+        state.highAlarmDebounceCount = 0;
+        // Send alarm with descriptive type based on configured trigger condition
+        const char *alarmType = triggerOnActivated ? "triggered" : "not_triggered";
+        sendAlarm(idx, alarmType, state.currentInches);
+      }
+    } else if (!shouldAlarm && state.highAlarmLatched) {
+      state.clearDebounceCount++;
+      state.highAlarmDebounceCount = 0;
+      if (state.clearDebounceCount >= ALARM_DEBOUNCE_COUNT) {
+        state.highAlarmLatched = false;
+        state.clearDebounceCount = 0;
+        sendAlarm(idx, "clear", state.currentInches);
+      }
+    } else if (!shouldAlarm) {
+      state.highAlarmDebounceCount = 0;
+    } else {
+      state.clearDebounceCount = 0;
+    }
+    return;  // Skip the standard analog threshold evaluation
+  }
+
+  // Standard analog/current loop sensor alarm evaluation with hysteresis
   float highTrigger = cfg.highAlarmThreshold;
   float highClear = cfg.highAlarmThreshold - cfg.hysteresisValue;
   float lowTrigger = cfg.lowAlarmThreshold;
@@ -1598,9 +1697,19 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   doc["label"] = cfg.name;
   doc["tank"] = cfg.tankNumber;
   doc["id"] = String(cfg.id);
-  doc["maxValue"] = cfg.maxValue;
-  doc["levelInches"] = state.currentInches;
-  doc["percent"] = (cfg.maxValue > 0.1f) ? (state.currentInches / cfg.maxValue * 100.0f) : 0.0f;
+  
+  // Handle digital sensors differently in telemetry
+  if (cfg.sensorType == SENSOR_DIGITAL) {
+    doc["sensorType"] = "digital";
+    bool activated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
+    doc["activated"] = activated;  // Boolean state: true = switch activated
+    doc["levelInches"] = state.currentInches;  // 1.0 or 0.0
+    doc["percent"] = activated ? 100.0f : 0.0f;  // 100% when activated, 0% when not
+  } else {
+    doc["maxValue"] = cfg.maxValue;
+    doc["levelInches"] = state.currentInches;
+    doc["percent"] = (cfg.maxValue > 0.1f) ? (state.currentInches / cfg.maxValue * 100.0f) : 0.0f;
+  }
   doc["reason"] = reason;
   doc["time"] = currentEpoch();
 

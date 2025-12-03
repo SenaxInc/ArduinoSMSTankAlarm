@@ -669,7 +669,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
     });
 
     const sensorTypes = [
-      { value: 0, label: 'Digital Input' },
+      { value: 0, label: 'Digital Input (Float Switch)' },
       { value: 1, label: 'Analog Input (0-10V)' },
       { value: 2, label: 'Current Loop (4-20mA)' },
       { value: 3, label: 'Hall Effect RPM' }
@@ -731,13 +731,19 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
               </select>
             </label>
             <label class="field pulses-per-rev-field" style="display: none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label>
-            <label class="field"><span><span class="height-label">Height (in)</span><span class="tooltip-icon" tabindex="0" data-tooltip="Maximum height or capacity of the tank in inches. Used to calculate fill percentage and set alarm thresholds relative to tank size.">?</span></span><input type="number" class="tank-height" value="120"></label>
+            <label class="field height-field"><span><span class="height-label">Height (in)</span><span class="tooltip-icon height-tooltip" tabindex="0" data-tooltip="Maximum height or capacity of the tank in inches. Used to calculate fill percentage and set alarm thresholds relative to tank size.">?</span></span><input type="number" class="tank-height" value="120"></label>
+          </div>
+          
+          <!-- Digital sensor info box (shown only for float switches) -->
+          <div class="digital-sensor-info" style="display: none; background: var(--chip); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px; margin-top: 8px; font-size: 0.9rem; color: var(--muted);">
+            <strong>Float Switch Mode:</strong> This sensor only detects whether fluid has reached the switch position. It does not measure actual fluid level. The alarm will trigger when the switch is activated (fluid present) or not activated (fluid absent).
           </div>
           
           <button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button>
           <div class="collapsible-section alarm-section">
-            <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;">Alarm Thresholds <button type="button" class="remove-btn" onclick="removeAlarmSection(${id})" style="float: right;">Remove Alarm</button></h4>
-            <div class="form-grid">
+            <h4 style="margin: 16px 0 8px; font-size: 0.95rem; border-top: 1px solid var(--card-border); padding-top: 12px;"><span class="alarm-section-title">Alarm Thresholds</span> <button type="button" class="remove-btn" onclick="removeAlarmSection(${id})" style="float: right;">Remove Alarm</button></h4>
+            <!-- Standard alarm thresholds (for analog/current loop sensors) -->
+            <div class="form-grid alarm-thresholds-grid">
               <div class="field">
                 <span>
                   <label style="display: flex; align-items: center; gap: 6px;">
@@ -753,6 +759,16 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
                   </label>
                 </span>
                 <input type="number" class="low-alarm" value="20">
+              </div>
+            </div>
+            <!-- Digital sensor alarm config (for float switches) -->
+            <div class="form-grid digital-alarm-grid" style="display: none;">
+              <div class="field" style="grid-column: 1 / -1;">
+                <span>Trigger Condition<span class="tooltip-icon" tabindex="0" data-tooltip="Select when the alarm should trigger based on the float switch state.">?</span></span>
+                <select class="digital-trigger-state">
+                  <option value="activated">When Switch is Activated (fluid detected)</option>
+                  <option value="not_activated">When Switch is NOT Activated (no fluid)</option>
+                </select>
               </div>
             </div>
           </div>
@@ -811,6 +827,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const div = document.createElement('div');
       div.innerHTML = createSensorHtml(sensorCount);
       container.appendChild(div.firstElementChild);
+      updateSensorTypeFields(sensorCount);  // Initialize fields for default sensor type
       sensorCount++;
     }
 
@@ -962,6 +979,54 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         option.textContent = opt.label;
         pinSelect.appendChild(option);
       });
+      
+      // Update sensor-type-specific fields
+      updateSensorTypeFields(id);
+    };
+
+    window.updateSensorTypeFields = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const type = parseInt(card.querySelector('.sensor-type').value);
+      const heightField = card.querySelector('.height-field');
+      const heightLabel = card.querySelector('.height-label');
+      const heightTooltip = card.querySelector('.height-tooltip');
+      const digitalInfoBox = card.querySelector('.digital-sensor-info');
+      const alarmThresholdsGrid = card.querySelector('.alarm-thresholds-grid');
+      const digitalAlarmGrid = card.querySelector('.digital-alarm-grid');
+      const alarmSectionTitle = card.querySelector('.alarm-section-title');
+      const pulsesPerRevField = card.querySelector('.pulses-per-rev-field');
+      
+      // Digital Input (Float Switch) - type === 0
+      if (type === 0) {
+        // Hide height field (not applicable for float switches)
+        heightField.style.display = 'none';
+        // Show digital sensor info box
+        digitalInfoBox.style.display = 'block';
+        // Update alarm section for digital sensors
+        alarmThresholdsGrid.style.display = 'none';
+        digitalAlarmGrid.style.display = 'grid';
+        alarmSectionTitle.textContent = 'Float Switch Alarm';
+        pulsesPerRevField.style.display = 'none';
+      } else if (type === 3) { // Hall Effect RPM
+        heightField.style.display = 'flex';
+        heightLabel.textContent = 'Max RPM';
+        heightTooltip.setAttribute('data-tooltip', 'Maximum expected RPM value. Used for alarm threshold reference.');
+        digitalInfoBox.style.display = 'none';
+        alarmThresholdsGrid.style.display = 'grid';
+        digitalAlarmGrid.style.display = 'none';
+        alarmSectionTitle.textContent = 'Alarm Thresholds';
+        pulsesPerRevField.style.display = 'flex';
+      } else {
+        // Analog or Current Loop sensors
+        heightField.style.display = 'flex';
+        heightLabel.textContent = 'Height (in)';
+        heightTooltip.setAttribute('data-tooltip', 'Maximum height or capacity of the tank in inches. Used to calculate fill percentage and set alarm thresholds relative to tank size.');
+        digitalInfoBox.style.display = 'none';
+        alarmThresholdsGrid.style.display = 'grid';
+        digitalAlarmGrid.style.display = 'none';
+        alarmSectionTitle.textContent = 'Alarm Thresholds';
+        pulsesPerRevField.style.display = 'none';
+      }
     };
 
     document.getElementById('addSensorBtn').addEventListener('click', addSensor);
@@ -1039,27 +1104,44 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           secondaryPin: -1,
           loopChannel: sensor === 'current' ? pin : -1,
           rpmPin: sensor === 'rpm' ? pin : -1,
-          maxValue: parseFloat(card.querySelector('.tank-height').value) || 120,
-          hysteresis: 2.0,
+          maxValue: sensor === 'digital' ? 1 : (parseFloat(card.querySelector('.tank-height').value) || 120),
+          hysteresis: sensor === 'digital' ? 0 : 2.0,
           daily: true,
           upload: true
         };
 
-        // Only include alarm values if alarm section is visible and individual alarms are enabled
-        if (alarmSectionVisible && (highAlarmEnabled || lowAlarmEnabled)) {
-          if (highAlarmEnabled && highAlarmValue !== '') {
-            const highAlarmFloat = parseFloat(highAlarmValue);
-            if (!isNaN(highAlarmFloat)) {
-              tank.highAlarm = highAlarmFloat;
+        // Handle alarms differently based on sensor type
+        if (alarmSectionVisible) {
+          if (sensor === 'digital') {
+            // Digital/float switch sensors use trigger state instead of thresholds
+            const digitalTriggerState = card.querySelector('.digital-trigger-state').value;
+            tank.digitalTrigger = digitalTriggerState;  // 'activated' or 'not_activated'
+            // For digital sensors, highAlarm = 1 means "alarm when reading is 1.0 (switch activated)"
+            // lowAlarm = 0 means "alarm when reading is 0.0 (switch not activated)"
+            if (digitalTriggerState === 'activated') {
+              tank.highAlarm = 1;  // Trigger alarm when reading is 1.0 (switch activated)
+            } else {
+              tank.lowAlarm = 0;   // Trigger alarm when reading is 0.0 (switch not activated)
             }
-          }
-          if (lowAlarmEnabled && lowAlarmValue !== '') {
-            const lowAlarmFloat = parseFloat(lowAlarmValue);
-            if (!isNaN(lowAlarmFloat)) {
-              tank.lowAlarm = lowAlarmFloat;
+            tank.alarmSms = true;
+          } else if (highAlarmEnabled || lowAlarmEnabled) {
+            // Standard analog/current loop sensors use thresholds
+            if (highAlarmEnabled && highAlarmValue !== '') {
+              const highAlarmFloat = parseFloat(highAlarmValue);
+              if (!isNaN(highAlarmFloat)) {
+                tank.highAlarm = highAlarmFloat;
+              }
             }
+            if (lowAlarmEnabled && lowAlarmValue !== '') {
+              const lowAlarmFloat = parseFloat(lowAlarmValue);
+              if (!isNaN(lowAlarmFloat)) {
+                tank.lowAlarm = lowAlarmFloat;
+              }
+            }
+            tank.alarmSms = true;
+          } else {
+            tank.alarmSms = false;
           }
-          tank.alarmSms = true;
         } else {
           // No alarm configured - disable SMS alerts
           tank.alarmSms = false;
@@ -5521,6 +5603,9 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
                       (strcmp(type, "sensor-stuck") == 0) ||
                       (strcmp(type, "sensor-recovered") == 0);
   bool isRecovery = (strcmp(type, "sensor-recovered") == 0);
+  // Digital sensor (float switch) alarm types
+  bool isDigitalAlarm = (strcmp(type, "triggered") == 0) ||
+                        (strcmp(type, "not_triggered") == 0);
 
   if (strcmp(type, "clear") == 0 || isRecovery) {
     rec->alarmActive = false;
@@ -5552,11 +5637,20 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
     smsAllowedByServer = gConfig.smsOnLow;
   } else if (strcmp(type, "clear") == 0) {
     smsAllowedByServer = gConfig.smsOnClear;
+  } else if (isDigitalAlarm) {
+    // Digital sensor alarms are treated like high alarms for SMS purposes
+    smsAllowedByServer = gConfig.smsOnHigh;
   }
 
   if (!isDiagnostic && smsEnabled && smsAllowedByServer && checkSmsRateLimit(rec)) {
     char message[160];
-    snprintf(message, sizeof(message), "%s #%d %s alarm %.1f in", rec->site, rec->tankNumber, rec->alarmType, inches);
+    // Format message differently for digital sensors
+    if (isDigitalAlarm) {
+      const char *stateDesc = (strcmp(type, "triggered") == 0) ? "ACTIVATED" : "NOT ACTIVATED";
+      snprintf(message, sizeof(message), "%s #%d Float Switch %s", rec->site, rec->tankNumber, stateDesc);
+    } else {
+      snprintf(message, sizeof(message), "%s #%d %s alarm %.1f in", rec->site, rec->tankNumber, rec->alarmType, inches);
+    }
     sendSmsAlert(message);
   }
 }
