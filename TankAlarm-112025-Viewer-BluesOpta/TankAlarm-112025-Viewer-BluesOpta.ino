@@ -390,7 +390,6 @@ static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t i
 static void scheduleNextSummaryFetch();
 static void fetchViewerSummary();
 static void handleViewerSummary(JsonDocument &doc, double epoch);
-static void handleRefreshPost(EthernetClient &client, const String &body);
 
 void setup() {
   Serial.begin(115200);
@@ -575,8 +574,6 @@ static void handleWebRequests() {
     sendDashboard(client);
   } else if (method == "GET" && path == "/api/tanks") {
     sendTankJson(client);
-  } else if (method == "POST" && path == "/api/refresh") {
-    handleRefreshPost(client, body);
   } else {
     respondStatus(client, 404, "Not Found");
   }
@@ -834,28 +831,4 @@ static void handleViewerSummary(JsonDocument &doc, double epoch) {
   Serial.print(F("Viewer summary applied ("));
   Serial.print(gTankRecordCount);
   Serial.println(F(" tanks)"));
-}
-
-static void handleRefreshPost(EthernetClient &client, const String &body) {
-  char clientUid[48] = {0};
-  if (body.length() > 0) {
-    DynamicJsonDocument doc(128);
-    if (deserializeJson(doc, body) == DeserializationError::Ok) {
-      const char *uid = doc["client"] | "";
-      if (uid && *uid) {
-        strlcpy(clientUid, uid, sizeof(clientUid));
-      }
-    }
-  }
-
-  if (clientUid[0]) {
-    Serial.print(F("Viewer manual refresh requested for client " ));
-    Serial.println(clientUid);
-  } else {
-    Serial.println(F("Viewer manual refresh requested for all sites"));
-  }
-
-  fetchViewerSummary();
-  scheduleNextSummaryFetch();
-  sendTankJson(client);
 }
