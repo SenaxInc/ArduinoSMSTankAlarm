@@ -1393,13 +1393,14 @@ static float readTankSensor(uint8_t idx) {
 
   switch (cfg.sensorType) {
     case SENSOR_DIGITAL: {
-      // Float switch: returns 1.0 when activated (HIGH), 0.0 when not activated (LOW)
-      // Note: With INPUT_PULLUP, the default state is HIGH (switch open)
+      // Float switch: returns 1.0 when activated, 0.0 when not activated
+      // Note: With INPUT_PULLUP, the default state is HIGH (switch open/no fluid)
       // When the float switch closes (fluid present), it pulls the pin LOW
+      // Therefore: LOW = activated (fluid present), HIGH = not activated (no fluid)
       int pin = (cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx);
       pinMode(pin, INPUT_PULLUP);
       int level = digitalRead(pin);
-      // LOW means switch is closed (activated/fluid present), HIGH means open (not activated/no fluid)
+      // Return 1.0 when activated (LOW), 0.0 when not activated (HIGH)
       return (level == LOW) ? 1.0f : 0.0f;
     }
     case SENSOR_ANALOG: {
@@ -1541,8 +1542,9 @@ static void evaluateAlarms(uint8_t idx) {
 
   // Handle digital sensors (float switches) differently
   if (cfg.sensorType == SENSOR_DIGITAL) {
-    // For digital sensors, currentInches is either 1.0 (HIGH/activated) or 0.0 (LOW/not activated)
-    bool isActivated = (state.currentInches > 0.5f);  // HIGH reading means switch is activated
+    // For digital sensors, currentInches is either 1.0 (activated/fluid present) or 0.0 (not activated/no fluid)
+    // Note: 1.0 corresponds to LOW pin state (switch closed), 0.0 corresponds to HIGH pin state (switch open)
+    bool isActivated = (state.currentInches > 0.5f);  // 1.0 means switch is activated (fluid present)
     bool shouldAlarm = false;
     
     // Determine if we should alarm based on trigger configuration
