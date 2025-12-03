@@ -89,6 +89,53 @@ The client creates a default configuration on first boot. You can update configu
 - **Min Inches**: Tank level in inches at minimum sensor value
 - **Max Inches**: Tank level in inches at maximum sensor value
 
+### 4-20mA Current Loop Sensor Configuration
+
+For 4-20mA current loop sensors, two mounting options are supported:
+
+#### Pressure Sensor (Bottom-Mounted)
+Used for sensors like the Dwyer 626-06-CB-P1-E5-S1 (0-5 PSI) mounted near the bottom of the tank.
+
+- **Current Loop Type**: "pressure"
+- **How it works**: Measures the pressure of the liquid column above the sensor
+  - 4mA = Empty tank (0 PSI / no liquid above sensor)
+  - 20mA = Full tank (max PSI / max liquid height)
+- **Sensor Mount Height**: Height of sensor above tank bottom (usually 0-2 inches)
+- **Max Value**: Maximum liquid height the sensor can measure (corresponds to 20mA)
+
+**Example Configuration** (0-5 PSI sensor, 1 PSI per 2.3 ft of water):
+- Sensor mounted 2 inches above tank bottom
+- Max sensor range = 5 PSI = ~138 inches of water
+- Tank height = 120 inches
+- Configuration:
+  - `currentLoopType`: "pressure"
+  - `sensorMountHeight`: 2.0
+  - `maxValue`: 138.0 (or actual tank height if tank is smaller)
+
+#### Ultrasonic Sensor (Top-Mounted)
+Used for sensors like the Siemens Sitrans LU240 mounted on top of the tank looking down.
+
+- **Current Loop Type**: "ultrasonic"
+- **How it works**: Measures the distance from the sensor to the liquid surface
+  - 4mA = Full tank (liquid close to sensor)
+  - 20mA = Empty tank (liquid far from sensor)
+- **Sensor Mount Height**: Distance from sensor to tank bottom when tank is empty
+- **Max Value**: Maximum liquid height (tank capacity)
+
+**Example Configuration** (ultrasonic sensor on 10-foot tank):
+- Sensor mounted 124 inches above tank bottom (tank is 120 inches + 4 inch clearance)
+- Maximum tank fill level = 120 inches
+- Configuration:
+  - `currentLoopType`: "ultrasonic"
+  - `sensorMountHeight`: 124.0
+  - `maxValue`: 120.0
+
+**Calibration Tips for 4-20mA Sensors:**
+1. Record the actual mA output at known liquid levels (empty, half-full, full)
+2. Verify sensor mount height is accurate
+3. Check for temperature effects on readings
+4. Consider the specific gravity of the liquid (for pressure sensors)
+
 ### Float Switch Configuration (Digital Sensors)
 Float switches can be configured as either normally-open (NO) or normally-closed (NC):
 
