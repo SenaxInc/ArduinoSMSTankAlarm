@@ -1557,7 +1557,7 @@ static void evaluateAlarms(uint8_t idx) {
 
   // Handle digital sensors (float switches) differently
   if (cfg.sensorType == SENSOR_DIGITAL) {
-    // For digital sensors, currentInches is either ACTIVATED_VALUE (1.0) or NOT_ACTIVATED_VALUE (0.0)
+    // For digital sensors, currentInches is either DIGITAL_SENSOR_ACTIVATED_VALUE (1.0) or DIGITAL_SENSOR_NOT_ACTIVATED_VALUE (0.0)
     bool isActivated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
     bool shouldAlarm = false;
     bool triggerOnActivated = true;  // Track what condition triggers the alarm
