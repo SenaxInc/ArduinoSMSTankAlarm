@@ -1242,8 +1242,9 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       }
       // Handle digital sensor trigger state (for float switches)
       if (t.containsKey("digitalTrigger")) {
+        const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
         strlcpy(gConfig.tanks[i].digitalTrigger,
-                t["digitalTrigger"].as<const char *>() ?: "",
+                digitalTriggerStr ? digitalTriggerStr : "",
                 sizeof(gConfig.tanks[i].digitalTrigger));
       }
     }
