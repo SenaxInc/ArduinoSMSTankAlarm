@@ -250,6 +250,7 @@ struct TankConfig {
   RelayMode relayMode;     // How long relay stays on (momentary, until_clear, manual_reset)
   // Digital sensor (float switch) specific settings
   char digitalTrigger[16]; // 'activated' or 'not_activated' - when to trigger alarm for digital sensors
+  char digitalSwitchMode[4]; // 'NO' for normally-open, 'NC' for normally-closed (default: NO)
 };
 
 struct ClientConfig {
@@ -631,6 +632,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].relayTrigger = RELAY_TRIGGER_ANY; // Default: trigger on any alarm
   cfg.tanks[0].relayMode = RELAY_MODE_MOMENTARY; // Default: momentary 30 min activation
   cfg.tanks[0].digitalTrigger[0] = '\0'; // Not a digital sensor by default
+  strlcpy(cfg.tanks[0].digitalSwitchMode, "NO", sizeof(cfg.tanks[0].digitalSwitchMode)); // Default: normally-open
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -759,6 +761,13 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     // Load digital sensor trigger state (for float switches)
     const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
     strlcpy(cfg.tanks[i].digitalTrigger, digitalTriggerStr ? digitalTriggerStr : "", sizeof(cfg.tanks[i].digitalTrigger));
+    // Load digital switch mode (NO = normally-open, NC = normally-closed)
+    const char *digitalSwitchModeStr = t["digitalSwitchMode"].as<const char *>();
+    if (digitalSwitchModeStr && strcmp(digitalSwitchModeStr, "NC") == 0) {
+      strlcpy(cfg.tanks[i].digitalSwitchMode, "NC", sizeof(cfg.tanks[i].digitalSwitchMode));
+    } else {
+      strlcpy(cfg.tanks[i].digitalSwitchMode, "NO", sizeof(cfg.tanks[i].digitalSwitchMode)); // Default: normally-open
+    }
   }
 
   return true;
@@ -826,6 +835,10 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     // Save digital sensor trigger state (for float switches)
     if (cfg.tanks[i].digitalTrigger[0] != '\0') {
       t["digitalTrigger"] = cfg.tanks[i].digitalTrigger;
+    }
+    // Save digital switch mode (NO/NC) for digital sensors
+    if (cfg.tanks[i].sensorType == SENSOR_DIGITAL) {
+      t["digitalSwitchMode"] = cfg.tanks[i].digitalSwitchMode;
     }
   }
 
@@ -1260,6 +1273,15 @@ static void applyConfigUpdate(const JsonDocument &doc) {
                 digitalTriggerStr ? digitalTriggerStr : "",
                 sizeof(gConfig.tanks[i].digitalTrigger));
       }
+      // Handle digital switch mode (NO/NC) for float switches
+      if (t.containsKey("digitalSwitchMode")) {
+        const char *digitalSwitchModeStr = t["digitalSwitchMode"].as<const char *>();
+        if (digitalSwitchModeStr && strcmp(digitalSwitchModeStr, "NC") == 0) {
+          strlcpy(gConfig.tanks[i].digitalSwitchMode, "NC", sizeof(gConfig.tanks[i].digitalSwitchMode));
+        } else {
+          strlcpy(gConfig.tanks[i].digitalSwitchMode, "NO", sizeof(gConfig.tanks[i].digitalSwitchMode));
+        }
+      }
     }
   }
 
@@ -1408,15 +1430,30 @@ static float readTankSensor(uint8_t idx) {
   switch (cfg.sensorType) {
     case SENSOR_DIGITAL: {
       // Float switch sensor - returns activated/not-activated state
-      // This implementation assumes normally-open (NO) float switches with INPUT_PULLUP:
-      // - Default state is HIGH (switch open, no fluid)
-      // - When fluid is present, switch closes and pulls pin LOW
-      // For normally-closed (NC) switches, invert the trigger condition in config
+      // The digitalSwitchMode field controls how the hardware is interpreted:
+      // - "NO" (normally-open): Switch is open by default, closes when fluid is present
+      //   - With INPUT_PULLUP: HIGH = switch open (no fluid), LOW = switch closed (fluid present)
+      //   - activated when pin is LOW
+      // - "NC" (normally-closed): Switch is closed by default, opens when fluid is present
+      //   - With INPUT_PULLUP: LOW = switch closed (no fluid), HIGH = switch open (fluid present)
+      //   - activated when pin is HIGH
       int pin = (cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx);
       pinMode(pin, INPUT_PULLUP);
       int level = digitalRead(pin);
-      // Return activated value when switch is closed (LOW), not-activated when open (HIGH)
-      return (level == LOW) ? DIGITAL_SENSOR_ACTIVATED_VALUE : DIGITAL_SENSOR_NOT_ACTIVATED_VALUE;
+      
+      // Determine if switch is configured as normally-closed
+      bool isNormallyClosed = (strcmp(cfg.digitalSwitchMode, "NC") == 0);
+      
+      // For NO switches: LOW = activated (switch closed, fluid present)
+      // For NC switches: HIGH = activated (switch opened, fluid present)
+      bool isActivated;
+      if (isNormallyClosed) {
+        isActivated = (level == HIGH); // NC switch opens (goes HIGH) when activated
+      } else {
+        isActivated = (level == LOW);  // NO switch closes (goes LOW) when activated
+      }
+      
+      return isActivated ? DIGITAL_SENSOR_ACTIVATED_VALUE : DIGITAL_SENSOR_NOT_ACTIVATED_VALUE;
     }
     case SENSOR_ANALOG: {
       // Use explicit bounds check for channel (A0602 has channels 0-7)
