@@ -675,6 +675,12 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       { value: 3, label: 'Hall Effect RPM' }
     ];
 
+    // 4-20mA current loop sensor subtypes
+    const currentLoopTypes = [
+      { value: 'pressure', label: 'Pressure Sensor (Bottom-Mounted)', tooltip: 'Pressure sensor mounted near tank bottom (e.g., Dwyer 626-06-CB-P1-E5-S1). 4mA = empty, 20mA = full.' },
+      { value: 'ultrasonic', label: 'Ultrasonic Sensor (Top-Mounted)', tooltip: 'Ultrasonic level sensor mounted on tank top (e.g., Siemens Sitrans LU240). 4mA = full, 20mA = empty.' }
+    ];
+
     const monitorTypes = [
       { value: 'tank', label: 'Tank Level' },
       { value: 'gas', label: 'Gas Pressure' },
@@ -737,6 +743,13 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
               </select>
             </label>
             <label class="field pulses-per-rev-field" style="display: none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label>
+            <label class="field current-loop-type-field" style="display: none;"><span>4-20mA Sensor Type<span class="tooltip-icon" tabindex="0" data-tooltip="Select the type of 4-20mA sensor: Pressure sensors are mounted near the tank bottom and measure liquid pressure. Ultrasonic sensors are mounted on top of the tank and measure distance to the liquid surface.">?</span></span>
+              <select class="current-loop-type" onchange="updateCurrentLoopFields(${id})">
+                <option value="pressure">Pressure Sensor (Bottom-Mounted)</option>
+                <option value="ultrasonic">Ultrasonic Sensor (Top-Mounted)</option>
+              </select>
+            </label>
+            <label class="field sensor-mount-height-field" style="display: none;"><span><span class="mount-height-label">Sensor Mount Height (in)</span><span class="tooltip-icon mount-height-tooltip" tabindex="0" data-tooltip="For pressure sensors: height of sensor above tank bottom (usually 0-2 inches). For ultrasonic sensors: distance from sensor to tank bottom when empty.">?</span></span><input type="number" class="sensor-mount-height" value="0" step="0.1" min="0"></label>
             <label class="field height-field"><span><span class="height-label">Height (in)</span><span class="tooltip-icon height-tooltip" tabindex="0" data-tooltip="Maximum height or capacity of the tank in inches. Used to calculate fill percentage and set alarm thresholds relative to tank size.">?</span></span><input type="number" class="tank-height" value="120"></label>
           </div>
           
@@ -744,6 +757,22 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           <div class="digital-sensor-info" style="display: none; background: var(--chip); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px; margin-top: 8px; font-size: 0.9rem; color: var(--muted);">
             <strong>Float Switch Mode:</strong> This sensor only detects whether fluid has reached the switch position. It does not measure actual fluid level. The alarm will trigger when the switch is activated (fluid present) or not activated (fluid absent).<br><br>
             <strong>Wiring Note:</strong> For both NO and NC switches, connect the switch between the input pin and GND. The software uses an internal pull-up resistor and interprets the signal based on your selected switch mode.
+          </div>
+          
+          <!-- 4-20mA sensor info box (shown only for current loop sensors) -->
+          <div class="current-loop-sensor-info" style="display: none; background: var(--chip); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px; margin-top: 8px; font-size: 0.9rem; color: var(--muted);">
+            <div class="pressure-sensor-info">
+              <strong>Pressure Sensor (Bottom-Mounted):</strong> Installed near the bottom of the tank, this sensor measures the pressure of the liquid column above it. Examples: Dwyer 626-06-CB-P1-E5-S1 (0-5 PSI).<br>
+              • 4mA = Empty tank (0 PSI)<br>
+              • 20mA = Full tank (max PSI)<br>
+              • Mount Height: Distance from sensor to tank bottom (usually 0-2 inches)
+            </div>
+            <div class="ultrasonic-sensor-info" style="display: none;">
+              <strong>Ultrasonic Sensor (Top-Mounted):</strong> Mounted on top of the tank, this sensor measures the distance from the sensor to the liquid surface. Examples: Siemens Sitrans LU240.<br>
+              • 4mA = Full tank (liquid close to sensor)<br>
+              • 20mA = Empty tank (liquid far from sensor)<br>
+              • Sensor Mount Height: Distance from sensor to tank bottom when empty
+            </div>
           </div>
           
           <button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button>
@@ -998,11 +1027,14 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const heightLabel = card.querySelector('.height-label');
       const heightTooltip = card.querySelector('.height-tooltip');
       const digitalInfoBox = card.querySelector('.digital-sensor-info');
+      const currentLoopInfoBox = card.querySelector('.current-loop-sensor-info');
       const alarmThresholdsGrid = card.querySelector('.alarm-thresholds-grid');
       const digitalAlarmGrid = card.querySelector('.digital-alarm-grid');
       const alarmSectionTitle = card.querySelector('.alarm-section-title');
       const pulsesPerRevField = card.querySelector('.pulses-per-rev-field');
       const switchModeField = card.querySelector('.switch-mode-field');
+      const currentLoopTypeField = card.querySelector('.current-loop-type-field');
+      const sensorMountHeightField = card.querySelector('.sensor-mount-height-field');
       
       // Digital Input (Float Switch) - type === 0
       if (type === 0) {
@@ -1010,34 +1042,88 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         heightField.style.display = 'none';
         // Show digital sensor info box
         digitalInfoBox.style.display = 'block';
+        currentLoopInfoBox.style.display = 'none';
         // Show switch mode selector for digital sensors
         switchModeField.style.display = 'flex';
+        // Hide current loop fields
+        currentLoopTypeField.style.display = 'none';
+        sensorMountHeightField.style.display = 'none';
         // Update alarm section for digital sensors
         alarmThresholdsGrid.style.display = 'none';
         digitalAlarmGrid.style.display = 'grid';
         alarmSectionTitle.textContent = 'Float Switch Alarm';
         pulsesPerRevField.style.display = 'none';
+      } else if (type === 2) { // Current Loop (4-20mA)
+        heightField.style.display = 'flex';
+        heightLabel.textContent = 'Tank Height (in)';
+        heightTooltip.setAttribute('data-tooltip', 'Maximum height of liquid in the tank in inches. For ultrasonic sensors, this is the distance the sensor measures at full tank.');
+        digitalInfoBox.style.display = 'none';
+        currentLoopInfoBox.style.display = 'block';
+        switchModeField.style.display = 'none';
+        // Show current loop type and mount height fields
+        currentLoopTypeField.style.display = 'flex';
+        sensorMountHeightField.style.display = 'flex';
+        alarmThresholdsGrid.style.display = 'grid';
+        digitalAlarmGrid.style.display = 'none';
+        alarmSectionTitle.textContent = 'Alarm Thresholds';
+        pulsesPerRevField.style.display = 'none';
+        // Update current loop specific info
+        updateCurrentLoopFields(id);
       } else if (type === 3) { // Hall Effect RPM
         heightField.style.display = 'flex';
         heightLabel.textContent = 'Max RPM';
         heightTooltip.setAttribute('data-tooltip', 'Maximum expected RPM value. Used for alarm threshold reference.');
         digitalInfoBox.style.display = 'none';
+        currentLoopInfoBox.style.display = 'none';
         switchModeField.style.display = 'none';
+        currentLoopTypeField.style.display = 'none';
+        sensorMountHeightField.style.display = 'none';
         alarmThresholdsGrid.style.display = 'grid';
         digitalAlarmGrid.style.display = 'none';
         alarmSectionTitle.textContent = 'Alarm Thresholds';
         pulsesPerRevField.style.display = 'flex';
       } else {
-        // Analog or Current Loop sensors
+        // Analog sensors
         heightField.style.display = 'flex';
         heightLabel.textContent = 'Height (in)';
         heightTooltip.setAttribute('data-tooltip', 'Maximum height or capacity of the tank in inches. Used to calculate fill percentage and set alarm thresholds relative to tank size.');
         digitalInfoBox.style.display = 'none';
+        currentLoopInfoBox.style.display = 'none';
         switchModeField.style.display = 'none';
+        currentLoopTypeField.style.display = 'none';
+        sensorMountHeightField.style.display = 'none';
         alarmThresholdsGrid.style.display = 'grid';
         digitalAlarmGrid.style.display = 'none';
         alarmSectionTitle.textContent = 'Alarm Thresholds';
         pulsesPerRevField.style.display = 'none';
+      }
+    };
+
+    window.updateCurrentLoopFields = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const currentLoopType = card.querySelector('.current-loop-type').value;
+      const currentLoopInfoBox = card.querySelector('.current-loop-sensor-info');
+      const pressureInfo = currentLoopInfoBox.querySelector('.pressure-sensor-info');
+      const ultrasonicInfo = currentLoopInfoBox.querySelector('.ultrasonic-sensor-info');
+      const mountHeightLabel = card.querySelector('.mount-height-label');
+      const mountHeightTooltip = card.querySelector('.mount-height-tooltip');
+      const heightLabel = card.querySelector('.height-label');
+      const heightTooltip = card.querySelector('.height-tooltip');
+      
+      if (currentLoopType === 'ultrasonic') {
+        pressureInfo.style.display = 'none';
+        ultrasonicInfo.style.display = 'block';
+        mountHeightLabel.textContent = 'Sensor Mount Height (in)';
+        mountHeightTooltip.setAttribute('data-tooltip', 'Distance from the ultrasonic sensor to the tank bottom when empty. This is used to calculate the actual liquid level.');
+        heightLabel.textContent = 'Tank Height (in)';
+        heightTooltip.setAttribute('data-tooltip', 'Maximum liquid height in the tank. When the tank is full, the liquid level equals this value.');
+      } else {
+        pressureInfo.style.display = 'block';
+        ultrasonicInfo.style.display = 'none';
+        mountHeightLabel.textContent = 'Sensor Mount Height (in)';
+        mountHeightTooltip.setAttribute('data-tooltip', 'Height of the pressure sensor above the tank bottom (usually 0-2 inches). This offset is added to the measured level.');
+        heightLabel.textContent = 'Max Measured Height (in)';
+        heightTooltip.setAttribute('data-tooltip', 'Maximum liquid height the sensor can measure (corresponds to 20mA / max PSI). Does not include the sensor mount height offset.');
       }
     };
 
@@ -1126,6 +1212,14 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         // Add switch mode for digital sensors (float switches)
         if (sensor === 'digital') {
           tank.digitalSwitchMode = switchMode;  // 'NO' or 'NC'
+        }
+
+        // Add current loop sensor type and mount height for 4-20mA sensors
+        if (sensor === 'current') {
+          const currentLoopType = card.querySelector('.current-loop-type').value;
+          const sensorMountHeight = parseFloat(card.querySelector('.sensor-mount-height').value) || 0;
+          tank.currentLoopType = currentLoopType;  // 'pressure' or 'ultrasonic'
+          tank.sensorMountHeight = sensorMountHeight;
         }
 
         // Handle alarms differently based on sensor type

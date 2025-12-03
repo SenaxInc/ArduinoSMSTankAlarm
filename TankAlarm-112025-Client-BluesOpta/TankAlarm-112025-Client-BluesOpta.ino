@@ -210,6 +210,14 @@ enum SensorType : uint8_t {
   SENSOR_HALL_EFFECT_RPM = 3
 };
 
+// 4-20mA current loop sensor subtypes
+enum CurrentLoopSensorType : uint8_t {
+  CURRENT_LOOP_PRESSURE = 0,    // Pressure sensor mounted near bottom of tank (e.g., Dwyer 626-06-CB-P1-E5-S1)
+                                // 4mA = empty (0 PSI), 20mA = full (max PSI)
+  CURRENT_LOOP_ULTRASONIC = 1   // Ultrasonic sensor mounted on top of tank (e.g., Siemens Sitrans LU240)
+                                // 4mA = full (sensor close to liquid), 20mA = empty (sensor far from liquid)
+};
+
 // Relay trigger conditions - which alarm type triggers the relay
 enum RelayTrigger : uint8_t {
   RELAY_TRIGGER_ANY = 0,   // Trigger on any alarm (high or low)
@@ -251,6 +259,10 @@ struct TankConfig {
   // Digital sensor (float switch) specific settings
   char digitalTrigger[16]; // 'activated' or 'not_activated' - when to trigger alarm for digital sensors
   char digitalSwitchMode[4]; // 'NO' for normally-open, 'NC' for normally-closed (default: NO)
+  // 4-20mA current loop sensor settings
+  CurrentLoopSensorType currentLoopType; // Pressure (bottom-mounted) or Ultrasonic (top-mounted)
+  float sensorMountHeight; // For ultrasonic: distance from sensor to tank bottom (inches)
+                           // For pressure: height of sensor above tank bottom (inches, usually 0-2)
 };
 
 struct ClientConfig {
@@ -633,6 +645,8 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].relayMode = RELAY_MODE_MOMENTARY; // Default: momentary 30 min activation
   cfg.tanks[0].digitalTrigger[0] = '\0'; // Not a digital sensor by default
   strlcpy(cfg.tanks[0].digitalSwitchMode, "NO", sizeof(cfg.tanks[0].digitalSwitchMode)); // Default: normally-open
+  cfg.tanks[0].currentLoopType = CURRENT_LOOP_PRESSURE; // Default: pressure sensor (most common)
+  cfg.tanks[0].sensorMountHeight = 0.0f; // Default: sensor at tank bottom
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -768,6 +782,15 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     } else {
       strlcpy(cfg.tanks[i].digitalSwitchMode, "NO", sizeof(cfg.tanks[i].digitalSwitchMode)); // Default: normally-open
     }
+    // Load 4-20mA current loop sensor type (pressure or ultrasonic)
+    const char *currentLoopTypeStr = t["currentLoopType"].as<const char *>();
+    if (currentLoopTypeStr && strcmp(currentLoopTypeStr, "ultrasonic") == 0) {
+      cfg.tanks[i].currentLoopType = CURRENT_LOOP_ULTRASONIC;
+    } else {
+      cfg.tanks[i].currentLoopType = CURRENT_LOOP_PRESSURE; // Default: pressure sensor
+    }
+    // Load sensor mount height (for calibration)
+    cfg.tanks[i].sensorMountHeight = t["sensorMountHeight"].is<float>() ? t["sensorMountHeight"].as<float>() : 0.0f;
   }
 
   return true;
@@ -838,6 +861,13 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     }
     // Save digital switch mode (NO/NC)
     t["digitalSwitchMode"] = cfg.tanks[i].digitalSwitchMode;
+    // Save 4-20mA current loop sensor type
+    switch (cfg.tanks[i].currentLoopType) {
+      case CURRENT_LOOP_ULTRASONIC: t["currentLoopType"] = "ultrasonic"; break;
+      default: t["currentLoopType"] = "pressure"; break;
+    }
+    // Save sensor mount height (for calibration)
+    t["sensorMountHeight"] = cfg.tanks[i].sensorMountHeight;
   }
 
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -895,6 +925,8 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   bool needsCurrentLoop = false;
   bool needsRelayOutput = false;
   bool needsRpmSensor = false;
+  bool hasPressureSensor = false;
+  bool hasUltrasonicSensor = false;
 
   for (uint8_t i = 0; i < cfg.tankCount; ++i) {
     if (cfg.tanks[i].sensorType == SENSOR_ANALOG) {
@@ -902,6 +934,11 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
     }
     if (cfg.tanks[i].sensorType == SENSOR_CURRENT_LOOP) {
       needsCurrentLoop = true;
+      if (cfg.tanks[i].currentLoopType == CURRENT_LOOP_PRESSURE) {
+        hasPressureSensor = true;
+      } else if (cfg.tanks[i].currentLoopType == CURRENT_LOOP_ULTRASONIC) {
+        hasUltrasonicSensor = true;
+      }
     }
     if (cfg.tanks[i].sensorType == SENSOR_HALL_EFFECT_RPM) {
       needsRpmSensor = true;
@@ -919,6 +956,12 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   }
   if (needsCurrentLoop) {
     Serial.println(F("Current loop interface required (4-20mA module)"));
+    if (hasPressureSensor) {
+      Serial.println(F("  - Pressure sensor (bottom-mounted, e.g., Dwyer 626-06-CB-P1-E5-S1)"));
+    }
+    if (hasUltrasonicSensor) {
+      Serial.println(F("  - Ultrasonic sensor (top-mounted, e.g., Siemens Sitrans LU240)"));
+    }
   }
   if (needsRpmSensor) {
     Serial.println(F("Hall effect RPM sensor connected to digital input"));
@@ -1280,6 +1323,19 @@ static void applyConfigUpdate(const JsonDocument &doc) {
           strlcpy(gConfig.tanks[i].digitalSwitchMode, "NO", sizeof(gConfig.tanks[i].digitalSwitchMode));
         }
       }
+      // Handle 4-20mA current loop sensor type (pressure or ultrasonic)
+      if (t.containsKey("currentLoopType")) {
+        const char *currentLoopTypeStr = t["currentLoopType"].as<const char *>();
+        if (currentLoopTypeStr && strcmp(currentLoopTypeStr, "ultrasonic") == 0) {
+          gConfig.tanks[i].currentLoopType = CURRENT_LOOP_ULTRASONIC;
+        } else {
+          gConfig.tanks[i].currentLoopType = CURRENT_LOOP_PRESSURE;
+        }
+      }
+      // Handle sensor mount height (for calibration)
+      if (t.containsKey("sensorMountHeight")) {
+        gConfig.tanks[i].sensorMountHeight = t["sensorMountHeight"].as<float>();
+      }
     }
   }
 
@@ -1480,7 +1536,33 @@ static float readTankSensor(uint8_t idx) {
       if (milliamps < 0.0f) {
         return gTankState[idx].currentInches; // keep previous on failure
       }
-      return linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.maxValue);
+      
+      // Handle different 4-20mA sensor types
+      float levelInches;
+      if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
+        // Ultrasonic sensor mounted on TOP of tank (e.g., Siemens Sitrans LU240)
+        // 4mA = full tank (sensor close to liquid surface)
+        // 20mA = empty tank (sensor far from liquid surface)
+        // sensorMountHeight = distance from sensor to tank bottom when empty
+        // maxValue = tank height (max liquid level)
+        // The sensor measures distance from sensor to liquid surface
+        // Distance at 4mA = 0 (full), Distance at 20mA = sensorMountHeight (empty)
+        float distanceFromSensor = linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.sensorMountHeight);
+        levelInches = cfg.sensorMountHeight - distanceFromSensor;
+        // Clamp to valid range
+        if (levelInches < 0.0f) levelInches = 0.0f;
+        if (levelInches > cfg.maxValue) levelInches = cfg.maxValue;
+      } else {
+        // Pressure sensor mounted near BOTTOM of tank (e.g., Dwyer 626-06-CB-P1-E5-S1)
+        // 4mA = empty tank (0 PSI / no liquid above sensor)
+        // 20mA = full tank (max PSI / max liquid height above sensor)
+        // sensorMountHeight = height of sensor above tank bottom (usually 0-2 inches)
+        // maxValue = maximum liquid height the sensor measures (corresponds to max PSI)
+        float rawLevel = linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.maxValue);
+        // Add mount height offset (sensor is mounted above tank bottom)
+        levelInches = rawLevel + cfg.sensorMountHeight;
+      }
+      return levelInches;
     }
     case SENSOR_HALL_EFFECT_RPM: {
       // Hall effect RPM sensor - sample pulses for a few seconds each measurement period
