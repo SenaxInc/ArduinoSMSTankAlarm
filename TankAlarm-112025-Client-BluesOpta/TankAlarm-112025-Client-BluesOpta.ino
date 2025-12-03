@@ -836,10 +836,8 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     if (cfg.tanks[i].digitalTrigger[0] != '\0') {
       t["digitalTrigger"] = cfg.tanks[i].digitalTrigger;
     }
-    // Save digital switch mode (NO/NC) for digital sensors
-    if (cfg.tanks[i].sensorType == SENSOR_DIGITAL) {
-      t["digitalSwitchMode"] = cfg.tanks[i].digitalSwitchMode;
-    }
+    // Save digital switch mode (NO/NC)
+    t["digitalSwitchMode"] = cfg.tanks[i].digitalSwitchMode;
   }
 
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)

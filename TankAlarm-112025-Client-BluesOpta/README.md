@@ -96,8 +96,8 @@ Float switches can be configured as either normally-open (NO) or normally-closed
   - **NO (Normally-Open)**: Switch is open by default, closes when fluid reaches the switch position
   - **NC (Normally-Closed)**: Switch is closed by default, opens when fluid reaches the switch position
 - **Digital Trigger**: When to trigger the alarm
-  - "activated": Alarm when switch is activated (fluid present for NO, fluid absent for NC)
-  - "not_activated": Alarm when switch is not activated
+  - "activated": Alarm when switch is activated (fluid present)
+  - "not_activated": Alarm when switch is not activated (fluid absent)
 
 **Wiring Note**: For both NO and NC float switches, connect the switch between the digital input pin and GND. The Arduino uses an internal pull-up resistor, and the software interprets the signal based on your configured switch mode. The wiring is the same for both modes - only the software interpretation changes.
 
