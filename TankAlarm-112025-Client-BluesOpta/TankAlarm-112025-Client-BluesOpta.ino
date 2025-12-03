@@ -1560,22 +1560,35 @@ static void evaluateAlarms(uint8_t idx) {
     // For digital sensors, currentInches is either ACTIVATED_VALUE (1.0) or NOT_ACTIVATED_VALUE (0.0)
     bool isActivated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
     bool shouldAlarm = false;
+    bool triggerOnActivated = true;  // Track what condition triggers the alarm
     
     // Determine if we should alarm based on trigger configuration
     if (cfg.digitalTrigger[0] != '\0') {
       if (strcmp(cfg.digitalTrigger, "activated") == 0) {
         shouldAlarm = isActivated;  // Alarm when switch is activated
+        triggerOnActivated = true;
       } else if (strcmp(cfg.digitalTrigger, "not_activated") == 0) {
         shouldAlarm = !isActivated;  // Alarm when switch is NOT activated
+        triggerOnActivated = false;
       }
     } else {
       // Legacy behavior: use highAlarm/lowAlarm thresholds
-      // highAlarm >= threshold means trigger when activated
-      // lowAlarm <= threshold means trigger when not activated
-      if (cfg.highAlarmThreshold >= DIGITAL_SWITCH_THRESHOLD) {
-        shouldAlarm = isActivated;  // Trigger when switch is activated
-      } else if (cfg.lowAlarmThreshold <= DIGITAL_SWITCH_THRESHOLD) {
-        shouldAlarm = !isActivated;  // Trigger when switch is NOT activated
+      // Only one of these should be configured for a digital sensor
+      // highAlarm = 1 means trigger when activated
+      // lowAlarm = 0 means trigger when not activated
+      bool hasHighAlarm = (cfg.highAlarmThreshold >= DIGITAL_SWITCH_THRESHOLD);
+      bool hasLowAlarm = (cfg.lowAlarmThreshold <= DIGITAL_SWITCH_THRESHOLD && cfg.lowAlarmThreshold >= 0);
+      
+      if (hasHighAlarm && !hasLowAlarm) {
+        shouldAlarm = isActivated;
+        triggerOnActivated = true;
+      } else if (hasLowAlarm && !hasHighAlarm) {
+        shouldAlarm = !isActivated;
+        triggerOnActivated = false;
+      } else if (hasHighAlarm) {
+        // Default to high alarm behavior if both are set
+        shouldAlarm = isActivated;
+        triggerOnActivated = true;
       }
     }
     
@@ -1586,8 +1599,8 @@ static void evaluateAlarms(uint8_t idx) {
       if (state.highAlarmDebounceCount >= ALARM_DEBOUNCE_COUNT) {
         state.highAlarmLatched = true;
         state.highAlarmDebounceCount = 0;
-        // Send alarm with descriptive type for float switch
-        const char *alarmType = isActivated ? "triggered" : "not_triggered";
+        // Send alarm with descriptive type based on configured trigger condition
+        const char *alarmType = triggerOnActivated ? "triggered" : "not_triggered";
         sendAlarm(idx, alarmType, state.currentInches);
       }
     } else if (!shouldAlarm && state.highAlarmLatched) {
