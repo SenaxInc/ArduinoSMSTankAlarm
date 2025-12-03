@@ -83,11 +83,23 @@ The client creates a default configuration on first boot. You can update configu
 - **High Alarm**: Threshold in inches for high level alert
 - **Low Alarm**: Threshold in inches for low level alert
 - **Analog Pin**: Arduino Opta analog input (A0-A7, I1-I8)
-- **Sensor Type**: "voltage" (0-10V) or "current" (4-20mA)
+- **Sensor Type**: "voltage" (0-10V), "current" (4-20mA), or "digital" (float switch)
 - **Min Value**: Minimum sensor value (e.g., 0.0V or 4.0mA)
 - **Max Value**: Maximum sensor value (e.g., 10.0V or 20.0mA)
 - **Min Inches**: Tank level in inches at minimum sensor value
 - **Max Inches**: Tank level in inches at maximum sensor value
+
+### Float Switch Configuration (Digital Sensors)
+Float switches can be configured as either normally-open (NO) or normally-closed (NC):
+
+- **Digital Switch Mode**: "NO" (normally-open) or "NC" (normally-closed)
+  - **NO (Normally-Open)**: Switch is open by default, closes when fluid reaches the switch position
+  - **NC (Normally-Closed)**: Switch is closed by default, opens when fluid reaches the switch position
+- **Digital Trigger**: When to trigger the alarm
+  - "activated": Alarm when switch is activated (fluid present)
+  - "not_activated": Alarm when switch is not activated (fluid absent)
+
+**Wiring Note**: For both NO and NC float switches, connect the switch between the digital input pin and GND. The Arduino uses an internal pull-up resistor, and the software interprets the signal based on your configured switch mode. The wiring is the same for both modes - only the software interpretation changes.
 
 ## Operation
 

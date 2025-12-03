@@ -730,13 +730,20 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
                 ${optaPins.map(p => `<option value="${p.value}">${p.label}</option>`).join('')}
               </select>
             </label>
+            <label class="field switch-mode-field" style="display: none;"><span>Switch Mode<span class="tooltip-icon" tabindex="0" data-tooltip="NO (Normally-Open): Switch is open by default, closes when fluid is present. NC (Normally-Closed): Switch is closed by default, opens when fluid is present. The wiring is the same - only the software interpretation changes.">?</span></span>
+              <select class="switch-mode">
+                <option value="NO">Normally-Open (NO)</option>
+                <option value="NC">Normally-Closed (NC)</option>
+              </select>
+            </label>
             <label class="field pulses-per-rev-field" style="display: none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label>
             <label class="field height-field"><span><span class="height-label">Height (in)</span><span class="tooltip-icon height-tooltip" tabindex="0" data-tooltip="Maximum height or capacity of the tank in inches. Used to calculate fill percentage and set alarm thresholds relative to tank size.">?</span></span><input type="number" class="tank-height" value="120"></label>
           </div>
           
           <!-- Digital sensor info box (shown only for float switches) -->
           <div class="digital-sensor-info" style="display: none; background: var(--chip); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px; margin-top: 8px; font-size: 0.9rem; color: var(--muted);">
-            <strong>Float Switch Mode:</strong> This sensor only detects whether fluid has reached the switch position. It does not measure actual fluid level. The alarm will trigger when the switch is activated (fluid present) or not activated (fluid absent).
+            <strong>Float Switch Mode:</strong> This sensor only detects whether fluid has reached the switch position. It does not measure actual fluid level. The alarm will trigger when the switch is activated (fluid present) or not activated (fluid absent).<br><br>
+            <strong>Wiring Note:</strong> For both NO and NC switches, connect the switch between the input pin and GND. The software uses an internal pull-up resistor and interprets the signal based on your selected switch mode.
           </div>
           
           <button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button>
@@ -995,6 +1002,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const digitalAlarmGrid = card.querySelector('.digital-alarm-grid');
       const alarmSectionTitle = card.querySelector('.alarm-section-title');
       const pulsesPerRevField = card.querySelector('.pulses-per-rev-field');
+      const switchModeField = card.querySelector('.switch-mode-field');
       
       // Digital Input (Float Switch) - type === 0
       if (type === 0) {
@@ -1002,6 +1010,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         heightField.style.display = 'none';
         // Show digital sensor info box
         digitalInfoBox.style.display = 'block';
+        // Show switch mode selector for digital sensors
+        switchModeField.style.display = 'flex';
         // Update alarm section for digital sensors
         alarmThresholdsGrid.style.display = 'none';
         digitalAlarmGrid.style.display = 'grid';
@@ -1012,6 +1022,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         heightLabel.textContent = 'Max RPM';
         heightTooltip.setAttribute('data-tooltip', 'Maximum expected RPM value. Used for alarm threshold reference.');
         digitalInfoBox.style.display = 'none';
+        switchModeField.style.display = 'none';
         alarmThresholdsGrid.style.display = 'grid';
         digitalAlarmGrid.style.display = 'none';
         alarmSectionTitle.textContent = 'Alarm Thresholds';
@@ -1022,6 +1033,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         heightLabel.textContent = 'Height (in)';
         heightTooltip.setAttribute('data-tooltip', 'Maximum height or capacity of the tank in inches. Used to calculate fill percentage and set alarm thresholds relative to tank size.');
         digitalInfoBox.style.display = 'none';
+        switchModeField.style.display = 'none';
         alarmThresholdsGrid.style.display = 'grid';
         digitalAlarmGrid.style.display = 'none';
         alarmSectionTitle.textContent = 'Alarm Thresholds';
@@ -1087,6 +1099,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         
         const sensor = sensorKeyFromValue(type);
         const pulsesPerRev = Math.max(1, Math.min(255, parseInt(card.querySelector('.pulses-per-rev').value) || 1));
+        const switchMode = card.querySelector('.switch-mode').value; // 'NO' or 'NC'
 
         // Check if alarm section is enabled
         const alarmSectionVisible = card.querySelector('.alarm-section').classList.contains('visible');
@@ -1109,6 +1122,11 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           daily: true,
           upload: true
         };
+
+        // Add switch mode for digital sensors (float switches)
+        if (sensor === 'digital') {
+          tank.digitalSwitchMode = switchMode;  // 'NO' or 'NC'
+        }
 
         // Handle alarms differently based on sensor type
         if (alarmSectionVisible) {
