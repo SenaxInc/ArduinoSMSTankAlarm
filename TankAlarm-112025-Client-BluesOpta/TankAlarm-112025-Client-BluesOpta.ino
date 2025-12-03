@@ -1574,10 +1574,10 @@ static void evaluateAlarms(uint8_t idx) {
     } else {
       // Legacy behavior: use highAlarm/lowAlarm thresholds
       // Only one of these should be configured for a digital sensor
-      // highAlarm = 1 means trigger when activated
-      // lowAlarm = 0 means trigger when not activated
-      bool hasHighAlarm = (cfg.highAlarmThreshold >= DIGITAL_SWITCH_THRESHOLD);
-      bool hasLowAlarm = (cfg.lowAlarmThreshold <= DIGITAL_SWITCH_THRESHOLD && cfg.lowAlarmThreshold >= 0);
+      // highAlarm = 1 means trigger when reading is 1.0 (switch activated)
+      // lowAlarm = 0 means trigger when reading is 0.0 (switch not activated)
+      bool hasHighAlarm = (cfg.highAlarmThreshold >= DIGITAL_SENSOR_ACTIVATED_VALUE);
+      bool hasLowAlarm = (cfg.lowAlarmThreshold == DIGITAL_SENSOR_NOT_ACTIVATED_VALUE);
       
       if (hasHighAlarm && !hasLowAlarm) {
         shouldAlarm = isActivated;

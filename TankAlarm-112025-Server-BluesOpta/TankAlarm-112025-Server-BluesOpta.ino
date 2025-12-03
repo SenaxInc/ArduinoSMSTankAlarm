@@ -736,7 +736,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           
           <!-- Digital sensor info box (shown only for float switches) -->
           <div class="digital-sensor-info" style="display: none; background: var(--chip); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px; margin-top: 8px; font-size: 0.9rem; color: var(--muted);">
-            <strong>Float Switch Mode:</strong> This sensor only detects if fluid has reached the switch position. It does not measure actual fluid level. The alarm will trigger when the switch is activated (fluid present) or not activated (no fluid).
+            <strong>Float Switch Mode:</strong> This sensor only detects whether fluid has reached the switch position. It does not measure actual fluid level. The alarm will trigger when the switch is activated (fluid present) or not activated (fluid absent).
           </div>
           
           <button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button>
@@ -827,6 +827,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       const div = document.createElement('div');
       div.innerHTML = createSensorHtml(sensorCount);
       container.appendChild(div.firstElementChild);
+      updateSensorTypeFields(sensorCount);  // Initialize fields for default sensor type
       sensorCount++;
     }
 
@@ -1115,12 +1116,12 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
             // Digital/float switch sensors use trigger state instead of thresholds
             const digitalTriggerState = card.querySelector('.digital-trigger-state').value;
             tank.digitalTrigger = digitalTriggerState;  // 'activated' or 'not_activated'
-            // For digital sensors, highAlarm = 1 means "alarm when switch is activated (HIGH)"
-            // lowAlarm = 0 means "alarm when switch is NOT activated (LOW)"
+            // For digital sensors, highAlarm = 1 means "alarm when reading is 1.0 (switch activated)"
+            // lowAlarm = 0 means "alarm when reading is 0.0 (switch not activated)"
             if (digitalTriggerState === 'activated') {
-              tank.highAlarm = 1;  // Trigger alarm when reading is HIGH (switch activated)
+              tank.highAlarm = 1;  // Trigger alarm when reading is 1.0 (switch activated)
             } else {
-              tank.lowAlarm = 0;   // Trigger alarm when reading is LOW (switch not activated)
+              tank.lowAlarm = 0;   // Trigger alarm when reading is 0.0 (switch not activated)
             }
             tank.alarmSms = true;
           } else if (highAlarmEnabled || lowAlarmEnabled) {
