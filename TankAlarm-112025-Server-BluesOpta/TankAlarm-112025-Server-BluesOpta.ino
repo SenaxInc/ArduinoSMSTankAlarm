@@ -1123,7 +1123,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         mountHeightLabel.textContent = 'Sensor Mount Height (in)';
         mountHeightTooltip.setAttribute('data-tooltip', 'Height of the pressure sensor above the tank bottom (usually 0-2 inches). This offset is added to the measured level.');
         heightLabel.textContent = 'Max Measured Height (in)';
-        heightTooltip.setAttribute('data-tooltip', 'Maximum liquid height the sensor can measure (corresponds to 20mA / max PSI). Does not include the sensor mount height offset.');
+        heightTooltip.setAttribute('data-tooltip', 'Maximum liquid height the sensor can measure (corresponds to 20mA / full sensor scale). Does not include the sensor mount height offset.');
       }
     };
 

@@ -1549,7 +1549,7 @@ static float readTankSensor(uint8_t idx) {
         // Distance at 4mA = 0 (full), Distance at 20mA = sensorMountHeight (empty)
         float distanceFromSensor = linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.sensorMountHeight);
         levelInches = cfg.sensorMountHeight - distanceFromSensor;
-        // Clamp to valid range
+        // Clamp to valid range (0 to maxValue)
         if (levelInches < 0.0f) levelInches = 0.0f;
         if (levelInches > cfg.maxValue) levelInches = cfg.maxValue;
       } else {
@@ -1561,6 +1561,8 @@ static float readTankSensor(uint8_t idx) {
         float rawLevel = linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.maxValue);
         // Add mount height offset (sensor is mounted above tank bottom)
         levelInches = rawLevel + cfg.sensorMountHeight;
+        // Clamp to valid range (sensorMountHeight to maxValue + sensorMountHeight)
+        if (levelInches < cfg.sensorMountHeight) levelInches = cfg.sensorMountHeight;
       }
       return levelInches;
     }
