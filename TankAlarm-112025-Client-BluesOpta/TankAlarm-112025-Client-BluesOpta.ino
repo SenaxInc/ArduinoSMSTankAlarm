@@ -187,6 +187,19 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define MIN_ALARM_INTERVAL_SECONDS 300  // Minimum 5 minutes between same alarm type
 #endif
 
+// Digital sensor (float switch) constants
+#ifndef DIGITAL_SWITCH_THRESHOLD
+#define DIGITAL_SWITCH_THRESHOLD 0.5f  // Threshold to determine activated vs not-activated state
+#endif
+
+#ifndef DIGITAL_SENSOR_ACTIVATED_VALUE
+#define DIGITAL_SENSOR_ACTIVATED_VALUE 1.0f  // Value returned when switch is activated
+#endif
+
+#ifndef DIGITAL_SENSOR_NOT_ACTIVATED_VALUE
+#define DIGITAL_SENSOR_NOT_ACTIVATED_VALUE 0.0f  // Value returned when switch is not activated
+#endif
+
 static const uint8_t NOTECARD_I2C_ADDRESS = 0x17;
 static const uint32_t NOTECARD_I2C_FREQUENCY = 400000UL;
 
@@ -1394,15 +1407,16 @@ static float readTankSensor(uint8_t idx) {
 
   switch (cfg.sensorType) {
     case SENSOR_DIGITAL: {
-      // Float switch: returns 1.0 when activated, 0.0 when not activated
-      // Note: With INPUT_PULLUP, the default state is HIGH (switch open/no fluid)
-      // When the float switch closes (fluid present), it pulls the pin LOW
-      // Therefore: LOW = activated (fluid present), HIGH = not activated (no fluid)
+      // Float switch sensor - returns activated/not-activated state
+      // This implementation assumes normally-open (NO) float switches with INPUT_PULLUP:
+      // - Default state is HIGH (switch open, no fluid)
+      // - When fluid is present, switch closes and pulls pin LOW
+      // For normally-closed (NC) switches, invert the trigger condition in config
       int pin = (cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx);
       pinMode(pin, INPUT_PULLUP);
       int level = digitalRead(pin);
-      // Return 1.0 when activated (LOW), 0.0 when not activated (HIGH)
-      return (level == LOW) ? 1.0f : 0.0f;
+      // Return activated value when switch is closed (LOW), not-activated when open (HIGH)
+      return (level == LOW) ? DIGITAL_SENSOR_ACTIVATED_VALUE : DIGITAL_SENSOR_NOT_ACTIVATED_VALUE;
     }
     case SENSOR_ANALOG: {
       // Use explicit bounds check for channel (A0602 has channels 0-7)
@@ -1543,9 +1557,8 @@ static void evaluateAlarms(uint8_t idx) {
 
   // Handle digital sensors (float switches) differently
   if (cfg.sensorType == SENSOR_DIGITAL) {
-    // For digital sensors, currentInches is either 1.0 (activated/fluid present) or 0.0 (not activated/no fluid)
-    // Note: 1.0 corresponds to LOW pin state (switch closed), 0.0 corresponds to HIGH pin state (switch open)
-    bool isActivated = (state.currentInches > 0.5f);  // 1.0 means switch is activated (fluid present)
+    // For digital sensors, currentInches is either ACTIVATED_VALUE (1.0) or NOT_ACTIVATED_VALUE (0.0)
+    bool isActivated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
     bool shouldAlarm = false;
     
     // Determine if we should alarm based on trigger configuration
@@ -1557,10 +1570,11 @@ static void evaluateAlarms(uint8_t idx) {
       }
     } else {
       // Legacy behavior: use highAlarm/lowAlarm thresholds
-      // highAlarm = 1 means trigger when activated, lowAlarm = 0 means trigger when not activated
-      if (cfg.highAlarmThreshold >= 0.5f) {
+      // highAlarm >= threshold means trigger when activated
+      // lowAlarm <= threshold means trigger when not activated
+      if (cfg.highAlarmThreshold >= DIGITAL_SWITCH_THRESHOLD) {
         shouldAlarm = isActivated;  // Trigger when switch is activated
-      } else if (cfg.lowAlarmThreshold <= 0.5f) {
+      } else if (cfg.lowAlarmThreshold <= DIGITAL_SWITCH_THRESHOLD) {
         shouldAlarm = !isActivated;  // Trigger when switch is NOT activated
       }
     }
@@ -1674,9 +1688,10 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   // Handle digital sensors differently in telemetry
   if (cfg.sensorType == SENSOR_DIGITAL) {
     doc["sensorType"] = "digital";
-    doc["activated"] = (state.currentInches > 0.5f);  // Boolean state: true = switch activated
+    bool activated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
+    doc["activated"] = activated;  // Boolean state: true = switch activated
     doc["levelInches"] = state.currentInches;  // 1.0 or 0.0
-    doc["percent"] = (state.currentInches > 0.5f) ? 100.0f : 0.0f;  // 100% when activated, 0% when not
+    doc["percent"] = activated ? 100.0f : 0.0f;  // 100% when activated, 0% when not
   } else {
     doc["maxValue"] = cfg.maxValue;
     doc["levelInches"] = state.currentInches;
