@@ -1568,33 +1568,67 @@ static float readTankSensor(uint8_t idx) {
       // Store raw mA reading for telemetry
       gTankState[idx].currentSensorMa = milliamps;
       
-      // Handle different 4-20mA sensor types
+      // Handle different 4-20mA sensor types using native sensor range
       float levelInches;
       if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
         // Ultrasonic sensor mounted on TOP of tank (e.g., Siemens Sitrans LU240)
-        // 4mA = full tank (sensor close to liquid surface)
-        // 20mA = empty tank (sensor far from liquid surface)
+        // 4mA = minimum distance (sensorRangeMin), 20mA = maximum distance (sensorRangeMax)
         // sensorMountHeight = distance from sensor to tank bottom when empty
-        // maxValue = tank height (max liquid level)
-        // The sensor measures distance from sensor to liquid surface
-        // Distance at 4mA = 0 (full), Distance at 20mA = sensorMountHeight (empty)
-        float distanceFromSensor = linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.sensorMountHeight);
-        levelInches = cfg.sensorMountHeight - distanceFromSensor;
+        // The sensor measures distance from sensor to liquid surface in native units
+        
+        // Convert mA to sensor's native distance units
+        float distanceNative = linearMap(milliamps, 4.0f, 20.0f, 
+                                         cfg.sensorRangeMin, cfg.sensorRangeMax);
+        
+        // Convert distance to inches based on sensorRangeUnit
+        float distanceInches = distanceNative;
+        if (strcmp(cfg.sensorRangeUnit, "m") == 0) {
+          distanceInches = distanceNative * 39.3701f;  // meters to inches
+        } else if (strcmp(cfg.sensorRangeUnit, "cm") == 0) {
+          distanceInches = distanceNative * 0.393701f; // centimeters to inches
+        } else if (strcmp(cfg.sensorRangeUnit, "ft") == 0) {
+          distanceInches = distanceNative * 12.0f;     // feet to inches
+        }
+        // else assume already in inches
+        
+        // Calculate liquid level: tank height - distance from sensor to surface
+        levelInches = cfg.sensorMountHeight - distanceInches;
+        
         // Clamp to valid range (0 to maxValue)
         if (levelInches < 0.0f) levelInches = 0.0f;
-        if (levelInches > cfg.maxValue) levelInches = cfg.maxValue;
+        if (cfg.maxValue > 0.1f && levelInches > cfg.maxValue) levelInches = cfg.maxValue;
       } else {
         // Pressure sensor mounted near BOTTOM of tank (e.g., Dwyer 626-06-CB-P1-E5-S1)
-        // 4mA = empty tank (0 PSI / no liquid above sensor)
-        // 20mA = full tank (max PSI / max liquid height above sensor)
+        // 4mA = sensorRangeMin (e.g., 0 PSI), 20mA = sensorRangeMax (e.g., 5 PSI)
         // sensorMountHeight = height of sensor above tank bottom (usually 0-2 inches)
-        // maxValue = maximum liquid height the sensor measures (corresponds to max PSI)
-        float rawLevel = linearMap(milliamps, 4.0f, 20.0f, 0.0f, cfg.maxValue);
-        // Add mount height offset (sensor is mounted above tank bottom)
-        levelInches = rawLevel + cfg.sensorMountHeight;
-        // Clamp to valid range (sensorMountHeight to maxValue + sensorMountHeight)
-        if (levelInches < cfg.sensorMountHeight) levelInches = cfg.sensorMountHeight;
-        if (levelInches > cfg.maxValue + cfg.sensorMountHeight) levelInches = cfg.maxValue + cfg.sensorMountHeight;
+        // The sensor measures liquid pressure above the sensor
+        
+        // Convert mA to sensor's native pressure units
+        float pressure = linearMap(milliamps, 4.0f, 20.0f,
+                                   cfg.sensorRangeMin, cfg.sensorRangeMax);
+        
+        // Convert pressure to liquid height in inches
+        // Default conversion factor: 1 PSI = 27.68 inches of water column
+        float conversionFactor = 27.68f; // PSI to inches (water)
+        if (strcmp(cfg.sensorRangeUnit, "bar") == 0) {
+          conversionFactor = 401.5f;  // bar to inches (1 bar = 401.5 inches water)
+        } else if (strcmp(cfg.sensorRangeUnit, "kPa") == 0) {
+          conversionFactor = 4.015f;  // kPa to inches (1 kPa = 4.015 inches water)
+        } else if (strcmp(cfg.sensorRangeUnit, "mbar") == 0) {
+          conversionFactor = 0.4015f; // mbar to inches
+        } else if (strcmp(cfg.sensorRangeUnit, "inH2O") == 0) {
+          conversionFactor = 1.0f;    // already in inches of water
+        }
+        // else assume PSI
+        
+        float liquidAboveSensor = pressure * conversionFactor;
+        
+        // Total height from tank bottom = liquid above sensor + sensor mount height
+        levelInches = liquidAboveSensor + cfg.sensorMountHeight;
+        
+        // Clamp: minimum is 0 (empty tank), maximum is tank capacity (if provided)
+        if (levelInches < 0.0f) levelInches = 0.0f;
+        if (cfg.maxValue > 0.1f && levelInches > cfg.maxValue) levelInches = cfg.maxValue;
       }
       return levelInches;
     }
