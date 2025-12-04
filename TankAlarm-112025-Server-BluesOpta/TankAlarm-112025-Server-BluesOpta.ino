@@ -2604,11 +2604,6 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
             </div>
           </label>
           <label class="field">
-            <span>Sensor Reading (mA) <em style="font-weight: normal; color: var(--muted);">- From telemetry</em></span>
-            <input type="number" id="sensorReading" step="0.01" min="4" max="20" placeholder="Auto-filled when tank selected">
-            <small id="sensorAutoInfo" style="color: var(--muted); margin-top: 4px; display: block;"></small>
-          </label>
-          <label class="field">
             <span>Reading Timestamp</span>
             <input type="datetime-local" id="readingTimestamp">
           </label>
@@ -2623,9 +2618,7 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
         </div>
       </form>
       <div class="info-box">
-        <strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the raw 4-20mA sensor reading. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation.
-        <br><br>
-        <strong>Raw sensor reading:</strong> The mA reading is now captured directly from the sensor and sent in telemetry. When you select a tank, it will be auto-filled from the latest telemetry. If no raw reading is available, you can enter it manually from a loop meter.
+        <strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the raw 4-20mA sensor reading from telemetry. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation.
       </div>
     </div>
 
@@ -2812,40 +2805,6 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
         });
       }
 
-      // Auto-populate sensor reading when tank is selected
-      function onTankSelect() {
-        const tankKey = document.getElementById('tankSelect').value;
-        const sensorInput = document.getElementById('sensorReading');
-        const sensorInfo = document.getElementById('sensorAutoInfo');
-        
-        if (!tankKey) {
-          sensorInput.value = '';
-          if (sensorInfo) sensorInfo.textContent = '';
-          return;
-        }
-        
-        // Find the tank data
-        const tank = tanks.find(t => `${t.client}:${t.tank}` === tankKey);
-        if (tank) {
-          // Use raw sensorMa if available from telemetry
-          if (tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20) {
-            sensorInput.value = tank.sensorMa.toFixed(2);
-            if (sensorInfo) {
-              const lastUpdateDate = tank.lastUpdate ? new Date(tank.lastUpdate * 1000).toLocaleString() : 'unknown';
-              sensorInfo.textContent = `From last telemetry @ ${lastUpdateDate}`;
-            }
-          } else {
-            sensorInput.value = '';
-            if (sensorInfo) {
-              sensorInfo.textContent = 'No raw mA reading available - enter manually';
-            }
-          }
-        }
-      }
-      
-      // Attach tank select handler
-      document.getElementById('tankSelect').addEventListener('change', onTankSelect);
-
       // Load calibration data
       async function loadCalibrationData() {
         try {
@@ -2989,7 +2948,6 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
         const levelInches = parseFloat(document.getElementById('levelInches').value) || 0;
         const totalInches = levelFeet * 12 + levelInches;
         
-        const sensorReading = parseFloat(document.getElementById('sensorReading').value);
         const timestampInput = document.getElementById('readingTimestamp').value;
         const notes = document.getElementById('notes').value.trim();
         
@@ -2999,6 +2957,9 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
           return;
         }
         
+        // Get the tank data to include sensorMa automatically
+        const tank = tanks.find(t => `${t.client}:${t.tank}` === tankKey);
+        
         // Build payload
         const payload = {
           clientUid: clientUid,
@@ -3007,8 +2968,9 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
           notes: notes
         };
         
-        if (!isNaN(sensorReading) && sensorReading >= 4 && sensorReading <= 20) {
-          payload.sensorReading = sensorReading;
+        // Include sensorMa from telemetry if available
+        if (tank && tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20) {
+          payload.sensorReading = tank.sensorMa;
         }
         
         if (timestampInput) {
