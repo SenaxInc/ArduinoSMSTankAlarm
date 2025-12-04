@@ -1255,13 +1255,14 @@ void sendHttpResponse(EthernetClient &client, String path) {
   } else if (path == "/emails") {
     sendEmailManagementPage(client);
   } else if (path == "/calibration") {
-    // Calibration page removed for simplification - send proper HTTP response
+    // Calibration learning system is available in the BluesOpta server version
     client.println("HTTP/1.1 200 OK");
     client.println("Content-Type: text/html");
     client.println("Connection: close");
     client.println();
-    client.println("<html><body><h1>Calibration Feature Removed</h1>");
-    client.println("<p>The calibration feature has been removed for simplification.</p>");
+    client.println("<html><body><h1>Calibration Learning System</h1>");
+    client.println("<p>The calibration learning system is available in the TankAlarm-112025-Server-BluesOpta version.</p>");
+    client.println("<p>This feature allows operators to enter manual tank level readings and automatically improves sensor accuracy over time using linear regression.</p>");
     client.println("<p><a href='/'>Back to Dashboard</a></p></body></html>");
   } else {
     send404Page(client);
