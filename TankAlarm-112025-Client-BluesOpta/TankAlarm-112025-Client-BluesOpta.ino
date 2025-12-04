@@ -263,6 +263,9 @@ struct TankConfig {
   CurrentLoopSensorType currentLoopType; // Pressure (bottom-mounted) or Ultrasonic (top-mounted)
   float sensorMountHeight; // For ultrasonic: distance from sensor to tank bottom (inches)
                            // For pressure: height of sensor above tank bottom (inches, usually 0-2)
+  float sensorRangeMin;    // Minimum native sensor range (e.g., 0 for 0-5 PSI or 0-10m)
+  float sensorRangeMax;    // Maximum native sensor range (e.g., 5 for 0-5 PSI, 10 for 0-10m)
+  char sensorRangeUnit[8]; // Unit for sensor range: "PSI", "bar", "m", "ft", "in", etc.
 };
 
 struct ClientConfig {
@@ -647,6 +650,9 @@ static void createDefaultConfig(ClientConfig &cfg) {
   strlcpy(cfg.tanks[0].digitalSwitchMode, "NO", sizeof(cfg.tanks[0].digitalSwitchMode)); // Default: normally-open
   cfg.tanks[0].currentLoopType = CURRENT_LOOP_PRESSURE; // Default: pressure sensor (most common)
   cfg.tanks[0].sensorMountHeight = 0.0f; // Default: sensor at tank bottom
+  cfg.tanks[0].sensorRangeMin = 0.0f;    // Default: 0 (e.g., 0 PSI or 0 meters)
+  cfg.tanks[0].sensorRangeMax = 5.0f;    // Default: 5 (e.g., 5 PSI for typical pressure sensor)
+  strlcpy(cfg.tanks[0].sensorRangeUnit, "PSI", sizeof(cfg.tanks[0].sensorRangeUnit)); // Default: PSI
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -791,6 +797,11 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     }
     // Load sensor mount height (for calibration) - validate non-negative
     cfg.tanks[i].sensorMountHeight = t["sensorMountHeight"].is<float>() ? fmaxf(0.0f, t["sensorMountHeight"].as<float>()) : 0.0f;
+    // Load sensor native range settings
+    cfg.tanks[i].sensorRangeMin = t["sensorRangeMin"].is<float>() ? t["sensorRangeMin"].as<float>() : 0.0f;
+    cfg.tanks[i].sensorRangeMax = t["sensorRangeMax"].is<float>() ? t["sensorRangeMax"].as<float>() : 5.0f;
+    const char *rangeUnitStr = t["sensorRangeUnit"].as<const char *>();
+    strlcpy(cfg.tanks[i].sensorRangeUnit, rangeUnitStr ? rangeUnitStr : "PSI", sizeof(cfg.tanks[i].sensorRangeUnit));
   }
 
   return true;
@@ -868,6 +879,10 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     }
     // Save sensor mount height (for calibration)
     t["sensorMountHeight"] = cfg.tanks[i].sensorMountHeight;
+    // Save sensor native range settings
+    t["sensorRangeMin"] = cfg.tanks[i].sensorRangeMin;
+    t["sensorRangeMax"] = cfg.tanks[i].sensorRangeMax;
+    t["sensorRangeUnit"] = cfg.tanks[i].sensorRangeUnit;
   }
 
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -1335,6 +1350,17 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       // Handle sensor mount height (for calibration) - validate non-negative
       if (t.containsKey("sensorMountHeight")) {
         gConfig.tanks[i].sensorMountHeight = fmaxf(0.0f, t["sensorMountHeight"].as<float>());
+      }
+      // Handle sensor native range settings
+      if (t.containsKey("sensorRangeMin")) {
+        gConfig.tanks[i].sensorRangeMin = t["sensorRangeMin"].as<float>();
+      }
+      if (t.containsKey("sensorRangeMax")) {
+        gConfig.tanks[i].sensorRangeMax = t["sensorRangeMax"].as<float>();
+      }
+      if (t.containsKey("sensorRangeUnit")) {
+        const char *unitStr = t["sensorRangeUnit"].as<const char *>();
+        strlcpy(gConfig.tanks[i].sensorRangeUnit, unitStr ? unitStr : "PSI", sizeof(gConfig.tanks[i].sensorRangeUnit));
       }
     }
   }
