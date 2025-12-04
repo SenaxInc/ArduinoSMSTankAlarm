@@ -200,6 +200,41 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define DIGITAL_SENSOR_NOT_ACTIVATED_VALUE 0.0f  // Value returned when switch is not activated
 #endif
 
+// Unit conversion constants for 4-20mA sensors
+#ifndef METERS_TO_INCHES
+#define METERS_TO_INCHES 39.3701f           // 1 meter = 39.3701 inches
+#endif
+
+#ifndef CENTIMETERS_TO_INCHES
+#define CENTIMETERS_TO_INCHES 0.393701f     // 1 centimeter = 0.393701 inches
+#endif
+
+#ifndef FEET_TO_INCHES
+#define FEET_TO_INCHES 12.0f                // 1 foot = 12 inches
+#endif
+
+// Pressure-to-height conversion factors (for water at standard conditions)
+#ifndef PSI_TO_INCHES_WATER
+#define PSI_TO_INCHES_WATER 27.68f          // 1 PSI = 27.68 inches of water column
+#endif
+
+#ifndef BAR_TO_INCHES_WATER
+#define BAR_TO_INCHES_WATER 401.5f          // 1 bar = 401.5 inches of water
+#endif
+
+#ifndef KPA_TO_INCHES_WATER
+#define KPA_TO_INCHES_WATER 4.015f          // 1 kPa = 4.015 inches of water
+#endif
+
+#ifndef MBAR_TO_INCHES_WATER
+#define MBAR_TO_INCHES_WATER 0.4015f        // 1 mbar = 0.4015 inches of water
+#endif
+
+// Minimum value threshold for configuration validation
+#ifndef MIN_VALID_MAX_VALUE
+#define MIN_VALID_MAX_VALUE 0.1f            // maxValue must be > this to be considered valid
+#endif
+
 static const uint8_t NOTECARD_I2C_ADDRESS = 0x17;
 static const uint32_t NOTECARD_I2C_FREQUENCY = 400000UL;
 
@@ -1540,7 +1575,7 @@ static float readTankSensor(uint8_t idx) {
       // Use explicit bounds check for channel (A0602 has channels 0-7)
       int channel = (cfg.primaryPin >= 0 && cfg.primaryPin < 8) ? cfg.primaryPin : 0;
       // Opta analog channels use analogRead with index 0..7 for extension A0602
-      if (cfg.maxValue < 0.1f) {
+      if (cfg.maxValue < MIN_VALID_MAX_VALUE) {
         return 0.0f;
       }
       float total = 0.0f;
@@ -1556,7 +1591,7 @@ static float readTankSensor(uint8_t idx) {
     case SENSOR_CURRENT_LOOP: {
       // Use explicit bounds check for current loop channel
       int16_t channel = (cfg.currentLoopChannel >= 0 && cfg.currentLoopChannel < 8) ? cfg.currentLoopChannel : 0;
-      if (cfg.maxValue < 0.1f) {
+      if (cfg.maxValue < MIN_VALID_MAX_VALUE) {
         gTankState[idx].currentSensorMa = 0.0f;
         return 0.0f;
       }
@@ -1583,11 +1618,11 @@ static float readTankSensor(uint8_t idx) {
         // Convert distance to inches based on sensorRangeUnit
         float distanceInches = distanceNative;
         if (strcmp(cfg.sensorRangeUnit, "m") == 0) {
-          distanceInches = distanceNative * 39.3701f;  // meters to inches
+          distanceInches = distanceNative * METERS_TO_INCHES;
         } else if (strcmp(cfg.sensorRangeUnit, "cm") == 0) {
-          distanceInches = distanceNative * 0.393701f; // centimeters to inches
+          distanceInches = distanceNative * CENTIMETERS_TO_INCHES;
         } else if (strcmp(cfg.sensorRangeUnit, "ft") == 0) {
-          distanceInches = distanceNative * 12.0f;     // feet to inches
+          distanceInches = distanceNative * FEET_TO_INCHES;
         }
         // else assume already in inches
         
@@ -1596,7 +1631,7 @@ static float readTankSensor(uint8_t idx) {
         
         // Clamp to valid range (0 to maxValue)
         if (levelInches < 0.0f) levelInches = 0.0f;
-        if (cfg.maxValue > 0.1f && levelInches > cfg.maxValue) levelInches = cfg.maxValue;
+        if (cfg.maxValue > MIN_VALID_MAX_VALUE && levelInches > cfg.maxValue) levelInches = cfg.maxValue;
       } else {
         // Pressure sensor mounted near BOTTOM of tank (e.g., Dwyer 626-06-CB-P1-E5-S1)
         // 4mA = sensorRangeMin (e.g., 0 PSI), 20mA = sensorRangeMax (e.g., 5 PSI)
@@ -1607,17 +1642,16 @@ static float readTankSensor(uint8_t idx) {
         float pressure = linearMap(milliamps, 4.0f, 20.0f,
                                    cfg.sensorRangeMin, cfg.sensorRangeMax);
         
-        // Convert pressure to liquid height in inches
-        // Default conversion factor: 1 PSI = 27.68 inches of water column
-        float conversionFactor = 27.68f; // PSI to inches (water)
+        // Convert pressure to liquid height in inches using appropriate conversion factor
+        float conversionFactor = PSI_TO_INCHES_WATER; // Default: PSI
         if (strcmp(cfg.sensorRangeUnit, "bar") == 0) {
-          conversionFactor = 401.5f;  // bar to inches (1 bar = 401.5 inches water)
+          conversionFactor = BAR_TO_INCHES_WATER;
         } else if (strcmp(cfg.sensorRangeUnit, "kPa") == 0) {
-          conversionFactor = 4.015f;  // kPa to inches (1 kPa = 4.015 inches water)
+          conversionFactor = KPA_TO_INCHES_WATER;
         } else if (strcmp(cfg.sensorRangeUnit, "mbar") == 0) {
-          conversionFactor = 0.4015f; // mbar to inches
+          conversionFactor = MBAR_TO_INCHES_WATER;
         } else if (strcmp(cfg.sensorRangeUnit, "inH2O") == 0) {
-          conversionFactor = 1.0f;    // already in inches of water
+          conversionFactor = 1.0f;  // Already in inches of water
         }
         // else assume PSI
         
@@ -1628,7 +1662,7 @@ static float readTankSensor(uint8_t idx) {
         
         // Clamp: minimum is 0 (empty tank), maximum is tank capacity (if provided)
         if (levelInches < 0.0f) levelInches = 0.0f;
-        if (cfg.maxValue > 0.1f && levelInches > cfg.maxValue) levelInches = cfg.maxValue;
+        if (cfg.maxValue > MIN_VALID_MAX_VALUE && levelInches > cfg.maxValue) levelInches = cfg.maxValue;
       }
       return levelInches;
     }
