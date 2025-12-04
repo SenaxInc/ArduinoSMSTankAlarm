@@ -89,6 +89,70 @@ The client creates a default configuration on first boot. You can update configu
 - **Min Inches**: Tank level in inches at minimum sensor value
 - **Max Inches**: Tank level in inches at maximum sensor value
 
+### 4-20mA Current Loop Sensor Configuration
+
+For 4-20mA current loop sensors, two mounting options are supported:
+
+#### Pressure Sensor (Bottom-Mounted)
+Used for sensors like the Dwyer 626-06-CB-P1-E5-S1 (0-5 PSI) mounted near the bottom of the tank.
+
+- **Current Loop Type**: "pressure"
+- **How it works**: Measures the pressure of the liquid column above the sensor
+  - 4mA = Empty tank (0 PSI / no liquid above sensor)
+  - 20mA = Full tank (max PSI / max liquid height)
+- **Sensor Range**: The native measurement range (e.g., 0-5 PSI, 0-2 bar)
+  - `sensorRangeMin`: Minimum value (typically 0)
+  - `sensorRangeMax`: Maximum value (e.g., 5 for 0-5 PSI)
+  - `sensorRangeUnit`: Unit of measurement ("PSI", "bar", etc.)
+- **Sensor Mount Height**: Height of sensor above tank bottom (usually 0-2 inches)
+- **Max Value**: Maximum liquid height the sensor can measure (corresponds to 20mA)
+
+**Example Configuration** (0-5 PSI sensor, 1 PSI per 2.3 ft of water):
+- Sensor mounted 2 inches above tank bottom
+- Max sensor range = 5 PSI = ~138 inches of water
+- Tank height = 120 inches
+- Configuration:
+  - `currentLoopType`: "pressure"
+  - `sensorRangeMin`: 0
+  - `sensorRangeMax`: 5
+  - `sensorRangeUnit`: "PSI"
+  - `sensorMountHeight`: 2.0
+  - `maxValue`: 118.0 (tank height minus mount height: 120 - 2 = 118 inches)
+
+> **Note:** For pressure sensors, set `maxValue` to the tank's usable height minus the sensor mount height. The implementation adds `sensorMountHeight` to the measured value, so `maxValue` should represent the height of liquid *above* the sensor, not the total tank height.
+
+#### Ultrasonic Sensor (Top-Mounted)
+Used for sensors like the Siemens Sitrans LU240 mounted on top of the tank looking down.
+
+- **Current Loop Type**: "ultrasonic"
+- **How it works**: Measures the distance from the sensor to the liquid surface
+  - 4mA = Full tank (liquid close to sensor)
+  - 20mA = Empty tank (liquid far from sensor)
+- **Sensor Range**: The native measurement range (e.g., 0-10 meters, 0-30 feet)
+  - `sensorRangeMin`: Minimum distance (typically 0)
+  - `sensorRangeMax`: Maximum distance (e.g., 10 for 0-10m)
+  - `sensorRangeUnit`: Unit of measurement ("m", "ft", "in", etc.)
+- **Sensor Mount Height**: Distance from sensor to tank bottom when tank is empty
+- **Max Value**: Maximum liquid height (tank capacity)
+
+**Example Configuration** (ultrasonic sensor with 0-10m range on 10-foot tank):
+- Sensor mounted 124 inches above tank bottom (tank is 120 inches + 4 inch clearance)
+- Maximum tank fill level = 120 inches
+- Configuration:
+  - `currentLoopType`: "ultrasonic"
+  - `sensorRangeMin`: 0
+  - `sensorRangeMax`: 10
+  - `sensorRangeUnit`: "m"
+  - `sensorMountHeight`: 124.0
+  - `maxValue`: 120.0
+
+**Calibration Tips for 4-20mA Sensors:**
+1. Record the actual mA output at known liquid levels (empty, half-full, full)
+2. Verify sensor mount height is accurate
+3. Enter the correct sensor native range (as specified in sensor datasheet)
+4. Check for temperature effects on readings
+5. Consider the specific gravity of the liquid (for pressure sensors)
+
 ### Float Switch Configuration (Digital Sensors)
 Float switches can be configured as either normally-open (NO) or normally-closed (NC):
 
