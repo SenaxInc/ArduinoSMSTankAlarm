@@ -2603,8 +2603,9 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
             </div>
           </label>
           <label class="field">
-            <span>Current Sensor Reading (mA) <em style="font-weight: normal; color: var(--muted);">- Required for calibration</em></span>
-            <input type="number" id="sensorReading" step="0.01" min="4" max="20" placeholder="e.g., 12.5 (4-20mA range)">
+            <span>Sensor Reading (mA) <em style="font-weight: normal; color: var(--muted);">- Auto-calculated from telemetry</em></span>
+            <input type="number" id="sensorReading" step="0.01" min="4" max="20" placeholder="Auto-filled when tank selected">
+            <small id="sensorAutoInfo" style="color: var(--muted); margin-top: 4px; display: block;"></small>
           </label>
           <label class="field">
             <span>Reading Timestamp</span>
@@ -2623,7 +2624,7 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
       <div class="info-box">
         <strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the current 4-20mA sensor reading. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation.
         <br><br>
-        <strong>Important:</strong> The sensor reading (mA) is required for calibration learning. If not provided, the entry will be logged but won't contribute to the calibration calculation. You can read the mA value from your 4-20mA loop meter or the sensor's display.
+        <strong>Sensor reading auto-calculation:</strong> When you select a tank, the sensor reading (mA) is automatically calculated from the latest telemetry data. You can override this value if you have a more accurate reading from a loop meter.
       </div>
     </div>
 
@@ -2791,7 +2792,11 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
               client: t.client,
               tank: t.tank,
               site: t.site,
-              label: t.label || `Tank ${t.tank}`
+              label: t.label || `Tank ${t.tank}`,
+              heightInches: t.heightInches || 0,
+              levelInches: t.levelInches || 0,
+              percent: t.percent || 0,
+              lastUpdate: t.lastUpdate || 0
             });
           }
         });
@@ -2804,6 +2809,44 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
           logTankFilter.appendChild(option);
         });
       }
+
+      // Calculate estimated mA from tank percent (for 4-20mA pressure sensors)
+      function estimateSensorMa(percent) {
+        if (typeof percent !== 'number' || !isFinite(percent)) return 0;
+        // Clamp percent to 0-100 range
+        const clampedPercent = Math.max(0, Math.min(100, percent));
+        // 4mA = 0%, 20mA = 100%
+        return 4 + (clampedPercent / 100) * 16;
+      }
+
+      // Auto-populate sensor reading when tank is selected
+      function onTankSelect() {
+        const tankKey = document.getElementById('tankSelect').value;
+        const sensorInput = document.getElementById('sensorReading');
+        const sensorInfo = document.getElementById('sensorAutoInfo');
+        
+        if (!tankKey) {
+          sensorInput.value = '';
+          if (sensorInfo) sensorInfo.textContent = '';
+          return;
+        }
+        
+        // Find the tank data
+        const tank = tanks.find(t => `${t.client}:${t.tank}` === tankKey);
+        if (tank && tank.heightInches > 0) {
+          const estimatedMa = estimateSensorMa(tank.percent);
+          if (estimatedMa >= 4 && estimatedMa <= 20) {
+            sensorInput.value = estimatedMa.toFixed(2);
+            if (sensorInfo) {
+              const lastUpdateDate = tank.lastUpdate ? new Date(tank.lastUpdate * 1000).toLocaleString() : 'unknown';
+              sensorInfo.textContent = `Auto-calculated from last telemetry (${tank.percent.toFixed(1)}% @ ${lastUpdateDate})`;
+            }
+          }
+        }
+      }
+      
+      // Attach tank select handler
+      document.getElementById('tankSelect').addEventListener('change', onTankSelect);
 
       // Load calibration data
       async function loadCalibrationData() {
@@ -7699,21 +7742,28 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   // Optional fields
   float sensorReading = doc["sensorReading"].as<float>();
   if (!doc.containsKey("sensorReading") || sensorReading < 4.0f || sensorReading > 20.0f) {
-    // Try to get current sensor reading from tank records
-    sensorReading = 0.0f;  // Will be marked as manual entry without sensor reading
+    // Auto-calculate sensor reading from tank telemetry data
+    sensorReading = 0.0f;
     
-    // Look up current tank reading if available
+    // Look up tank record to get percent from latest telemetry
     for (uint8_t i = 0; i < gTankRecordCount; ++i) {
       if (strcmp(gTankRecords[i].clientUid, clientUid) == 0 && 
           gTankRecords[i].tankNumber == tankNumber) {
-        // Estimate mA from current level if we have height data
-        // This is approximate - better to have actual sensor reading
-        if (gTankRecords[i].heightInches > 1.0f) {  // Require at least 1 inch height for safe division
-          float percent = gTankRecords[i].levelInches / gTankRecords[i].heightInches;
-          // Clamp percent to valid range
-          if (percent < 0.0f) percent = 0.0f;
-          if (percent > 1.0f) percent = 1.0f;
-          sensorReading = 4.0f + percent * 16.0f;  // Estimate 4-20mA from percent
+        // Use stored percent if available, otherwise calculate from level/height
+        float percent = gTankRecords[i].percent;
+        if (percent < 0.1f && gTankRecords[i].heightInches > 1.0f) {
+          // Calculate percent from level/height as fallback
+          percent = (gTankRecords[i].levelInches / gTankRecords[i].heightInches) * 100.0f;
+        }
+        // Convert percent (0-100) to mA (4-20)
+        if (percent >= 0.0f) {
+          if (percent > 100.0f) percent = 100.0f;
+          sensorReading = 4.0f + (percent / 100.0f) * 16.0f;
+          Serial.print(F("Auto-calculated sensor reading from telemetry: "));
+          Serial.print(sensorReading, 2);
+          Serial.print(F(" mA ("));
+          Serial.print(percent, 1);
+          Serial.println(F("%)"));
         }
         break;
       }
