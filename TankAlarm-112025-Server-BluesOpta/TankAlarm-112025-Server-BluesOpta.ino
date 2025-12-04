@@ -2915,7 +2915,7 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
           
           // Check if sensor reading is valid for calibration (4-20mA range)
           const isValidReading = log.sensorReading >= 4 && log.sensorReading <= 20;
-          const sensorDisplay = log.sensorReading >= 4 && log.sensorReading <= 20 
+          const sensorDisplay = isValidReading 
             ? log.sensorReading.toFixed(2) + ' mA' 
             : (log.sensorReading ? `${log.sensorReading.toFixed(2)} mA ⚠️` : '-- ⚠️');
           
@@ -7317,20 +7317,17 @@ static void recalculateCalibration(TankCalibration *cal) {
   cal->learnedOffset = (sumY - cal->learnedSlope * sumX) / n;
   
   // Calculate R-squared (coefficient of determination)
-  // R² = 1 - (SS_residual / SS_total)
-  // For linear regression: SS_regression = slope² * (sumX² - n * meanX²)
-  // And: SS_residual = SS_total - SS_regression
+  // R² = (Covariance(X,Y))² / (Variance(X) * Variance(Y))
+  // Which equals: ssCovXY² / (ssX * ssTotal)
   float meanX = sumX / n;
   float meanY = sumY / n;
-  float ssTotal = sumY2 - n * meanY * meanY;
-  float ssX = sumX2 - n * meanX * meanX;
+  float ssTotal = sumY2 - n * meanY * meanY;  // = Variance(Y) * n
+  float ssX = sumX2 - n * meanX * meanX;       // = Variance(X) * n
+  float ssCovXY = sumXY - n * meanX * meanY;   // = Covariance(X,Y) * n
   
   if (ssTotal > 0.0001f && ssX > 0.0001f) {
-    // SS_regression = slope * (sumXY - n * meanX * meanY)
-    float ssCovXY = sumXY - n * meanX * meanY;
-    float ssRegression = cal->learnedSlope * ssCovXY;
-    float ssResidual = ssTotal - ssRegression;
-    cal->rSquared = 1.0f - (ssResidual / ssTotal);
+    // R² = ssCovXY² / (ssX * ssTotal)
+    cal->rSquared = (ssCovXY * ssCovXY) / (ssX * ssTotal);
     if (cal->rSquared < 0.0f) cal->rSquared = 0.0f;
     if (cal->rSquared > 1.0f) cal->rSquared = 1.0f;
   } else {
