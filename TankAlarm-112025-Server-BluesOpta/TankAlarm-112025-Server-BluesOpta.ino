@@ -7751,8 +7751,8 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
           gTankRecords[i].tankNumber == tankNumber) {
         // Use stored percent if available, otherwise calculate from level/height
         float percent = gTankRecords[i].percent;
-        if (percent < 0.1f && gTankRecords[i].heightInches > 1.0f) {
-          // Calculate percent from level/height as fallback
+        if (percent <= 0.0f && gTankRecords[i].heightInches > 1.0f) {
+          // Percent not set, calculate from level/height as fallback
           percent = (gTankRecords[i].levelInches / gTankRecords[i].heightInches) * 100.0f;
         }
         // Convert percent (0-100) to mA (4-20)
