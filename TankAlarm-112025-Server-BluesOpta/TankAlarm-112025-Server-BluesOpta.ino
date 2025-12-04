@@ -7157,7 +7157,11 @@ static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8
 // Simple linear regression using calibration log entries
 // Returns true if enough data points exist for valid calibration
 static void recalculateCalibration(TankCalibration *cal) {
-  if (!cal || cal->entryCount < 2) {
+  if (!cal) {
+    return;
+  }
+  
+  if (cal->entryCount < 2) {
     cal->hasLearnedCalibration = false;
     return;
   }
@@ -7362,7 +7366,7 @@ static void saveCalibrationEntry(const char *clientUid, uint8_t tankNumber, doub
   // Update calibration for this tank
   TankCalibration *cal = findOrCreateTankCalibration(clientUid, tankNumber);
   if (cal) {
-    cal->entryCount++;
+    // recalculateCalibration will read the file and update entryCount
     recalculateCalibration(cal);
     saveCalibrationData();
   }
@@ -7415,7 +7419,7 @@ static void loadCalibrationData() {
       if (pos7 < 0) continue;
       cal.hasLearnedCalibration = line.substring(pos6 + 1, pos7).toInt() == 1;
       
-      cal.lastCalibrationEpoch = line.substring(pos7 + 1).toFloat();
+      cal.lastCalibrationEpoch = atof(line.substring(pos7 + 1).c_str());
       
       gTankCalibrationCount++;
     }
@@ -7463,7 +7467,7 @@ static void loadCalibrationData() {
       if (pos7 < 0) continue;
       cal.hasLearnedCalibration = line.substring(pos6 + 1, pos7).toInt() == 1;
       
-      cal.lastCalibrationEpoch = line.substring(pos7 + 1).toFloat();
+      cal.lastCalibrationEpoch = atof(line.substring(pos7 + 1).c_str());
       
       gTankCalibrationCount++;
     }
@@ -7565,7 +7569,7 @@ static void handleCalibrationGet(EthernetClient &client) {
         
         int pos3 = line.indexOf('\t', pos2 + 1);
         if (pos3 < 0) continue;
-        double timestamp = line.substring(pos2 + 1, pos3).toFloat();
+        double timestamp = atof(line.substring(pos2 + 1, pos3).c_str());
         
         int pos4 = line.indexOf('\t', pos3 + 1);
         if (pos4 < 0) continue;
@@ -7613,7 +7617,7 @@ static void handleCalibrationGet(EthernetClient &client) {
           
           int pos3 = line.indexOf('\t', pos2 + 1);
           if (pos3 < 0) continue;
-          double timestamp = line.substring(pos2 + 1, pos3).toFloat();
+          double timestamp = atof(line.substring(pos2 + 1, pos3).c_str());
           
           int pos4 = line.indexOf('\t', pos3 + 1);
           if (pos4 < 0) continue;
@@ -7690,8 +7694,11 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
           gTankRecords[i].tankNumber == tankNumber) {
         // Estimate mA from current level if we have height data
         // This is approximate - better to have actual sensor reading
-        if (gTankRecords[i].heightInches > 0.1f) {
+        if (gTankRecords[i].heightInches > 1.0f) {  // Require at least 1 inch height for safe division
           float percent = gTankRecords[i].levelInches / gTankRecords[i].heightInches;
+          // Clamp percent to valid range
+          if (percent < 0.0f) percent = 0.0f;
+          if (percent > 1.0f) percent = 1.0f;
           sensorReading = 4.0f + percent * 16.0f;  // Estimate 4-20mA from percent
         }
         break;
