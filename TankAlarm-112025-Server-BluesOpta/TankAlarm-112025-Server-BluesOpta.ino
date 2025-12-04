@@ -1056,7 +1056,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       } else if (type === 2) { // Current Loop (4-20mA)
         heightField.style.display = 'flex';
         heightLabel.textContent = 'Tank Height (in)';
-        heightTooltip.setAttribute('data-tooltip', 'Maximum height of liquid in the tank in inches. For ultrasonic sensors, this is the distance the sensor measures at full tank.');
+        heightTooltip.setAttribute('data-tooltip', 'Maximum height of liquid in the tank in inches. Meaning varies based on sensor subtype.');
         digitalInfoBox.style.display = 'none';
         currentLoopInfoBox.style.display = 'block';
         switchModeField.style.display = 'none';

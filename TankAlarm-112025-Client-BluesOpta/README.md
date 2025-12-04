@@ -110,7 +110,9 @@ Used for sensors like the Dwyer 626-06-CB-P1-E5-S1 (0-5 PSI) mounted near the bo
 - Configuration:
   - `currentLoopType`: "pressure"
   - `sensorMountHeight`: 2.0
-  - `maxValue`: 138.0 (or actual tank height if tank is smaller)
+  - `maxValue`: 118.0 (tank height minus mount height: 120 - 2 = 118 inches)
+
+> **Note:** For pressure sensors, set `maxValue` to the tank's usable height minus the sensor mount height. The implementation adds `sensorMountHeight` to the measured value, so `maxValue` should represent the height of liquid *above* the sensor, not the total tank height.
 
 #### Ultrasonic Sensor (Top-Mounted)
 Used for sensors like the Siemens Sitrans LU240 mounted on top of the tank looking down.

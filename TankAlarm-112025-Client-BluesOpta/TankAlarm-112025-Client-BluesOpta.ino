@@ -789,8 +789,8 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     } else {
       cfg.tanks[i].currentLoopType = CURRENT_LOOP_PRESSURE; // Default: pressure sensor
     }
-    // Load sensor mount height (for calibration)
-    cfg.tanks[i].sensorMountHeight = t["sensorMountHeight"].is<float>() ? t["sensorMountHeight"].as<float>() : 0.0f;
+    // Load sensor mount height (for calibration) - validate non-negative
+    cfg.tanks[i].sensorMountHeight = t["sensorMountHeight"].is<float>() ? fmaxf(0.0f, t["sensorMountHeight"].as<float>()) : 0.0f;
   }
 
   return true;
@@ -1332,9 +1332,9 @@ static void applyConfigUpdate(const JsonDocument &doc) {
           gConfig.tanks[i].currentLoopType = CURRENT_LOOP_PRESSURE;
         }
       }
-      // Handle sensor mount height (for calibration)
+      // Handle sensor mount height (for calibration) - validate non-negative
       if (t.containsKey("sensorMountHeight")) {
-        gConfig.tanks[i].sensorMountHeight = t["sensorMountHeight"].as<float>();
+        gConfig.tanks[i].sensorMountHeight = fmaxf(0.0f, t["sensorMountHeight"].as<float>());
       }
     }
   }
@@ -1563,6 +1563,7 @@ static float readTankSensor(uint8_t idx) {
         levelInches = rawLevel + cfg.sensorMountHeight;
         // Clamp to valid range (sensorMountHeight to maxValue + sensorMountHeight)
         if (levelInches < cfg.sensorMountHeight) levelInches = cfg.sensorMountHeight;
+        if (levelInches > cfg.maxValue + cfg.sensorMountHeight) levelInches = cfg.maxValue + cfg.sensorMountHeight;
       }
       return levelInches;
     }
