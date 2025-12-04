@@ -182,6 +182,19 @@
 #define SERIAL_STALE_SECONDS 1800  // 30 minutes
 #endif
 
+// Calibration learning system constants
+#ifndef CALIBRATION_LOG_PATH
+#define CALIBRATION_LOG_PATH "/calibration_log.txt"
+#endif
+
+#ifndef MAX_CALIBRATION_ENTRIES
+#define MAX_CALIBRATION_ENTRIES 100  // Max calibration entries per tank
+#endif
+
+#ifndef MAX_CALIBRATION_TANKS
+#define MAX_CALIBRATION_TANKS 20  // Max tanks to track calibration for
+#endif
+
 static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(10)) + 512;
 static const size_t CLIENT_JSON_CAPACITY = 24576;
 
@@ -214,7 +227,8 @@ struct TankRecord {
   uint8_t tankNumber;
   float heightInches;
   float levelInches;
-  float percent;
+  float sensorMa;             // Raw 4-20mA sensor reading (0 if not available)
+  float percent;              // Calculated on server from levelInches/heightInches
   bool alarmActive;
   char alarmType[24];
   double lastUpdateEpoch;
@@ -266,6 +280,35 @@ static uint8_t gClientMetadataCount = 0;
 static ServerSerialBuffer gServerSerial;
 static ClientSerialBuffer gClientSerialBuffers[MAX_CLIENT_SERIAL_LOGS];
 static uint8_t gClientSerialBufferCount = 0;
+
+// Calibration learning system data structures
+// Stores manual level readings paired with sensor readings for learning
+struct CalibrationEntry {
+  double timestamp;           // Epoch time of the reading
+  float sensorReading;        // Raw sensor value (mA for 4-20mA sensors)
+  float verifiedLevelInches;  // Manually verified tank level in inches
+  char notes[64];             // Optional notes about the reading
+};
+
+// Per-tank calibration data with learned parameters
+struct TankCalibration {
+  char clientUid[48];
+  uint8_t tankNumber;
+  // Learned linear regression parameters: level = slope * sensorReading + offset
+  float learnedSlope;         // Learned inches per mA (replaces maxValue calculation)
+  float learnedOffset;        // Learned offset in inches
+  bool hasLearnedCalibration; // True if we have enough data points for calibration
+  uint8_t entryCount;         // Number of calibration entries
+  float rSquared;             // Goodness of fit (0-1, higher is better)
+  double lastCalibrationEpoch; // When calibration was last updated
+  // Original sensor configuration for reference
+  float originalMaxValue;     // Original maxValue from config
+  char sensorType[16];        // "pressure" or "ultrasonic"
+  float sensorMountHeight;    // Sensor mount height in inches
+};
+
+static TankCalibration gTankCalibrations[MAX_CALIBRATION_TANKS];
+static uint8_t gTankCalibrationCount = 0;
 
 static ServerConfig gConfig;
 static bool gConfigDirty = false;
@@ -2221,6 +2264,760 @@ static const char SERIAL_MONITOR_HTML[] PROGMEM = R"HTML(
 </html>
 )HTML";
 
+static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calibration Learning - Tank Alarm Server</title>
+  <style>
+    :root {
+      font-family: "Segoe UI", Arial, sans-serif;
+      color-scheme: light dark;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    body[data-theme="light"] {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --text: #1f2933;
+      --muted: #475569;
+      --header-bg: #e2e8f0;
+      --card-border: rgba(15,23,42,0.08);
+      --card-shadow: rgba(15,23,42,0.08);
+      --accent: #2563eb;
+      --accent-strong: #1d4ed8;
+      --accent-contrast: #f8fafc;
+      --chip: #f8fafc;
+      --input-border: #cbd5e1;
+      --danger: #ef4444;
+      --success: #10b981;
+      --pill-bg: rgba(37,99,235,0.12);
+      --table-border: rgba(15,23,42,0.08);
+    }
+    body[data-theme="dark"] {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --header-bg: #16213d;
+      --card-border: rgba(15,23,42,0.55);
+      --card-shadow: rgba(0,0,0,0.55);
+      --accent: #38bdf8;
+      --accent-strong: #22d3ee;
+      --accent-contrast: #0f172a;
+      --chip: rgba(148,163,184,0.15);
+      --input-border: rgba(148,163,184,0.4);
+      --danger: #f87171;
+      --success: #34d399;
+      --pill-bg: rgba(56,189,248,0.18);
+      --table-border: rgba(255,255,255,0.12);
+    }
+    header {
+      background: var(--header-bg);
+      padding: 28px 24px;
+      box-shadow: 0 20px 45px var(--card-shadow);
+    }
+    header .bar {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.9rem;
+    }
+    header p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 640px;
+      line-height: 1.4;
+    }
+    .header-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .pill {
+      border-radius: 999px;
+      padding: 10px 20px;
+      text-decoration: none;
+      font-weight: 600;
+      background: var(--pill-bg);
+      color: var(--accent);
+      border: 1px solid transparent;
+      transition: transform 0.15s ease;
+    }
+    .pill:hover {
+      transform: translateY(-1px);
+    }
+    .icon-button {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      border: 1px solid var(--card-border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 1.2rem;
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+    .icon-button:hover {
+      transform: translateY(-1px);
+    }
+    main {
+      padding: 24px;
+      max-width: 1200px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .card {
+      background: var(--surface);
+      border-radius: 24px;
+      border: 1px solid var(--card-border);
+      padding: 20px;
+      box-shadow: 0 25px 55px var(--card-shadow);
+      margin-bottom: 24px;
+    }
+    h2 {
+      margin-top: 0;
+      font-size: 1.3rem;
+    }
+    h3 {
+      margin: 20px 0 10px;
+      font-size: 1.1rem;
+      color: var(--text);
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 12px;
+    }
+    .field span {
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .field input, .field select, .field textarea {
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--input-border);
+      font-size: 0.95rem;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .level-input-group {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .level-input-group input {
+      width: 70px;
+    }
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--accent);
+      color: var(--accent-contrast);
+      transition: transform 0.15s ease;
+    }
+    button.secondary {
+      background: transparent;
+      border: 1px solid var(--card-border);
+      color: var(--text);
+    }
+    button:hover {
+      transform: translateY(-1px);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--table-border);
+      font-size: 0.9rem;
+    }
+    th {
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    tr:last-child td {
+      border-bottom: none;
+    }
+    .calibration-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .calibration-status.calibrated {
+      background: rgba(16,185,129,0.15);
+      color: var(--success);
+    }
+    .calibration-status.uncalibrated {
+      background: rgba(239,68,68,0.15);
+      color: var(--danger);
+    }
+    .calibration-status.learning {
+      background: rgba(37,99,235,0.15);
+      color: var(--accent);
+    }
+    .drift-indicator {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .drift-indicator.low {
+      background: rgba(16,185,129,0.15);
+      color: var(--success);
+    }
+    .drift-indicator.medium {
+      background: rgba(245,158,11,0.15);
+      color: #f59e0b;
+    }
+    .drift-indicator.high {
+      background: rgba(239,68,68,0.15);
+      color: var(--danger);
+    }
+    .info-box {
+      background: var(--chip);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 12px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .stats-row {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+    }
+    .stat-item span {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .stat-item strong {
+      font-size: 1.4rem;
+      margin-top: 4px;
+    }
+    #toast {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%);
+      background: var(--accent);
+      color: var(--accent-contrast);
+      padding: 12px 18px;
+      border-radius: 999px;
+      box-shadow: 0 10px 30px rgba(15,23,42,0.25);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+      font-weight: 600;
+    }
+    #toast.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body data-theme="light">
+  <header>
+    <div class="bar">
+      <div>
+        <h1>Calibration Learning System</h1>
+        <p>
+          Enter manual tank level readings to improve sensor accuracy over time. The system learns the relationship between sensor readings and actual tank levels using linear regression.
+        </p>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
+        <a class="pill" href="/">&larr; Back to Dashboard</a>
+      </div>
+    </div>
+  </header>
+  <main>
+    <!-- New Calibration Entry Form -->
+    <div class="card">
+      <h2>Add Calibration Reading</h2>
+      <p style="color: var(--muted); margin-bottom: 16px;">
+        Enter a manually verified tank level reading. For best results, take readings at different fill levels (e.g., 25%, 50%, 75%, full).
+      </p>
+      <form id="calibrationForm">
+        <div class="form-grid">
+          <label class="field">
+            <span>Select Tank</span>
+            <select id="tankSelect" required>
+              <option value="">-- Select a tank --</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Verified Level</span>
+            <div class="level-input-group">
+              <input type="number" id="levelFeet" min="0" max="100" placeholder="Feet" required>
+              <span>'</span>
+              <input type="number" id="levelInches" min="0" max="11.9" step="0.1" placeholder="Inches" required>
+              <span>"</span>
+            </div>
+          </label>
+          <label class="field">
+            <span>Reading Timestamp</span>
+            <input type="datetime-local" id="readingTimestamp">
+          </label>
+        </div>
+        <label class="field" style="margin-top: 12px;">
+          <span>Notes (optional)</span>
+          <textarea id="notes" rows="2" placeholder="e.g., Measured with stick gauge at front of tank"></textarea>
+        </label>
+        <div style="margin-top: 16px;">
+          <button type="submit">Submit Calibration Reading</button>
+          <button type="button" class="secondary" onclick="document.getElementById('calibrationForm').reset();">Clear Form</button>
+        </div>
+      </form>
+      <div class="info-box">
+        <strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the raw 4-20mA sensor reading from telemetry. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation.
+      </div>
+    </div>
+
+    <!-- Calibration Status Overview -->
+    <div class="card">
+      <h2>Calibration Status</h2>
+      <div id="calibrationStats" class="stats-row">
+        <div class="stat-item">
+          <span>Total Tanks</span>
+          <strong id="statTotalTanks">0</strong>
+        </div>
+        <div class="stat-item">
+          <span>Calibrated</span>
+          <strong id="statCalibrated">0</strong>
+        </div>
+        <div class="stat-item">
+          <span>Learning (1 point)</span>
+          <strong id="statLearning">0</strong>
+        </div>
+        <div class="stat-item">
+          <span>Uncalibrated</span>
+          <strong id="statUncalibrated">0</strong>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Tank</th>
+            <th>Site</th>
+            <th>Status</th>
+            <th>Data Points</th>
+            <th>R² Fit</th>
+            <th>Learned Slope</th>
+            <th>Drift from Original</th>
+            <th>Last Calibration</th>
+          </tr>
+        </thead>
+        <tbody id="calibrationTableBody">
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Calibration Log -->
+    <div class="card">
+      <h2>Calibration Log</h2>
+      <div class="form-grid" style="margin-bottom: 12px;">
+        <label class="field">
+          <span>Filter by Tank</span>
+          <select id="logTankFilter">
+            <option value="">All Tanks</option>
+          </select>
+        </label>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Tank</th>
+            <th>Sensor (mA)</th>
+            <th>Verified Level</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody id="logTableBody">
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Drift Analysis -->
+    <div class="card">
+      <h2>Drift Analysis</h2>
+      <p style="color: var(--muted); margin-bottom: 16px;">
+        Shows how sensor accuracy has changed over time. High drift may indicate sensor degradation, tank modifications, or environmental factors.
+      </p>
+      <div id="driftAnalysis">
+        <p style="color: var(--muted);">Select a tank with calibration data to view drift analysis.</p>
+      </div>
+    </div>
+  </main>
+  <div id="toast"></div>
+  <script>
+    (() => {
+      const THEME_KEY = 'tankalarmTheme';
+      const themeToggle = document.getElementById('themeToggle');
+      
+      function applyTheme(next) {
+        const theme = next === 'dark' ? 'dark' : 'light';
+        document.body.dataset.theme = theme;
+        themeToggle.textContent = theme === 'dark' ? '☀' : '☾';
+        themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+        localStorage.setItem(THEME_KEY, theme);
+      }
+      
+      applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+      themeToggle.addEventListener('click', () => {
+        const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
+      });
+
+      function showToast(message, isError) {
+        const toast = document.getElementById('toast');
+        toast.textContent = message;
+        toast.style.background = isError ? '#dc2626' : '#0284c7';
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 2500);
+      }
+
+      function formatEpoch(epoch) {
+        if (!epoch) return '--';
+        const date = new Date(epoch * 1000);
+        if (isNaN(date.getTime())) return '--';
+        return date.toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit'
+        });
+      }
+
+      function formatLevel(inches) {
+        if (typeof inches !== 'number' || !isFinite(inches) || inches < 0) {
+          return '--';
+        }
+        const feet = Math.floor(inches / 12);
+        const remainingInches = inches % 12;
+        if (feet === 0) {
+          return `${remainingInches.toFixed(1)}"`;
+        }
+        return `${feet}' ${remainingInches.toFixed(1)}"`;
+      }
+
+      // Global state
+      let tanks = [];
+      let calibrations = [];
+      let calibrationLogs = [];
+
+      // Load tank list for dropdowns
+      async function loadTanks() {
+        try {
+          const response = await fetch('/api/tanks');
+          if (!response.ok) throw new Error('Failed to load tanks');
+          const data = await response.json();
+          tanks = data.tanks || [];
+          populateTankDropdowns();
+        } catch (err) {
+          console.error('Error loading tanks:', err);
+          showToast('Failed to load tank list', true);
+        }
+      }
+
+      function populateTankDropdowns() {
+        const tankSelect = document.getElementById('tankSelect');
+        const logTankFilter = document.getElementById('logTankFilter');
+        
+        // Clear and repopulate
+        tankSelect.innerHTML = '<option value="">-- Select a tank --</option>';
+        logTankFilter.innerHTML = '<option value="">All Tanks</option>';
+        
+        const uniqueTanks = new Map();
+        tanks.forEach(t => {
+          const key = `${t.client}:${t.tank}`;
+          if (!uniqueTanks.has(key)) {
+            uniqueTanks.set(key, {
+              client: t.client,
+              tank: t.tank,
+              site: t.site,
+              label: t.label || `Tank ${t.tank}`,
+              heightInches: t.heightInches || 0,
+              levelInches: t.levelInches || 0,
+              sensorMa: t.sensorMa || 0,
+              percent: t.percent || 0,
+              lastUpdate: t.lastUpdate || 0
+            });
+          }
+        });
+        
+        uniqueTanks.forEach((tank, key) => {
+          const option = document.createElement('option');
+          option.value = key;
+          option.textContent = `${tank.site} - ${tank.label} (#${tank.tank})`;
+          tankSelect.appendChild(option.cloneNode(true));
+          logTankFilter.appendChild(option);
+        });
+      }
+
+      // Load calibration data
+      async function loadCalibrationData() {
+        try {
+          const response = await fetch('/api/calibration');
+          if (!response.ok) throw new Error('Failed to load calibration data');
+          const data = await response.json();
+          calibrations = data.calibrations || [];
+          calibrationLogs = data.logs || [];
+          updateCalibrationStats();
+          updateCalibrationTable();
+          updateCalibrationLog();
+        } catch (err) {
+          console.error('Error loading calibration data:', err);
+        }
+      }
+
+      function updateCalibrationStats() {
+        const total = tanks.length > 0 ? new Set(tanks.map(t => `${t.client}:${t.tank}`)).size : 0;
+        const calibrated = calibrations.filter(c => c.hasLearnedCalibration).length;
+        const learning = calibrations.filter(c => !c.hasLearnedCalibration && c.entryCount > 0).length;
+        const uncalibrated = total - calibrated - learning;
+        
+        document.getElementById('statTotalTanks').textContent = total;
+        document.getElementById('statCalibrated').textContent = calibrated;
+        document.getElementById('statLearning').textContent = learning;
+        document.getElementById('statUncalibrated').textContent = Math.max(0, uncalibrated);
+      }
+
+      function updateCalibrationTable() {
+        const tbody = document.getElementById('calibrationTableBody');
+        tbody.innerHTML = '';
+        
+        if (calibrations.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--muted);">No calibration data yet. Add readings to start learning.</td></tr>';
+          return;
+        }
+        
+        calibrations.forEach(cal => {
+          const tr = document.createElement('tr');
+          
+          // Find tank info
+          const tankInfo = tanks.find(t => t.client === cal.clientUid && t.tank === cal.tankNumber);
+          const tankName = tankInfo ? `${tankInfo.label || 'Tank ' + cal.tankNumber}` : `Tank ${cal.tankNumber}`;
+          const site = tankInfo ? tankInfo.site : '--';
+          
+          // Status badge
+          let statusClass = 'uncalibrated';
+          let statusText = 'Uncalibrated';
+          if (cal.hasLearnedCalibration) {
+            statusClass = 'calibrated';
+            statusText = 'Calibrated';
+          } else if (cal.entryCount > 0) {
+            statusClass = 'learning';
+            statusText = 'Learning';
+          }
+          
+          // Calculate drift from original
+          let driftText = '--';
+          let driftClass = 'low';
+          if (cal.hasLearnedCalibration && cal.originalMaxValue > 0) {
+            // Original slope would be maxValue / 16 (inches per mA over 4-20mA range)
+            const originalSlope = cal.originalMaxValue / 16.0;
+            const drift = Math.abs((cal.learnedSlope - originalSlope) / originalSlope * 100);
+            driftText = drift.toFixed(1) + '%';
+            if (drift > 10) driftClass = 'high';
+            else if (drift > 5) driftClass = 'medium';
+          }
+          
+          tr.innerHTML = `
+            <td>${tankName}</td>
+            <td>${site}</td>
+            <td><span class="calibration-status ${statusClass}">${statusText}</span></td>
+            <td>${cal.entryCount}</td>
+            <td>${cal.hasLearnedCalibration ? (cal.rSquared * 100).toFixed(1) + '%' : '--'}</td>
+            <td>${cal.hasLearnedCalibration ? cal.learnedSlope.toFixed(3) + ' in/mA' : '--'}</td>
+            <td><span class="drift-indicator ${driftClass}">${driftText}</span></td>
+            <td>${formatEpoch(cal.lastCalibrationEpoch)}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
+      function updateCalibrationLog() {
+        const tbody = document.getElementById('logTableBody');
+        const filter = document.getElementById('logTankFilter').value;
+        tbody.innerHTML = '';
+        
+        let filtered = calibrationLogs;
+        if (filter) {
+          const [clientUid, tankNum] = filter.split(':');
+          filtered = calibrationLogs.filter(log => 
+            log.clientUid === clientUid && log.tankNumber === parseInt(tankNum)
+          );
+        }
+        
+        if (filtered.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--muted);">No calibration entries found.</td></tr>';
+          return;
+        }
+        
+        // Sort by timestamp descending (most recent first)
+        filtered.sort((a, b) => b.timestamp - a.timestamp);
+        
+        filtered.forEach(log => {
+          const tr = document.createElement('tr');
+          const tankInfo = tanks.find(t => t.client === log.clientUid && t.tank === log.tankNumber);
+          const tankName = tankInfo ? `${tankInfo.site} - ${tankInfo.label || 'Tank ' + log.tankNumber}` : `Tank ${log.tankNumber}`;
+          
+          // Check if sensor reading is valid for calibration (4-20mA range)
+          const isValidReading = log.sensorReading >= 4 && log.sensorReading <= 20;
+          const sensorDisplay = isValidReading 
+            ? log.sensorReading.toFixed(2) + ' mA' 
+            : (log.sensorReading ? `${log.sensorReading.toFixed(2)} mA ⚠️` : '-- ⚠️');
+          
+          tr.innerHTML = `
+            <td>${formatEpoch(log.timestamp)}</td>
+            <td>${tankName}</td>
+            <td title="${isValidReading ? '' : 'Not used for calibration (outside 4-20mA range)'}">${sensorDisplay}</td>
+            <td>${formatLevel(log.verifiedLevelInches)}</td>
+            <td>${log.notes || '--'}</td>
+          `;
+          if (!isValidReading) {
+            tr.style.opacity = '0.6';
+          }
+          tbody.appendChild(tr);
+        });
+      }
+
+      // Handle form submission
+      document.getElementById('calibrationForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const tankKey = document.getElementById('tankSelect').value;
+        if (!tankKey) {
+          showToast('Please select a tank', true);
+          return;
+        }
+        
+        const [clientUid, tankNumber] = tankKey.split(':');
+        const levelFeet = parseInt(document.getElementById('levelFeet').value) || 0;
+        const levelInches = parseFloat(document.getElementById('levelInches').value) || 0;
+        const totalInches = levelFeet * 12 + levelInches;
+        
+        const timestampInput = document.getElementById('readingTimestamp').value;
+        const notes = document.getElementById('notes').value.trim();
+        
+        // Validate
+        if (totalInches < 0) {
+          showToast('Invalid level value', true);
+          return;
+        }
+        
+        // Get the tank data to include sensorMa automatically
+        const tank = tanks.find(t => `${t.client}:${t.tank}` === tankKey);
+        
+        // Build payload
+        const payload = {
+          clientUid: clientUid,
+          tankNumber: parseInt(tankNumber),
+          verifiedLevelInches: totalInches,
+          notes: notes
+        };
+        
+        // Include sensorMa from telemetry if available
+        if (tank && tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20) {
+          payload.sensorReading = tank.sensorMa;
+        }
+        
+        if (timestampInput) {
+          payload.timestamp = Math.floor(new Date(timestampInput).getTime() / 1000);
+        }
+        
+        try {
+          const response = await fetch('/api/calibration', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(text || 'Failed to submit calibration');
+          }
+          
+          showToast('Calibration reading submitted successfully');
+          document.getElementById('calibrationForm').reset();
+          loadCalibrationData();
+        } catch (err) {
+          console.error('Error submitting calibration:', err);
+          showToast(err.message || 'Failed to submit calibration', true);
+        }
+      });
+
+      // Filter change handler
+      document.getElementById('logTankFilter').addEventListener('change', updateCalibrationLog);
+
+      // Set default timestamp to now
+      const now = new Date();
+      now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+      document.getElementById('readingTimestamp').value = now.toISOString().slice(0, 16);
+
+      // Initial load
+      loadTanks();
+      loadCalibrationData();
+      
+      // Refresh periodically
+      setInterval(loadCalibrationData, 30000);
+    })();
+  </script>
+</body>
+</html>
+)HTML";
+
 static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html lang="en">
@@ -2524,6 +3321,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         <a class="pill" href="/client-console">Client Console</a>
         <a class="pill secondary" href="/config-generator">Config Generator</a>
         <a class="pill secondary" href="/serial-monitor">Serial Monitor</a>
+        <a class="pill secondary" href="/calibration">Calibration</a>
       </div>
     </div>
     <div class="meta-grid">
@@ -4014,6 +4812,14 @@ static void handleSerialLogsGet(EthernetClient &client, const String &queryStrin
 static void handleSerialLogsDownload(EthernetClient &client, const String &queryString);
 static void handleSerialRequestPost(EthernetClient &client, const String &body);
 static void sendSerialMonitor(EthernetClient &client);
+static void sendCalibrationPage(EthernetClient &client);
+static void handleCalibrationGet(EthernetClient &client);
+static void handleCalibrationPost(EthernetClient &client, const String &body);
+static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8_t tankNumber);
+static void recalculateCalibration(TankCalibration *cal);
+static void loadCalibrationData();
+static void saveCalibrationData();
+static void saveCalibrationEntry(const char *clientUid, uint8_t tankNumber, double timestamp, float sensorReading, float verifiedLevelInches, const char *notes);
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
 static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state, const char *source);
 static void pollNotecard();
@@ -4480,6 +5286,7 @@ void setup() {
 
   initializeStorage();
   ensureConfigLoaded();
+  loadCalibrationData();  // Load calibration learning data
   printHardwareRequirements();
 
   Wire.begin();
@@ -5034,10 +5841,14 @@ static void handleWebRequests() {
     sendConfigGenerator(client);
   } else if (method == "GET" && path == "/serial-monitor") {
     sendSerialMonitor(client);
+  } else if (method == "GET" && path == "/calibration") {
+    sendCalibrationPage(client);
   } else if (method == "GET" && path == "/api/tanks") {
     sendTankJson(client);
   } else if (method == "GET" && path == "/api/clients") {
     sendClientDataJson(client);
+  } else if (method == "GET" && path == "/api/calibration") {
+    handleCalibrationGet(client);
   } else if (method == "GET" && path.startsWith("/api/serial-logs")) {
     String queryString = "";
     int queryStart = path.indexOf('?');
@@ -5057,6 +5868,12 @@ static void handleWebRequests() {
       respondStatus(client, 413, "Payload Too Large");
     } else {
       handleSerialRequestPost(client, body);
+    }
+  } else if (method == "POST" && path == "/api/calibration") {
+    if (contentLength > 512) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleCalibrationPost(client, body);
     }
   } else if (method == "POST" && path == "/api/config") {
     if (contentLength > 8192) {
@@ -5325,6 +6142,7 @@ static void sendTankJson(EthernetClient &client) {
     obj["tank"] = gTankRecords[i].tankNumber;
     obj["heightInches"] = gTankRecords[i].heightInches;
     obj["levelInches"] = gTankRecords[i].levelInches;
+    obj["sensorMa"] = gTankRecords[i].sensorMa;
     obj["percent"] = gTankRecords[i].percent;
     obj["alarm"] = gTankRecords[i].alarmActive;
     obj["alarmType"] = gTankRecords[i].alarmType;
@@ -5409,6 +6227,7 @@ static void sendClientDataJson(EthernetClient &client) {
       clientObj["label"] = rec.label;
       clientObj["tank"] = rec.tankNumber;
       clientObj["levelInches"] = rec.levelInches;
+      clientObj["sensorMa"] = rec.sensorMa;
       clientObj["percent"] = rec.percent;
       clientObj["lastUpdate"] = rec.lastUpdateEpoch;
       clientObj["alarmType"] = rec.alarmType;
@@ -5425,6 +6244,7 @@ static void sendClientDataJson(EthernetClient &client) {
     tankObj["tank"] = rec.tankNumber;
     tankObj["heightInches"] = rec.heightInches;
     tankObj["levelInches"] = rec.levelInches;
+    tankObj["sensorMa"] = rec.sensorMa;
     tankObj["percent"] = rec.percent;
     tankObj["alarm"] = rec.alarmActive;
     tankObj["alarmType"] = rec.alarmType;
@@ -5736,9 +6556,27 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   strlcpy(rec->site, doc["site"] | "", sizeof(rec->site));
   strlcpy(rec->label, doc["label"] | "Tank", sizeof(rec->label));
   rec->levelInches = doc["levelInches"].as<float>();
-  rec->percent = doc["percent"].as<float>();
+  
+  // Handle raw sensor mA reading if provided (from 4-20mA sensors)
+  if (doc.containsKey("sensorMa")) {
+    rec->sensorMa = doc["sensorMa"].as<float>();
+  } else {
+    rec->sensorMa = 0.0f;  // Not available
+  }
+  
+  // Calculate percent on server from level/height (backwards compatible)
+  if (doc.containsKey("percent")) {
+    rec->percent = doc["percent"].as<float>();
+  } else if (rec->heightInches > 0.1f) {
+    rec->percent = (rec->levelInches / rec->heightInches) * 100.0f;
+  } else {
+    rec->percent = 0.0f;
+  }
+  
   if (doc.containsKey("heightInches")) {
     rec->heightInches = doc["heightInches"].as<float>();
+  } else if (doc.containsKey("maxValue")) {
+    rec->heightInches = doc["maxValue"].as<float>();
   }
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
 }
@@ -6017,6 +6855,7 @@ static void sendDailyEmail() {
     obj["label"] = gTankRecords[i].label;
     obj["tank"] = gTankRecords[i].tankNumber;
     obj["levelInches"] = gTankRecords[i].levelInches;
+    obj["sensorMa"] = gTankRecords[i].sensorMa;
     obj["percent"] = gTankRecords[i].percent;
     obj["alarm"] = gTankRecords[i].alarmActive;
     obj["alarmType"] = gTankRecords[i].alarmType;
@@ -6064,6 +6903,7 @@ static void publishViewerSummary() {
     obj["tank"] = gTankRecords[i].tankNumber;
     obj["heightInches"] = gTankRecords[i].heightInches;
     obj["levelInches"] = gTankRecords[i].levelInches;
+    obj["sensorMa"] = gTankRecords[i].sensorMa;
     obj["percent"] = gTankRecords[i].percent;
     obj["alarm"] = gTankRecords[i].alarmActive;
     obj["alarmType"] = gTankRecords[i].alarmType;
@@ -6300,4 +7140,637 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
   snapshot->payload[len] = '\0';
 
   saveClientConfigSnapshots();
+}
+
+// ============================================================================
+// Calibration Learning System Implementation
+// ============================================================================
+
+static void sendCalibrationPage(EthernetClient &client) {
+  size_t htmlLen = strlen_P(CALIBRATION_HTML);
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: text/html; charset=utf-8"));
+  client.print(F("Content-Length: "));
+  client.println(htmlLen);
+  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
+  client.println();
+
+  for (size_t i = 0; i < htmlLen; ++i) {
+    char c = pgm_read_byte_near(CALIBRATION_HTML + i);
+    client.write(c);
+  }
+}
+
+static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8_t tankNumber) {
+  if (!clientUid || strlen(clientUid) == 0) {
+    return nullptr;
+  }
+  
+  // Search for existing calibration
+  for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
+    if (strcmp(gTankCalibrations[i].clientUid, clientUid) == 0 && 
+        gTankCalibrations[i].tankNumber == tankNumber) {
+      return &gTankCalibrations[i];
+    }
+  }
+  
+  // Create new entry if space available
+  if (gTankCalibrationCount < MAX_CALIBRATION_TANKS) {
+    TankCalibration *cal = &gTankCalibrations[gTankCalibrationCount++];
+    memset(cal, 0, sizeof(TankCalibration));
+    strlcpy(cal->clientUid, clientUid, sizeof(cal->clientUid));
+    cal->tankNumber = tankNumber;
+    cal->hasLearnedCalibration = false;
+    cal->entryCount = 0;
+    cal->learnedSlope = 0.0f;
+    cal->learnedOffset = 0.0f;
+    cal->rSquared = 0.0f;
+    return cal;
+  }
+  
+  return nullptr;
+}
+
+// Simple linear regression using calibration log entries
+// Returns true if enough data points exist for valid calibration
+static void recalculateCalibration(TankCalibration *cal) {
+  if (!cal) {
+    return;
+  }
+  
+  if (cal->entryCount < 2) {
+    cal->hasLearnedCalibration = false;
+    return;
+  }
+  
+  // Read calibration entries from file and compute linear regression
+  // For simplicity in embedded context, we'll re-read entries when needed
+  
+#ifdef FILESYSTEM_AVAILABLE
+  float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
+  int count = 0;
+  
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    FILE *file = fopen("/fs/calibration_log.txt", "r");
+    if (!file) {
+      cal->hasLearnedCalibration = false;
+      return;
+    }
+    
+    char lineBuffer[256];
+    while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && count < MAX_CALIBRATION_ENTRIES) {
+      String line = String(lineBuffer);
+      line.trim();
+      if (line.length() == 0) continue;
+      
+      // Parse: clientUid\ttankNumber\ttimestamp\tsensorReading\tverifiedLevel\tnotes
+      int pos1 = line.indexOf('\t');
+      if (pos1 < 0) continue;
+      String uid = line.substring(0, pos1);
+      
+      int pos2 = line.indexOf('\t', pos1 + 1);
+      if (pos2 < 0) continue;
+      int tankNum = line.substring(pos1 + 1, pos2).toInt();
+      
+      // Check if this entry matches our tank
+      if (uid != String(cal->clientUid) || tankNum != cal->tankNumber) continue;
+      
+      int pos3 = line.indexOf('\t', pos2 + 1);
+      if (pos3 < 0) continue;
+      
+      int pos4 = line.indexOf('\t', pos3 + 1);
+      if (pos4 < 0) continue;
+      float sensorReading = line.substring(pos3 + 1, pos4).toFloat();
+      
+      int pos5 = line.indexOf('\t', pos4 + 1);
+      float verifiedLevel;
+      if (pos5 < 0) {
+        verifiedLevel = line.substring(pos4 + 1).toFloat();
+      } else {
+        verifiedLevel = line.substring(pos4 + 1, pos5).toFloat();
+      }
+      
+      // Only include valid readings (4-20mA range)
+      if (sensorReading >= 4.0f && sensorReading <= 20.0f && verifiedLevel >= 0.0f) {
+        sumX += sensorReading;
+        sumY += verifiedLevel;
+        sumXY += sensorReading * verifiedLevel;
+        sumX2 += sensorReading * sensorReading;
+        sumY2 += verifiedLevel * verifiedLevel;
+        count++;
+      }
+    }
+    
+    fclose(file);
+  #else
+    if (!LittleFS.exists(CALIBRATION_LOG_PATH)) {
+      cal->hasLearnedCalibration = false;
+      return;
+    }
+    
+    File file = LittleFS.open(CALIBRATION_LOG_PATH, "r");
+    if (!file) {
+      cal->hasLearnedCalibration = false;
+      return;
+    }
+    
+    while (file.available() && count < MAX_CALIBRATION_ENTRIES) {
+      String line = file.readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0) continue;
+      
+      // Parse: clientUid\ttankNumber\ttimestamp\tsensorReading\tverifiedLevel\tnotes
+      int pos1 = line.indexOf('\t');
+      if (pos1 < 0) continue;
+      String uid = line.substring(0, pos1);
+      
+      int pos2 = line.indexOf('\t', pos1 + 1);
+      if (pos2 < 0) continue;
+      int tankNum = line.substring(pos1 + 1, pos2).toInt();
+      
+      // Check if this entry matches our tank
+      if (uid != String(cal->clientUid) || tankNum != cal->tankNumber) continue;
+      
+      int pos3 = line.indexOf('\t', pos2 + 1);
+      if (pos3 < 0) continue;
+      
+      int pos4 = line.indexOf('\t', pos3 + 1);
+      if (pos4 < 0) continue;
+      float sensorReading = line.substring(pos3 + 1, pos4).toFloat();
+      
+      int pos5 = line.indexOf('\t', pos4 + 1);
+      float verifiedLevel;
+      if (pos5 < 0) {
+        verifiedLevel = line.substring(pos4 + 1).toFloat();
+      } else {
+        verifiedLevel = line.substring(pos4 + 1, pos5).toFloat();
+      }
+      
+      // Only include valid readings (4-20mA range)
+      if (sensorReading >= 4.0f && sensorReading <= 20.0f && verifiedLevel >= 0.0f) {
+        sumX += sensorReading;
+        sumY += verifiedLevel;
+        sumXY += sensorReading * verifiedLevel;
+        sumX2 += sensorReading * sensorReading;
+        sumY2 += verifiedLevel * verifiedLevel;
+        count++;
+      }
+    }
+    
+    file.close();
+  #endif
+  
+  if (count < 2) {
+    cal->hasLearnedCalibration = false;
+    cal->entryCount = count;
+    return;
+  }
+  
+  // Calculate linear regression: y = slope * x + offset
+  // slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX^2)
+  // offset = (sumY - slope * sumX) / n
+  float n = (float)count;
+  float denominator = n * sumX2 - sumX * sumX;
+  
+  if (fabs(denominator) < 0.0001f) {
+    // Avoid division by zero - data points are too similar
+    cal->hasLearnedCalibration = false;
+    cal->entryCount = count;
+    return;
+  }
+  
+  cal->learnedSlope = (n * sumXY - sumX * sumY) / denominator;
+  cal->learnedOffset = (sumY - cal->learnedSlope * sumX) / n;
+  
+  // Calculate R-squared (coefficient of determination)
+  // R² = (Covariance(X,Y))² / (Variance(X) * Variance(Y))
+  // Which equals: ssCovXY² / (ssX * ssTotal)
+  float meanX = sumX / n;
+  float meanY = sumY / n;
+  float ssTotal = sumY2 - n * meanY * meanY;  // = Variance(Y) * n
+  float ssX = sumX2 - n * meanX * meanX;       // = Variance(X) * n
+  float ssCovXY = sumXY - n * meanX * meanY;   // = Covariance(X,Y) * n
+  
+  if (ssTotal > 0.0001f && ssX > 0.0001f) {
+    // R² = ssCovXY² / (ssX * ssTotal)
+    cal->rSquared = (ssCovXY * ssCovXY) / (ssX * ssTotal);
+    if (cal->rSquared < 0.0f) cal->rSquared = 0.0f;
+    if (cal->rSquared > 1.0f) cal->rSquared = 1.0f;
+  } else {
+    cal->rSquared = 0.0f;
+  }
+  
+  cal->entryCount = count;
+  cal->hasLearnedCalibration = true;
+  cal->lastCalibrationEpoch = currentEpoch();
+  
+  Serial.print(F("Calibration updated for "));
+  Serial.print(cal->clientUid);
+  Serial.print(F(" tank "));
+  Serial.print(cal->tankNumber);
+  Serial.print(F(": slope="));
+  Serial.print(cal->learnedSlope, 4);
+  Serial.print(F(" in/mA, offset="));
+  Serial.print(cal->learnedOffset, 2);
+  Serial.print(F(" in, R²="));
+  Serial.println(cal->rSquared, 3);
+  
+#else
+  cal->hasLearnedCalibration = false;
+#endif
+}
+
+static void saveCalibrationEntry(const char *clientUid, uint8_t tankNumber, double timestamp, 
+                                  float sensorReading, float verifiedLevelInches, const char *notes) {
+#ifdef FILESYSTEM_AVAILABLE
+  // Format: clientUid\ttankNumber\ttimestamp\tsensorReading\tverifiedLevel\tnotes
+  char entry[256];
+  snprintf(entry, sizeof(entry), "%s\t%d\t%.0f\t%.2f\t%.2f\t%s\n",
+           clientUid, tankNumber, timestamp, sensorReading, verifiedLevelInches, 
+           notes ? notes : "");
+  
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    FILE *file = fopen("/fs/calibration_log.txt", "a");
+    if (file) {
+      fputs(entry, file);
+      fclose(file);
+    }
+  #else
+    File file = LittleFS.open(CALIBRATION_LOG_PATH, "a");
+    if (file) {
+      file.print(entry);
+      file.close();
+    }
+  #endif
+  
+  // Update calibration for this tank
+  TankCalibration *cal = findOrCreateTankCalibration(clientUid, tankNumber);
+  if (cal) {
+    // recalculateCalibration will read the file and update entryCount
+    recalculateCalibration(cal);
+    saveCalibrationData();
+  }
+#endif
+}
+
+static void loadCalibrationData() {
+  gTankCalibrationCount = 0;
+  
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    FILE *file = fopen("/fs/calibration_data.txt", "r");
+    if (!file) return;
+    
+    char lineBuffer[256];
+    while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && gTankCalibrationCount < MAX_CALIBRATION_TANKS) {
+      String line = String(lineBuffer);
+      line.trim();
+      if (line.length() == 0) continue;
+      
+      // Parse: clientUid\ttankNumber\tslope\toffset\trSquared\tentryCount\thasCalibration\tlastEpoch
+      TankCalibration &cal = gTankCalibrations[gTankCalibrationCount];
+      memset(&cal, 0, sizeof(TankCalibration));
+      
+      int pos1 = line.indexOf('\t');
+      if (pos1 < 0) continue;
+      strlcpy(cal.clientUid, line.substring(0, pos1).c_str(), sizeof(cal.clientUid));
+      
+      int pos2 = line.indexOf('\t', pos1 + 1);
+      if (pos2 < 0) continue;
+      cal.tankNumber = line.substring(pos1 + 1, pos2).toInt();
+      
+      int pos3 = line.indexOf('\t', pos2 + 1);
+      if (pos3 < 0) continue;
+      cal.learnedSlope = line.substring(pos2 + 1, pos3).toFloat();
+      
+      int pos4 = line.indexOf('\t', pos3 + 1);
+      if (pos4 < 0) continue;
+      cal.learnedOffset = line.substring(pos3 + 1, pos4).toFloat();
+      
+      int pos5 = line.indexOf('\t', pos4 + 1);
+      if (pos5 < 0) continue;
+      cal.rSquared = line.substring(pos4 + 1, pos5).toFloat();
+      
+      int pos6 = line.indexOf('\t', pos5 + 1);
+      if (pos6 < 0) continue;
+      cal.entryCount = line.substring(pos5 + 1, pos6).toInt();
+      
+      int pos7 = line.indexOf('\t', pos6 + 1);
+      if (pos7 < 0) continue;
+      cal.hasLearnedCalibration = line.substring(pos6 + 1, pos7).toInt() == 1;
+      
+      cal.lastCalibrationEpoch = atof(line.substring(pos7 + 1).c_str());
+      
+      gTankCalibrationCount++;
+    }
+    
+    fclose(file);
+  #else
+    if (!LittleFS.exists("/calibration_data.txt")) return;
+    
+    File file = LittleFS.open("/calibration_data.txt", "r");
+    if (!file) return;
+    
+    while (file.available() && gTankCalibrationCount < MAX_CALIBRATION_TANKS) {
+      String line = file.readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0) continue;
+      
+      TankCalibration &cal = gTankCalibrations[gTankCalibrationCount];
+      memset(&cal, 0, sizeof(TankCalibration));
+      
+      int pos1 = line.indexOf('\t');
+      if (pos1 < 0) continue;
+      strlcpy(cal.clientUid, line.substring(0, pos1).c_str(), sizeof(cal.clientUid));
+      
+      int pos2 = line.indexOf('\t', pos1 + 1);
+      if (pos2 < 0) continue;
+      cal.tankNumber = line.substring(pos1 + 1, pos2).toInt();
+      
+      int pos3 = line.indexOf('\t', pos2 + 1);
+      if (pos3 < 0) continue;
+      cal.learnedSlope = line.substring(pos2 + 1, pos3).toFloat();
+      
+      int pos4 = line.indexOf('\t', pos3 + 1);
+      if (pos4 < 0) continue;
+      cal.learnedOffset = line.substring(pos3 + 1, pos4).toFloat();
+      
+      int pos5 = line.indexOf('\t', pos4 + 1);
+      if (pos5 < 0) continue;
+      cal.rSquared = line.substring(pos4 + 1, pos5).toFloat();
+      
+      int pos6 = line.indexOf('\t', pos5 + 1);
+      if (pos6 < 0) continue;
+      cal.entryCount = line.substring(pos5 + 1, pos6).toInt();
+      
+      int pos7 = line.indexOf('\t', pos6 + 1);
+      if (pos7 < 0) continue;
+      cal.hasLearnedCalibration = line.substring(pos6 + 1, pos7).toInt() == 1;
+      
+      cal.lastCalibrationEpoch = atof(line.substring(pos7 + 1).c_str());
+      
+      gTankCalibrationCount++;
+    }
+    
+    file.close();
+  #endif
+#endif
+  
+  Serial.print(F("Loaded "));
+  Serial.print(gTankCalibrationCount);
+  Serial.println(F(" tank calibration records"));
+}
+
+static void saveCalibrationData() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    FILE *file = fopen("/fs/calibration_data.txt", "w");
+    if (!file) return;
+    
+    for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
+      TankCalibration &cal = gTankCalibrations[i];
+      fprintf(file, "%s\t%d\t%.6f\t%.2f\t%.4f\t%d\t%d\t%.0f\n",
+              cal.clientUid, cal.tankNumber, cal.learnedSlope, cal.learnedOffset,
+              cal.rSquared, cal.entryCount, cal.hasLearnedCalibration ? 1 : 0,
+              cal.lastCalibrationEpoch);
+    }
+    
+    fclose(file);
+  #else
+    File file = LittleFS.open("/calibration_data.txt", "w");
+    if (!file) return;
+    
+    for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
+      TankCalibration &cal = gTankCalibrations[i];
+      file.print(cal.clientUid);
+      file.print('\t');
+      file.print(cal.tankNumber);
+      file.print('\t');
+      file.print(cal.learnedSlope, 6);
+      file.print('\t');
+      file.print(cal.learnedOffset, 2);
+      file.print('\t');
+      file.print(cal.rSquared, 4);
+      file.print('\t');
+      file.print(cal.entryCount);
+      file.print('\t');
+      file.print(cal.hasLearnedCalibration ? 1 : 0);
+      file.print('\t');
+      file.println(cal.lastCalibrationEpoch, 0);
+    }
+    
+    file.close();
+  #endif
+#endif
+}
+
+static void handleCalibrationGet(EthernetClient &client) {
+  DynamicJsonDocument doc(4096);
+  
+  // Add calibration status for each tank
+  JsonArray calibrationsArr = doc.createNestedArray("calibrations");
+  for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
+    TankCalibration &cal = gTankCalibrations[i];
+    JsonObject obj = calibrationsArr.createNestedObject();
+    obj["clientUid"] = cal.clientUid;
+    obj["tankNumber"] = cal.tankNumber;
+    obj["learnedSlope"] = cal.learnedSlope;
+    obj["learnedOffset"] = cal.learnedOffset;
+    obj["hasLearnedCalibration"] = cal.hasLearnedCalibration;
+    obj["entryCount"] = cal.entryCount;
+    obj["rSquared"] = cal.rSquared;
+    obj["lastCalibrationEpoch"] = cal.lastCalibrationEpoch;
+    obj["originalMaxValue"] = cal.originalMaxValue;
+    obj["sensorType"] = cal.sensorType;
+  }
+  
+  // Add recent calibration log entries
+  JsonArray logsArr = doc.createNestedArray("logs");
+  
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    FILE *file = fopen("/fs/calibration_log.txt", "r");
+    if (file) {
+      char lineBuffer[256];
+      int count = 0;
+      while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && count < 50) {
+        String line = String(lineBuffer);
+        line.trim();
+        if (line.length() == 0) continue;
+        
+        // Parse entry
+        int pos1 = line.indexOf('\t');
+        if (pos1 < 0) continue;
+        String uid = line.substring(0, pos1);
+        
+        int pos2 = line.indexOf('\t', pos1 + 1);
+        if (pos2 < 0) continue;
+        int tankNum = line.substring(pos1 + 1, pos2).toInt();
+        
+        int pos3 = line.indexOf('\t', pos2 + 1);
+        if (pos3 < 0) continue;
+        double timestamp = atof(line.substring(pos2 + 1, pos3).c_str());
+        
+        int pos4 = line.indexOf('\t', pos3 + 1);
+        if (pos4 < 0) continue;
+        float sensorReading = line.substring(pos3 + 1, pos4).toFloat();
+        
+        int pos5 = line.indexOf('\t', pos4 + 1);
+        float verifiedLevel;
+        String notes = "";
+        if (pos5 < 0) {
+          verifiedLevel = line.substring(pos4 + 1).toFloat();
+        } else {
+          verifiedLevel = line.substring(pos4 + 1, pos5).toFloat();
+          notes = line.substring(pos5 + 1);
+        }
+        
+        JsonObject logObj = logsArr.createNestedObject();
+        logObj["clientUid"] = uid;
+        logObj["tankNumber"] = tankNum;
+        logObj["timestamp"] = timestamp;
+        logObj["sensorReading"] = sensorReading;
+        logObj["verifiedLevelInches"] = verifiedLevel;
+        logObj["notes"] = notes;
+        count++;
+      }
+      fclose(file);
+    }
+  #else
+    if (LittleFS.exists(CALIBRATION_LOG_PATH)) {
+      File file = LittleFS.open(CALIBRATION_LOG_PATH, "r");
+      if (file) {
+        int count = 0;
+        while (file.available() && count < 50) {
+          String line = file.readStringUntil('\n');
+          line.trim();
+          if (line.length() == 0) continue;
+          
+          // Parse entry
+          int pos1 = line.indexOf('\t');
+          if (pos1 < 0) continue;
+          String uid = line.substring(0, pos1);
+          
+          int pos2 = line.indexOf('\t', pos1 + 1);
+          if (pos2 < 0) continue;
+          int tankNum = line.substring(pos1 + 1, pos2).toInt();
+          
+          int pos3 = line.indexOf('\t', pos2 + 1);
+          if (pos3 < 0) continue;
+          double timestamp = atof(line.substring(pos2 + 1, pos3).c_str());
+          
+          int pos4 = line.indexOf('\t', pos3 + 1);
+          if (pos4 < 0) continue;
+          float sensorReading = line.substring(pos3 + 1, pos4).toFloat();
+          
+          int pos5 = line.indexOf('\t', pos4 + 1);
+          float verifiedLevel;
+          String notes = "";
+          if (pos5 < 0) {
+            verifiedLevel = line.substring(pos4 + 1).toFloat();
+          } else {
+            verifiedLevel = line.substring(pos4 + 1, pos5).toFloat();
+            notes = line.substring(pos5 + 1);
+          }
+          
+          JsonObject logObj = logsArr.createNestedObject();
+          logObj["clientUid"] = uid;
+          logObj["tankNumber"] = tankNum;
+          logObj["timestamp"] = timestamp;
+          logObj["sensorReading"] = sensorReading;
+          logObj["verifiedLevelInches"] = verifiedLevel;
+          logObj["notes"] = notes;
+          count++;
+        }
+        file.close();
+      }
+    }
+  #endif
+#endif
+  
+  String json;
+  if (serializeJson(doc, json) == 0) {
+    respondStatus(client, 500, F("Failed to encode calibration data"));
+    return;
+  }
+  respondJson(client, json);
+}
+
+static void handleCalibrationPost(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(512);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+  
+  const char *clientUid = doc["clientUid"].as<const char *>();
+  if (!clientUid || strlen(clientUid) == 0) {
+    respondStatus(client, 400, F("Missing clientUid"));
+    return;
+  }
+  
+  if (!doc.containsKey("tankNumber")) {
+    respondStatus(client, 400, F("Missing tankNumber"));
+    return;
+  }
+  uint8_t tankNumber = doc["tankNumber"].as<uint8_t>();
+  
+  if (!doc.containsKey("verifiedLevelInches")) {
+    respondStatus(client, 400, F("Missing verifiedLevelInches"));
+    return;
+  }
+  float verifiedLevelInches = doc["verifiedLevelInches"].as<float>();
+  
+  // Optional fields
+  float sensorReading = doc["sensorReading"].as<float>();
+  if (!doc.containsKey("sensorReading") || sensorReading < 4.0f || sensorReading > 20.0f) {
+    // Try to get raw sensorMa from tank record (sent directly from client)
+    sensorReading = 0.0f;
+    
+    // Look up tank record to get raw sensorMa from latest telemetry
+    for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+      if (strcmp(gTankRecords[i].clientUid, clientUid) == 0 && 
+          gTankRecords[i].tankNumber == tankNumber) {
+        // Use raw sensorMa if available (sent directly from client device)
+        if (gTankRecords[i].sensorMa >= 4.0f && gTankRecords[i].sensorMa <= 20.0f) {
+          sensorReading = gTankRecords[i].sensorMa;
+          Serial.print(F("Using raw sensorMa from telemetry: "));
+          Serial.print(sensorReading, 2);
+          Serial.println(F(" mA"));
+        }
+        break;
+      }
+    }
+  }
+  
+  double timestamp = doc["timestamp"].as<double>();
+  if (timestamp <= 0.0) {
+    timestamp = currentEpoch();
+  }
+  
+  const char *notes = doc["notes"].as<const char *>();
+  
+  // Validate sensor reading - warn if not in valid range
+  bool sensorReadingValid = (sensorReading >= 4.0f && sensorReading <= 20.0f);
+  
+  // Save the calibration entry
+  saveCalibrationEntry(clientUid, tankNumber, timestamp, sensorReading, verifiedLevelInches, notes);
+  
+  Serial.print(F("Calibration entry added for "));
+  Serial.print(clientUid);
+  Serial.print(F(" tank "));
+  Serial.print(tankNumber);
+  Serial.print(F(": "));
+  Serial.print(verifiedLevelInches, 1);
+  Serial.print(F(" in @ "));
+  Serial.print(sensorReading, 2);
+  Serial.println(F(" mA"));
+  
+  if (!sensorReadingValid) {
+    Serial.println(F("Warning: Sensor reading not in valid 4-20mA range, entry logged but won't be used for regression"));
+    respondStatus(client, 200, F("Calibration entry saved (note: sensor reading outside 4-20mA range won't be used for calibration)"));
+  } else {
+    respondStatus(client, 200, F("Calibration entry saved"));
+  }
 }

@@ -283,6 +283,7 @@ struct ClientConfig {
 
 struct TankRuntime {
   float currentInches;
+  float currentSensorMa;        // Raw sensor reading in milliamps (for 4-20mA sensors)
   float lastReportedInches;
   float lastDailySentInches;
   bool highAlarmLatched;
@@ -1556,12 +1557,16 @@ static float readTankSensor(uint8_t idx) {
       // Use explicit bounds check for current loop channel
       int16_t channel = (cfg.currentLoopChannel >= 0 && cfg.currentLoopChannel < 8) ? cfg.currentLoopChannel : 0;
       if (cfg.maxValue < 0.1f) {
+        gTankState[idx].currentSensorMa = 0.0f;
         return 0.0f;
       }
       float milliamps = readCurrentLoopMilliamps(channel);
       if (milliamps < 0.0f) {
         return gTankState[idx].currentInches; // keep previous on failure
       }
+      
+      // Store raw mA reading for telemetry
+      gTankState[idx].currentSensorMa = milliamps;
       
       // Handle different 4-20mA sensor types
       float levelInches;
@@ -1850,11 +1855,14 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
     bool activated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
     doc["activated"] = activated;  // Boolean state: true = switch activated
     doc["levelInches"] = state.currentInches;  // 1.0 or 0.0
-    doc["percent"] = activated ? 100.0f : 0.0f;  // 100% when activated, 0% when not
+  } else if (cfg.sensorType == SENSOR_CURRENT_LOOP) {
+    doc["sensorType"] = "currentLoop";
+    doc["maxValue"] = cfg.maxValue;
+    doc["levelInches"] = state.currentInches;
+    doc["sensorMa"] = state.currentSensorMa;  // Raw 4-20mA reading
   } else {
     doc["maxValue"] = cfg.maxValue;
     doc["levelInches"] = state.currentInches;
-    doc["percent"] = (cfg.maxValue > 0.1f) ? (state.currentInches / cfg.maxValue * 100.0f) : 0.0f;
   }
   doc["reason"] = reason;
   doc["time"] = currentEpoch();
@@ -2147,7 +2155,10 @@ static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t 
   t["label"] = cfg.name;
   t["tank"] = cfg.tankNumber;
   t["levelInches"] = state.currentInches;
-  t["percent"] = (cfg.maxValue > 0.1f) ? (state.currentInches / cfg.maxValue * 100.0f) : 0.0f;
+  // Include raw sensor mA for current loop sensors
+  if (cfg.sensorType == SENSOR_CURRENT_LOOP && state.currentSensorMa >= 4.0f) {
+    t["sensorMa"] = state.currentSensorMa;
+  }
   t["high"] = cfg.highAlarmThreshold;
   t["low"] = cfg.lowAlarmThreshold;
 
