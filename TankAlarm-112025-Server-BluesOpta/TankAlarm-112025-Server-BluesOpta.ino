@@ -2603,8 +2603,8 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
             </div>
           </label>
           <label class="field">
-            <span>Current Sensor Reading (mA)</span>
-            <input type="number" id="sensorReading" step="0.01" min="4" max="20" placeholder="e.g., 12.5">
+            <span>Current Sensor Reading (mA) <em style="font-weight: normal; color: var(--muted);">- Required for calibration</em></span>
+            <input type="number" id="sensorReading" step="0.01" min="4" max="20" placeholder="e.g., 12.5 (4-20mA range)">
           </label>
           <label class="field">
             <span>Reading Timestamp</span>
@@ -2621,7 +2621,9 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
         </div>
       </form>
       <div class="info-box">
-        <strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the current sensor reading. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation.
+        <strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the current 4-20mA sensor reading. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation.
+        <br><br>
+        <strong>Important:</strong> The sensor reading (mA) is required for calibration learning. If not provided, the entry will be logged but won't contribute to the calibration calculation. You can read the mA value from your 4-20mA loop meter or the sensor's display.
       </div>
     </div>
 
@@ -2911,13 +2913,22 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
           const tankInfo = tanks.find(t => t.client === log.clientUid && t.tank === log.tankNumber);
           const tankName = tankInfo ? `${tankInfo.site} - ${tankInfo.label || 'Tank ' + log.tankNumber}` : `Tank ${log.tankNumber}`;
           
+          // Check if sensor reading is valid for calibration (4-20mA range)
+          const isValidReading = log.sensorReading >= 4 && log.sensorReading <= 20;
+          const sensorDisplay = log.sensorReading >= 4 && log.sensorReading <= 20 
+            ? log.sensorReading.toFixed(2) + ' mA' 
+            : (log.sensorReading ? `${log.sensorReading.toFixed(2)} mA ⚠️` : '-- ⚠️');
+          
           tr.innerHTML = `
             <td>${formatEpoch(log.timestamp)}</td>
             <td>${tankName}</td>
-            <td>${log.sensorReading ? log.sensorReading.toFixed(2) + ' mA' : '--'}</td>
+            <td title="${isValidReading ? '' : 'Not used for calibration (outside 4-20mA range)'}">${sensorDisplay}</td>
             <td>${formatLevel(log.verifiedLevelInches)}</td>
             <td>${log.notes || '--'}</td>
           `;
+          if (!isValidReading) {
+            tr.style.opacity = '0.6';
+          }
           tbody.appendChild(tr);
         });
       }
@@ -7306,13 +7317,19 @@ static void recalculateCalibration(TankCalibration *cal) {
   cal->learnedOffset = (sumY - cal->learnedSlope * sumX) / n;
   
   // Calculate R-squared (coefficient of determination)
+  // R² = 1 - (SS_residual / SS_total)
+  // For linear regression: SS_regression = slope² * (sumX² - n * meanX²)
+  // And: SS_residual = SS_total - SS_regression
+  float meanX = sumX / n;
   float meanY = sumY / n;
   float ssTotal = sumY2 - n * meanY * meanY;
+  float ssX = sumX2 - n * meanX * meanX;
   
-  if (ssTotal > 0.0001f) {
-    // ssResidual = sum((y_i - (slope * x_i + offset))^2)
-    // For simplicity, we estimate it from the regression formula
-    float ssResidual = sumY2 - cal->learnedOffset * sumY - cal->learnedSlope * sumXY;
+  if (ssTotal > 0.0001f && ssX > 0.0001f) {
+    // SS_regression = slope * (sumXY - n * meanX * meanY)
+    float ssCovXY = sumXY - n * meanX * meanY;
+    float ssRegression = cal->learnedSlope * ssCovXY;
+    float ssResidual = ssTotal - ssRegression;
     cal->rSquared = 1.0f - (ssResidual / ssTotal);
     if (cal->rSquared < 0.0f) cal->rSquared = 0.0f;
     if (cal->rSquared > 1.0f) cal->rSquared = 1.0f;
@@ -7713,6 +7730,9 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   
   const char *notes = doc["notes"].as<const char *>();
   
+  // Validate sensor reading - warn if not in valid range
+  bool sensorReadingValid = (sensorReading >= 4.0f && sensorReading <= 20.0f);
+  
   // Save the calibration entry
   saveCalibrationEntry(clientUid, tankNumber, timestamp, sensorReading, verifiedLevelInches, notes);
   
@@ -7726,5 +7746,10 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   Serial.print(sensorReading, 2);
   Serial.println(F(" mA"));
   
-  respondStatus(client, 200, F("Calibration entry saved"));
+  if (!sensorReadingValid) {
+    Serial.println(F("Warning: Sensor reading not in valid 4-20mA range, entry logged but won't be used for regression"));
+    respondStatus(client, 200, F("Calibration entry saved (note: sensor reading outside 4-20mA range won't be used for calibration)"));
+  } else {
+    respondStatus(client, 200, F("Calibration entry saved"));
+  }
 }
