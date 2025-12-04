@@ -227,7 +227,8 @@ struct TankRecord {
   uint8_t tankNumber;
   float heightInches;
   float levelInches;
-  float percent;
+  float sensorMa;             // Raw 4-20mA sensor reading (0 if not available)
+  float percent;              // Calculated on server from levelInches/heightInches
   bool alarmActive;
   char alarmType[24];
   double lastUpdateEpoch;
@@ -2603,7 +2604,7 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
             </div>
           </label>
           <label class="field">
-            <span>Sensor Reading (mA) <em style="font-weight: normal; color: var(--muted);">- Auto-calculated from telemetry</em></span>
+            <span>Sensor Reading (mA) <em style="font-weight: normal; color: var(--muted);">- From telemetry</em></span>
             <input type="number" id="sensorReading" step="0.01" min="4" max="20" placeholder="Auto-filled when tank selected">
             <small id="sensorAutoInfo" style="color: var(--muted); margin-top: 4px; display: block;"></small>
           </label>
@@ -2622,9 +2623,9 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
         </div>
       </form>
       <div class="info-box">
-        <strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the current 4-20mA sensor reading. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation.
+        <strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the raw 4-20mA sensor reading. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation.
         <br><br>
-        <strong>Sensor reading auto-calculation:</strong> When you select a tank, the sensor reading (mA) is automatically calculated from the latest telemetry data. You can override this value if you have a more accurate reading from a loop meter.
+        <strong>Raw sensor reading:</strong> The mA reading is now captured directly from the sensor and sent in telemetry. When you select a tank, it will be auto-filled from the latest telemetry. If no raw reading is available, you can enter it manually from a loop meter.
       </div>
     </div>
 
@@ -2795,6 +2796,7 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
               label: t.label || `Tank ${t.tank}`,
               heightInches: t.heightInches || 0,
               levelInches: t.levelInches || 0,
+              sensorMa: t.sensorMa || 0,
               percent: t.percent || 0,
               lastUpdate: t.lastUpdate || 0
             });
@@ -2808,15 +2810,6 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
           tankSelect.appendChild(option.cloneNode(true));
           logTankFilter.appendChild(option);
         });
-      }
-
-      // Calculate estimated mA from tank percent (for 4-20mA pressure sensors)
-      function estimateSensorMa(percent) {
-        if (typeof percent !== 'number' || !isFinite(percent)) return 0;
-        // Clamp percent to 0-100 range
-        const clampedPercent = Math.max(0, Math.min(100, percent));
-        // 4mA = 0%, 20mA = 100%
-        return 4 + (clampedPercent / 100) * 16;
       }
 
       // Auto-populate sensor reading when tank is selected
@@ -2833,13 +2826,18 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
         
         // Find the tank data
         const tank = tanks.find(t => `${t.client}:${t.tank}` === tankKey);
-        if (tank && tank.heightInches > 0) {
-          const estimatedMa = estimateSensorMa(tank.percent);
-          if (estimatedMa >= 4 && estimatedMa <= 20) {
-            sensorInput.value = estimatedMa.toFixed(2);
+        if (tank) {
+          // Use raw sensorMa if available from telemetry
+          if (tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20) {
+            sensorInput.value = tank.sensorMa.toFixed(2);
             if (sensorInfo) {
               const lastUpdateDate = tank.lastUpdate ? new Date(tank.lastUpdate * 1000).toLocaleString() : 'unknown';
-              sensorInfo.textContent = `Auto-calculated from last telemetry (${tank.percent.toFixed(1)}% @ ${lastUpdateDate})`;
+              sensorInfo.textContent = `From last telemetry @ ${lastUpdateDate}`;
+            }
+          } else {
+            sensorInput.value = '';
+            if (sensorInfo) {
+              sensorInfo.textContent = 'No raw mA reading available - enter manually';
             }
           }
         }
@@ -6182,6 +6180,7 @@ static void sendTankJson(EthernetClient &client) {
     obj["tank"] = gTankRecords[i].tankNumber;
     obj["heightInches"] = gTankRecords[i].heightInches;
     obj["levelInches"] = gTankRecords[i].levelInches;
+    obj["sensorMa"] = gTankRecords[i].sensorMa;
     obj["percent"] = gTankRecords[i].percent;
     obj["alarm"] = gTankRecords[i].alarmActive;
     obj["alarmType"] = gTankRecords[i].alarmType;
@@ -6266,6 +6265,7 @@ static void sendClientDataJson(EthernetClient &client) {
       clientObj["label"] = rec.label;
       clientObj["tank"] = rec.tankNumber;
       clientObj["levelInches"] = rec.levelInches;
+      clientObj["sensorMa"] = rec.sensorMa;
       clientObj["percent"] = rec.percent;
       clientObj["lastUpdate"] = rec.lastUpdateEpoch;
       clientObj["alarmType"] = rec.alarmType;
@@ -6282,6 +6282,7 @@ static void sendClientDataJson(EthernetClient &client) {
     tankObj["tank"] = rec.tankNumber;
     tankObj["heightInches"] = rec.heightInches;
     tankObj["levelInches"] = rec.levelInches;
+    tankObj["sensorMa"] = rec.sensorMa;
     tankObj["percent"] = rec.percent;
     tankObj["alarm"] = rec.alarmActive;
     tankObj["alarmType"] = rec.alarmType;
@@ -6593,9 +6594,27 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   strlcpy(rec->site, doc["site"] | "", sizeof(rec->site));
   strlcpy(rec->label, doc["label"] | "Tank", sizeof(rec->label));
   rec->levelInches = doc["levelInches"].as<float>();
-  rec->percent = doc["percent"].as<float>();
+  
+  // Handle raw sensor mA reading if provided (from 4-20mA sensors)
+  if (doc.containsKey("sensorMa")) {
+    rec->sensorMa = doc["sensorMa"].as<float>();
+  } else {
+    rec->sensorMa = 0.0f;  // Not available
+  }
+  
+  // Calculate percent on server from level/height (backwards compatible)
+  if (doc.containsKey("percent")) {
+    rec->percent = doc["percent"].as<float>();
+  } else if (rec->heightInches > 0.1f) {
+    rec->percent = (rec->levelInches / rec->heightInches) * 100.0f;
+  } else {
+    rec->percent = 0.0f;
+  }
+  
   if (doc.containsKey("heightInches")) {
     rec->heightInches = doc["heightInches"].as<float>();
+  } else if (doc.containsKey("maxValue")) {
+    rec->heightInches = doc["maxValue"].as<float>();
   }
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
 }
@@ -6874,6 +6893,7 @@ static void sendDailyEmail() {
     obj["label"] = gTankRecords[i].label;
     obj["tank"] = gTankRecords[i].tankNumber;
     obj["levelInches"] = gTankRecords[i].levelInches;
+    obj["sensorMa"] = gTankRecords[i].sensorMa;
     obj["percent"] = gTankRecords[i].percent;
     obj["alarm"] = gTankRecords[i].alarmActive;
     obj["alarmType"] = gTankRecords[i].alarmType;
@@ -6921,6 +6941,7 @@ static void publishViewerSummary() {
     obj["tank"] = gTankRecords[i].tankNumber;
     obj["heightInches"] = gTankRecords[i].heightInches;
     obj["levelInches"] = gTankRecords[i].levelInches;
+    obj["sensorMa"] = gTankRecords[i].sensorMa;
     obj["percent"] = gTankRecords[i].percent;
     obj["alarm"] = gTankRecords[i].alarmActive;
     obj["alarmType"] = gTankRecords[i].alarmType;
@@ -7742,28 +7763,19 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   // Optional fields
   float sensorReading = doc["sensorReading"].as<float>();
   if (!doc.containsKey("sensorReading") || sensorReading < 4.0f || sensorReading > 20.0f) {
-    // Auto-calculate sensor reading from tank telemetry data
+    // Try to get raw sensorMa from tank record (sent directly from client)
     sensorReading = 0.0f;
     
-    // Look up tank record to get percent from latest telemetry
+    // Look up tank record to get raw sensorMa from latest telemetry
     for (uint8_t i = 0; i < gTankRecordCount; ++i) {
       if (strcmp(gTankRecords[i].clientUid, clientUid) == 0 && 
           gTankRecords[i].tankNumber == tankNumber) {
-        // Use stored percent if available, otherwise calculate from level/height
-        float percent = gTankRecords[i].percent;
-        if (percent <= 0.0f && gTankRecords[i].heightInches > 1.0f) {
-          // Percent not set, calculate from level/height as fallback
-          percent = (gTankRecords[i].levelInches / gTankRecords[i].heightInches) * 100.0f;
-        }
-        // Convert percent (0-100) to mA (4-20)
-        if (percent >= 0.0f) {
-          if (percent > 100.0f) percent = 100.0f;
-          sensorReading = 4.0f + (percent / 100.0f) * 16.0f;
-          Serial.print(F("Auto-calculated sensor reading from telemetry: "));
+        // Use raw sensorMa if available (sent directly from client device)
+        if (gTankRecords[i].sensorMa >= 4.0f && gTankRecords[i].sensorMa <= 20.0f) {
+          sensorReading = gTankRecords[i].sensorMa;
+          Serial.print(F("Using raw sensorMa from telemetry: "));
           Serial.print(sensorReading, 2);
-          Serial.print(F(" mA ("));
-          Serial.print(percent, 1);
-          Serial.println(F("%)"));
+          Serial.println(F(" mA"));
         }
         break;
       }
