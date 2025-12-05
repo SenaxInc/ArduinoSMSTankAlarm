@@ -182,6 +182,14 @@
 #define SERIAL_STALE_SECONDS 1800  // 30 minutes
 #endif
 
+#ifndef MAX_HTTP_BODY_BYTES
+#define MAX_HTTP_BODY_BYTES 8192  // Global cap on incoming HTTP body size
+#endif
+
+#ifndef MAX_NOTES_PER_FILE_PER_POLL
+#define MAX_NOTES_PER_FILE_PER_POLL 10  // Prevent long blocking notefile drains
+#endif
+
 // Calibration learning system constants
 #ifndef CALIBRATION_LOG_PATH
 #define CALIBRATION_LOG_PATH "/calibration_log.txt"
@@ -378,6 +386,19 @@ static bool pinMatches(const char *pin) {
     return false;
   }
   return strncmp(pin, gConfig.configPin, sizeof(gConfig.configPin)) == 0;
+}
+
+// Require that a valid admin PIN is configured and provided; respond with 403/400 on failure.
+static bool requireValidPin(EthernetClient &client, const char *pinValue) {
+  if (gConfig.configPin[0] == '\0') {
+    respondStatus(client, 403, F("Configure admin PIN before making changes"));
+    return false;
+  }
+  if (!pinMatches(pinValue)) {
+    respondStatus(client, 403, F("Invalid PIN"));
+    return false;
+  }
+  return true;
 }
 
 static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
@@ -3925,11 +3946,14 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
     .modal {
       position: fixed;
       inset: 0;
-      background: rgba(15,23,42,0.65);
+      background: radial-gradient(circle at 20% 20%, rgba(99,102,241,0.12), transparent 30%),
+                  radial-gradient(circle at 80% 30%, rgba(14,165,233,0.12), transparent 32%),
+                  rgba(15,23,42,0.7);
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 999;
+      backdrop-filter: blur(4px);
     }
     .modal.hidden {
       opacity: 0;
@@ -3938,13 +3962,35 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
     .modal-card {
       background: var(--surface);
       border-radius: 16px;
-      padding: 24px;
+      padding: 28px 26px 24px;
       width: min(420px, 90%);
       border: 1px solid var(--card-border);
-      box-shadow: 0 20px 40px var(--card-shadow);
+      box-shadow: 0 24px 50px rgba(15,23,42,0.35);
+      position: relative;
     }
     .modal-card h2 {
       margin-top: 0;
+    }
+    .modal-card .field + .field,
+    .modal-card .field + .actions {
+      margin-top: 12px;
+    }
+    .pin-hint {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .modal-badge {
+      position: absolute;
+      top: 14px;
+      right: 16px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      background: var(--chip);
+      color: var(--muted);
+      border: 1px solid var(--card-border);
     }
     .hidden {
       display: none !important;
@@ -4073,6 +4119,7 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
   <div id="toast"></div>
   <div id="pinModal" class="modal hidden">
     <div class="modal-card">
+      <div class="modal-badge" id="pinSessionBadge">Session</div>
       <h2 id="pinModalTitle">Set Admin PIN</h2>
       <p id="pinModalDescription">Enter a 4-digit PIN to unlock configuration changes.</p>
       <form id="pinForm">
@@ -4082,7 +4129,8 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
         </label>
         <label class="field" id="pinPrimaryGroup">
           <span id="pinPrimaryLabel">PIN</span>
-          <input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required>
+          <input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits" aria-describedby="pinHint" title="Enter exactly four digits (0-9)">
+          <small class="pin-hint" id="pinHint">Use exactly 4 digits (0-9). The PIN is kept locally in this browser for 90 days.</small>
         </label>
         <label class="field hidden" id="pinConfirmGroup">
           <span>Confirm PIN</span>
@@ -4113,13 +4161,40 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
       });
 
       const PIN_STORAGE_KEY = 'tankalarmPin';
+      const PIN_SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90-day browser retention
+      function loadStoredPin() {
+        try {
+          const raw = localStorage.getItem(PIN_STORAGE_KEY);
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          if (!parsed || !parsed.pin || !parsed.expiresAt) {
+            localStorage.removeItem(PIN_STORAGE_KEY);
+            return null;
+          }
+          if (Date.now() > parsed.expiresAt) {
+            localStorage.removeItem(PIN_STORAGE_KEY);
+            return null;
+          }
+          return parsed.pin;
+        } catch (err) {
+          localStorage.removeItem(PIN_STORAGE_KEY);
+          return null;
+        }
+      }
+      function storePin(pin) {
+        const payload = { pin, expiresAt: Date.now() + PIN_SESSION_TTL_MS };
+        localStorage.setItem(PIN_STORAGE_KEY, JSON.stringify(payload));
+      }
+      function clearStoredPin() {
+        localStorage.removeItem(PIN_STORAGE_KEY);
+      }
       const state = {
         data: null,
         selected: null
       };
 
       const pinState = {
-        value: sessionStorage.getItem(PIN_STORAGE_KEY) || null,
+        value: loadStoredPin() || null,
         configured: false,
         mode: 'unlock'
       };
@@ -4187,7 +4262,7 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
 
       function invalidatePin() {
         pinState.value = null;
-        sessionStorage.removeItem(PIN_STORAGE_KEY);
+        clearStoredPin();
         setFormDisabled(true);
       }
 
@@ -4210,6 +4285,7 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
           pinEls.description.textContent = 'Choose a 4-digit PIN to secure configuration changes.';
           pinEls.confirmGroup.classList.remove('hidden');
           pinEls.cancel.classList.add('hidden');
+          document.getElementById('pinSessionBadge').textContent = 'Required';
         } else if (mode === 'change') {
           pinEls.title.textContent = 'Change Admin PIN';
           pinEls.description.textContent = 'Enter your current PIN and the new PIN you would like to use.';
@@ -4217,10 +4293,12 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
           pinEls.confirmGroup.classList.remove('hidden');
           pinEls.primaryLabel.textContent = 'New PIN';
           pinEls.cancel.classList.remove('hidden');
+          document.getElementById('pinSessionBadge').textContent = 'Secured';
         } else {
           pinEls.title.textContent = 'Enter Admin PIN';
-          pinEls.description.textContent = 'Enter the admin PIN to unlock configuration controls.';
+          pinEls.description.textContent = 'Enter the admin PIN to unlock configuration controls. We keep it in this browser for 90 days.';
           pinEls.cancel.classList.remove('hidden');
+          document.getElementById('pinSessionBadge').textContent = 'Locked';
         }
         pinEls.modal.classList.remove('hidden');
         setFormDisabled(true);
@@ -4290,7 +4368,7 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
 
           const result = await requestPin(payload);
           pinState.value = pinToStore;
-          sessionStorage.setItem(PIN_STORAGE_KEY, pinToStore);
+          storePin(pinToStore);
           hidePinModal();
           setFormDisabled(false);
           showToast((result && result.message) || 'PIN updated');
@@ -4323,6 +4401,7 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
             showPinModal('unlock');
           }
         } else {
+          storePin(pinState.value); // Refresh TTL on activity
           setFormDisabled(false);
           hidePinModal();
         }
@@ -4781,7 +4860,7 @@ static void scheduleNextDailyEmail();
 static void scheduleNextViewerSummary();
 static void initializeEthernet();
 static void handleWebRequests();
-static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength);
+static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge);
 static void respondHtml(EthernetClient &client, const String &body);
 static void respondJson(EthernetClient &client, const String &body, int status = 200);
 static void respondStatus(EthernetClient &client, int status, const String &message);
@@ -4846,17 +4925,24 @@ static bool checkSmsRateLimit(TankRecord *rec);
 static void publishViewerSummary();
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
 static String getQueryParam(const String &query, const char *key);
+static bool requireValidPin(EthernetClient &client, const char *pinValue);
 
 static void handleRefreshPost(EthernetClient &client, const String &body) {
   char clientUid[64] = {0};
+  const char *pinValue = nullptr;
   if (body.length() > 0) {
-    DynamicJsonDocument doc(128);
+    DynamicJsonDocument doc(192);
     if (deserializeJson(doc, body) == DeserializationError::Ok) {
       const char *uid = doc["client"] | "";
       if (uid && *uid) {
         strlcpy(clientUid, uid, sizeof(clientUid));
       }
+      pinValue = doc["pin"].as<const char *>();
     }
+  }
+
+  if (!requireValidPin(client, pinValue)) {
+    return;
   }
 
   if (clientUid[0]) {
@@ -5537,7 +5623,7 @@ static bool loadConfig(ServerConfig &cfg) {
   } else {
     cfg.webRefreshSeconds = 21600;
   }
-  cfg.useStaticIp = doc["useStaticIp"].is<bool>() ? doc["useStaticIp"].as<bool>() : true;
+  cfg.useStaticIp = doc["useStaticIp"].is<bool>() ? doc["useStaticIp"].as<bool>() : false;
   cfg.smsOnHigh = doc["smsOnHigh"].is<bool>() ? doc["smsOnHigh"].as<bool>() : true;
   cfg.smsOnLow = doc["smsOnLow"].is<bool>() ? doc["smsOnLow"].as<bool>() : true;
   cfg.smsOnClear = doc["smsOnClear"].is<bool>() ? doc["smsOnClear"].as<bool>() : false;
@@ -5704,7 +5790,7 @@ static void initializeNotecard() {
 }
 
 static void ensureTimeSync() {
-  if (gLastSyncedEpoch <= 0.0 || millis() - gLastSyncMillis > 6UL * 60UL * 60UL * 1000UL) {
+  if (gLastSyncedEpoch <= 0.0 || (uint32_t)(millis() - gLastSyncMillis) > 6UL * 60UL * 60UL * 1000UL) {
     J *req = notecard.newRequest("card.time");
     if (!req) {
       return;
@@ -5736,7 +5822,7 @@ static double currentEpoch() {
   if (gLastSyncedEpoch <= 0.0) {
     return 0.0;
   }
-  unsigned long delta = millis() - gLastSyncMillis;
+  uint32_t delta = (uint32_t)(millis() - gLastSyncMillis);  // Handles millis() rollover
   return gLastSyncedEpoch + (double)delta / 1000.0;
 }
 
@@ -5826,9 +5912,16 @@ static void handleWebRequests() {
   String path;
   String body;
   size_t contentLength = 0;
+  bool bodyTooLarge = false;
 
-  if (!readHttpRequest(client, method, path, body, contentLength)) {
+  if (!readHttpRequest(client, method, path, body, contentLength, bodyTooLarge)) {
     respondStatus(client, 400, F("Bad Request"));
+    client.stop();
+    return;
+  }
+
+  if (bodyTooLarge) {
+    respondStatus(client, 413, F("Payload Too Large"));
     client.stop();
     return;
   }
@@ -5907,11 +6000,12 @@ static void handleWebRequests() {
   client.stop();
 }
 
-static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength) {
+static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge) {
   method = "";
   path = "";
   contentLength = 0;
   body = "";
+  bodyTooLarge = false;
 
   String line;
   bool firstLine = true;
@@ -5952,6 +6046,10 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
           headerValue.trim();
           if (headerKey.equalsIgnoreCase("Content-Length")) {
             contentLength = headerValue.toInt();
+            if (contentLength > MAX_HTTP_BODY_BYTES) {
+              bodyTooLarge = true;
+              contentLength = MAX_HTTP_BODY_BYTES;
+            }
           }
         }
       }
@@ -5971,6 +6069,10 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
         char c = client.read();
         body += c;
         readBytes++;
+      }
+      if (readBytes >= MAX_HTTP_BODY_BYTES) {
+        bodyTooLarge = true;
+        break;
       }
     }
   }
@@ -6393,9 +6495,14 @@ static void handlePinPost(EthernetClient &client, const String &body) {
 }
 
 static void handleRelayPost(EthernetClient &client, const String &body) {
-  DynamicJsonDocument doc(512);
+  DynamicJsonDocument doc(640);
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
     return;
   }
 
@@ -6510,7 +6617,8 @@ static void pollNotecard() {
 }
 
 static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double)) {
-  while (true) {
+  uint8_t processed = 0;
+  while (processed < MAX_NOTES_PER_FILE_PER_POLL) {
     J *req = notecard.newRequest("note.get");
     if (!req) {
       return;
@@ -6542,6 +6650,10 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
     }
 
     notecard.deleteResponse(rsp);
+    processed++;
+
+    // Yield to keep the loop responsive and allow watchdog kicks elsewhere
+    delay(1);
   }
 }
 
