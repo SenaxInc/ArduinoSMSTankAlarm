@@ -230,11 +230,6 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define MBAR_TO_INCHES_WATER 0.4015f        // 1 mbar = 0.4015 inches of water
 #endif
 
-// Minimum value threshold for configuration validation
-#ifndef MIN_VALID_MAX_VALUE
-#define MIN_VALID_MAX_VALUE 0.1f            // maxValue must be > this to be considered valid
-#endif
-
 static const uint8_t NOTECARD_I2C_ADDRESS = 0x17;
 static const uint32_t NOTECARD_I2C_FREQUENCY = 400000UL;
 
@@ -280,7 +275,6 @@ struct TankConfig {
   int16_t currentLoopChannel; // 4-20mA channel index (-1 if unused)
   int16_t rpmPin;          // Hall effect RPM sensor pin (-1 if unused)
   uint8_t pulsesPerRevolution; // For RPM sensors: pulses per revolution (default 1)
-  float maxValue;          // Tank height (inches) for level sensors, or max RPM for RPM sensors
   float highAlarmThreshold;   // High threshold for triggering alarm (inches or RPM)
   float lowAlarmThreshold;    // Low threshold for triggering alarm (inches or RPM)
   float hysteresisValue;   // Hysteresis band (default 2.0)
@@ -674,7 +668,6 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].currentLoopChannel = -1;
   cfg.tanks[0].rpmPin = -1; // No RPM sensor by default
   cfg.tanks[0].pulsesPerRevolution = 1; // Default: 1 pulse per revolution
-  cfg.tanks[0].maxValue = 120.0f;
   cfg.tanks[0].highAlarmThreshold = 100.0f;
   cfg.tanks[0].lowAlarmThreshold = 20.0f;
   cfg.tanks[0].hysteresisValue = 2.0f; // 2 unit hysteresis band
@@ -788,9 +781,6 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     cfg.tanks[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : -1;
     cfg.tanks[i].rpmPin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : -1;
     cfg.tanks[i].pulsesPerRevolution = t["pulsesPerRev"].is<uint8_t>() ? max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>()) : 1;
-    // Support both old field names (heightInches) and new (maxValue) for backwards compatibility
-    cfg.tanks[i].maxValue = t["maxValue"].is<float>() ? t["maxValue"].as<float>() : 
-                            (t["heightInches"].is<float>() ? t["heightInches"].as<float>() : 120.0f);
     cfg.tanks[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : 100.0f;
     cfg.tanks[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : 20.0f;
     cfg.tanks[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : 2.0f;
@@ -888,7 +878,6 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     t["loopChannel"] = cfg.tanks[i].currentLoopChannel;
     t["rpmPin"] = cfg.tanks[i].rpmPin;
     t["pulsesPerRev"] = cfg.tanks[i].pulsesPerRevolution;
-    t["maxValue"] = cfg.tanks[i].maxValue;
     t["highAlarm"] = cfg.tanks[i].highAlarmThreshold;
     t["lowAlarm"] = cfg.tanks[i].lowAlarmThreshold;
     t["hysteresis"] = cfg.tanks[i].hysteresisValue;
@@ -1323,12 +1312,6 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       if (t.containsKey("pulsesPerRev")) {
         gConfig.tanks[i].pulsesPerRevolution = max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>());
       }
-      // Support both old field name (heightInches) and new (maxValue)
-      if (t.containsKey("maxValue")) {
-        gConfig.tanks[i].maxValue = t["maxValue"].as<float>();
-      } else if (t.containsKey("heightInches")) {
-        gConfig.tanks[i].maxValue = t["heightInches"].as<float>();
-      }
       gConfig.tanks[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : gConfig.tanks[i].highAlarmThreshold;
       gConfig.tanks[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : gConfig.tanks[i].lowAlarmThreshold;
       gConfig.tanks[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : gConfig.tanks[i].hysteresisValue;
@@ -1509,14 +1492,14 @@ static bool validateSensorReading(uint8_t idx, float reading) {
       maxValid = (cfg.sensorRangeMax * conversionFactor + cfg.sensorMountHeight) * 1.1f;
     }
     minValid = -maxValid * 0.1f;
-    // If maxValue is provided and smaller, use it for clamping
-    if (cfg.maxValue > MIN_VALID_MAX_VALUE && cfg.maxValue * 1.1f < maxValid) {
-      maxValid = cfg.maxValue * 1.1f;
-    }
+  } else if (cfg.sensorType == SENSOR_DIGITAL) {
+    // Digital sensors have simple 0/1 values
+    minValid = -0.5f;
+    maxValid = 1.5f;
   } else {
-    // For legacy analog and other sensors, use maxValue (allow 10% margin)
-    minValid = -cfg.maxValue * 0.1f;
-    maxValid = cfg.maxValue * 1.1f;
+    // For RPM and other sensors without native range, use alarm thresholds as reference
+    maxValid = cfg.highAlarmThreshold * 2.0f; // Allow up to 2x high alarm as valid
+    minValid = -maxValid * 0.1f;
   }
   
   if (reading < minValid || reading > maxValid) {
@@ -1629,32 +1612,19 @@ static float readTankSensor(uint8_t idx) {
     }
     case SENSOR_ANALOG: {
       // Analog voltage sensor (e.g., Dwyer 626 with 0-10V, 1-5V, 0-5V output)
-      // Uses the same pressure-to-height conversion as current loop sensors
+      // Uses pressure-to-height conversion based on sensor native range
       // 
       // Configuration:
       // - analogVoltageMin/Max: Voltage output range (e.g., 0-10V, 1-5V)
       // - sensorRangeMin/Max: Pressure range in sensorRangeUnit (e.g., 0-5 PSI)
       // - sensorMountHeight: Height of sensor above tank bottom (inches)
-      // - maxValue: Optional clamping (0 = no clamping)
       
       // Use explicit bounds check for channel (A0602 has channels 0-7)
       int channel = (cfg.primaryPin >= 0 && cfg.primaryPin < 8) ? cfg.primaryPin : 0;
       
       // Validate that we have a valid sensor range configured
       if (cfg.sensorRangeMax <= cfg.sensorRangeMin || cfg.analogVoltageMax <= cfg.analogVoltageMin) {
-        // Fallback: legacy mode using maxValue for direct height mapping
-        if (cfg.maxValue < MIN_VALID_MAX_VALUE) {
-          return 0.0f;
-        }
-        float total = 0.0f;
-        const uint8_t samples = 8;
-        for (uint8_t i = 0; i < samples; ++i) {
-          int raw = analogRead(channel);
-          total += (float)raw / 4095.0f; // 12-bit resolution, 0-10V range
-          delay(2);
-        }
-        float avg = total / samples;
-        return linearMap(avg, 0.05f, 0.95f, 0.0f, cfg.maxValue);
+        return 0.0f; // Invalid configuration
       }
       
       // Read voltage (Opta A0602 analog inputs: 0-10V mapped to 0-4095)
@@ -1689,16 +1659,14 @@ static float readTankSensor(uint8_t idx) {
       // Total height from tank bottom = liquid above sensor + sensor mount height
       float levelInches = liquidAboveSensor + cfg.sensorMountHeight;
       
-      // Clamp: minimum is 0 (empty tank), maximum is tank capacity (if provided)
+      // Clamp: minimum is 0 (empty tank)
       if (levelInches < 0.0f) levelInches = 0.0f;
-      if (cfg.maxValue > MIN_VALID_MAX_VALUE && levelInches > cfg.maxValue) levelInches = cfg.maxValue;
       
       return levelInches;
     }
     case SENSOR_CURRENT_LOOP: {
       // Use explicit bounds check for current loop channel
       int16_t channel = (cfg.currentLoopChannel >= 0 && cfg.currentLoopChannel < 8) ? cfg.currentLoopChannel : 0;
-      // Note: maxValue is optional for current loop sensors - we use sensorRangeMin/Max instead
       // Validate that we have a valid sensor range configured
       if (cfg.sensorRangeMax <= cfg.sensorRangeMin) {
         gTankState[idx].currentSensorMa = 0.0f;
@@ -1738,9 +1706,8 @@ static float readTankSensor(uint8_t idx) {
         // Calculate liquid level: tank height - distance from sensor to surface
         levelInches = cfg.sensorMountHeight - distanceInches;
         
-        // Clamp to valid range (0 to maxValue)
+        // Clamp to valid range (0 minimum)
         if (levelInches < 0.0f) levelInches = 0.0f;
-        if (cfg.maxValue > MIN_VALID_MAX_VALUE && levelInches > cfg.maxValue) levelInches = cfg.maxValue;
       } else {
         // Pressure sensor mounted near BOTTOM of tank (e.g., Dwyer 626-06-CB-P1-E5-S1)
         // 4mA = sensorRangeMin (e.g., 0 PSI), 20mA = sensorRangeMax (e.g., 5 PSI)
@@ -1769,9 +1736,8 @@ static float readTankSensor(uint8_t idx) {
         // Total height from tank bottom = liquid above sensor + sensor mount height
         levelInches = liquidAboveSensor + cfg.sensorMountHeight;
         
-        // Clamp: minimum is 0 (empty tank), maximum is tank capacity (if provided)
+        // Clamp: minimum is 0 (empty tank)
         if (levelInches < 0.0f) levelInches = 0.0f;
-        if (cfg.maxValue > MIN_VALID_MAX_VALUE && levelInches > cfg.maxValue) levelInches = cfg.maxValue;
       }
       return levelInches;
     }
@@ -1839,7 +1805,7 @@ static float readTankSensor(uint8_t idx) {
       
       gRpmLastReading[idx] = rpm;
       
-      // Return RPM value (maxValue field is used as max RPM for scaling/alarms)
+      // Return RPM value (use highAlarmThreshold for max expected RPM)
       return rpm;
     }
     default:
@@ -2034,11 +2000,9 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
     doc["levelInches"] = state.currentInches;  // 1.0 or 0.0
   } else if (cfg.sensorType == SENSOR_CURRENT_LOOP) {
     doc["sensorType"] = "currentLoop";
-    doc["maxValue"] = cfg.maxValue;
     doc["levelInches"] = state.currentInches;
     doc["sensorMa"] = state.currentSensorMa;  // Raw 4-20mA reading
   } else {
-    doc["maxValue"] = cfg.maxValue;
     doc["levelInches"] = state.currentInches;
   }
   doc["reason"] = reason;

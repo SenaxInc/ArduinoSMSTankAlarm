@@ -84,14 +84,10 @@ The client creates a default configuration on first boot. You can update configu
 - **Low Alarm**: Threshold in inches for low level alert
 - **Analog Pin**: Arduino Opta analog input (A0-A7, I1-I8)
 - **Sensor Type**: "voltage" (0-10V), "current" (4-20mA), or "digital" (float switch)
-- **Min Value**: Minimum sensor value (e.g., 0.0V or 4.0mA)
-- **Max Value**: Maximum sensor value (e.g., 10.0V or 20.0mA)
-- **Min Inches**: Tank level in inches at minimum sensor value
-- **Max Inches**: Tank level in inches at maximum sensor value
 
 ### 4-20mA Current Loop Sensor Configuration
 
-For 4-20mA current loop sensors, two mounting options are supported. The implementation uses the sensor's **native measurement range** (sensorRangeMin/Max/Unit) for accurate conversions, making `maxValue` **optional** (used only for clamping/validation).
+For 4-20mA current loop sensors, two mounting options are supported. The implementation uses the sensor's **native measurement range** (sensorRangeMin/Max/Unit) for accurate pressure-to-height conversions.
 
 #### Pressure Sensor (Bottom-Mounted)
 Used for sensors like the Dwyer 626-06-CB-P1-E5-S1 (0-5 PSI) mounted near the bottom of the tank.
@@ -105,7 +101,6 @@ Used for sensors like the Dwyer 626-06-CB-P1-E5-S1 (0-5 PSI) mounted near the bo
   - `sensorRangeMax`: Maximum pressure at 20mA (e.g., 5 for 0-5 PSI)
   - `sensorRangeUnit`: Pressure unit - "PSI", "bar", "kPa", "mbar", or "inH2O"
 - **Sensor Mount Height**: Height of sensor above tank bottom (usually 0-2 inches)
-- **Max Value**: **Optional** - Maximum expected tank level for clamping (0 to disable clamping)
 
 **Pressure-to-Height Conversion:**
 The system automatically converts pressure to inches using these factors:
@@ -118,16 +113,12 @@ The system automatically converts pressure to inches using these factors:
 **Example Configuration** (0-5 PSI sensor on 120" tank):
 - Sensor mounted 2 inches above tank bottom
 - Max sensor range = 5 PSI = ~138 inches of water column
-- Tank capacity = 120 inches
-- Configuration (minimal - no maxValue needed):
+- Configuration:
   - `currentLoopType`: "pressure"
   - `sensorRangeMin`: 0
   - `sensorRangeMax`: 5
   - `sensorRangeUnit`: "PSI"
   - `sensorMountHeight`: 2.0
-  - `maxValue`: 0 (or omit entirely - not required for 4-20mA sensors)
-
-> **Note:** For 4-20mA sensors, `maxValue` is **completely optional**. The sensor's native range (`sensorRangeMin`/`sensorRangeMax`/`sensorRangeUnit`) provides all the information needed to calculate the liquid level. Set `maxValue` only if you want to clamp readings to a maximum tank capacity.
 
 **How It Works:**
 1. 4mA → 0 PSI → 0 inches of liquid above sensor
@@ -146,7 +137,6 @@ Used for sensors like the Siemens Sitrans LU240 mounted on top of the tank looki
   - `sensorRangeMax`: Maximum distance at 20mA (e.g., 10m)
   - `sensorRangeUnit`: Distance unit - "m", "cm", "ft", or "in"
 - **Sensor Mount Height**: Distance from sensor to tank bottom when tank is empty (in inches)
-- **Max Value**: **Optional** - Maximum expected liquid level for clamping (0 to disable)
 
 **Distance Unit Conversion:**
 The system automatically converts distance to inches using:
@@ -156,14 +146,12 @@ The system automatically converts distance to inches using:
 
 **Example Configuration** (ultrasonic sensor with 0.5-10m range on 10-foot tank):
 - Sensor mounted 124 inches above tank bottom (tank is 120" + 4" clearance)
-- Maximum tank fill level = 120 inches
-- Configuration (minimal - no maxValue needed):
+- Configuration:
   - `currentLoopType`: "ultrasonic"
   - `sensorRangeMin`: 0.5 (blind spot in meters)
   - `sensorRangeMax`: 10.0 (max range in meters)
   - `sensorRangeUnit`: "m"
   - `sensorMountHeight`: 124.0
-  - `maxValue`: 0 (or omit entirely - not required)
 
 **How It Works:**
 1. 4mA → 0.5m (19.7") → liquid level = 124" - 19.7" = 104.3" (nearly full)
@@ -190,7 +178,7 @@ Float switches can be configured as either normally-open (NO) or normally-closed
 
 ### Analog Voltage Sensor Configuration
 
-For analog voltage sensors (like the Dwyer 626 series with voltage output), the system now supports the same native range configuration as 4-20mA sensors. This allows you to specify both the voltage range and pressure range for accurate pressure-to-height conversion.
+For analog voltage sensors (like the Dwyer 626 series with voltage output), the system supports the same native range configuration as 4-20mA sensors. This allows you to specify both the voltage range and pressure range for accurate pressure-to-height conversion.
 
 **Supported Voltage Output Configurations:**
 - 0-10V (default)
@@ -206,7 +194,6 @@ For analog voltage sensors (like the Dwyer 626 series with voltage output), the 
 - `sensorRangeMin` / `sensorRangeMax`: Pressure range in native units
 - `sensorRangeUnit`: Pressure unit - "PSI", "bar", "kPa", "mbar", or "inH2O"
 - `sensorMountHeight`: Height of sensor above tank bottom (inches)
-- `maxValue`: **Optional** - Maximum expected tank level for clamping (0 to disable)
 
 **Example Configuration** (Dwyer 626 with 1-5V output, 0-5 PSI range):
 - Configuration:
@@ -217,11 +204,6 @@ For analog voltage sensors (like the Dwyer 626 series with voltage output), the 
   - `sensorRangeMax`: 5
   - `sensorRangeUnit`: "PSI"
   - `sensorMountHeight`: 2.0
-  - `maxValue`: 0 (or omit entirely - not required)
-
-> **Note:** For analog voltage sensors with native range configured, `maxValue` is **completely optional**. The sensor's voltage range and pressure range provide all the information needed to calculate the liquid level. Set `maxValue` only if you want to clamp readings to a maximum tank capacity.
-
-**Legacy Mode:** If `analogVoltageMin`/`analogVoltageMax` and `sensorRangeMin`/`sensorRangeMax` are not configured, the system falls back to the legacy behavior where `maxValue` directly represents the tank height.
 
 ## Operation
 
