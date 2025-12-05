@@ -419,6 +419,10 @@ static bool pinMatches(const char *pin) {
 // Forward declaration for respondStatus (defined later in the web server section)
 static void respondStatus(EthernetClient &client, int status, const String &message);
 
+// Forward declarations for FTP backup/restore functions (defined in FTP section)
+static bool performFtpBackup(String *errorOut = nullptr);
+static bool performFtpRestore(String *errorOut = nullptr);
+
 // Require that a valid admin PIN is configured and provided; respond with 403/400 on failure.
 static bool requireValidPin(EthernetClient &client, const char *pinValue) {
   if (gConfig.configPin[0] == '\0') {
@@ -6523,7 +6527,7 @@ static bool ftpRestoreClientConfigs(FtpSession &session, String &error, uint8_t 
   return true;
 }
 
-static bool performFtpBackup(String *errorOut = nullptr) {
+static bool performFtpBackup(String *errorOut) {
   if (!gConfig.ftpEnabled) {
     if (errorOut) *errorOut = F("FTP disabled");
     return false;
@@ -6571,7 +6575,7 @@ static bool performFtpBackup(String *errorOut = nullptr) {
   return true;
 }
 
-static bool performFtpRestore(String *errorOut = nullptr) {
+static bool performFtpRestore(String *errorOut) {
   if (!gConfig.ftpEnabled) {
     if (errorOut) *errorOut = F("FTP disabled");
     return false;
