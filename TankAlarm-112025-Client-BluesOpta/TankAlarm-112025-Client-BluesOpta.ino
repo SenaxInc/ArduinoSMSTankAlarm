@@ -1460,9 +1460,40 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   const TankConfig &cfg = gConfig.tanks[idx];
   TankRuntime &state = gTankState[idx];
 
-  // Check for out-of-range values (allow 10% margin)
-  float minValid = -cfg.maxValue * 0.1f;
-  float maxValid = cfg.maxValue * 1.1f;
+  // Calculate valid range based on sensor type
+  float minValid;
+  float maxValid;
+  
+  if (cfg.sensorType == SENSOR_CURRENT_LOOP && cfg.sensorRangeMax > cfg.sensorRangeMin) {
+    // For current loop sensors, calculate max from native sensor range
+    float conversionFactor = PSI_TO_INCHES_WATER;
+    if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
+      // Ultrasonic: max level is sensorMountHeight (when tank is full)
+      maxValid = cfg.sensorMountHeight * 1.1f;
+    } else {
+      // Pressure: calculate max from pressure range
+      if (strcmp(cfg.sensorRangeUnit, "bar") == 0) {
+        conversionFactor = BAR_TO_INCHES_WATER;
+      } else if (strcmp(cfg.sensorRangeUnit, "kPa") == 0) {
+        conversionFactor = KPA_TO_INCHES_WATER;
+      } else if (strcmp(cfg.sensorRangeUnit, "mbar") == 0) {
+        conversionFactor = MBAR_TO_INCHES_WATER;
+      } else if (strcmp(cfg.sensorRangeUnit, "inH2O") == 0) {
+        conversionFactor = 1.0f;
+      }
+      maxValid = (cfg.sensorRangeMax * conversionFactor + cfg.sensorMountHeight) * 1.1f;
+    }
+    minValid = -maxValid * 0.1f;
+    // If maxValue is provided and smaller, use it for clamping
+    if (cfg.maxValue > MIN_VALID_MAX_VALUE && cfg.maxValue * 1.1f < maxValid) {
+      maxValid = cfg.maxValue * 1.1f;
+    }
+  } else {
+    // For analog and other sensors, use maxValue (allow 10% margin)
+    minValid = -cfg.maxValue * 0.1f;
+    maxValid = cfg.maxValue * 1.1f;
+  }
+  
   if (reading < minValid || reading > maxValid) {
     state.consecutiveFailures++;
     if (state.consecutiveFailures >= SENSOR_FAILURE_THRESHOLD) {
@@ -1591,7 +1622,9 @@ static float readTankSensor(uint8_t idx) {
     case SENSOR_CURRENT_LOOP: {
       // Use explicit bounds check for current loop channel
       int16_t channel = (cfg.currentLoopChannel >= 0 && cfg.currentLoopChannel < 8) ? cfg.currentLoopChannel : 0;
-      if (cfg.maxValue < MIN_VALID_MAX_VALUE) {
+      // Note: maxValue is optional for current loop sensors - we use sensorRangeMin/Max instead
+      // Validate that we have a valid sensor range configured
+      if (cfg.sensorRangeMax <= cfg.sensorRangeMin) {
         gTankState[idx].currentSensorMa = 0.0f;
         return 0.0f;
       }

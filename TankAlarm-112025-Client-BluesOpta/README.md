@@ -119,13 +119,15 @@ The system automatically converts pressure to inches using these factors:
 - Sensor mounted 2 inches above tank bottom
 - Max sensor range = 5 PSI = ~138 inches of water column
 - Tank capacity = 120 inches
-- Configuration:
+- Configuration (minimal - no maxValue needed):
   - `currentLoopType`: "pressure"
   - `sensorRangeMin`: 0
   - `sensorRangeMax`: 5
   - `sensorRangeUnit`: "PSI"
   - `sensorMountHeight`: 2.0
-  - `maxValue`: 120.0 (optional - tank capacity for clamping)
+  - `maxValue`: 0 (or omit entirely - not required for 4-20mA sensors)
+
+> **Note:** For 4-20mA sensors, `maxValue` is **completely optional**. The sensor's native range (`sensorRangeMin`/`sensorRangeMax`/`sensorRangeUnit`) provides all the information needed to calculate the liquid level. Set `maxValue` only if you want to clamp readings to a maximum tank capacity.
 
 **How It Works:**
 1. 4mA → 0 PSI → 0 inches of liquid above sensor
@@ -155,13 +157,13 @@ The system automatically converts distance to inches using:
 **Example Configuration** (ultrasonic sensor with 0.5-10m range on 10-foot tank):
 - Sensor mounted 124 inches above tank bottom (tank is 120" + 4" clearance)
 - Maximum tank fill level = 120 inches
-- Configuration:
+- Configuration (minimal - no maxValue needed):
   - `currentLoopType`: "ultrasonic"
   - `sensorRangeMin`: 0.5 (blind spot in meters)
   - `sensorRangeMax`: 10.0 (max range in meters)
   - `sensorRangeUnit`: "m"
   - `sensorMountHeight`: 124.0
-  - `maxValue`: 120.0 (optional - max fill level)
+  - `maxValue`: 0 (or omit entirely - not required)
 
 **How It Works:**
 1. 4mA → 0.5m (19.7") → liquid level = 124" - 19.7" = 104.3" (nearly full)
