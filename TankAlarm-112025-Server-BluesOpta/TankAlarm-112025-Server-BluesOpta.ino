@@ -388,6 +388,9 @@ static bool pinMatches(const char *pin) {
   return strncmp(pin, gConfig.configPin, sizeof(gConfig.configPin)) == 0;
 }
 
+// Forward declaration for respondStatus (defined later in the web server section)
+static void respondStatus(EthernetClient &client, int status, const String &message);
+
 // Require that a valid admin PIN is configured and provided; respond with 403/400 on failure.
 static bool requireValidPin(EthernetClient &client, const char *pinValue) {
   if (gConfig.configPin[0] == '\0') {
@@ -4863,7 +4866,7 @@ static void handleWebRequests();
 static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge);
 static void respondHtml(EthernetClient &client, const String &body);
 static void respondJson(EthernetClient &client, const String &body, int status = 200);
-static void respondStatus(EthernetClient &client, int status, const String &message);
+// Note: respondStatus is forward-declared earlier in the file (before requireValidPin)
 static void sendDashboard(EthernetClient &client);
 static void sendClientConsole(EthernetClient &client);
 static void sendConfigGenerator(EthernetClient &client);
