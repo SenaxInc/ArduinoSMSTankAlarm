@@ -188,6 +188,41 @@ Float switches can be configured as either normally-open (NO) or normally-closed
 
 **Wiring Note**: For both NO and NC float switches, connect the switch between the digital input pin and GND. The Arduino uses an internal pull-up resistor, and the software interprets the signal based on your configured switch mode. The wiring is the same for both modes - only the software interpretation changes.
 
+### Analog Voltage Sensor Configuration
+
+For analog voltage sensors (like the Dwyer 626 series with voltage output), the system now supports the same native range configuration as 4-20mA sensors. This allows you to specify both the voltage range and pressure range for accurate pressure-to-height conversion.
+
+**Supported Voltage Output Configurations:**
+- 0-10V (default)
+- 0-5V
+- 1-5V  
+- 0.5-4.5V
+- 2-10V
+- Any configurable range
+
+**Configuration Parameters:**
+- `analogVoltageMin`: Minimum voltage output (e.g., 0.0 for 0-10V, 1.0 for 1-5V)
+- `analogVoltageMax`: Maximum voltage output (e.g., 10.0 for 0-10V, 5.0 for 1-5V)
+- `sensorRangeMin` / `sensorRangeMax`: Pressure range in native units
+- `sensorRangeUnit`: Pressure unit - "PSI", "bar", "kPa", "mbar", or "inH2O"
+- `sensorMountHeight`: Height of sensor above tank bottom (inches)
+- `maxValue`: **Optional** - Maximum expected tank level for clamping (0 to disable)
+
+**Example Configuration** (Dwyer 626 with 1-5V output, 0-5 PSI range):
+- Configuration:
+  - `sensorType`: "analog"
+  - `analogVoltageMin`: 1.0
+  - `analogVoltageMax`: 5.0
+  - `sensorRangeMin`: 0
+  - `sensorRangeMax`: 5
+  - `sensorRangeUnit`: "PSI"
+  - `sensorMountHeight`: 2.0
+  - `maxValue`: 0 (or omit entirely - not required)
+
+> **Note:** For analog voltage sensors with native range configured, `maxValue` is **completely optional**. The sensor's voltage range and pressure range provide all the information needed to calculate the liquid level. Set `maxValue` only if you want to clamp readings to a maximum tank capacity.
+
+**Legacy Mode:** If `analogVoltageMin`/`analogVoltageMax` and `sensorRangeMin`/`sensorRangeMax` are not configured, the system falls back to the legacy behavior where `maxValue` directly represents the tank height.
+
 ## Operation
 
 ### Normal Operation

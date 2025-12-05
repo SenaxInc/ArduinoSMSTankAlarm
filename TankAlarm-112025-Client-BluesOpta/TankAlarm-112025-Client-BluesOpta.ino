@@ -301,6 +301,9 @@ struct TankConfig {
   float sensorRangeMin;    // Minimum native sensor range (e.g., 0 for 0-5 PSI or 0-10m)
   float sensorRangeMax;    // Maximum native sensor range (e.g., 5 for 0-5 PSI, 10 for 0-10m)
   char sensorRangeUnit[8]; // Unit for sensor range: "PSI", "bar", "m", "ft", "in", etc.
+  // Analog voltage sensor settings (for sensors like Dwyer 626 with voltage output)
+  float analogVoltageMin;  // Minimum voltage output (e.g., 0.0 for 0-10V, 1.0 for 1-5V)
+  float analogVoltageMax;  // Maximum voltage output (e.g., 10.0 for 0-10V, 5.0 for 1-5V)
 };
 
 struct ClientConfig {
@@ -689,6 +692,8 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].sensorRangeMin = 0.0f;    // Default: 0 (e.g., 0 PSI or 0 meters)
   cfg.tanks[0].sensorRangeMax = 5.0f;    // Default: 5 (e.g., 5 PSI for typical pressure sensor)
   strlcpy(cfg.tanks[0].sensorRangeUnit, "PSI", sizeof(cfg.tanks[0].sensorRangeUnit)); // Default: PSI
+  cfg.tanks[0].analogVoltageMin = 0.0f;  // Default: 0V (for 0-10V sensors)
+  cfg.tanks[0].analogVoltageMax = 10.0f; // Default: 10V (for 0-10V sensors)
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -838,6 +843,9 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     cfg.tanks[i].sensorRangeMax = t["sensorRangeMax"].is<float>() ? t["sensorRangeMax"].as<float>() : 5.0f;
     const char *rangeUnitStr = t["sensorRangeUnit"].as<const char *>();
     strlcpy(cfg.tanks[i].sensorRangeUnit, rangeUnitStr ? rangeUnitStr : "PSI", sizeof(cfg.tanks[i].sensorRangeUnit));
+    // Load analog voltage range settings (for 0-10V, 1-5V, etc. sensors)
+    cfg.tanks[i].analogVoltageMin = t["analogVoltageMin"].is<float>() ? t["analogVoltageMin"].as<float>() : 0.0f;
+    cfg.tanks[i].analogVoltageMax = t["analogVoltageMax"].is<float>() ? t["analogVoltageMax"].as<float>() : 10.0f;
   }
 
   return true;
@@ -919,6 +927,9 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     t["sensorRangeMin"] = cfg.tanks[i].sensorRangeMin;
     t["sensorRangeMax"] = cfg.tanks[i].sensorRangeMax;
     t["sensorRangeUnit"] = cfg.tanks[i].sensorRangeUnit;
+    // Save analog voltage range settings
+    t["analogVoltageMin"] = cfg.tanks[i].analogVoltageMin;
+    t["analogVoltageMax"] = cfg.tanks[i].analogVoltageMax;
   }
 
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -1398,6 +1409,13 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         const char *unitStr = t["sensorRangeUnit"].as<const char *>();
         strlcpy(gConfig.tanks[i].sensorRangeUnit, unitStr ? unitStr : "PSI", sizeof(gConfig.tanks[i].sensorRangeUnit));
       }
+      // Handle analog voltage range settings
+      if (t.containsKey("analogVoltageMin")) {
+        gConfig.tanks[i].analogVoltageMin = t["analogVoltageMin"].as<float>();
+      }
+      if (t.containsKey("analogVoltageMax")) {
+        gConfig.tanks[i].analogVoltageMax = t["analogVoltageMax"].as<float>();
+      }
     }
   }
 
@@ -1464,10 +1482,17 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   float minValid;
   float maxValid;
   
-  if (cfg.sensorType == SENSOR_CURRENT_LOOP && cfg.sensorRangeMax > cfg.sensorRangeMin) {
-    // For current loop sensors, calculate max from native sensor range
+  // Check if sensor has native range configured (current loop or analog with voltage range)
+  bool hasNativeRange = (cfg.sensorRangeMax > cfg.sensorRangeMin);
+  bool isCurrentLoop = (cfg.sensorType == SENSOR_CURRENT_LOOP);
+  bool isAnalogWithVoltageRange = (cfg.sensorType == SENSOR_ANALOG && 
+                                    cfg.analogVoltageMax > cfg.analogVoltageMin &&
+                                    hasNativeRange);
+  
+  if ((isCurrentLoop || isAnalogWithVoltageRange) && hasNativeRange) {
+    // For sensors with native range, calculate max from sensor range
     float conversionFactor = PSI_TO_INCHES_WATER;
-    if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
+    if (isCurrentLoop && cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
       // Ultrasonic: max level is sensorMountHeight (when tank is full)
       maxValid = cfg.sensorMountHeight * 1.1f;
     } else {
@@ -1489,7 +1514,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
       maxValid = cfg.maxValue * 1.1f;
     }
   } else {
-    // For analog and other sensors, use maxValue (allow 10% margin)
+    // For legacy analog and other sensors, use maxValue (allow 10% margin)
     minValid = -cfg.maxValue * 0.1f;
     maxValid = cfg.maxValue * 1.1f;
   }
@@ -1603,21 +1628,72 @@ static float readTankSensor(uint8_t idx) {
       return isActivated ? DIGITAL_SENSOR_ACTIVATED_VALUE : DIGITAL_SENSOR_NOT_ACTIVATED_VALUE;
     }
     case SENSOR_ANALOG: {
+      // Analog voltage sensor (e.g., Dwyer 626 with 0-10V, 1-5V, 0-5V output)
+      // Uses the same pressure-to-height conversion as current loop sensors
+      // 
+      // Configuration:
+      // - analogVoltageMin/Max: Voltage output range (e.g., 0-10V, 1-5V)
+      // - sensorRangeMin/Max: Pressure range in sensorRangeUnit (e.g., 0-5 PSI)
+      // - sensorMountHeight: Height of sensor above tank bottom (inches)
+      // - maxValue: Optional clamping (0 = no clamping)
+      
       // Use explicit bounds check for channel (A0602 has channels 0-7)
       int channel = (cfg.primaryPin >= 0 && cfg.primaryPin < 8) ? cfg.primaryPin : 0;
-      // Opta analog channels use analogRead with index 0..7 for extension A0602
-      if (cfg.maxValue < MIN_VALID_MAX_VALUE) {
-        return 0.0f;
+      
+      // Validate that we have a valid sensor range configured
+      if (cfg.sensorRangeMax <= cfg.sensorRangeMin || cfg.analogVoltageMax <= cfg.analogVoltageMin) {
+        // Fallback: legacy mode using maxValue for direct height mapping
+        if (cfg.maxValue < MIN_VALID_MAX_VALUE) {
+          return 0.0f;
+        }
+        float total = 0.0f;
+        const uint8_t samples = 8;
+        for (uint8_t i = 0; i < samples; ++i) {
+          int raw = analogRead(channel);
+          total += (float)raw / 4095.0f; // 12-bit resolution, 0-10V range
+          delay(2);
+        }
+        float avg = total / samples;
+        return linearMap(avg, 0.05f, 0.95f, 0.0f, cfg.maxValue);
       }
+      
+      // Read voltage (Opta A0602 analog inputs: 0-10V mapped to 0-4095)
       float total = 0.0f;
       const uint8_t samples = 8;
       for (uint8_t i = 0; i < samples; ++i) {
         int raw = analogRead(channel);
-        total += (float)raw / 4095.0f; // 12-bit resolution
+        total += (float)raw / 4095.0f * 10.0f; // Convert to 0-10V
         delay(2);
       }
-      float avg = total / samples;
-      return linearMap(avg, 0.05f, 0.95f, 0.0f, cfg.maxValue);
+      float voltage = total / samples;
+      
+      // Map voltage to sensor's native pressure units
+      float pressure = linearMap(voltage, cfg.analogVoltageMin, cfg.analogVoltageMax,
+                                 cfg.sensorRangeMin, cfg.sensorRangeMax);
+      
+      // Convert pressure to liquid height in inches using appropriate conversion factor
+      float conversionFactor = PSI_TO_INCHES_WATER; // Default: PSI
+      if (strcmp(cfg.sensorRangeUnit, "bar") == 0) {
+        conversionFactor = BAR_TO_INCHES_WATER;
+      } else if (strcmp(cfg.sensorRangeUnit, "kPa") == 0) {
+        conversionFactor = KPA_TO_INCHES_WATER;
+      } else if (strcmp(cfg.sensorRangeUnit, "mbar") == 0) {
+        conversionFactor = MBAR_TO_INCHES_WATER;
+      } else if (strcmp(cfg.sensorRangeUnit, "inH2O") == 0) {
+        conversionFactor = 1.0f;  // Already in inches of water
+      }
+      // else assume PSI
+      
+      float liquidAboveSensor = pressure * conversionFactor;
+      
+      // Total height from tank bottom = liquid above sensor + sensor mount height
+      float levelInches = liquidAboveSensor + cfg.sensorMountHeight;
+      
+      // Clamp: minimum is 0 (empty tank), maximum is tank capacity (if provided)
+      if (levelInches < 0.0f) levelInches = 0.0f;
+      if (cfg.maxValue > MIN_VALID_MAX_VALUE && levelInches > cfg.maxValue) levelInches = cfg.maxValue;
+      
+      return levelInches;
     }
     case SENSOR_CURRENT_LOOP: {
       // Use explicit bounds check for current loop channel
