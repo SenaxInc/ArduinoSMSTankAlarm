@@ -343,9 +343,9 @@ static bool gLastLinkState = false;
 static double gLastDailyEmailSentEpoch = 0.0;
 #define MIN_DAILY_EMAIL_INTERVAL_SECONDS 3600  // Minimum 1 hour between daily emails
 
-#ifndef ARDUINO_TANKALARM_HAS_STRLCPY
-#define ARDUINO_TANKALARM_HAS_STRLCPY
-size_t strlcpy(char *dst, const char *src, size_t size) {
+// strlcpy is provided by Notecard library on Mbed platforms
+#if !defined(ARDUINO_ARCH_MBED) && !defined(strlcpy)
+static size_t strlcpy(char *dst, const char *src, size_t size) {
   if (!dst || !src || size == 0) {
     return 0;
   }

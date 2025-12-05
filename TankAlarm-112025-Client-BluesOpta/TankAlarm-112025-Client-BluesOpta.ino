@@ -1342,8 +1342,9 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         gConfig.tanks[i].enableServerUpload = t["upload"].as<bool>();
       }
       if (t.containsKey("relayTargetClient")) {
+        const char *relayTargetStr = t["relayTargetClient"].as<const char *>();
         strlcpy(gConfig.tanks[i].relayTargetClient, 
-                t["relayTargetClient"].as<const char *>() ?: "", 
+                relayTargetStr ? relayTargetStr : "", 
                 sizeof(gConfig.tanks[i].relayTargetClient));
       }
       if (t.containsKey("relayMask")) {
@@ -2325,7 +2326,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
 
   J *body = JParse(buffer);
   if (!body) {
-    notecard.deleteResponse(req);
+    JDelete(req);
     bufferNoteForRetry(targetFile, buffer, syncNow);
     return;
   }

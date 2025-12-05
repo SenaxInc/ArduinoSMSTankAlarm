@@ -17,7 +17,12 @@
 #include <Wire.h>
 #include <ArduinoJson.h>
 #include <Notecard.h>
-#include <Ethernet.h>
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_PORTENTA_H7_M7) || defined(ARDUINO_PORTENTA_H7_M4)
+  #include <PortentaEthernet.h>
+  #include <Ethernet.h>
+#else
+  #include <Ethernet.h>
+#endif
 #include <math.h>
 #include <string.h>
 
