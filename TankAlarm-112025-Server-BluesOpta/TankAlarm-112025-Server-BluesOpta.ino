@@ -388,6 +388,9 @@ static bool pinMatches(const char *pin) {
   return strncmp(pin, gConfig.configPin, sizeof(gConfig.configPin)) == 0;
 }
 
+// Forward declaration for respondStatus (used by requireValidPin below)
+static void respondStatus(EthernetClient &client, int status, const String &message);
+
 // Require that a valid admin PIN is configured and provided; respond with 403/400 on failure.
 static bool requireValidPin(EthernetClient &client, const char *pinValue) {
   if (gConfig.configPin[0] == '\0') {
