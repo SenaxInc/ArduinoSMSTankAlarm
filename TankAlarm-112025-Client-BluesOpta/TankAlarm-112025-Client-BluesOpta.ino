@@ -230,6 +230,23 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define MBAR_TO_INCHES_WATER 0.4015f        // 1 mbar = 0.4015 inches of water
 #endif
 
+// Helper function: Get pressure-to-inches conversion factor based on unit
+static float getPressureConversionFactor(const char* unit) {
+  if (strcmp(unit, "bar") == 0) return BAR_TO_INCHES_WATER;
+  if (strcmp(unit, "kPa") == 0) return KPA_TO_INCHES_WATER;
+  if (strcmp(unit, "mbar") == 0) return MBAR_TO_INCHES_WATER;
+  if (strcmp(unit, "inH2O") == 0) return 1.0f;
+  return PSI_TO_INCHES_WATER; // Default: PSI
+}
+
+// Helper function: Get distance-to-inches conversion factor based on unit
+static float getDistanceConversionFactor(const char* unit) {
+  if (strcmp(unit, "m") == 0) return METERS_TO_INCHES;
+  if (strcmp(unit, "cm") == 0) return CENTIMETERS_TO_INCHES;
+  if (strcmp(unit, "ft") == 0) return FEET_TO_INCHES;
+  return 1.0f; // Default: assume inches
+}
+
 static const uint8_t NOTECARD_I2C_ADDRESS = 0x17;
 static const uint32_t NOTECARD_I2C_FREQUENCY = 400000UL;
 
@@ -1474,21 +1491,12 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   
   if ((isCurrentLoop || isAnalogWithVoltageRange) && hasNativeRange) {
     // For sensors with native range, calculate max from sensor range
-    float conversionFactor = PSI_TO_INCHES_WATER;
     if (isCurrentLoop && cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
       // Ultrasonic: max level is sensorMountHeight (when tank is full)
       maxValid = cfg.sensorMountHeight * 1.1f;
     } else {
       // Pressure: calculate max from pressure range
-      if (strcmp(cfg.sensorRangeUnit, "bar") == 0) {
-        conversionFactor = BAR_TO_INCHES_WATER;
-      } else if (strcmp(cfg.sensorRangeUnit, "kPa") == 0) {
-        conversionFactor = KPA_TO_INCHES_WATER;
-      } else if (strcmp(cfg.sensorRangeUnit, "mbar") == 0) {
-        conversionFactor = MBAR_TO_INCHES_WATER;
-      } else if (strcmp(cfg.sensorRangeUnit, "inH2O") == 0) {
-        conversionFactor = 1.0f;
-      }
+      float conversionFactor = getPressureConversionFactor(cfg.sensorRangeUnit);
       maxValid = (cfg.sensorRangeMax * conversionFactor + cfg.sensorMountHeight) * 1.1f;
     }
     minValid = -maxValid * 0.1f;
@@ -1642,18 +1650,7 @@ static float readTankSensor(uint8_t idx) {
                                  cfg.sensorRangeMin, cfg.sensorRangeMax);
       
       // Convert pressure to liquid height in inches using appropriate conversion factor
-      float conversionFactor = PSI_TO_INCHES_WATER; // Default: PSI
-      if (strcmp(cfg.sensorRangeUnit, "bar") == 0) {
-        conversionFactor = BAR_TO_INCHES_WATER;
-      } else if (strcmp(cfg.sensorRangeUnit, "kPa") == 0) {
-        conversionFactor = KPA_TO_INCHES_WATER;
-      } else if (strcmp(cfg.sensorRangeUnit, "mbar") == 0) {
-        conversionFactor = MBAR_TO_INCHES_WATER;
-      } else if (strcmp(cfg.sensorRangeUnit, "inH2O") == 0) {
-        conversionFactor = 1.0f;  // Already in inches of water
-      }
-      // else assume PSI
-      
+      float conversionFactor = getPressureConversionFactor(cfg.sensorRangeUnit);
       float liquidAboveSensor = pressure * conversionFactor;
       
       // Total height from tank bottom = liquid above sensor + sensor mount height
@@ -1693,15 +1690,7 @@ static float readTankSensor(uint8_t idx) {
                                          cfg.sensorRangeMin, cfg.sensorRangeMax);
         
         // Convert distance to inches based on sensorRangeUnit
-        float distanceInches = distanceNative;
-        if (strcmp(cfg.sensorRangeUnit, "m") == 0) {
-          distanceInches = distanceNative * METERS_TO_INCHES;
-        } else if (strcmp(cfg.sensorRangeUnit, "cm") == 0) {
-          distanceInches = distanceNative * CENTIMETERS_TO_INCHES;
-        } else if (strcmp(cfg.sensorRangeUnit, "ft") == 0) {
-          distanceInches = distanceNative * FEET_TO_INCHES;
-        }
-        // else assume already in inches
+        float distanceInches = distanceNative * getDistanceConversionFactor(cfg.sensorRangeUnit);
         
         // Calculate liquid level: tank height - distance from sensor to surface
         levelInches = cfg.sensorMountHeight - distanceInches;
@@ -1719,18 +1708,7 @@ static float readTankSensor(uint8_t idx) {
                                    cfg.sensorRangeMin, cfg.sensorRangeMax);
         
         // Convert pressure to liquid height in inches using appropriate conversion factor
-        float conversionFactor = PSI_TO_INCHES_WATER; // Default: PSI
-        if (strcmp(cfg.sensorRangeUnit, "bar") == 0) {
-          conversionFactor = BAR_TO_INCHES_WATER;
-        } else if (strcmp(cfg.sensorRangeUnit, "kPa") == 0) {
-          conversionFactor = KPA_TO_INCHES_WATER;
-        } else if (strcmp(cfg.sensorRangeUnit, "mbar") == 0) {
-          conversionFactor = MBAR_TO_INCHES_WATER;
-        } else if (strcmp(cfg.sensorRangeUnit, "inH2O") == 0) {
-          conversionFactor = 1.0f;  // Already in inches of water
-        }
-        // else assume PSI
-        
+        float conversionFactor = getPressureConversionFactor(cfg.sensorRangeUnit);
         float liquidAboveSensor = pressure * conversionFactor;
         
         // Total height from tank bottom = liquid above sensor + sensor mount height

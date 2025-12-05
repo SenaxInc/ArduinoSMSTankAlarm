@@ -102,6 +102,8 @@ Used for sensors like the Dwyer 626-06-CB-P1-E5-S1 (0-5 PSI) mounted near the bo
   - `sensorRangeUnit`: Pressure unit - "PSI", "bar", "kPa", "mbar", or "inH2O"
 - **Sensor Mount Height**: Height of sensor above tank bottom (usually 0-2 inches)
 
+**Known Limitation - Blind Spot:** Pressure sensors cannot detect liquid levels below their mount height. When the tank is empty (0 PSI), the reported level will be the sensor mount height (e.g., 2"), not 0". Mount the sensor as close to the tank bottom as possible to minimize this blind spot.
+
 **Pressure-to-Height Conversion:**
 The system automatically converts pressure to inches using these factors:
 - 1 PSI = 27.68 inches of water
@@ -122,7 +124,7 @@ The system automatically converts pressure to inches using these factors:
 
 **How It Works:**
 1. 4mA → 0 PSI → 0 inches of liquid above sensor
-2. Total height = 0 + 2" mount height = 2" (sensor position, not liquid)
+2. Total height = 0 + 2" mount height = 2" (minimum reported value due to blind spot)
 3. When tank fills: 12mA → 2.5 PSI → 69.2" + 2" = 71.2" total
 
 #### Ultrasonic Sensor (Top-Mounted)
