@@ -84,74 +84,87 @@ The client creates a default configuration on first boot. You can update configu
 - **Low Alarm**: Threshold in inches for low level alert
 - **Analog Pin**: Arduino Opta analog input (A0-A7, I1-I8)
 - **Sensor Type**: "voltage" (0-10V), "current" (4-20mA), or "digital" (float switch)
-- **Min Value**: Minimum sensor value (e.g., 0.0V or 4.0mA)
-- **Max Value**: Maximum sensor value (e.g., 10.0V or 20.0mA)
-- **Min Inches**: Tank level in inches at minimum sensor value
-- **Max Inches**: Tank level in inches at maximum sensor value
 
 ### 4-20mA Current Loop Sensor Configuration
 
-For 4-20mA current loop sensors, two mounting options are supported:
+For 4-20mA current loop sensors, two mounting options are supported. The implementation uses the sensor's **native measurement range** (sensorRangeMin/Max/Unit) for accurate pressure-to-height conversions.
 
 #### Pressure Sensor (Bottom-Mounted)
 Used for sensors like the Dwyer 626-06-CB-P1-E5-S1 (0-5 PSI) mounted near the bottom of the tank.
 
 - **Current Loop Type**: "pressure"
 - **How it works**: Measures the pressure of the liquid column above the sensor
-  - 4mA = Empty tank (0 PSI / no liquid above sensor)
-  - 20mA = Full tank (max PSI / max liquid height)
-- **Sensor Range**: The native measurement range (e.g., 0-5 PSI, 0-2 bar)
-  - `sensorRangeMin`: Minimum value (typically 0)
-  - `sensorRangeMax`: Maximum value (e.g., 5 for 0-5 PSI)
-  - `sensorRangeUnit`: Unit of measurement ("PSI", "bar", etc.)
+  - 4mA = `sensorRangeMin` (e.g., 0 PSI = no liquid above sensor)
+  - 20mA = `sensorRangeMax` (e.g., 5 PSI = max liquid height)
+- **Sensor Range**: The native measurement range from the sensor datasheet
+  - `sensorRangeMin`: Minimum pressure at 4mA (typically 0)
+  - `sensorRangeMax`: Maximum pressure at 20mA (e.g., 5 for 0-5 PSI)
+  - `sensorRangeUnit`: Pressure unit - "PSI", "bar", "kPa", "mbar", or "inH2O"
 - **Sensor Mount Height**: Height of sensor above tank bottom (usually 0-2 inches)
-- **Max Value**: Maximum liquid height the sensor can measure (corresponds to 20mA)
 
-**Example Configuration** (0-5 PSI sensor, 1 PSI per 2.3 ft of water):
+**Known Limitation - Blind Spot:** Pressure sensors cannot detect liquid levels below their mount height. When the tank is empty (0 PSI), the reported level will be the sensor mount height (e.g., 2"), not 0". Mount the sensor as close to the tank bottom as possible to minimize this blind spot.
+
+**Pressure-to-Height Conversion:**
+The system automatically converts pressure to inches using these factors:
+- 1 PSI = 27.68 inches of water
+- 1 bar = 401.5 inches of water
+- 1 kPa = 4.015 inches of water
+- 1 mbar = 0.4015 inches of water
+- 1 inH2O = 1 inch of water
+
+**Example Configuration** (0-5 PSI sensor on 120" tank):
 - Sensor mounted 2 inches above tank bottom
-- Max sensor range = 5 PSI = ~138 inches of water
-- Tank height = 120 inches
+- Max sensor range = 5 PSI = ~138 inches of water column
 - Configuration:
   - `currentLoopType`: "pressure"
   - `sensorRangeMin`: 0
   - `sensorRangeMax`: 5
   - `sensorRangeUnit`: "PSI"
   - `sensorMountHeight`: 2.0
-  - `maxValue`: 118.0 (tank height minus mount height: 120 - 2 = 118 inches)
 
-> **Note:** For pressure sensors, set `maxValue` to the tank's usable height minus the sensor mount height. The implementation adds `sensorMountHeight` to the measured value, so `maxValue` should represent the height of liquid *above* the sensor, not the total tank height.
+**How It Works:**
+1. 4mA → 0 PSI → 0 inches of liquid above sensor
+2. Total height = 0 + 2" mount height = 2" (minimum reported value due to blind spot)
+3. When tank fills: 12mA → 2.5 PSI → 69.2" + 2" = 71.2" total
 
 #### Ultrasonic Sensor (Top-Mounted)
 Used for sensors like the Siemens Sitrans LU240 mounted on top of the tank looking down.
 
 - **Current Loop Type**: "ultrasonic"
 - **How it works**: Measures the distance from the sensor to the liquid surface
-  - 4mA = Full tank (liquid close to sensor)
-  - 20mA = Empty tank (liquid far from sensor)
-- **Sensor Range**: The native measurement range (e.g., 0-10 meters, 0-30 feet)
-  - `sensorRangeMin`: Minimum distance (typically 0)
-  - `sensorRangeMax`: Maximum distance (e.g., 10 for 0-10m)
-  - `sensorRangeUnit`: Unit of measurement ("m", "ft", "in", etc.)
-- **Sensor Mount Height**: Distance from sensor to tank bottom when tank is empty
-- **Max Value**: Maximum liquid height (tank capacity)
+  - 4mA = `sensorRangeMin` (minimum distance, typically a blind spot)
+  - 20mA = `sensorRangeMax` (maximum measurable distance)
+- **Sensor Range**: The native measurement range from the sensor datasheet
+  - `sensorRangeMin`: Minimum distance at 4mA (e.g., 0.5m for blind spot)
+  - `sensorRangeMax`: Maximum distance at 20mA (e.g., 10m)
+  - `sensorRangeUnit`: Distance unit - "m", "cm", "ft", or "in"
+- **Sensor Mount Height**: Distance from sensor to tank bottom when tank is empty (in inches)
 
-**Example Configuration** (ultrasonic sensor with 0-10m range on 10-foot tank):
-- Sensor mounted 124 inches above tank bottom (tank is 120 inches + 4 inch clearance)
-- Maximum tank fill level = 120 inches
+**Distance Unit Conversion:**
+The system automatically converts distance to inches using:
+- 1 m = 39.3701 inches
+- 1 cm = 0.393701 inches
+- 1 ft = 12 inches
+
+**Example Configuration** (ultrasonic sensor with 0.5-10m range on 10-foot tank):
+- Sensor mounted 124 inches above tank bottom (tank is 120" + 4" clearance)
 - Configuration:
   - `currentLoopType`: "ultrasonic"
-  - `sensorRangeMin`: 0
-  - `sensorRangeMax`: 10
+  - `sensorRangeMin`: 0.5 (blind spot in meters)
+  - `sensorRangeMax`: 10.0 (max range in meters)
   - `sensorRangeUnit`: "m"
   - `sensorMountHeight`: 124.0
-  - `maxValue`: 120.0
+
+**How It Works:**
+1. 4mA → 0.5m (19.7") → liquid level = 124" - 19.7" = 104.3" (nearly full)
+2. 20mA → 10m (393.7") → liquid level = 124" - 393.7" = clamped to 0" (empty/beyond range)
 
 **Calibration Tips for 4-20mA Sensors:**
 1. Record the actual mA output at known liquid levels (empty, half-full, full)
-2. Verify sensor mount height is accurate
+2. Verify sensor mount height is accurate using a tape measure
 3. Enter the correct sensor native range (as specified in sensor datasheet)
-4. Check for temperature effects on readings
-5. Consider the specific gravity of the liquid (for pressure sensors)
+4. For pressure sensors: account for specific gravity if not measuring water (multiply PSI by 1.0/SG)
+5. Check for temperature effects on readings (cold liquids are denser)
 
 ### Float Switch Configuration (Digital Sensors)
 Float switches can be configured as either normally-open (NO) or normally-closed (NC):
@@ -164,6 +177,35 @@ Float switches can be configured as either normally-open (NO) or normally-closed
   - "not_activated": Alarm when switch is not activated (fluid absent)
 
 **Wiring Note**: For both NO and NC float switches, connect the switch between the digital input pin and GND. The Arduino uses an internal pull-up resistor, and the software interprets the signal based on your configured switch mode. The wiring is the same for both modes - only the software interpretation changes.
+
+### Analog Voltage Sensor Configuration
+
+For analog voltage sensors (like the Dwyer 626 series with voltage output), the system supports the same native range configuration as 4-20mA sensors. This allows you to specify both the voltage range and pressure range for accurate pressure-to-height conversion.
+
+**Supported Voltage Output Configurations:**
+- 0-10V (default)
+- 0-5V
+- 1-5V  
+- 0.5-4.5V
+- 2-10V
+- Any configurable range
+
+**Configuration Parameters:**
+- `analogVoltageMin`: Minimum voltage output (e.g., 0.0 for 0-10V, 1.0 for 1-5V)
+- `analogVoltageMax`: Maximum voltage output (e.g., 10.0 for 0-10V, 5.0 for 1-5V)
+- `sensorRangeMin` / `sensorRangeMax`: Pressure range in native units
+- `sensorRangeUnit`: Pressure unit - "PSI", "bar", "kPa", "mbar", or "inH2O"
+- `sensorMountHeight`: Height of sensor above tank bottom (inches)
+
+**Example Configuration** (Dwyer 626 with 1-5V output, 0-5 PSI range):
+- Configuration:
+  - `sensorType`: "analog"
+  - `analogVoltageMin`: 1.0
+  - `analogVoltageMax`: 5.0
+  - `sensorRangeMin`: 0
+  - `sensorRangeMax`: 5
+  - `sensorRangeUnit`: "PSI"
+  - `sensorMountHeight`: 2.0
 
 ## Operation
 
