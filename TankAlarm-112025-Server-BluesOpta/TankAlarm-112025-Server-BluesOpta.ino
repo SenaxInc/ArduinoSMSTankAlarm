@@ -130,6 +130,22 @@
 #define CLIENT_CONFIG_CACHE_PATH "/client_config_cache.txt"
 #endif
 
+#ifndef FTP_PORT_DEFAULT
+#define FTP_PORT_DEFAULT 21
+#endif
+
+#ifndef FTP_PATH_DEFAULT
+#define FTP_PATH_DEFAULT "/tankalarm/server"
+#endif
+
+#ifndef FTP_TIMEOUT_MS
+#define FTP_TIMEOUT_MS 8000UL
+#endif
+
+#ifndef FTP_MAX_FILE_BYTES
+#define FTP_MAX_FILE_BYTES 24576UL
+#endif
+
 #ifndef MAX_CLIENT_CONFIG_SNAPSHOTS
 #define MAX_CLIENT_CONFIG_SNAPSHOTS 20
 #endif
@@ -226,6 +242,16 @@ struct ServerConfig {
   bool smsOnHigh;
   bool smsOnLow;
   bool smsOnClear;
+  // Optional LAN FTP backup/restore
+  bool ftpEnabled;
+  bool ftpPassive;
+  bool ftpBackupOnChange;
+  bool ftpRestoreOnBoot;
+  uint16_t ftpPort;
+  char ftpHost[64];
+  char ftpUser[32];
+  char ftpPass[32];
+  char ftpPath[64];
 };
 
 struct TankRecord {
@@ -320,6 +346,8 @@ static uint8_t gTankCalibrationCount = 0;
 
 static ServerConfig gConfig;
 static bool gConfigDirty = false;
+static bool gPendingFtpBackup = false;
+static bool gPaused = false;  // When true, pause Notecard processing for maintenance
 
 static TankRecord gTankRecords[MAX_TANK_RECORDS];
 static uint8_t gTankRecordCount = 0;
@@ -3238,6 +3266,28 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
     .btn:not(:disabled):hover {
       transform: translateY(-1px);
     }
+    .pause-btn {
+      border: 1px solid var(--card-border);
+      border-radius: 999px;
+      padding: 10px 16px;
+      background: transparent;
+      color: var(--text);
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.12s ease, background 0.12s ease, color 0.12s ease;
+    }
+    .pause-btn:hover {
+      transform: translateY(-1px);
+    }
+    .pause-btn.paused {
+      background: #b91c1c;
+      color: #fff;
+      border-color: #b91c1c;
+    }
+    .pause-btn.paused:hover {
+      background: #991b1b;
+      border-color: #991b1b;
+    }
     .card {
       background: var(--surface);
       border-radius: 24px;
@@ -3342,6 +3392,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       </div>
       <div class="header-actions">
         <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
+        <button class="pause-btn" id="pauseBtn" aria-label="Pause data flow">Pause</button>
         <a class="pill" href="/client-console">Client Console</a>
         <a class="pill secondary" href="/config-generator">Config Generator</a>
         <a class="pill secondary" href="/serial-monitor">Serial Monitor</a>
@@ -3421,6 +3472,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 
       const els = {
         themeToggle: document.getElementById('themeToggle'),
+        pauseBtn: document.getElementById('pauseBtn'),
         serverName: document.getElementById('serverName'),
         serverUid: document.getElementById('serverUid'),
         fleetName: document.getElementById('fleetName'),
@@ -3440,7 +3492,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         tanks: [],
         refreshing: false,
         timer: null,
-        uiRefreshSeconds: DEFAULT_REFRESH_SECONDS
+        uiRefreshSeconds: DEFAULT_REFRESH_SECONDS,
+        paused: false,
+        pin: null,
+        pinConfigured: false
       };
 
       function applyTheme(next) {
@@ -3454,6 +3509,16 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       els.themeToggle.addEventListener('click', () => {
         const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
         applyTheme(next);
+      });
+
+      els.pauseBtn.addEventListener('click', togglePause);
+      els.pauseBtn.addEventListener('mouseenter', () => {
+        if (state.paused) {
+          els.pauseBtn.textContent = 'Resume';
+        }
+      });
+      els.pauseBtn.addEventListener('mouseleave', () => {
+        renderPauseButton();
       });
 
       function showToast(message, isError) {
@@ -3491,6 +3556,20 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           minute: '2-digit',
           hour12: true
         });
+      }
+
+      function renderPauseButton() {
+        const btn = els.pauseBtn;
+        if (!btn) return;
+        if (state.paused) {
+          btn.classList.add('paused');
+          btn.textContent = 'Paused';
+          btn.title = 'Paused – hover to resume';
+        } else {
+          btn.classList.remove('paused');
+          btn.textContent = 'Pause';
+          btn.title = 'Pause data flow';
+        }
       }
 
       function describeCadence(seconds) {
@@ -3650,6 +3729,41 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         }, state.uiRefreshSeconds * 1000);
       }
 
+      async function togglePause() {
+        if (!state.pinConfigured) {
+          // No PIN configured; allow without prompt
+        } else if (!state.pin) {
+          const pinInput = prompt('Enter admin PIN to toggle pause');
+          if (!pinInput) {
+            return;
+          }
+          state.pin = pinInput.trim();
+        }
+
+        const targetPaused = !state.paused;
+        try {
+          const res = await fetch('/api/pause', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paused: targetPaused, pin: state.pin || '' })
+          });
+          if (!res.ok) {
+            if (res.status === 403) {
+              state.pin = null;
+              throw new Error('PIN required or invalid');
+            }
+            const text = await res.text();
+            throw new Error(text || 'Pause toggle failed');
+          }
+          const data = await res.json();
+          state.paused = !!data.paused;
+          renderPauseButton();
+          showToast(state.paused ? 'Paused for maintenance' : 'Resumed');
+        } catch (err) {
+          showToast(err.message || 'Pause toggle failed', true);
+        }
+      }
+
       function applyServerData(data) {
         state.clients = data.clients || [];
         state.tanks = flattenTanks(state.clients);
@@ -3667,8 +3781,11 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           minute: '2-digit',
           hour12: true
         });
+        state.paused = !!serverInfo.paused;
+        state.pinConfigured = !!serverInfo.pinConfigured;
         state.uiRefreshSeconds = DEFAULT_REFRESH_SECONDS;
         renderTankRows();
+        renderPauseButton();
         updateStats();
         scheduleUiRefresh();
       }
@@ -4090,6 +4207,26 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
             <input type="checkbox" id="smsClearToggle">
           </label>
         </div>
+
+        <h3>FTP Backup &amp; Restore</h3>
+        <div class="form-grid">
+          <label class="field"><span>FTP Host</span><input id="ftpHost" type="text" placeholder="192.168.1.50"></label>
+          <label class="field"><span>FTP Port</span><input id="ftpPort" type="number" min="1" max="65535" value="21"></label>
+          <label class="field"><span>FTP User</span><input id="ftpUser" type="text" placeholder="user"></label>
+          <label class="field"><span>FTP Password <small style="color:var(--muted);font-weight:400;">(leave blank to keep)</small></span><input id="ftpPass" type="password" autocomplete="off"></label>
+          <label class="field"><span>FTP Path</span><input id="ftpPath" type="text" placeholder="/tankalarm/server"></label>
+        </div>
+        <div class="toggle-group">
+          <label class="toggle"><span>Enable FTP</span><input type="checkbox" id="ftpEnabled"></label>
+          <label class="toggle"><span>Passive Mode</span><input type="checkbox" id="ftpPassive" checked></label>
+          <label class="toggle"><span>Auto-backup on save</span><input type="checkbox" id="ftpBackupOnChange"></label>
+          <label class="toggle"><span>Restore on boot (best for replacements)</span><input type="checkbox" id="ftpRestoreOnBoot"></label>
+        </div>
+        <div class="actions" style="margin-top:12px;">
+          <button type="button" id="ftpBackupNow">Backup Now</button>
+          <button type="button" class="secondary" id="ftpRestoreNow">Restore Now</button>
+        </div>
+
         <h3>Tanks</h3>
         <table class="tank-table" id="tankTable">
           <thead>
@@ -4222,6 +4359,17 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
         smsHighToggle: document.getElementById('smsHighToggle'),
         smsLowToggle: document.getElementById('smsLowToggle'),
         smsClearToggle: document.getElementById('smsClearToggle'),
+        ftpEnabled: document.getElementById('ftpEnabled'),
+        ftpPassive: document.getElementById('ftpPassive'),
+        ftpBackupOnChange: document.getElementById('ftpBackupOnChange'),
+        ftpRestoreOnBoot: document.getElementById('ftpRestoreOnBoot'),
+        ftpHost: document.getElementById('ftpHost'),
+        ftpPort: document.getElementById('ftpPort'),
+        ftpUser: document.getElementById('ftpUser'),
+        ftpPass: document.getElementById('ftpPass'),
+        ftpPath: document.getElementById('ftpPath'),
+        ftpBackupNow: document.getElementById('ftpBackupNow'),
+        ftpRestoreNow: document.getElementById('ftpRestoreNow'),
         tankBody: document.querySelector('#tankTable tbody'),
         toast: document.getElementById('toast'),
         addTank: document.getElementById('addTank'),
@@ -4433,6 +4581,17 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
         els.smsHighToggle.checked = !!valueOr(serverInfo && serverInfo.smsOnHigh, true);
         els.smsLowToggle.checked = !!valueOr(serverInfo && serverInfo.smsOnLow, true);
         els.smsClearToggle.checked = !!valueOr(serverInfo && serverInfo.smsOnClear, false);
+
+        const ftp = serverInfo && serverInfo.ftp ? serverInfo.ftp : {};
+        els.ftpEnabled.checked = !!valueOr(ftp.enabled, false);
+        els.ftpPassive.checked = ftp.passive !== false;
+        els.ftpBackupOnChange.checked = !!valueOr(ftp.backupOnChange, false);
+        els.ftpRestoreOnBoot.checked = !!valueOr(ftp.restoreOnBoot, false);
+        els.ftpHost.value = valueOr(ftp.host, '');
+        els.ftpPort.value = valueOr(ftp.port, 21);
+        els.ftpUser.value = valueOr(ftp.user, '');
+        els.ftpPath.value = valueOr(ftp.path, '/tankalarm/server');
+        els.ftpPass.value = '';
       }
 
       function formatEpoch(epoch) {
@@ -4694,13 +4853,68 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
       }
 
       function collectServerSettings() {
+        const ftpSettings = {
+          enabled: !!els.ftpEnabled.checked,
+          passive: !!els.ftpPassive.checked,
+          backupOnChange: !!els.ftpBackupOnChange.checked,
+          restoreOnBoot: !!els.ftpRestoreOnBoot.checked,
+          host: els.ftpHost.value.trim(),
+          port: parseInt(els.ftpPort.value, 10) || 21,
+          user: els.ftpUser.value.trim(),
+          path: els.ftpPath.value.trim() || '/tankalarm/server'
+        };
+
+        const ftpPass = els.ftpPass.value.trim();
+        if (ftpPass) {
+          ftpSettings.pass = ftpPass;
+        }
+
         return {
           smsPrimary: els.smsPrimary.value.trim(),
           smsSecondary: els.smsSecondary.value.trim(),
           smsOnHigh: !!els.smsHighToggle.checked,
           smsOnLow: !!els.smsLowToggle.checked,
-          smsOnClear: !!els.smsClearToggle.checked
+          smsOnClear: !!els.smsClearToggle.checked,
+          ftp: ftpSettings
         };
+      }
+
+      async function performFtpAction(kind) {
+        if (pinState.configured && !pinState.value) {
+          showPinModal('unlock');
+          showToast('Enter the admin PIN first.', true);
+          return;
+        }
+
+        const payload = { pin: pinState.value || '' };
+        const endpoint = kind === 'restore' ? '/api/ftp-restore' : '/api/ftp-backup';
+
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) {
+            if (res.status === 403) {
+              invalidatePin();
+              showPinModal('unlock');
+            }
+            const text = await res.text();
+            throw new Error(text || `${kind} failed`);
+          }
+          const data = await res.json();
+          if (data && data.message) {
+            showToast(data.message, false);
+          } else {
+            showToast(kind === 'restore' ? 'FTP restore completed' : 'FTP backup completed');
+          }
+          if (kind === 'restore') {
+            await refreshData(state.selected);
+          }
+        } catch (err) {
+          showToast(err.message || `FTP ${kind} failed`, true);
+        }
       }
 
       async function submitConfig(event) {
@@ -4842,6 +5056,8 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
       els.refreshAllBtn.addEventListener('click', () => {
         triggerManualRefresh(null);
       });
+      els.ftpBackupNow.addEventListener('click', () => performFtpAction('backup'));
+      els.ftpRestoreNow.addEventListener('click', () => performFtpAction('restore'));
 
       refreshData();
     })();
@@ -4873,6 +5089,9 @@ static void sendConfigGenerator(EthernetClient &client);
 static void sendTankJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client);
 static void handleConfigPost(EthernetClient &client, const String &body);
+static void handlePausePost(EthernetClient &client, const String &body);
+static void handleFtpBackupPost(EthernetClient &client, const String &body);
+static void handleFtpRestorePost(EthernetClient &client, const String &body);
 // Enum definitions
 enum class ConfigDispatchStatus : uint8_t {
   Ok = 0,
@@ -5389,6 +5608,21 @@ void setup() {
   initializeEthernet();
   gWebServer.begin();
 
+  if (gConfig.ftpEnabled && gConfig.ftpRestoreOnBoot) {
+    String err;
+    if (performFtpRestore(&err)) {
+      Serial.println(F("FTP restore on boot completed"));
+      ensureConfigLoaded();
+      loadClientConfigSnapshots();
+      loadCalibrationData();
+      scheduleNextDailyEmail();
+      scheduleNextViewerSummary();
+    } else {
+      Serial.print(F("FTP restore on boot skipped/failed: "));
+      Serial.println(err);
+    }
+  }
+
 #ifdef WATCHDOG_AVAILABLE
   // Initialize watchdog timer
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -5464,7 +5698,9 @@ void loop() {
   now = millis();
   if (now - gLastPollMillis > 5000UL) {
     gLastPollMillis = now;
-    pollNotecard();
+    if (!gPaused) {
+      pollNotecard();
+    }
   }
 
   ensureTimeSync();
@@ -5482,6 +5718,19 @@ void loop() {
   if (gConfigDirty) {
     if (saveConfig(gConfig)) {
       gConfigDirty = false;
+      if (gConfig.ftpEnabled && gConfig.ftpBackupOnChange) {
+        gPendingFtpBackup = true;
+      }
+    }
+  }
+
+  if (gPendingFtpBackup) {
+    String error;
+    bool ok = performFtpBackup(&error);
+    gPendingFtpBackup = false;
+    if (!ok) {
+      Serial.print(F("FTP auto-backup failed: "));
+      Serial.println(error);
     }
   }
 }
@@ -5532,6 +5781,7 @@ static void ensureConfigLoaded() {
     createDefaultConfig(gConfig);
     saveConfig(gConfig);
     Serial.println(F("Default server configuration created"));
+    gPaused = true;  // Start paused on fresh install to allow safe setup/restore
   }
 
   loadClientConfigSnapshots();
@@ -5552,6 +5802,15 @@ static void createDefaultConfig(ServerConfig &cfg) {
   cfg.smsOnHigh = true;
   cfg.smsOnLow = true;
   cfg.smsOnClear = false;
+  cfg.ftpEnabled = false;
+  cfg.ftpPassive = true;
+  cfg.ftpBackupOnChange = false;
+  cfg.ftpRestoreOnBoot = false;
+  cfg.ftpPort = FTP_PORT_DEFAULT;
+  strlcpy(cfg.ftpHost, "", sizeof(cfg.ftpHost));
+  strlcpy(cfg.ftpUser, "", sizeof(cfg.ftpUser));
+  strlcpy(cfg.ftpPass, "", sizeof(cfg.ftpPass));
+  strlcpy(cfg.ftpPath, FTP_PATH_DEFAULT, sizeof(cfg.ftpPath));
 }
 
 static bool loadConfig(ServerConfig &cfg) {
@@ -5631,6 +5890,37 @@ static bool loadConfig(ServerConfig &cfg) {
   cfg.smsOnLow = doc["smsOnLow"].is<bool>() ? doc["smsOnLow"].as<bool>() : true;
   cfg.smsOnClear = doc["smsOnClear"].is<bool>() ? doc["smsOnClear"].as<bool>() : false;
 
+  JsonObject ftpObj = doc["ftp"].as<JsonObject>();
+  cfg.ftpEnabled = ftpObj ? (ftpObj["enabled"].is<bool>() ? ftpObj["enabled"].as<bool>() : false) : (doc["ftpEnabled"].is<bool>() ? doc["ftpEnabled"].as<bool>() : false);
+  cfg.ftpPassive = ftpObj ? (ftpObj["passive"].is<bool>() ? ftpObj["passive"].as<bool>() : true) : true;
+  cfg.ftpBackupOnChange = ftpObj ? (ftpObj["backupOnChange"].is<bool>() ? ftpObj["backupOnChange"].as<bool>() : false) : (doc["ftpBackupOnChange"].is<bool>() ? doc["ftpBackupOnChange"].as<bool>() : false);
+  cfg.ftpRestoreOnBoot = ftpObj ? (ftpObj["restoreOnBoot"].is<bool>() ? ftpObj["restoreOnBoot"].as<bool>() : false) : (doc["ftpRestoreOnBoot"].is<bool>() ? doc["ftpRestoreOnBoot"].as<bool>() : false);
+  cfg.ftpPort = ftpObj ? (ftpObj["port"].is<uint16_t>() ? ftpObj["port"].as<uint16_t>() : FTP_PORT_DEFAULT) : (doc["ftpPort"].is<uint16_t>() ? doc["ftpPort"].as<uint16_t>() : FTP_PORT_DEFAULT);
+  if (ftpObj && ftpObj.containsKey("host")) {
+    strlcpy(cfg.ftpHost, ftpObj["host"], sizeof(cfg.ftpHost));
+  }
+  if (ftpObj && ftpObj.containsKey("user")) {
+    strlcpy(cfg.ftpUser, ftpObj["user"], sizeof(cfg.ftpUser));
+  }
+  if (ftpObj && ftpObj.containsKey("pass")) {
+    strlcpy(cfg.ftpPass, ftpObj["pass"], sizeof(cfg.ftpPass));
+  }
+  if (ftpObj && ftpObj.containsKey("path")) {
+    strlcpy(cfg.ftpPath, ftpObj["path"], sizeof(cfg.ftpPath));
+  }
+  if ((!ftpObj || !ftpObj.containsKey("host")) && doc["ftpHost"].as<const char *>()) {
+    strlcpy(cfg.ftpHost, doc["ftpHost"], sizeof(cfg.ftpHost));
+  }
+  if ((!ftpObj || !ftpObj.containsKey("user")) && doc["ftpUser"].as<const char *>()) {
+    strlcpy(cfg.ftpUser, doc["ftpUser"], sizeof(cfg.ftpUser));
+  }
+  if ((!ftpObj || !ftpObj.containsKey("pass")) && doc["ftpPass"].as<const char *>()) {
+    strlcpy(cfg.ftpPass, doc["ftpPass"], sizeof(cfg.ftpPass));
+  }
+  if ((!ftpObj || !ftpObj.containsKey("path")) && doc["ftpPath"].as<const char *>()) {
+    strlcpy(cfg.ftpPath, doc["ftpPath"], sizeof(cfg.ftpPath));
+  }
+
   if (doc.containsKey("staticIp")) {
     JsonArrayConst ip = doc["staticIp"].as<JsonArrayConst>();
     if (ip.size() == 4) {
@@ -5682,6 +5972,17 @@ static bool saveConfig(const ServerConfig &cfg) {
   doc["smsOnHigh"] = cfg.smsOnHigh;
   doc["smsOnLow"] = cfg.smsOnLow;
   doc["smsOnClear"] = cfg.smsOnClear;
+
+  JsonObject ftp = doc.createNestedObject("ftp");
+  ftp["enabled"] = cfg.ftpEnabled;
+  ftp["passive"] = cfg.ftpPassive;
+  ftp["backupOnChange"] = cfg.ftpBackupOnChange;
+  ftp["restoreOnBoot"] = cfg.ftpRestoreOnBoot;
+  ftp["port"] = cfg.ftpPort;
+  ftp["host"] = cfg.ftpHost;
+  ftp["user"] = cfg.ftpUser;
+  ftp["pass"] = cfg.ftpPass;
+  ftp["path"] = cfg.ftpPath;
 
   JsonArray ip = doc.createNestedArray("staticIp");
   ip.add(gStaticIp[0]);
@@ -5750,6 +6051,570 @@ static bool saveConfig(const ServerConfig &cfg) {
 #else
   return false; // Filesystem not available
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// FTP backup/restore helpers
+// ---------------------------------------------------------------------------
+
+struct FtpSession {
+  EthernetClient ctrl;
+};
+
+struct BackupFileEntry {
+  const char *localPath;
+  const char *remoteName;
+};
+
+static const BackupFileEntry kBackupFiles[] = {
+  { SERVER_CONFIG_PATH, "server_config.json" },
+  { CLIENT_CONFIG_CACHE_PATH, "client_config_cache.txt" },
+  { CALIBRATION_LOG_PATH, "calibration_log.txt" },
+  { "/calibration_data.txt", "calibration_data.txt" }
+};
+
+static void buildLocalPath(const char *relativePath, char *out, size_t outSize) {
+  if (!relativePath || !out || outSize == 0) {
+    return;
+  }
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  if (strncmp(relativePath, "/fs", 3) == 0) {
+    strlcpy(out, relativePath, outSize);
+  } else {
+    snprintf(out, outSize, "/fs%s", (relativePath[0] == '/') ? relativePath : "/");
+  }
+#else
+  strlcpy(out, relativePath, outSize);
+#endif
+}
+
+static bool readFileToBuffer(const char *relativePath, String &out) {
+#ifndef FILESYSTEM_AVAILABLE
+  (void)relativePath;
+  (void)out;
+  return false;
+#else
+  char fullPath[96];
+  buildLocalPath(relativePath, fullPath, sizeof(fullPath));
+
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  FILE *file = fopen(fullPath, "rb");
+  if (!file) {
+    return false;
+  }
+
+  fseek(file, 0, SEEK_END);
+  long fileSize = ftell(file);
+  fseek(file, 0, SEEK_SET);
+
+  if (fileSize < 0 || fileSize > (long)FTP_MAX_FILE_BYTES) {
+    fclose(file);
+    return false;
+  }
+
+  char *buffer = (char *)malloc(fileSize + 1);
+  if (!buffer) {
+    fclose(file);
+    return false;
+  }
+
+  size_t read = fread(buffer, 1, fileSize, file);
+  buffer[read] = '\0';
+  out = String(buffer);
+  free(buffer);
+  fclose(file);
+  return true;
+#else
+  if (!LittleFS.exists(fullPath)) {
+    return false;
+  }
+
+  File file = LittleFS.open(fullPath, "r");
+  if (!file) {
+    return false;
+  }
+
+  size_t fileSize = file.size();
+  if (fileSize > FTP_MAX_FILE_BYTES) {
+    file.close();
+    return false;
+  }
+
+  out.reserve(fileSize + 1);
+  while (file.available()) {
+    out += (char)file.read();
+  }
+  file.close();
+  return true;
+#endif
+#endif
+}
+
+static bool writeBufferToFile(const char *relativePath, const uint8_t *data, size_t len) {
+#ifndef FILESYSTEM_AVAILABLE
+  (void)relativePath;
+  (void)data;
+  (void)len;
+  return false;
+#else
+  if (!data || len > FTP_MAX_FILE_BYTES) {
+    return false;
+  }
+
+  char fullPath[96];
+  buildLocalPath(relativePath, fullPath, sizeof(fullPath));
+
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  FILE *file = fopen(fullPath, "wb");
+  if (!file) {
+    return false;
+  }
+  size_t written = fwrite(data, 1, len, file);
+  fclose(file);
+  return written == len;
+#else
+  File file = LittleFS.open(fullPath, "w");
+  if (!file) {
+    return false;
+  }
+  size_t written = file.write(data, len);
+  file.close();
+  return written == len;
+#endif
+#endif
+}
+
+static bool ftpReadResponse(EthernetClient &client, int &code, String &message, uint32_t timeoutMs = FTP_TIMEOUT_MS) {
+  message = "";
+  String line;
+  unsigned long start = millis();
+  int multilineCode = -1;
+
+  while (millis() - start < timeoutMs) {
+    while (client.available()) {
+      char c = client.read();
+      if (c == '\r') {
+        continue;
+      }
+      if (c == '\n') {
+        if (line.length() >= 3 && isdigit(line[0]) && isdigit(line[1]) && isdigit(line[2])) {
+          int thisCode = line.substring(0, 3).toInt();
+          if (line.length() > 3 && line[3] == '-') {
+            multilineCode = thisCode;
+            message += line;
+            message += '\n';
+          } else if (multilineCode == -1 || thisCode == multilineCode) {
+            code = thisCode;
+            message += line;
+            return true;
+          }
+        }
+        line = "";
+      } else {
+        line += c;
+      }
+    }
+    delay(5);
+  }
+  return false;
+}
+
+static bool ftpSendCommand(FtpSession &session, const char *command, int &code, String &message) {
+  session.ctrl.print(command);
+  session.ctrl.print("\r\n");
+  return ftpReadResponse(session.ctrl, code, message);
+}
+
+static bool ftpBackupClientConfigs(FtpSession &session, String &error, uint8_t &uploadedFiles);
+static bool ftpRestoreClientConfigs(FtpSession &session, String &error, uint8_t &restoredFiles);
+static bool ftpConnectAndLogin(FtpSession &session, String &error) {
+  if (!gConfig.ftpEnabled || strlen(gConfig.ftpHost) == 0) {
+    error = F("FTP disabled or host missing");
+    return false;
+  }
+
+  if (!session.ctrl.connect(gConfig.ftpHost, gConfig.ftpPort)) {
+    error = F("FTP connect failed");
+    return false;
+  }
+
+  int code = 0;
+  String msg;
+  if (!ftpReadResponse(session.ctrl, code, msg) || code >= 400) {
+    error = F("No welcome banner");
+    return false;
+  }
+
+  char cmdBuffer[96];
+  snprintf(cmdBuffer, sizeof(cmdBuffer), "USER %s", (strlen(gConfig.ftpUser) > 0) ? gConfig.ftpUser : "anonymous");
+  if (!ftpSendCommand(session, cmdBuffer, code, msg) || (code != 230 && code != 331)) {
+    error = F("USER rejected");
+    return false;
+  }
+  if (code == 331) {
+    snprintf(cmdBuffer, sizeof(cmdBuffer), "PASS %s", (strlen(gConfig.ftpPass) > 0) ? gConfig.ftpPass : "guest");
+    if (!ftpSendCommand(session, cmdBuffer, code, msg) || code != 230) {
+      error = F("PASS rejected");
+      return false;
+    }
+  }
+
+  if (!ftpSendCommand(session, "TYPE I", code, msg) || code >= 400) {
+    error = F("TYPE failed");
+    return false;
+  }
+
+  return true;
+}
+
+static bool ftpEnterPassive(FtpSession &session, IPAddress &dataHost, uint16_t &dataPort, String &error) {
+  if (!gConfig.ftpPassive) {
+    error = F("Only passive FTP supported");
+    return false;
+  }
+  int code = 0;
+  String msg;
+  if (!ftpSendCommand(session, "PASV", code, msg) || code >= 400) {
+    error = F("PASV failed");
+    return false;
+  }
+
+  int parts[6] = {0};
+  int idx = 0;
+  for (size_t i = 0; i < msg.length() && idx < 6; ++i) {
+    if (isdigit(msg[i])) {
+      parts[idx] = parts[idx] * 10 + (msg[i] - '0');
+    } else if (msg[i] == ',' || msg[i] == ')') {
+      idx++;
+    }
+  }
+
+  if (idx < 6) {
+    error = F("PASV parse error");
+    return false;
+  }
+
+  dataHost = IPAddress(parts[0], parts[1], parts[2], parts[3]);
+  dataPort = (parts[4] << 8) | parts[5];
+  return true;
+}
+
+static void buildRemotePath(char *out, size_t outLen, const char *fileName) {
+  const char *base = (strlen(gConfig.ftpPath) > 0) ? gConfig.ftpPath : FTP_PATH_DEFAULT;
+  const char *uid = (strlen(gServerUid) > 0) ? gServerUid : "server";
+  bool baseHasSlash = base[strlen(base) - 1] == '/';
+  snprintf(out, outLen, "%s%s%s/%s", base, baseHasSlash ? "" : "/", uid, fileName);
+}
+
+static bool ftpStoreBuffer(FtpSession &session, const char *remoteFile, const uint8_t *data, size_t len, String &error) {
+  if (!data || len == 0) {
+    error = F("No data to upload");
+    return false;
+  }
+
+  IPAddress dataHost;
+  uint16_t dataPort = 0;
+  if (!ftpEnterPassive(session, dataHost, dataPort, error)) {
+    return false;
+  }
+
+  EthernetClient dataClient;
+  if (!dataClient.connect(dataHost, dataPort)) {
+    error = F("Data connect failed");
+    return false;
+  }
+
+  char cmd[160];
+  snprintf(cmd, sizeof(cmd), "STOR %s", remoteFile);
+  int code = 0;
+  String msg;
+  if (!ftpSendCommand(session, cmd, code, msg) || code >= 400) {
+    error = F("STOR rejected");
+    dataClient.stop();
+    return false;
+  }
+
+  size_t written = dataClient.write(data, len);
+  dataClient.stop();
+  if (written != len) {
+    error = F("Short write");
+    return false;
+  }
+
+  if (!ftpReadResponse(session.ctrl, code, msg) || code >= 400) {
+    error = F("STOR completion failed");
+    return false;
+  }
+
+  return true;
+}
+
+static bool ftpRetrieveBuffer(FtpSession &session, const char *remoteFile, String &out, String &error) {
+  IPAddress dataHost;
+  uint16_t dataPort = 0;
+  if (!ftpEnterPassive(session, dataHost, dataPort, error)) {
+    return false;
+  }
+
+  EthernetClient dataClient;
+  if (!dataClient.connect(dataHost, dataPort)) {
+    error = F("Data connect failed");
+    return false;
+  }
+
+  char cmd[160];
+  snprintf(cmd, sizeof(cmd), "RETR %s", remoteFile);
+  int code = 0;
+  String msg;
+  if (!ftpSendCommand(session, cmd, code, msg) || code >= 400) {
+    error = F("RETR rejected");
+    dataClient.stop();
+    return false;
+  }
+
+  unsigned long start = millis();
+  while (millis() - start < FTP_TIMEOUT_MS) {
+    while (dataClient.available()) {
+      char c = dataClient.read();
+      out += c;
+      if (out.length() > FTP_MAX_FILE_BYTES) {
+        error = F("File too large");
+        dataClient.stop();
+        return false;
+      }
+    }
+    if (!dataClient.connected()) {
+      break;
+    }
+    delay(2);
+  }
+  dataClient.stop();
+
+  if (!ftpReadResponse(session.ctrl, code, msg) || code >= 400) {
+    error = F("RETR completion failed");
+    return false;
+  }
+
+  return true;
+}
+
+static void ftpQuit(FtpSession &session) {
+  if (session.ctrl.connected()) {
+    int code = 0;
+    String msg;
+    ftpSendCommand(session, "QUIT", code, msg);
+    session.ctrl.stop();
+  }
+}
+
+// Upload per-client configs (from in-memory snapshots) as individual files plus a manifest.
+static bool ftpBackupClientConfigs(FtpSession &session, String &error, uint8_t &uploadedFiles) {
+  uploadedFiles = 0;
+  if (gClientConfigCount == 0) {
+    return true;  // Nothing to do
+  }
+
+  // Build and upload manifest listing client UIDs (and optional site for readability)
+  String manifest;
+  for (uint8_t i = 0; i < gClientConfigCount; ++i) {
+    manifest += gClientConfigs[i].uid;
+    manifest += '\t';
+    manifest += gClientConfigs[i].site;
+    manifest += '\n';
+  }
+
+  char manifestPath[192];
+  buildRemotePath(manifestPath, sizeof(manifestPath), "clients_manifest.txt");
+  if (!ftpStoreBuffer(session, manifestPath, (const uint8_t *)manifest.c_str(), manifest.length(), error)) {
+    return false;
+  }
+  uploadedFiles++;
+  Serial.println(F("FTP backup: clients_manifest.txt"));
+
+  // Upload each cached client config as its own file
+  for (uint8_t i = 0; i < gClientConfigCount; ++i) {
+    ClientConfigSnapshot &snap = gClientConfigs[i];
+    size_t len = strlen(snap.payload);
+    if (len == 0 || len > FTP_MAX_FILE_BYTES) {
+      continue;  // Skip empty/oversized
+    }
+
+    char remotePath[192];
+    char fileName[96];
+    snprintf(fileName, sizeof(fileName), "clients/%s.json", snap.uid);
+    buildRemotePath(remotePath, sizeof(remotePath), fileName);
+
+    if (ftpStoreBuffer(session, remotePath, (const uint8_t *)snap.payload, len, error)) {
+      uploadedFiles++;
+      Serial.print(F("FTP backup client config: "));
+      Serial.println(remotePath);
+    }
+  }
+
+  return true;
+}
+
+// Download per-client configs if present and rebuild the cache file locally.
+static bool ftpRestoreClientConfigs(FtpSession &session, String &error, uint8_t &restoredFiles) {
+  restoredFiles = 0;
+
+  char manifestPath[192];
+  buildRemotePath(manifestPath, sizeof(manifestPath), "clients_manifest.txt");
+
+  String manifest;
+  if (!ftpRetrieveBuffer(session, manifestPath, manifest, error)) {
+    // Manifest not found; treat as optional and succeed silently.
+    return true;
+  }
+
+  // Parse manifest lines: uid \t site
+  String rebuiltCache;
+  int lineStart = 0;
+  while (lineStart < manifest.length()) {
+    int lineEnd = manifest.indexOf('\n', lineStart);
+    if (lineEnd == -1) lineEnd = manifest.length();
+    String line = manifest.substring(lineStart, lineEnd);
+    line.trim();
+    if (line.length() == 0) {
+      lineStart = lineEnd + 1;
+      continue;
+    }
+    int sep = line.indexOf('\t');
+    String uid = (sep >= 0) ? line.substring(0, sep) : line;
+    uid.trim();
+    if (uid.length() == 0) {
+      lineStart = lineEnd + 1;
+      continue;
+    }
+
+    // Fetch per-client config
+    char remotePath[192];
+    char fileName[96];
+    snprintf(fileName, sizeof(fileName), "clients/%s.json", uid.c_str());
+    buildRemotePath(remotePath, sizeof(remotePath), fileName);
+
+    String cfg;
+    if (ftpRetrieveBuffer(session, remotePath, cfg, error)) {
+      cfg.trim();
+      if (cfg.length() > 0 && cfg.length() < FTP_MAX_FILE_BYTES) {
+        rebuiltCache += uid;
+        rebuiltCache += '\t';
+        rebuiltCache += cfg;
+        rebuiltCache += '\n';
+        restoredFiles++;
+        Serial.print(F("FTP restore client config: "));
+        Serial.println(remotePath);
+      }
+    }
+
+    lineStart = lineEnd + 1;
+  }
+
+  if (restoredFiles == 0) {
+    return true;  // Nothing restored; do not treat as fatal
+  }
+
+  // Overwrite local cache with rebuilt content
+  if (!writeBufferToFile(CLIENT_CONFIG_CACHE_PATH, (const uint8_t *)rebuiltCache.c_str(), rebuiltCache.length())) {
+    error = F("Failed to write client cache");
+    return false;
+  }
+
+  return true;
+}
+
+static bool performFtpBackup(String *errorOut = nullptr) {
+  if (!gConfig.ftpEnabled) {
+    if (errorOut) *errorOut = F("FTP disabled");
+    return false;
+  }
+
+  FtpSession session;
+  String err;
+  if (!ftpConnectAndLogin(session, err)) {
+    if (errorOut) *errorOut = err;
+    return false;
+  }
+
+  uint8_t uploaded = 0;
+  for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
+    const BackupFileEntry &entry = kBackupFiles[i];
+    String contents;
+    if (!readFileToBuffer(entry.localPath, contents)) {
+      continue;  // Missing or too large; skip quietly
+    }
+
+    char remotePath[192];
+    buildRemotePath(remotePath, sizeof(remotePath), entry.remoteName);
+    if (ftpStoreBuffer(session, remotePath, (const uint8_t *)contents.c_str(), contents.length(), err)) {
+      uploaded++;
+      Serial.print(F("FTP backup: "));
+      Serial.println(remotePath);
+    } else {
+      Serial.print(F("FTP upload failed for "));
+      Serial.println(remotePath);
+    }
+  }
+
+  // Also back up per-client cached configs (manifest + per-uid JSON)
+  uint8_t clientUploaded = 0;
+  ftpBackupClientConfigs(session, err, clientUploaded);
+  uploaded += clientUploaded;
+
+  ftpQuit(session);
+
+  if (uploaded == 0) {
+    if (errorOut) *errorOut = F("No files uploaded");
+    return false;
+  }
+
+  return true;
+}
+
+static bool performFtpRestore(String *errorOut = nullptr) {
+  if (!gConfig.ftpEnabled) {
+    if (errorOut) *errorOut = F("FTP disabled");
+    return false;
+  }
+
+  FtpSession session;
+  String err;
+  if (!ftpConnectAndLogin(session, err)) {
+    if (errorOut) *errorOut = err;
+    return false;
+  }
+
+  uint8_t restored = 0;
+  for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
+    const BackupFileEntry &entry = kBackupFiles[i];
+    String contents;
+
+    char remotePath[192];
+    buildRemotePath(remotePath, sizeof(remotePath), entry.remoteName);
+    if (!ftpRetrieveBuffer(session, remotePath, contents, err)) {
+      continue;
+    }
+
+    if (writeBufferToFile(entry.localPath, (const uint8_t *)contents.c_str(), contents.length())) {
+      restored++;
+      Serial.print(F("FTP restore: "));
+      Serial.println(entry.localPath);
+    }
+  }
+
+  // Attempt to restore per-client cached configs (optional)
+  uint8_t clientRestored = 0;
+  ftpRestoreClientConfigs(session, err, clientRestored);
+  restored += clientRestored;
+
+  ftpQuit(session);
+
+  if (restored == 0) {
+    if (errorOut) *errorOut = F("No files restored");
+    return false;
+  }
+
+  return true;
 }
 
 static void printHardwareRequirements() {
@@ -5994,6 +6859,24 @@ static void handleWebRequests() {
       respondStatus(client, 413, "Payload Too Large");
     } else {
       handleRelayPost(client, body);
+    }
+  } else if (method == "POST" && path == "/api/pause") {
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handlePausePost(client, body);
+    }
+  } else if (method == "POST" && path == "/api/ftp-backup") {
+    if (contentLength > 512) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleFtpBackupPost(client, body);
+    }
+  } else if (method == "POST" && path == "/api/ftp-restore") {
+    if (contentLength > 512) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleFtpRestorePost(client, body);
     }
   } else {
     respondStatus(client, 404, F("Not Found"));
@@ -6284,6 +7167,18 @@ static void sendClientDataJson(EthernetClient &client) {
   serverObj["smsOnLow"] = gConfig.smsOnLow;
   serverObj["smsOnClear"] = gConfig.smsOnClear;
   serverObj["pinConfigured"] = (gConfig.configPin[0] != '\0');
+  serverObj["paused"] = gPaused;
+
+  JsonObject ftpObj = serverObj.createNestedObject("ftp");
+  ftpObj["enabled"] = gConfig.ftpEnabled;
+  ftpObj["passive"] = gConfig.ftpPassive;
+  ftpObj["backupOnChange"] = gConfig.ftpBackupOnChange;
+  ftpObj["restoreOnBoot"] = gConfig.ftpRestoreOnBoot;
+  ftpObj["port"] = gConfig.ftpPort;
+  ftpObj["host"] = gConfig.ftpHost;
+  ftpObj["user"] = gConfig.ftpUser;
+  ftpObj["path"] = gConfig.ftpPath;
+  ftpObj["passSet"] = (gConfig.ftpPass[0] != '\0');
 
   doc["serverUid"] = gServerUid;
   doc["nextDailyEmailEpoch"] = gNextDailyEmailEpoch;
@@ -6424,6 +7319,40 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
     }
     if (serverObj.containsKey("smsOnClear")) {
       gConfig.smsOnClear = serverObj["smsOnClear"].as<bool>();
+    }
+
+    if (serverObj.containsKey("ftp")) {
+      JsonObject ftpObj = serverObj["ftp"].as<JsonObject>();
+      if (ftpObj.containsKey("enabled")) {
+        gConfig.ftpEnabled = ftpObj["enabled"].as<bool>();
+      }
+      if (ftpObj.containsKey("passive")) {
+        gConfig.ftpPassive = ftpObj["passive"].as<bool>();
+      }
+      if (ftpObj.containsKey("backupOnChange")) {
+        gConfig.ftpBackupOnChange = ftpObj["backupOnChange"].as<bool>();
+      }
+      if (ftpObj.containsKey("restoreOnBoot")) {
+        gConfig.ftpRestoreOnBoot = ftpObj["restoreOnBoot"].as<bool>();
+      }
+      if (ftpObj.containsKey("port")) {
+        gConfig.ftpPort = ftpObj["port"].as<uint16_t>();
+      }
+      if (ftpObj.containsKey("host")) {
+        strlcpy(gConfig.ftpHost, ftpObj["host"], sizeof(gConfig.ftpHost));
+      }
+      if (ftpObj.containsKey("user")) {
+        strlcpy(gConfig.ftpUser, ftpObj["user"], sizeof(gConfig.ftpUser));
+      }
+      if (ftpObj.containsKey("pass")) {
+        const char *passVal = ftpObj["pass"].as<const char *>();
+        if (passVal && strlen(passVal) > 0) {
+          strlcpy(gConfig.ftpPass, passVal, sizeof(gConfig.ftpPass));
+        }
+      }
+      if (ftpObj.containsKey("path")) {
+        strlcpy(gConfig.ftpPath, ftpObj["path"], sizeof(gConfig.ftpPath));
+      }
     }
     gConfigDirty = true;
     scheduleNextDailyEmail();
@@ -6572,6 +7501,96 @@ static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state
   Serial.println(state ? "ON" : "OFF");
 
   return true;
+}
+
+static void handlePausePost(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(256);
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (gConfig.configPin[0] != '\0') {
+    if (!requireValidPin(client, pinValue)) {
+      return;
+    }
+  }
+
+  bool paused = doc["paused"].is<bool>() ? doc["paused"].as<bool>() : true;
+  gPaused = paused;
+
+  DynamicJsonDocument resp(128);
+  resp["paused"] = gPaused;
+  String json;
+  serializeJson(resp, json);
+  respondJson(client, json, 200);
+
+  Serial.print(F("Server pause state: "));
+  Serial.println(gPaused ? F("paused") : F("running"));
+}
+
+static void handleFtpBackupPost(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(256);
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
+    return;
+  }
+
+  String error;
+  bool ok = performFtpBackup(&error);
+
+  DynamicJsonDocument resp(192);
+  resp["ok"] = ok;
+  if (ok) {
+    resp["message"] = F("Backup uploaded to FTP");
+  } else {
+    resp["error"] = error.length() ? error : F("Backup failed");
+  }
+  String json;
+  serializeJson(resp, json);
+  respondJson(client, json, ok ? 200 : 500);
+}
+
+static void handleFtpRestorePost(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(256);
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
+    return;
+  }
+
+  String error;
+  bool ok = performFtpRestore(&error);
+
+  if (ok) {
+    // Reload in-memory views now that on-disk state changed
+    ensureConfigLoaded();
+    loadClientConfigSnapshots();
+    loadCalibrationData();
+    scheduleNextDailyEmail();
+    scheduleNextViewerSummary();
+  }
+
+  DynamicJsonDocument resp(192);
+  resp["ok"] = ok;
+  if (ok) {
+    resp["message"] = F("Restore completed from FTP");
+  } else {
+    resp["error"] = error.length() ? error : F("Restore failed");
+  }
+  String json;
+  serializeJson(resp, json);
+  respondJson(client, json, ok ? 200 : 500);
 }
 
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
