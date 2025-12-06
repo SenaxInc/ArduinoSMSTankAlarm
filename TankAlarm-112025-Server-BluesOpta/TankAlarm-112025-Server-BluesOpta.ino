@@ -104,6 +104,10 @@
 #define MAX_TANK_RECORDS 32
 #endif
 
+#ifndef MAX_TANKS
+#define MAX_TANKS 8  // Maximum tanks per client device (must match client configuration)
+#endif
+
 #ifndef MAX_EMAIL_BUFFER
 #define MAX_EMAIL_BUFFER 2048
 #endif
