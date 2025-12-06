@@ -1446,7 +1446,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       }
       // Handle per-relay momentary durations (in seconds)
       if (t.containsKey("relayMomentaryDurations")) {
-        JsonArray durations = t["relayMomentaryDurations"].as<JsonArray>();
+        JsonArrayConst durations = t["relayMomentaryDurations"].as<JsonArrayConst>();
         for (size_t r = 0; r < 4 && r < durations.size(); r++) {
           uint16_t dur = durations[r].as<uint16_t>();
           // Enforce minimum of 1 second, max of 86400 (24 hours)
