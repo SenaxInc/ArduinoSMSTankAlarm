@@ -7794,10 +7794,7 @@ static void handleRelayClearPost(EthernetClient &client, const String &body) {
   }
 
   uint8_t tankIdx = doc["tankIdx"].as<uint8_t>();
-  if (tankIdx >= MAX_TANKS) {
-    respondStatus(client, 400, F("Invalid tankIdx"));
-    return;
-  }
+  // Note: tankIdx validation is handled by the client device based on its actual tank configuration
 
   if (sendRelayClearCommand(clientUid, tankIdx)) {
     respondStatus(client, 200, F("OK"));
