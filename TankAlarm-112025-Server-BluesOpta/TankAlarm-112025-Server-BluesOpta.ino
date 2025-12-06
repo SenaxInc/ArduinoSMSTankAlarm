@@ -1,5 +1,6 @@
 /*
   Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
+  Version: 1.0.0
 
   Hardware:
   - Arduino Opta Lite (built-in Ethernet)
@@ -30,6 +31,15 @@
 #include <math.h>
 #include <string.h>
 #include <ctype.h>
+
+// Firmware version for production tracking
+#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_BUILD_DATE __DATE__
+
+// Debug mode - controls Serial output and Notecard debug logging
+// For PRODUCTION: Leave commented out (default) to save power consumption
+// For DEVELOPMENT: Uncomment the line below for troubleshooting and monitoring
+//#define DEBUG_MODE
 #if defined(ARDUINO_ARCH_AVR)
   #include <avr/pgmspace.h>
 #else
@@ -741,8 +751,19 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         <h3>Sensors</h3>
         <div id="sensorsContainer"></div>
         
-        <div class="actions">
+        <div class="actions" style="margin-bottom: 24px;">
           <button type="button" id="addSensorBtn" class="secondary">+ Add Sensor</button>
+        </div>
+        
+        <h3>Inputs (Buttons &amp; Switches)</h3>
+        <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 12px;">Configure physical inputs for actions like clearing relay alarms. More input actions will be available in future updates.</p>
+        <div id="inputsContainer"></div>
+        
+        <div class="actions" style="margin-bottom: 24px;">
+          <button type="button" id="addInputBtn" class="secondary">+ Add Input</button>
+        </div>
+        
+        <div class="actions">
           <button type="button" id="downloadBtn">Download Config</button>
         </div>
       </form>
@@ -938,8 +959,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
                 </select>
               </label>
               <label class="field"><span>Relay Mode</span>
-                <select class="relay-mode">
-                  <option value="momentary">Momentary (30 min on, then auto-off)</option>
+                <select class="relay-mode" onchange="toggleRelayDurations(${id})">
+                  <option value="momentary">Momentary (configurable duration)</option>
                   <option value="until_clear">Stay On Until Alarm Clears</option>
                   <option value="manual_reset">Stay On Until Manual Server Reset</option>
                 </select>
@@ -950,6 +971,15 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
                   <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-2" value="2"> R2</label>
                   <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-3" value="4"> R3</label>
                   <label style="display: flex; align-items: center; gap: 4px;"><input type="checkbox" class="relay-4" value="8"> R4</label>
+                </div>
+              </div>
+              <div class="relay-durations-section" style="grid-column: 1 / -1; display: block;">
+                <span style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px; display: block;">Momentary Duration per Relay (seconds, 0 = default 30 min):</span>
+                <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 0.85rem;">R1: <input type="number" class="relay-duration-1" value="0" min="0" max="86400" style="width: 70px;"></label>
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 0.85rem;">R2: <input type="number" class="relay-duration-2" value="0" min="0" max="86400" style="width: 70px;"></label>
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 0.85rem;">R3: <input type="number" class="relay-duration-3" value="0" min="0" max="86400" style="width: 70px;"></label>
+                  <label style="display: flex; align-items: center; gap: 4px; font-size: 0.85rem;">R4: <input type="number" class="relay-duration-4" value="0" min="0" max="86400" style="width: 70px;"></label>
                 </div>
               </div>
             </div>
@@ -1055,6 +1085,12 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       ['relay-1', 'relay-2', 'relay-3', 'relay-4'].forEach(cls => {
         card.querySelector('.' + cls).checked = false;
       });
+      // Reset duration inputs
+      ['relay-duration-1', 'relay-duration-2', 'relay-duration-3', 'relay-duration-4'].forEach(cls => {
+        card.querySelector('.' + cls).value = '0';
+      });
+      // Show durations section (since mode is reset to momentary)
+      card.querySelector('.relay-durations-section').style.display = 'block';
     };
 
     window.toggleSmsSection = function(id) {
@@ -1075,6 +1111,17 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       card.querySelector('.sms-phones').value = '';
       card.querySelector('.sms-trigger').value = 'any';
       card.querySelector('.sms-message').value = '';
+    };
+
+    window.toggleRelayDurations = function(id) {
+      const card = document.getElementById(`sensor-${id}`);
+      const relayMode = card.querySelector('.relay-mode').value;
+      const durationsSection = card.querySelector('.relay-durations-section');
+      if (relayMode === 'momentary') {
+        durationsSection.style.display = 'block';
+      } else {
+        durationsSection.style.display = 'none';
+      }
     };
 
     window.updateMonitorFields = function(id) {
@@ -1264,6 +1311,62 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
 
     document.getElementById('addSensorBtn').addEventListener('click', addSensor);
 
+    // =========================================================================
+    // Input (Button/Switch) Management
+    // =========================================================================
+    
+    const inputActions = [
+      { value: 'clear_relays', label: 'Clear All Relay Alarms', tooltip: 'When pressed, turns off all active relay outputs and resets alarm states.' },
+      { value: 'none', label: 'Disabled (No Action)', tooltip: 'Input is configured but does not trigger any action.' }
+    ];
+    
+    const inputModes = [
+      { value: 'active_low', label: 'Active LOW (Button to GND, internal pullup)' },
+      { value: 'active_high', label: 'Active HIGH (Button to VCC, external pull-down)' }
+    ];
+    
+    let inputIdCounter = 0;
+    
+    function addInput() {
+      const id = inputIdCounter++;
+      const container = document.getElementById('inputsContainer');
+      
+      const card = document.createElement('div');
+      card.className = 'sensor-card';
+      card.id = `input-${id}`;
+      card.innerHTML = `
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h4 style="margin: 0; font-size: 1rem;">Input ${id + 1}</h4>
+          <button type="button" class="remove-btn" onclick="removeInput(${id})">Remove</button>
+        </div>
+        <div class="form-grid">
+          <label class="field"><span>Input Name</span><input type="text" class="input-name" placeholder="Clear Button" value="Clear Button"></label>
+          <label class="field"><span>Pin Number<span class="tooltip-icon" tabindex="0" data-tooltip="Arduino Opta pin number for the input. A0=0, A1=1, etc. Use a digital-capable pin.">?</span></span><input type="number" class="input-pin" value="0" min="0" max="99"></label>
+          <label class="field"><span>Input Mode<span class="tooltip-icon" tabindex="0" data-tooltip="Active LOW: Button connects pin to GND, uses internal pull-up resistor. Active HIGH: Button connects pin to VCC, requires external pull-down resistor.">?</span></span>
+            <select class="input-mode">
+              ${inputModes.map(m => `<option value="${m.value}">${m.label}</option>`).join('')}
+            </select>
+          </label>
+          <label class="field"><span>Action<span class="tooltip-icon" tabindex="0" data-tooltip="What happens when this input is activated (button pressed for 500ms).">?</span></span>
+            <select class="input-action">
+              ${inputActions.map(a => `<option value="${a.value}">${a.label}</option>`).join('')}
+            </select>
+          </label>
+        </div>
+      `;
+      
+      container.appendChild(card);
+    }
+    
+    window.removeInput = function(id) {
+      const card = document.getElementById(`input-${id}`);
+      if (card) {
+        card.remove();
+      }
+    };
+    
+    document.getElementById('addInputBtn').addEventListener('click', addInput);
+
     function sensorKeyFromValue(value) {
       switch (value) {
         case 0: return 'digital';
@@ -1425,6 +1528,18 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
             tank.relayMask = relayMask;
             tank.relayTrigger = relayTrigger;  // 'any', 'high', or 'low'
             tank.relayMode = relayMode;  // 'momentary', 'until_clear', or 'manual_reset'
+            
+            // Include per-relay momentary durations (only for momentary mode)
+            if (relayMode === 'momentary') {
+              const durations = [
+                parseInt(card.querySelector('.relay-duration-1').value) || 0,
+                parseInt(card.querySelector('.relay-duration-2').value) || 0,
+                parseInt(card.querySelector('.relay-duration-3').value) || 0,
+                parseInt(card.querySelector('.relay-duration-4').value) || 0
+              ];
+              tank.relayMomentaryDurations = durations;
+            }
+            
             if (relayMask === 0) {
               alert("You have set a relay target but have not selected any relay outputs for " + name + ". The configuration will be incomplete.");
             }
@@ -1463,6 +1578,32 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
 
         config.tanks.push(tank);
       });
+
+      // Process input configurations (buttons, switches)
+      const inputCards = document.querySelectorAll('#inputsContainer .sensor-card');
+      let clearButtonConfigured = false;
+      
+      inputCards.forEach((card) => {
+        const inputName = card.querySelector('.input-name').value.trim() || 'Input';
+        const inputPin = parseInt(card.querySelector('.input-pin').value, 10);
+        const inputMode = card.querySelector('.input-mode').value;
+        const inputAction = card.querySelector('.input-action').value;
+        
+        // For now, only handle clear_relays action
+        if (inputAction === 'clear_relays' && !clearButtonConfigured) {
+          config.clearButtonPin = isNaN(inputPin) ? -1 : inputPin;
+          config.clearButtonActiveHigh = (inputMode === 'active_high');
+          clearButtonConfigured = true;
+        }
+        // Future: Add support for other input actions here
+        // e.g., inputs array for multiple configurable inputs
+      });
+      
+      // If no clear button was configured, explicitly disable it
+      if (!clearButtonConfigured) {
+        config.clearButtonPin = -1;
+        config.clearButtonActiveHigh = false;
+      }
 
       const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -3460,6 +3601,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <th>VIN Voltage</th>
             <th>Status</th>
             <th>Updated</th>
+            <th>Relay Control</th>
             <th>Refresh</th>
           </tr>
         </thead>
@@ -3598,6 +3740,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
               site: client.site,
               label: client.label || 'Tank',
               tank: client.tank || '--',
+              tankIdx: 0,
               levelInches: client.levelInches,
               percent: client.percent,
               alarm: client.alarm,
@@ -3613,6 +3756,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
               site: client.site,
               label: tank.label || client.label || 'Tank',
               tank: tank.tank || '--',
+              tankIdx: idx,
               levelInches: tank.levelInches,
               percent: tank.percent,
               alarm: tank.alarm,
@@ -3638,7 +3782,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         const rows = state.tanks;
         if (!rows.length) {
           const tr = document.createElement('tr');
-          tr.innerHTML = '<td colspan="8">No telemetry available</td>';
+          tr.innerHTML = '<td colspan="9">No telemetry available</td>';
           tbody.appendChild(tr);
           return;
         }
@@ -3653,6 +3797,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
             <td>${formatVoltage(row.vinVoltage)}</td>
             <td>${statusBadge(row)}</td>
             <td>${formatEpoch(row.lastUpdate)}</td>
+            <td>${relayButtons(row)}</td>
             <td>${refreshButton(row)}</td>`;
           tbody.appendChild(tr);
         });
@@ -3663,6 +3808,15 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
           return '<span class="status-pill ok">Normal</span>';
         }
         return '<span class="status-pill alarm">ALARM</span>';
+      }
+
+      function relayButtons(row) {
+        if (!row.client || row.client === '--') return '--';
+        const escapedClient = escapeHtml(row.client);
+        const tankIdx = row.tankIdx !== undefined ? row.tankIdx : 0;
+        const disabled = state.refreshing ? 'disabled' : '';
+        const btnStyle = 'padding:4px 8px;font-size:0.75rem;border-radius:4px;border:1px solid var(--card-border);background:var(--card-bg);cursor:pointer;margin:2px;';
+        return `<button style="${btnStyle}" onclick="clearRelays('${escapedClient}', ${tankIdx})" title="Clear all relays for this tank" ${disabled}>🔕 Clear</button>`;
       }
 
       function refreshButton(row) {
@@ -3708,6 +3862,48 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         }
       }
       window.refreshTank = refreshTank;
+
+      async function clearRelays(clientUid, tankIdx) {
+        if (state.refreshing) return;
+        
+        // Require PIN if configured
+        if (state.pinConfigured && !state.pin) {
+          const pinInput = prompt('Enter admin PIN to control relays');
+          if (!pinInput) return;
+          state.pin = pinInput.trim();
+        }
+        
+        state.refreshing = true;
+        renderTankRows();
+        try {
+          const res = await fetch('/api/relay/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              clientUid: clientUid, 
+              tankIdx: tankIdx,
+              pin: state.pin || ''
+            })
+          });
+          if (!res.ok) {
+            if (res.status === 403) {
+              state.pin = null;
+              throw new Error('PIN required or invalid');
+            }
+            const text = await res.text();
+            throw new Error(text || 'Clear relay failed');
+          }
+          showToast('Relay clear command sent');
+          // Refresh data after a short delay to show updated state
+          setTimeout(() => refreshData(), 1000);
+        } catch (err) {
+          showToast(err.message || 'Clear relay failed', true);
+        } finally {
+          state.refreshing = false;
+          renderTankRows();
+        }
+      }
+      window.clearRelays = clearRelays;
 
       function updateStats() {
         const clientIds = new Set();
@@ -4196,6 +4392,16 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
           <label class="field"><span>SMS Secondary</span><input id="smsSecondaryInput" type="text" placeholder="+1234567890"></label>
           <label class="field"><span>Daily Report Email</span><input id="dailyEmailInput" type="email" placeholder="reports@example.com"></label>
         </div>
+        <h3 style="margin-top:24px;">Clear Button (Physical Button to Clear Relays)</h3>
+        <div class="form-grid">
+          <label class="field"><span>Clear Button Pin (-1 = disabled)<span class="tooltip-icon" tabindex="0" data-tooltip="Pin number for physical clear button. When pressed for 500ms, clears all relay alarms. Use -1 to disable.">?</span></span><input id="clearButtonPinInput" type="number" min="-1" max="99" value="-1"></label>
+          <label class="field"><span>Button Active State</span>
+            <select id="clearButtonActiveHighInput">
+              <option value="false">Active LOW (pullup, button to GND)</option>
+              <option value="true">Active HIGH (external pull-down)</option>
+            </select>
+          </label>
+        </div>
         <h3 style="margin-top:24px;">Server SMS Alerts</h3>
         <div class="toggle-group">
           <label class="toggle">
@@ -4360,6 +4566,8 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
         smsPrimary: document.getElementById('smsPrimaryInput'),
         smsSecondary: document.getElementById('smsSecondaryInput'),
         dailyEmail: document.getElementById('dailyEmailInput'),
+        clearButtonPin: document.getElementById('clearButtonPinInput'),
+        clearButtonActiveHigh: document.getElementById('clearButtonActiveHighInput'),
         smsHighToggle: document.getElementById('smsHighToggle'),
         smsLowToggle: document.getElementById('smsLowToggle'),
         smsClearToggle: document.getElementById('smsClearToggle'),
@@ -4805,6 +5013,8 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
     els.reportHour.value = valueOr(config.reportHour, 5);
     els.reportMinute.value = valueOr(config.reportMinute, 0);
         els.dailyEmail.value = config.dailyEmail || '';
+        els.clearButtonPin.value = valueOr(config.clearButtonPin, -1);
+        els.clearButtonActiveHigh.value = config.clearButtonActiveHigh ? 'true' : 'false';
         populateTankRows(config.tanks);
 
         const detailParts = [];
@@ -4850,6 +5060,8 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
           reportHour: parseInt(els.reportHour.value, 10) || 5,
           reportMinute: parseInt(els.reportMinute.value, 10) || 0,
           dailyEmail: els.dailyEmail.value.trim(),
+          clearButtonPin: parseInt(els.clearButtonPin.value, 10),
+          clearButtonActiveHigh: els.clearButtonActiveHigh.value === 'true',
           tanks
         };
 
@@ -5113,6 +5325,7 @@ enum class SerialRequestResult : uint8_t {
 static void handlePinPost(EthernetClient &client, const String &body);
 static void handleRefreshPost(EthernetClient &client, const String &body);
 static void handleRelayPost(EthernetClient &client, const String &body);
+static void handleRelayClearPost(EthernetClient &client, const String &body);
 static void handleSerialLogsGet(EthernetClient &client, const String &queryString);
 static void handleSerialLogsDownload(EthernetClient &client, const String &queryString);
 static void handleSerialRequestPost(EthernetClient &client, const String &body);
@@ -5590,7 +5803,11 @@ void setup() {
   }
 
   Serial.println();
-  Serial.println(F("Tank Alarm Server 112025 starting"));
+  Serial.print(F("Tank Alarm Server 112025 v"));
+  Serial.print(F(FIRMWARE_VERSION));
+  Serial.print(F(" ("));
+  Serial.print(F(FIRMWARE_BUILD_DATE));
+  Serial.println(F(")"));
 
   // Initialize serial log buffers
   memset(&gServerSerial, 0, sizeof(ServerSerialBuffer));
@@ -6631,7 +6848,9 @@ static void printHardwareRequirements() {
 }
 
 static void initializeNotecard() {
+#ifdef DEBUG_MODE
   notecard.setDebugOutputStream(Serial);
+#endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
   J *req = notecard.newRequest("card.wire");
@@ -6863,6 +7082,12 @@ static void handleWebRequests() {
       respondStatus(client, 413, "Payload Too Large");
     } else {
       handleRelayPost(client, body);
+    }
+  } else if (method == "POST" && path == "/api/relay/clear") {
+    if (contentLength > 512) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleRelayClearPost(client, body);
     }
   } else if (method == "POST" && path == "/api/pause") {
     if (contentLength > 256) {
@@ -7505,6 +7730,80 @@ static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state
   Serial.println(state ? "ON" : "OFF");
 
   return true;
+}
+
+// Send a command to clear/reset relay alarms for a specific tank on a client
+static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
+  if (!clientUid) {
+    return false;
+  }
+
+  J *req = notecard.newRequest("note.add");
+  if (!req) {
+    return false;
+  }
+
+  // Use device-specific targeting: send directly to client's relay.qi inbox
+  char targetFile[80];
+  snprintf(targetFile, sizeof(targetFile), "device:%s:relay.qi", clientUid);
+  JAddStringToObject(req, "file", targetFile);
+  JAddBoolToObject(req, "sync", true);
+
+  J *body = JCreateObject();
+  if (!body) {
+    return false;
+  }
+
+  // Use relay_reset_tank command format that the client already supports
+  JAddNumberToObject(body, "relay_reset_tank", tankIdx);
+  JAddStringToObject(body, "source", "server-dashboard");
+  
+  JAddItemToObject(req, "body", body);
+  
+  bool queued = notecard.sendRequest(req);
+  if (!queued) {
+    return false;
+  }
+
+  Serial.print(F("Queued relay clear command for client "));
+  Serial.print(clientUid);
+  Serial.print(F(", tank "));
+  Serial.println(tankIdx);
+
+  return true;
+}
+
+static void handleRelayClearPost(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(256);
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (gConfig.configPin[0] != '\0') {
+    if (!requireValidPin(client, pinValue)) {
+      return;
+    }
+  }
+
+  const char *clientUid = doc["clientUid"].as<const char *>();
+  if (!clientUid || strlen(clientUid) == 0) {
+    respondStatus(client, 400, F("Missing clientUid"));
+    return;
+  }
+
+  uint8_t tankIdx = doc["tankIdx"].as<uint8_t>();
+  if (tankIdx >= MAX_TANKS) {
+    respondStatus(client, 400, F("Invalid tankIdx"));
+    return;
+  }
+
+  if (sendRelayClearCommand(clientUid, tankIdx)) {
+    respondStatus(client, 200, F("OK"));
+  } else {
+    respondStatus(client, 500, F("Failed to send relay clear command"));
+  }
 }
 
 static void handlePausePost(EthernetClient &client, const String &body) {

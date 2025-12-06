@@ -1,5 +1,6 @@
 /*
   Tank Alarm Viewer 112025 - Arduino Opta + Blues Notecard
+  Version: 1.0.0
 
   Purpose:
   - Read-only kiosk that renders the server dashboard without exposing control paths
@@ -25,6 +26,15 @@
 #endif
 #include <math.h>
 #include <string.h>
+
+// Firmware version for production tracking
+#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_BUILD_DATE __DATE__
+
+// Debug mode - controls Serial output and Notecard debug logging
+// For PRODUCTION: Leave commented out (default) to save power consumption
+// For DEVELOPMENT: Uncomment the line below for troubleshooting and monitoring
+//#define DEBUG_MODE
 
 #if defined(ARDUINO_ARCH_AVR)
   #include <avr/pgmspace.h>
@@ -402,7 +412,11 @@ void setup() {
     delay(10);
   }
   Serial.println();
-  Serial.println(F("Tank Alarm Viewer 112025 starting"));
+  Serial.print(F("Tank Alarm Viewer 112025 v"));
+  Serial.print(F(FIRMWARE_VERSION));
+  Serial.print(F(" ("));
+  Serial.print(F(FIRMWARE_BUILD_DATE));
+  Serial.println(F(")"));
 
   Wire.begin();
   Wire.setClock(NOTECARD_I2C_FREQUENCY);
@@ -456,7 +470,9 @@ void loop() {
 }
 
 static void initializeNotecard() {
+#ifdef DEBUG_MODE
   notecard.setDebugOutputStream(Serial);
+#endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
   J *req = notecard.newRequest("card.wire");

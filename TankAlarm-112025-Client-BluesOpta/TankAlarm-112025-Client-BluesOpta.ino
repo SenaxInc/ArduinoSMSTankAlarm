@@ -1,5 +1,6 @@
 /*
   Tank Alarm Client 112025 - Arduino Opta + Blues Notecard
+  Version: 1.0.0
 
   Hardware:
   - Arduino Opta Lite (STM32H747XI dual-core)
@@ -25,6 +26,10 @@
 #include <Notecard.h>
 #include <math.h>
 #include <string.h>
+
+// Firmware version for production tracking
+#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_BUILD_DATE __DATE__
 
 // Filesystem and Watchdog support
 // Note: Arduino Opta uses Mbed OS, which has different APIs than STM32duino
@@ -187,6 +192,11 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 #define MIN_ALARM_INTERVAL_SECONDS 300  // Minimum 5 minutes between same alarm type
 #endif
 
+// Default momentary relay duration (30 minutes in seconds)
+#ifndef DEFAULT_RELAY_MOMENTARY_SECONDS
+#define DEFAULT_RELAY_MOMENTARY_SECONDS 1800  // 30 minutes
+#endif
+
 // Digital sensor (float switch) constants
 #ifndef DIGITAL_SWITCH_THRESHOLD
 #define DIGITAL_SWITCH_THRESHOLD 0.5f  // Threshold to determine activated vs not-activated state
@@ -274,13 +284,13 @@ enum RelayTrigger : uint8_t {
 
 // Relay engagement mode - how long the relay stays on
 enum RelayMode : uint8_t {
-  RELAY_MODE_MOMENTARY = 0,     // Momentary on for 30 minutes, then auto-off
+  RELAY_MODE_MOMENTARY = 0,     // Momentary on for configurable duration, then auto-off
   RELAY_MODE_UNTIL_CLEAR = 1,   // Stay on until alarm clears
   RELAY_MODE_MANUAL_RESET = 2   // Stay on until manually reset from server
 };
 
-// Default relay engagement duration (30 minutes in milliseconds)
-#define RELAY_MOMENTARY_DURATION_MS (30UL * 60UL * 1000UL)
+// Default relay engagement duration (30 minutes in seconds)
+#define RELAY_DEFAULT_MOMENTARY_SECONDS 1800
 
 struct TankConfig {
   char id;                 // Friendly identifier (A, B, C ...)
@@ -302,6 +312,7 @@ struct TankConfig {
   uint8_t relayMask;       // Bitmask of relays to trigger (bit 0=relay 1, etc.)
   RelayTrigger relayTrigger; // Which alarm type triggers the relay (any, high, low)
   RelayMode relayMode;     // How long relay stays on (momentary, until_clear, manual_reset)
+  uint16_t relayMomentarySeconds[4]; // Per-relay momentary duration in seconds (0 = use default 30 min)
   // Digital sensor (float switch) specific settings
   char digitalTrigger[16]; // 'activated' or 'not_activated' - when to trigger alarm for digital sensors
   char digitalSwitchMode[4]; // 'NO' for normally-open, 'NC' for normally-closed (default: NO)
@@ -328,6 +339,9 @@ struct ClientConfig {
   uint8_t reportMinute;
   uint8_t tankCount;
   TankConfig tanks[MAX_TANKS];
+  // Optional clear button configuration
+  int8_t clearButtonPin;        // Pin for physical clear button (-1 = disabled)
+  bool clearButtonActiveHigh;   // true = button active when HIGH, false = active when LOW (with pullup)
 };
 
 struct TankRuntime {
@@ -389,6 +403,13 @@ static unsigned long gLastRelayCheckMillis = 0;
 // Per-tank relay activation tracking for momentary mode timeout
 static unsigned long gRelayActivationTime[MAX_TANKS] = {0};
 static bool gRelayActiveForTank[MAX_TANKS] = {false};
+
+// Clear button state for debouncing
+static unsigned long gClearButtonLastPressTime = 0;
+static bool gClearButtonLastState = false;
+static bool gClearButtonInitialized = false;
+#define CLEAR_BUTTON_DEBOUNCE_MS 50
+#define CLEAR_BUTTON_MIN_PRESS_MS 500  // Require 500ms press to clear (prevent accidental triggers)
 
 // RPM sensor state for Hall effect pulse counting
 // We track pulses per tank that uses an RPM sensor
@@ -453,6 +474,9 @@ static int getRelayPin(uint8_t relayIndex);
 static float readNotecardVinVoltage();
 static void checkRelayMomentaryTimeout(unsigned long now);
 static void resetRelayForTank(uint8_t idx);
+static void initializeClearButton();
+static void checkClearButton(unsigned long now);
+static void clearAllRelayAlarms();
 static void addSerialLog(const char *message);
 static void pollForSerialRequests();
 static void sendSerialLogs();
@@ -464,7 +488,11 @@ void setup() {
   }
 
   Serial.println();
-  Serial.println(F("Tank Alarm Client 112025 starting"));
+  Serial.print(F("Tank Alarm Client 112025 v"));
+  Serial.print(F(FIRMWARE_VERSION));
+  Serial.print(F(" ("));
+  Serial.print(F(FIRMWARE_BUILD_DATE));
+  Serial.println(F(")"));
 
   // Initialize serial log buffer
   memset(&gSerialLog, 0, sizeof(ClientSerialLog));
@@ -546,6 +574,7 @@ void setup() {
   }
 
   initializeRelays();
+  initializeClearButton();
 
   Serial.println(F("Client setup complete"));
   addSerialLog("Client started successfully");
@@ -594,6 +623,9 @@ void loop() {
 
   // Check for momentary relay timeout (30 minutes)
   checkRelayMomentaryTimeout(now);
+  
+  // Check for physical clear button press
+  checkClearButton(now);
 
   persistConfigIfDirty();
   ensureTimeSync();
@@ -694,7 +726,11 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].relayTargetClient[0] = '\0'; // No relay target by default
   cfg.tanks[0].relayMask = 0; // No relays triggered by default
   cfg.tanks[0].relayTrigger = RELAY_TRIGGER_ANY; // Default: trigger on any alarm
-  cfg.tanks[0].relayMode = RELAY_MODE_MOMENTARY; // Default: momentary 30 min activation
+  cfg.tanks[0].relayMode = RELAY_MODE_MOMENTARY; // Default: momentary activation
+  // Default: all relays use 30 minutes (0 = use default)
+  for (uint8_t r = 0; r < 4; ++r) {
+    cfg.tanks[0].relayMomentarySeconds[r] = 0;
+  }
   cfg.tanks[0].digitalTrigger[0] = '\0'; // Not a digital sensor by default
   strlcpy(cfg.tanks[0].digitalSwitchMode, "NO", sizeof(cfg.tanks[0].digitalSwitchMode)); // Default: normally-open
   cfg.tanks[0].currentLoopType = CURRENT_LOOP_PRESSURE; // Default: pressure sensor (most common)
@@ -704,6 +740,10 @@ static void createDefaultConfig(ClientConfig &cfg) {
   strlcpy(cfg.tanks[0].sensorRangeUnit, "PSI", sizeof(cfg.tanks[0].sensorRangeUnit)); // Default: PSI
   cfg.tanks[0].analogVoltageMin = 0.0f;  // Default: 0V (for 0-10V sensors)
   cfg.tanks[0].analogVoltageMax = 10.0f; // Default: 10V (for 0-10V sensors)
+  
+  // Clear button defaults (disabled)
+  cfg.clearButtonPin = -1;           // -1 = disabled
+  cfg.clearButtonActiveHigh = false; // Active LOW with pullup (button connects to GND)
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -775,6 +815,10 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   }
   cfg.reportHour = doc["reportHour"].is<uint8_t>() ? doc["reportHour"].as<uint8_t>() : DEFAULT_REPORT_HOUR;
   cfg.reportMinute = doc["reportMinute"].is<uint8_t>() ? doc["reportMinute"].as<uint8_t>() : DEFAULT_REPORT_MINUTE;
+  
+  // Load clear button configuration
+  cfg.clearButtonPin = doc["clearButtonPin"].is<int>() ? doc["clearButtonPin"].as<int8_t>() : -1;
+  cfg.clearButtonActiveHigh = doc["clearButtonActiveHigh"].is<bool>() ? doc["clearButtonActiveHigh"].as<bool>() : false;
 
   cfg.tankCount = doc["tanks"].is<JsonArray>() ? min<uint8_t>(doc["tanks"].size(), MAX_TANKS) : 0;
 
@@ -826,6 +870,15 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     } else {
       cfg.tanks[i].relayMode = RELAY_MODE_MOMENTARY;
     }
+    // Load per-relay momentary durations (0 = use default 30 min)
+    JsonArrayConst durations = t["relayMomentaryDurations"].as<JsonArrayConst>();
+    for (uint8_t r = 0; r < 4; ++r) {
+      if (durations && r < durations.size()) {
+        cfg.tanks[i].relayMomentarySeconds[r] = durations[r].as<uint16_t>();
+      } else {
+        cfg.tanks[i].relayMomentarySeconds[r] = 0; // Default
+      }
+    }
     // Load digital sensor trigger state (for float switches)
     const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
     strlcpy(cfg.tanks[i].digitalTrigger, digitalTriggerStr ? digitalTriggerStr : "", sizeof(cfg.tanks[i].digitalTrigger));
@@ -876,6 +929,10 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   doc["reportHour"] = cfg.reportHour;
   doc["reportMinute"] = cfg.reportMinute;
   doc["dailyEmail"] = cfg.dailyEmail;
+  
+  // Save clear button configuration
+  doc["clearButtonPin"] = cfg.clearButtonPin;
+  doc["clearButtonActiveHigh"] = cfg.clearButtonActiveHigh;
 
   JsonArray tanks = doc.createNestedArray("tanks");
   for (uint8_t i = 0; i < cfg.tankCount; ++i) {
@@ -915,6 +972,11 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
       case RELAY_MODE_UNTIL_CLEAR: t["relayMode"] = "until_clear"; break;
       case RELAY_MODE_MANUAL_RESET: t["relayMode"] = "manual_reset"; break;
       default: t["relayMode"] = "momentary"; break;
+    }
+    // Save per-relay momentary durations
+    JsonArray durations = t.createNestedArray("relayMomentaryDurations");
+    for (uint8_t r = 0; r < 4; ++r) {
+      durations.add(cfg.tanks[i].relayMomentarySeconds[r]);
     }
     // Save digital sensor trigger state (for float switches)
     if (cfg.tanks[i].digitalTrigger[0] != '\0') {
@@ -1302,6 +1364,18 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   if (doc.containsKey("dailyEmail")) {
     strlcpy(gConfig.dailyEmail, doc["dailyEmail"].as<const char *>(), sizeof(gConfig.dailyEmail));
   }
+  
+  // Handle clear button configuration
+  if (doc.containsKey("clearButtonPin")) {
+    int8_t newPin = doc["clearButtonPin"].as<int8_t>();
+    if (newPin != gConfig.clearButtonPin) {
+      gConfig.clearButtonPin = newPin;
+      hardwareChanged = true;  // Need to reinitialize button pin
+    }
+  }
+  if (doc.containsKey("clearButtonActiveHigh")) {
+    gConfig.clearButtonActiveHigh = doc["clearButtonActiveHigh"].as<bool>();
+  }
 
   if (doc.containsKey("tanks")) {
     hardwareChanged = true;  // Tank configuration affects hardware
@@ -1368,6 +1442,15 @@ static void applyConfigUpdate(const JsonDocument &doc) {
           gConfig.tanks[i].relayMode = RELAY_MODE_MANUAL_RESET;
         } else {
           gConfig.tanks[i].relayMode = RELAY_MODE_MOMENTARY;
+        }
+      }
+      // Handle per-relay momentary durations (in seconds)
+      if (t.containsKey("relayMomentaryDurations")) {
+        JsonArray durations = t["relayMomentaryDurations"].as<JsonArray>();
+        for (size_t r = 0; r < 4 && r < durations.size(); r++) {
+          uint16_t dur = durations[r].as<uint16_t>();
+          // Enforce minimum of 1 second, max of 86400 (24 hours)
+          gConfig.tanks[i].relayMomentarySeconds[r] = constrain(dur, 1, 86400);
         }
       }
       // Handle digital sensor trigger state (for float switches)
@@ -2809,14 +2892,17 @@ static void processRelayCommand(const JsonDocument &doc) {
   setRelayState(relayNum, state);
 
   // Handle timed auto-off if duration specified
-  // TODO: Implement timer tracking for automatic relay shutoff
-  // This feature is documented in the API but not yet implemented
+  // Note: Custom duration is not implemented in v1.0.0 - use relay modes instead:
+  //   - RELAY_MODE_MOMENTARY: 30-minute auto-off
+  //   - RELAY_MODE_UNTIL_CLEAR: Stays on until alarm clears
+  //   - RELAY_MODE_MANUAL_RESET: Stays on until server reset
+  // The duration parameter in relay commands is reserved for future use.
   if (doc.containsKey("duration") && state) {
     uint16_t duration = doc["duration"].as<uint16_t>();
     if (duration > 0) {
-      Serial.print(F("Note: Auto-off duration requested ("));
+      Serial.print(F("Note: Custom duration ("));
       Serial.print(duration);
-      Serial.println(F(" sec) but not yet implemented"));
+      Serial.println(F(" sec) ignored - use relay modes instead"));
     }
   }
 }
@@ -2873,7 +2959,8 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
   }
 }
 
-// Check and deactivate relays that have exceeded the momentary timeout (30 minutes)
+// Check and deactivate relays that have exceeded the momentary timeout
+// Uses the minimum duration among the active relays in the mask
 static void checkRelayMomentaryTimeout(unsigned long now) {
   for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
     const TankConfig &cfg = gConfig.tanks[i];
@@ -2883,13 +2970,36 @@ static void checkRelayMomentaryTimeout(unsigned long now) {
       continue;
     }
     
-    // Check if 30 minutes have elapsed
+    // Find the minimum duration among the relays in this tank's mask
+    // 0 means "use default" (30 minutes)
+    uint32_t minDurationMs = 0xFFFFFFFF; // Start with max value
+    for (uint8_t r = 0; r < 4; r++) {
+      if (cfg.relayMask & (1 << r)) {
+        uint16_t seconds = cfg.relayMomentarySeconds[r];
+        if (seconds == 0) {
+          seconds = DEFAULT_RELAY_MOMENTARY_SECONDS; // Use default for 0
+        }
+        uint32_t durationMs = (uint32_t)seconds * 1000UL;
+        if (durationMs < minDurationMs) {
+          minDurationMs = durationMs;
+        }
+      }
+    }
+    
+    // Default to 30 minutes if no relays in mask (shouldn't happen)
+    if (minDurationMs == 0xFFFFFFFF) {
+      minDurationMs = DEFAULT_RELAY_MOMENTARY_SECONDS * 1000UL;
+    }
+    
+    // Check if the duration has elapsed
     // Note: Unsigned subtraction correctly handles millis() overflow due to modular arithmetic
-    if (now - gRelayActivationTime[i] >= RELAY_MOMENTARY_DURATION_MS) {
+    if (now - gRelayActivationTime[i] >= minDurationMs) {
       // Deactivate the relay
       if (cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
         triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
-        Serial.print(F("Momentary relay timeout (30 min) for tank "));
+        Serial.print(F("Momentary relay timeout ("));
+        Serial.print(minDurationMs / 60000UL);
+        Serial.print(F(" min) for tank "));
         Serial.println(i);
       }
       gRelayActiveForTank[i] = false;
@@ -2913,6 +3023,105 @@ static void resetRelayForTank(uint8_t idx) {
   }
   gRelayActiveForTank[idx] = false;
   gRelayActivationTime[idx] = 0;
+}
+
+// ============================================================================
+// Clear Button Support (Physical Button to Clear All Relay Alarms)
+// ============================================================================
+
+// Initialize the clear button pin if configured
+static void initializeClearButton() {
+  if (gConfig.clearButtonPin < 0) {
+    // Clear button disabled
+    gClearButtonInitialized = false;
+    return;
+  }
+  
+  // Configure the button pin
+  if (gConfig.clearButtonActiveHigh) {
+    // Button is active HIGH - use INPUT (external pull-down required)
+    pinMode(gConfig.clearButtonPin, INPUT);
+  } else {
+    // Button is active LOW - use INPUT_PULLUP (button connects to GND)
+    pinMode(gConfig.clearButtonPin, INPUT_PULLUP);
+  }
+  
+  gClearButtonInitialized = true;
+  gClearButtonLastState = false;
+  gClearButtonLastPressTime = 0;
+  
+  Serial.print(F("Clear button initialized on pin "));
+  Serial.print(gConfig.clearButtonPin);
+  Serial.println(gConfig.clearButtonActiveHigh ? F(" (active HIGH)") : F(" (active LOW with pullup)"));
+}
+
+// Check for clear button press (with debouncing)
+static void checkClearButton(unsigned long now) {
+  if (!gClearButtonInitialized || gConfig.clearButtonPin < 0) {
+    return;
+  }
+  
+  // Read the button state
+  bool buttonPhysical = digitalRead(gConfig.clearButtonPin);
+  bool buttonPressed = gConfig.clearButtonActiveHigh ? buttonPhysical : !buttonPhysical;
+  
+  // Debounce: only register state change after stable for CLEAR_BUTTON_DEBOUNCE_MS
+  if (buttonPressed != gClearButtonLastState) {
+    // State changed - reset the timer
+    gClearButtonLastPressTime = now;
+    gClearButtonLastState = buttonPressed;
+    return;
+  }
+  
+  // Button state is stable
+  if (buttonPressed && (now - gClearButtonLastPressTime >= CLEAR_BUTTON_MIN_PRESS_MS)) {
+    // Button has been held for minimum press time - trigger clear
+    Serial.println(F("Clear button pressed - clearing all relay alarms"));
+    addSerialLog("Clear button pressed - clearing all relay alarms");
+    clearAllRelayAlarms();
+    
+    // Reset the timer to require release before next trigger
+    gClearButtonLastPressTime = now;
+    gClearButtonLastState = false;  // Require button release before next action
+    
+    // Wait for button release to prevent repeated triggers
+    unsigned long releaseWaitStart = millis();
+    while (millis() - releaseWaitStart < 2000) {  // Wait up to 2 seconds
+      bool stillPressed = gConfig.clearButtonActiveHigh ? 
+                          digitalRead(gConfig.clearButtonPin) : 
+                          !digitalRead(gConfig.clearButtonPin);
+      if (!stillPressed) {
+        break;
+      }
+      delay(50);
+    }
+  }
+}
+
+// Clear all relay alarms for all tanks (turn off all relays and reset state)
+static void clearAllRelayAlarms() {
+  bool anyCleared = false;
+  
+  for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
+    if (gRelayActiveForTank[i]) {
+      resetRelayForTank(i);
+      anyCleared = true;
+    }
+  }
+  
+  // Also turn off any locally controlled relays
+  for (uint8_t r = 0; r < MAX_RELAYS; ++r) {
+    if (gRelayState[r]) {
+      setRelayState(r, false);
+      anyCleared = true;
+    }
+  }
+  
+  if (anyCleared) {
+    Serial.println(F("All relay alarms cleared"));
+  } else {
+    Serial.println(F("No active relay alarms to clear"));
+  }
 }
 
 // ============================================================================

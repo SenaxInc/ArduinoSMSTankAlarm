@@ -349,6 +349,108 @@ return linearMap(avg, 0.05f, 0.95f, 0.0f, cfg.heightInches);
 
 ---
 
+## V1.0 Release Updates (December 6, 2025)
+
+### Changes Applied for V1.0 Release
+
+The following updates were implemented as part of the v1.0 release preparation:
+
+#### 1. Version Tracking Added
+- **All Components**: Added `FIRMWARE_VERSION "1.0.0"` constant to Client, Server, and Viewer
+- Firmware version now displayed in startup Serial messages
+- Enables proper version tracking for future updates and debugging
+
+#### 2. DEBUG_MODE Guards Implemented
+- **Server & Viewer**: Added `#define DEBUG_MODE 1` with conditional debug output
+- `notecard.setDebugOutputStream()` now only enabled when `DEBUG_MODE` is set
+- Reduces noise in production deployments while allowing debug builds
+
+#### 3. Per-Relay Configurable Momentary Durations
+- **Client**: Added `relayMomentarySeconds[4]` array to `TankConfig` struct
+- Each relay (R1-R4) can have independent timeout duration
+- Valid range: 1 second to 86,400 seconds (24 hours)
+- Value of 0 uses default (30 minutes / 1800 seconds)
+- Durations are persisted in config JSON as `relayMomentaryDurations` array
+
+- **Server Config UI**: Added duration input fields in relay section
+  - Per-relay duration inputs visible when "Momentary" mode selected
+  - Values included in generated config JSON
+  - UI hides durations when other relay modes selected
+
+#### 4. Relay Mode Dropdown Updated
+- Changed label from "Momentary (30 min on, then auto-off)" to "Momentary (configurable duration)"
+- Reflects new per-relay duration capability
+
+#### 5. Manual Override Capabilities
+- **Server Dashboard**: Added "Relay Control" column with "Clear" button per tank row
+- Clicking "Clear" sends command via Device-to-Device API to reset all relay alarms on that tank's client
+- New `/api/relay/clear` endpoint handles POST requests with tank index
+- JavaScript functions: `relayButtons()` renders buttons, `clearRelays(tankIndex)` triggers API call
+
+#### 6. Physical Clear Button on Client
+- **Client Hardware**: Added support for optional physical button to clear all relay alarms
+- New config fields in `ClientConfig`:
+  - `clearButtonPin` (int8_t): GPIO pin number, -1 to disable
+  - `clearButtonActiveHigh` (bool): Set based on button wiring (to VCC or GND)
+- Functions added:
+  - `initializeClearButton()`: Configures pin with appropriate pull-up/pull-down
+  - `checkClearButton()`: Debounced button check (500ms press required)
+  - `clearAllRelayAlarms()`: Resets all relay outputs and clears alarm states
+- **Client Console UI**: Added configuration fields for button pin and active state
+
+#### 7. Extensible Input Configuration
+- **Config Generator**: Added "Inputs (Buttons & Switches)" section in Config Generator webpage
+- Inputs are configured like sensors with:
+  - Input Name
+  - Pin Number
+  - Input Mode (Active LOW / Active HIGH)
+  - Action (Clear All Relay Alarms / Disabled)
+- Designed for extensibility - future input actions can be added (e.g., trigger test mode, force report, etc.)
+- Config download maps inputs to appropriate config fields (clearButtonPin, clearButtonActiveHigh)
+
+### Remaining TODO Items
+
+The following items from the original review are still pending for future releases:
+
+| Priority | Item | Notes |
+|----------|------|-------|
+| High | Independent relay timeout tracking | Current implementation uses minimum duration across all relays in mask. Future: track each relay independently with `gRelayActivationTime[tank][relay]` |
+| Medium | Relay status synchronization | When client restarts, relay state isn't synced with physical relay hardware |
+| Medium | Server-side duration UI validation | Add min/max validation and friendly time format (mm:ss or HH:mm:ss) |
+| Low | Presets for common durations | Add dropdown presets: 1 min, 5 min, 15 min, 30 min, 1 hour, etc. |
+
+### Future Improvement Suggestions
+
+#### Relay Control Enhancements
+1. **Per-Relay Independent Tracking**: Refactor to track activation time per relay, not per tank. This would allow R1 and R3 to have different remaining times.
+   ```cpp
+   // Current (per-tank):
+   unsigned long gRelayActivationTime[MAX_TANKS];
+   
+   // Future (per-relay):
+   unsigned long gRelayActivationTime[MAX_TANKS][4];
+   bool gRelayActive[MAX_TANKS][4];
+   ```
+
+2. **Remaining Time Display**: Show countdown timer on Server dashboard for active momentary relays
+
+3. **Manual Override**: Add web UI button to manually extend or reset relay timers
+
+4. **Staggered Deactivation**: When multiple relays have different durations, deactivate each at its configured time rather than all at once
+
+#### Configuration UI Enhancements
+1. **Human-Readable Duration Input**: Convert seconds to hours:minutes:seconds format
+2. **Quick Duration Presets**: Buttons for common values (1min, 5min, 30min, 1hr)
+3. **Validation Feedback**: Real-time validation with error messages for invalid values
+4. **Import/Export Relay Settings**: Allow copying relay configuration between tanks
+
+#### Production Hardening
+1. **Relay State Persistence**: Save active relay state to flash, restore on boot
+2. **Relay Health Check**: Verify relay actually toggled using feedback circuit
+3. **Failsafe Mode**: Auto-deactivate all relays after configurable maximum runtime (e.g., 24 hours)
+
+---
+
 ## Overall Assessment
 
 **Strengths:**
@@ -366,3 +468,5 @@ return linearMap(avg, 0.05f, 0.95f, 0.0f, cfg.heightInches);
 - Missing production-ready features (watchdog, graceful degradation)
 
 **Verdict:** The code is a solid foundation but needs significant hardening before production deployment. Focus on critical bugs and security issues first, then address reliability and performance concerns.
+
+**V1.0 Status:** Ready for initial deployment with version tracking, debug controls, and configurable relay durations. Core functionality is stable.
