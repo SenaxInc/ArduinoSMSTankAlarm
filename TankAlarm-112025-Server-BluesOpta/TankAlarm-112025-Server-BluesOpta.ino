@@ -104,10 +104,6 @@
 #define MAX_TANK_RECORDS 32
 #endif
 
-#ifndef MAX_TANKS
-#define MAX_TANKS 8  // Maximum tanks per client device (must match client configuration)
-#endif
-
 #ifndef MAX_EMAIL_BUFFER
 #define MAX_EMAIL_BUFFER 2048
 #endif
@@ -7798,10 +7794,7 @@ static void handleRelayClearPost(EthernetClient &client, const String &body) {
   }
 
   uint8_t tankIdx = doc["tankIdx"].as<uint8_t>();
-  if (tankIdx >= MAX_TANKS) {
-    respondStatus(client, 400, F("Invalid tankIdx"));
-    return;
-  }
+  // Note: tankIdx validation is handled by the client device based on its actual tank configuration
 
   if (sendRelayClearCommand(clientUid, tankIdx)) {
     respondStatus(client, 200, F("OK"));
