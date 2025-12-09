@@ -269,13 +269,14 @@ Hall effect sensors can be used to measure RPM (rotations per minute) for applic
 {
   "sensor": "rpm",
   "rpmPin": 2,
-  "pulsesPerRev": 4,
+  "pulsesPerRev": 8,
   "hallEffectType": "omnipolar",
   "hallEffectDetection": "time",
   "highAlarm": 3000,
   "lowAlarm": 500
 }
 ```
+Note: With omnipolar sensor and 4 magnets, use pulsesPerRev = 8 (2 pulses per magnet × 4 magnets)
 
 **Wiring:**
 - Connect hall effect sensor VCC to 5V or 3.3V (check sensor datasheet)
