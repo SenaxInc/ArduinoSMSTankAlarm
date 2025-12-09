@@ -258,6 +258,7 @@ Hall effect sensors can be used to measure RPM (rotations per minute) for applic
 - `pulsesPerRevolution`: Number of pulses generated per complete rotation (default: 1)
   - Single magnet: 1 pulse per revolution
   - Multiple magnets: Set to number of magnets
+  - **Note:** For **bipolar** or **omnipolar** sensors, a single magnet generates 2 pulses per revolution (one for each pole). Set `pulsesPerRevolution` to `2 × number of magnets` in these cases.
 - `hallEffectType`: Sensor type - "unipolar", "bipolar", "omnipolar", or "analog"
 - `hallEffectDetection`: Detection method - "pulse" or "time"
 - `highAlarm`: Maximum expected RPM for alarm (e.g., 3000)
@@ -286,7 +287,7 @@ Hall effect sensors can be used to measure RPM (rotations per minute) for applic
 - Use "time" detection for faster response to speed changes
 - Use "pulse" detection for better accuracy at steady speeds
 - For multiple magnets, set `pulsesPerRev` to the number of magnets
-- For omnipolar sensors, each magnet passing creates a pulse (N and S poles both trigger)
+- For omnipolar sensors, each magnet passing creates 2 pulses (both N and S poles trigger)
 - Monitor both high and low thresholds to detect over-speed and stall conditions
 
 ## Operation

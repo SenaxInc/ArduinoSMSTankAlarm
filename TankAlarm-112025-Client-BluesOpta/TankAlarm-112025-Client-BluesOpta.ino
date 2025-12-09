@@ -873,6 +873,8 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
       cfg.tanks[i].hallEffectType = HALL_EFFECT_OMNIPOLAR;
     } else if (hallType && strcmp(hallType, "analog") == 0) {
       cfg.tanks[i].hallEffectType = HALL_EFFECT_ANALOG;
+    } else if (hallType && strcmp(hallType, "unipolar") == 0) {
+      cfg.tanks[i].hallEffectType = HALL_EFFECT_UNIPOLAR;
     } else {
       cfg.tanks[i].hallEffectType = HALL_EFFECT_UNIPOLAR; // Default
     }
@@ -880,6 +882,8 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     const char *hallDetect = t["hallEffectDetection"].as<const char *>();
     if (hallDetect && strcmp(hallDetect, "time") == 0) {
       cfg.tanks[i].hallEffectDetection = HALL_DETECT_TIME_BASED;
+    } else if (hallDetect && strcmp(hallDetect, "pulse") == 0) {
+      cfg.tanks[i].hallEffectDetection = HALL_DETECT_PULSE;
     } else {
       cfg.tanks[i].hallEffectDetection = HALL_DETECT_PULSE; // Default
     }
@@ -1894,6 +1898,10 @@ static float readTankSensor(uint8_t idx) {
       uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
       const float MS_PER_MINUTE = 60000.0f;
       
+      // Common constants for both detection methods
+      const unsigned long DEBOUNCE_MS = 2;
+      const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2;
+      
       float rpm = 0.0f;
       
       // Choose detection method: pulse counting or time-based
@@ -1905,9 +1913,6 @@ static float readTankSensor(uint8_t idx) {
         unsigned long sampleStart = millis();
         int lastState = digitalRead(pin);
         gRpmLastPinState[idx] = lastState;
-        
-        const unsigned long DEBOUNCE_MS = 2;
-        const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2;
         unsigned long firstPulseTime = 0;
         unsigned long secondPulseTime = 0;
         unsigned long cycleLastPulseTime = 0; // Track last pulse within this measurement cycle for debounce
@@ -1931,6 +1936,10 @@ static float readTankSensor(uint8_t idx) {
             case HALL_EFFECT_OMNIPOLAR:
               // Bipolar/Latching and Omnipolar: detect both edges (state changes)
               edgeDetected = (lastState != currentState);
+              break;
+            default:
+              // Default to unipolar behavior if value is invalid/corrupted
+              edgeDetected = (lastState == HIGH && currentState == LOW);
               break;
           }
           
@@ -1997,8 +2006,6 @@ static float readTankSensor(uint8_t idx) {
         int lastState = digitalRead(pin);
         gRpmLastPinState[idx] = lastState;
         
-        const unsigned long DEBOUNCE_MS = 2;
-        const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2;
         unsigned long lastPulseTime = 0;
         uint32_t iterationCount = 0;
         
@@ -2017,6 +2024,10 @@ static float readTankSensor(uint8_t idx) {
             case HALL_EFFECT_OMNIPOLAR:
               // Bipolar/Latching and Omnipolar: count both edges (state changes)
               edgeDetected = (lastState != currentState);
+              break;
+            default:
+              // Default to unipolar behavior for safety and consistency
+              edgeDetected = (lastState == HIGH && currentState == LOW);
               break;
           }
           
