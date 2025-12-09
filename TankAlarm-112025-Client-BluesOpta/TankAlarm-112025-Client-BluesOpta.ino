@@ -1910,7 +1910,7 @@ static float readTankSensor(uint8_t idx) {
         const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2;
         unsigned long firstPulseTime = 0;
         unsigned long secondPulseTime = 0;
-        unsigned long localLastPulseTime = 0; // Local tracking for proper debounce
+        unsigned long cycleLastPulseTime = 0; // Track last pulse within this measurement cycle for debounce
         uint32_t iterationCount = 0;
         bool firstPulseDetected = false;
         bool secondPulseDetected = false;
@@ -1942,9 +1942,9 @@ static float readTankSensor(uint8_t idx) {
           
           if (edgeDetected) {
             unsigned long now = millis();
-            // Debounce using local tracking within this measurement cycle
-            if (now - localLastPulseTime >= DEBOUNCE_MS) {
-              localLastPulseTime = now;
+            // Debounce using cycle-local tracking within this measurement
+            if (now - cycleLastPulseTime >= DEBOUNCE_MS) {
+              cycleLastPulseTime = now;
               if (!firstPulseDetected) {
                 firstPulseTime = now;
                 firstPulseDetected = true;
@@ -1980,9 +1980,12 @@ static float readTankSensor(uint8_t idx) {
           rpm = MS_PER_MINUTE / ((float)gRpmPulsePeriodMs[idx] * (float)pulsesPerRev);
         } else if (firstPulseDetected && !secondPulseDetected) {
           // Only one pulse detected - RPM is very low or stopped
-          // Use a conservative estimate based on the sample duration
-          // If we didn't get a second pulse in 3 seconds, RPM is < 20 (assuming 1 pulse/rev)
-          rpm = 0.0f;
+          // If we didn't get a second pulse within the sample duration, 
+          // RPM is below: 60000ms / (RPM_SAMPLE_DURATION_MS * pulsesPerRev)
+          // For 3s sampling with 1 pulse/rev: < 20 RPM
+          // For 3s sampling with 4 pulses/rev: < 5 RPM
+          // Keep last reading to avoid false zero during temporary signal loss
+          rpm = gRpmLastReading[idx];
         } else {
           // No pulses detected, keep last reading
           rpm = gRpmLastReading[idx];
