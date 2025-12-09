@@ -275,6 +275,20 @@ enum CurrentLoopSensorType : uint8_t {
                                 // 4mA = full (sensor close to liquid), 20mA = empty (sensor far from liquid)
 };
 
+// Hall effect sensor types for RPM measurement
+enum HallEffectSensorType : uint8_t {
+  HALL_EFFECT_UNIPOLAR = 0,     // Triggered by single pole (usually South), reset when field removed
+  HALL_EFFECT_BIPOLAR = 1,      // Latching: South pole turns ON, North pole turns OFF
+  HALL_EFFECT_OMNIPOLAR = 2,    // Responds to either North or South pole
+  HALL_EFFECT_ANALOG = 3        // Linear/analog: outputs voltage proportional to magnetic field strength
+};
+
+// Hall effect detection method
+enum HallEffectDetectionMethod : uint8_t {
+  HALL_DETECT_PULSE = 0,        // Count pulses (transitions) - traditional method
+  HALL_DETECT_TIME_BASED = 1    // Measure time between pulses - more flexible for different magnet types
+};
+
 // Relay trigger conditions - which alarm type triggers the relay
 enum RelayTrigger : uint8_t {
   RELAY_TRIGGER_ANY = 0,   // Trigger on any alarm (high or low)
@@ -302,6 +316,8 @@ struct TankConfig {
   int16_t currentLoopChannel; // 4-20mA channel index (-1 if unused)
   int16_t rpmPin;          // Hall effect RPM sensor pin (-1 if unused)
   uint8_t pulsesPerRevolution; // For RPM sensors: pulses per revolution (default 1)
+  HallEffectSensorType hallEffectType; // Type of hall effect sensor (unipolar, bipolar, omnipolar, analog)
+  HallEffectDetectionMethod hallEffectDetection; // Detection method (pulse counting or time-based)
   float highAlarmThreshold;   // High threshold for triggering alarm (inches or RPM)
   float lowAlarmThreshold;    // Low threshold for triggering alarm (inches or RPM)
   float hysteresisValue;   // Hysteresis band (default 2.0)
@@ -416,6 +432,9 @@ static bool gClearButtonInitialized = false;
 static unsigned long gRpmLastSampleMillis[MAX_TANKS] = {0};
 static float gRpmLastReading[MAX_TANKS] = {0.0f};
 static int gRpmLastPinState[MAX_TANKS];  // Initialized dynamically in setup()
+// For time-based detection: track time between pulses
+static unsigned long gRpmLastPulseTime[MAX_TANKS] = {0};
+static unsigned long gRpmPulsePeriodMs[MAX_TANKS] = {0};
 
 // RPM sampling duration in milliseconds (sample for a few seconds each period)
 #ifndef RPM_SAMPLE_DURATION_MS
@@ -539,6 +558,8 @@ void setup() {
     gRpmLastPinState[i] = HIGH;
     gRpmLastSampleMillis[i] = 0;
     gRpmLastReading[i] = 0.0f;
+    gRpmLastPulseTime[i] = 0;
+    gRpmPulsePeriodMs[i] = 0;
   }
 
   // Explicitly initialize relay state tracking arrays for clarity and consistency
@@ -717,6 +738,8 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.tanks[0].currentLoopChannel = -1;
   cfg.tanks[0].rpmPin = -1; // No RPM sensor by default
   cfg.tanks[0].pulsesPerRevolution = 1; // Default: 1 pulse per revolution
+  cfg.tanks[0].hallEffectType = HALL_EFFECT_UNIPOLAR; // Default: unipolar sensor
+  cfg.tanks[0].hallEffectDetection = HALL_DETECT_PULSE; // Default: pulse counting method
   cfg.tanks[0].highAlarmThreshold = 100.0f;
   cfg.tanks[0].lowAlarmThreshold = 20.0f;
   cfg.tanks[0].hysteresisValue = 2.0f; // 2 unit hysteresis band
@@ -842,6 +865,24 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     cfg.tanks[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : -1;
     cfg.tanks[i].rpmPin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : -1;
     cfg.tanks[i].pulsesPerRevolution = t["pulsesPerRev"].is<uint8_t>() ? max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>()) : 1;
+    // Load hall effect sensor type
+    const char *hallType = t["hallEffectType"].as<const char *>();
+    if (hallType && strcmp(hallType, "bipolar") == 0) {
+      cfg.tanks[i].hallEffectType = HALL_EFFECT_BIPOLAR;
+    } else if (hallType && strcmp(hallType, "omnipolar") == 0) {
+      cfg.tanks[i].hallEffectType = HALL_EFFECT_OMNIPOLAR;
+    } else if (hallType && strcmp(hallType, "analog") == 0) {
+      cfg.tanks[i].hallEffectType = HALL_EFFECT_ANALOG;
+    } else {
+      cfg.tanks[i].hallEffectType = HALL_EFFECT_UNIPOLAR; // Default
+    }
+    // Load hall effect detection method
+    const char *hallDetect = t["hallEffectDetection"].as<const char *>();
+    if (hallDetect && strcmp(hallDetect, "time") == 0) {
+      cfg.tanks[i].hallEffectDetection = HALL_DETECT_TIME_BASED;
+    } else {
+      cfg.tanks[i].hallEffectDetection = HALL_DETECT_PULSE; // Default
+    }
     cfg.tanks[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : 100.0f;
     cfg.tanks[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : 20.0f;
     cfg.tanks[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : 2.0f;
@@ -952,6 +993,20 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     t["loopChannel"] = cfg.tanks[i].currentLoopChannel;
     t["rpmPin"] = cfg.tanks[i].rpmPin;
     t["pulsesPerRev"] = cfg.tanks[i].pulsesPerRevolution;
+    // Save hall effect sensor type
+    switch (cfg.tanks[i].hallEffectType) {
+      case HALL_EFFECT_BIPOLAR: t["hallEffectType"] = "bipolar"; break;
+      case HALL_EFFECT_OMNIPOLAR: t["hallEffectType"] = "omnipolar"; break;
+      case HALL_EFFECT_ANALOG: t["hallEffectType"] = "analog"; break;
+      case HALL_EFFECT_UNIPOLAR:
+      default: t["hallEffectType"] = "unipolar"; break;
+    }
+    // Save hall effect detection method
+    switch (cfg.tanks[i].hallEffectDetection) {
+      case HALL_DETECT_TIME_BASED: t["hallEffectDetection"] = "time"; break;
+      case HALL_DETECT_PULSE:
+      default: t["hallEffectDetection"] = "pulse"; break;
+    }
     t["highAlarm"] = cfg.tanks[i].highAlarmThreshold;
     t["lowAlarm"] = cfg.tanks[i].lowAlarmThreshold;
     t["hysteresis"] = cfg.tanks[i].hysteresisValue;
@@ -1403,6 +1458,28 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       if (t.containsKey("pulsesPerRev")) {
         gConfig.tanks[i].pulsesPerRevolution = max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>());
       }
+      // Update hall effect sensor type if provided
+      if (t.containsKey("hallEffectType")) {
+        const char *hallType = t["hallEffectType"].as<const char *>();
+        if (hallType && strcmp(hallType, "bipolar") == 0) {
+          gConfig.tanks[i].hallEffectType = HALL_EFFECT_BIPOLAR;
+        } else if (hallType && strcmp(hallType, "omnipolar") == 0) {
+          gConfig.tanks[i].hallEffectType = HALL_EFFECT_OMNIPOLAR;
+        } else if (hallType && strcmp(hallType, "analog") == 0) {
+          gConfig.tanks[i].hallEffectType = HALL_EFFECT_ANALOG;
+        } else if (hallType && strcmp(hallType, "unipolar") == 0) {
+          gConfig.tanks[i].hallEffectType = HALL_EFFECT_UNIPOLAR;
+        }
+      }
+      // Update hall effect detection method if provided
+      if (t.containsKey("hallEffectDetection")) {
+        const char *hallDetect = t["hallEffectDetection"].as<const char *>();
+        if (hallDetect && strcmp(hallDetect, "time") == 0) {
+          gConfig.tanks[i].hallEffectDetection = HALL_DETECT_TIME_BASED;
+        } else if (hallDetect && strcmp(hallDetect, "pulse") == 0) {
+          gConfig.tanks[i].hallEffectDetection = HALL_DETECT_PULSE;
+        }
+      }
       gConfig.tanks[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : gConfig.tanks[i].highAlarmThreshold;
       gConfig.tanks[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : gConfig.tanks[i].lowAlarmThreshold;
       gConfig.tanks[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : gConfig.tanks[i].hysteresisValue;
@@ -1804,66 +1881,169 @@ static float readTankSensor(uint8_t idx) {
       return levelInches;
     }
     case SENSOR_HALL_EFFECT_RPM: {
-      // Hall effect RPM sensor - sample pulses for a few seconds each measurement period
+      // Hall effect RPM sensor - supports multiple sensor types and detection methods
       // Use rpmPin if available, otherwise use primaryPin
       int pin = (cfg.rpmPin >= 0 && cfg.rpmPin < 255) ? cfg.rpmPin : 
                 ((cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx));
       
-      // Configure pin as input with pullup for Hall effect sensor
+      // Configure pin as input with pullup for digital Hall effect sensors
+      // Analog sensors would typically use analog input, but we support digital threshold mode here
       pinMode(pin, INPUT_PULLUP);
       
-      // Sample pulses for RPM_SAMPLE_DURATION_MS (default 3 seconds)
-      // This provides accurate RPM measurement by counting multiple pulses
-      unsigned long sampleStart = millis();
-      uint32_t pulseCount = 0;
+      float rpm = 0.0f;
       
-      // Always read current pin state first to establish baseline
-      // This prevents false pulse counts on first reading
-      int lastState = digitalRead(pin);
-      gRpmLastPinState[idx] = lastState;
-      
-      // Count pulses over the sampling duration, with debounce
-      // Use unsigned subtraction to handle millis() overflow correctly
-      const unsigned long DEBOUNCE_MS = 2; // Minimum time between pulses to filter bounce
-      const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2; // Safety limit: 2x expected iterations
-      unsigned long lastPulseTime = 0;
-      uint32_t iterationCount = 0;
-      while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS && iterationCount < MAX_ITERATIONS) {
-        int currentState = digitalRead(pin);
-        // Count falling edges (HIGH to LOW transitions) with debounce
-        if (lastState == HIGH && currentState == LOW) {
-          unsigned long now = millis();
-          if (now - lastPulseTime >= DEBOUNCE_MS) {
-            pulseCount++;
-            lastPulseTime = now;
-          }
-        }
-        lastState = currentState;
-        // Small delay to allow other processing and avoid excessive polling
-        delay(1);
-        iterationCount++;
+      // Choose detection method: pulse counting or time-based
+      if (cfg.hallEffectDetection == HALL_DETECT_TIME_BASED) {
+        // Time-based detection: measure period between pulses
+        // More flexible for different magnet types and orientations
+        // Requires fewer pulses to get a reading
         
+        unsigned long sampleStart = millis();
+        int lastState = digitalRead(pin);
+        gRpmLastPinState[idx] = lastState;
+        
+        const unsigned long DEBOUNCE_MS = 2;
+        const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2;
+        unsigned long firstPulseTime = 0;
+        unsigned long secondPulseTime = 0;
+        uint32_t iterationCount = 0;
+        bool firstPulseDetected = false;
+        
+        // Detect edge transitions based on sensor type
+        while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS && iterationCount < MAX_ITERATIONS) {
+          int currentState = digitalRead(pin);
+          bool edgeDetected = false;
+          
+          // Determine edge detection based on hall effect sensor type
+          switch (cfg.hallEffectType) {
+            case HALL_EFFECT_UNIPOLAR:
+              // Unipolar: triggers on one pole (active low), detect falling edge
+              edgeDetected = (lastState == HIGH && currentState == LOW);
+              break;
+            case HALL_EFFECT_BIPOLAR:
+              // Bipolar/Latching: alternates between states, detect both edges
+              edgeDetected = (lastState != currentState);
+              break;
+            case HALL_EFFECT_OMNIPOLAR:
+              // Omnipolar: responds to either pole, detect both edges
+              edgeDetected = (lastState != currentState);
+              break;
+            case HALL_EFFECT_ANALOG:
+              // For analog sensors in digital mode, detect falling edge (threshold crossing)
+              edgeDetected = (lastState == HIGH && currentState == LOW);
+              break;
+          }
+          
+          if (edgeDetected) {
+            unsigned long now = millis();
+            if (now - gRpmLastPulseTime[idx] >= DEBOUNCE_MS) {
+              if (!firstPulseDetected) {
+                firstPulseTime = now;
+                firstPulseDetected = true;
+              } else {
+                secondPulseTime = now;
+                gRpmPulsePeriodMs[idx] = secondPulseTime - firstPulseTime;
+                gRpmLastPulseTime[idx] = secondPulseTime;
+                break; // Got our measurement, exit early
+              }
+            }
+          }
+          lastState = currentState;
+          delay(1);
+          iterationCount++;
+          
 #ifdef WATCHDOG_AVAILABLE
-        // Reset watchdog during long sampling to prevent timeout
-        #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-          mbedWatchdog.kick();
-        #else
-          IWatchdog.reload();
-        #endif
+          #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+            mbedWatchdog.kick();
+          #else
+            IWatchdog.reload();
+          #endif
 #endif
+        }
+        
+        gRpmLastPinState[idx] = lastState;
+        gRpmLastSampleMillis[idx] = millis();
+        
+        // Calculate RPM from pulse period
+        if (gRpmPulsePeriodMs[idx] > 0) {
+          const float MS_PER_MINUTE = 60000.0f;
+          uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
+          // RPM = (60000 ms/min) / (period_ms * pulses_per_rev)
+          rpm = MS_PER_MINUTE / ((float)gRpmPulsePeriodMs[idx] * (float)pulsesPerRev);
+        } else {
+          // No valid period, keep last reading
+          rpm = gRpmLastReading[idx];
+        }
+        
+      } else {
+        // Pulse counting method (traditional approach)
+        // Sample pulses for RPM_SAMPLE_DURATION_MS (default 3 seconds)
+        // This provides accurate RPM measurement by counting multiple pulses
+        
+        unsigned long sampleStart = millis();
+        uint32_t pulseCount = 0;
+        
+        // Always read current pin state first to establish baseline
+        int lastState = digitalRead(pin);
+        gRpmLastPinState[idx] = lastState;
+        
+        const unsigned long DEBOUNCE_MS = 2;
+        const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2;
+        unsigned long lastPulseTime = 0;
+        uint32_t iterationCount = 0;
+        
+        while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS && iterationCount < MAX_ITERATIONS) {
+          int currentState = digitalRead(pin);
+          bool edgeDetected = false;
+          
+          // Determine edge detection based on hall effect sensor type
+          switch (cfg.hallEffectType) {
+            case HALL_EFFECT_UNIPOLAR:
+              // Unipolar: triggers on one pole, detect falling edge (active low)
+              edgeDetected = (lastState == HIGH && currentState == LOW);
+              break;
+            case HALL_EFFECT_BIPOLAR:
+              // Bipolar/Latching: alternates between states, count both edges
+              edgeDetected = (lastState != currentState);
+              break;
+            case HALL_EFFECT_OMNIPOLAR:
+              // Omnipolar: responds to either pole, count both edges
+              edgeDetected = (lastState != currentState);
+              break;
+            case HALL_EFFECT_ANALOG:
+              // For analog sensors in digital mode, detect falling edge
+              edgeDetected = (lastState == HIGH && currentState == LOW);
+              break;
+          }
+          
+          if (edgeDetected) {
+            unsigned long now = millis();
+            if (now - lastPulseTime >= DEBOUNCE_MS) {
+              pulseCount++;
+              lastPulseTime = now;
+            }
+          }
+          lastState = currentState;
+          delay(1);
+          iterationCount++;
+          
+#ifdef WATCHDOG_AVAILABLE
+          #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+            mbedWatchdog.kick();
+          #else
+            IWatchdog.reload();
+          #endif
+#endif
+        }
+        
+        gRpmLastPinState[idx] = lastState;
+        gRpmLastSampleMillis[idx] = millis();
+        
+        // Calculate RPM from pulse count
+        const float MS_PER_MINUTE = 60000.0f;
+        uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
+        rpm = ((float)pulseCount * MS_PER_MINUTE) / ((float)RPM_SAMPLE_DURATION_MS * (float)pulsesPerRev);
       }
-      
-      // Save last pin state for next sample
-      gRpmLastPinState[idx] = lastState;
-      gRpmLastSampleMillis[idx] = millis();
-      
-      // Calculate RPM from pulse count
-      // Formula: RPM = (pulses / sample_duration_seconds) * 60 seconds/minute / pulses_per_revolution
-      // Simplified: RPM = (pulses * 60000) / (sample_duration_ms * pulses_per_rev)
-      // Note: Max RPM is limited by the polling loop speed (approx 30,000 RPM at 1 pulse/rev), which is sufficient.
-      const float MS_PER_MINUTE = 60000.0f;
-      uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
-      float rpm = ((float)pulseCount * MS_PER_MINUTE) / ((float)RPM_SAMPLE_DURATION_MS * (float)pulsesPerRev);
       
       gRpmLastReading[idx] = rpm;
       
