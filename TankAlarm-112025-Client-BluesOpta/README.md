@@ -83,7 +83,7 @@ The client creates a default configuration on first boot. You can update configu
 - **High Alarm**: Threshold in inches for high level alert
 - **Low Alarm**: Threshold in inches for low level alert
 - **Analog Pin**: Arduino Opta analog input (A0-A7, I1-I8)
-- **Sensor Type**: "voltage" (0-10V), "current" (4-20mA), or "digital" (float switch)
+- **Sensor Type**: "voltage" (0-10V), "current" (4-20mA), "digital" (float switch), or "rpm" (hall effect)
 
 ### 4-20mA Current Loop Sensor Configuration
 
@@ -206,6 +206,88 @@ For analog voltage sensors (like the Dwyer 626 series with voltage output), the 
   - `sensorRangeMax`: 5
   - `sensorRangeUnit`: "PSI"
   - `sensorMountHeight`: 2.0
+
+### Hall Effect RPM Sensor Configuration
+
+Hall effect sensors can be used to measure RPM (rotations per minute) for applications such as pump monitoring, motor speed tracking, or flow measurement. The system supports multiple types of hall effect sensors and detection methods.
+
+**Sensor Types:**
+
+1. **Unipolar** (default)
+   - Triggered by a single magnetic pole (usually South pole)
+   - Resets when magnetic field is removed
+   - Output: Active LOW when magnet present, HIGH when absent
+   - Use case: Simple magnet detection, one pulse per rotation
+
+2. **Bipolar (Latching)**
+   - Requires South pole to turn ON and North pole to turn OFF
+   - Maintains state until opposite pole is detected
+   - Output: Latches between HIGH and LOW states
+   - Use case: Motor applications, precise position sensing
+
+3. **Omnipolar**
+   - Responds to either North or South pole
+   - Simplifies magnet placement and orientation
+   - Output: Toggles on any magnetic field
+   - Use case: Flexible installations, bidirectional sensing
+
+4. **Analog (Linear)**
+   - Outputs voltage proportional to magnetic field strength
+   - Can be used in digital threshold mode
+   - Output: Voltage varies with field strength
+   - Use case: Distance or angle measurement, fuel gauges
+
+**Detection Methods:**
+
+1. **Pulse Counting** (default)
+   - Counts all pulses over a fixed sampling period (3 seconds)
+   - More accurate for steady speeds
+   - Averages multiple revolutions for better precision
+   - Formula: RPM = (pulses × 60000) / (sample_duration_ms × pulses_per_rev)
+
+2. **Time-Based**
+   - Measures the period between two consecutive pulses
+   - More responsive to speed changes
+   - Works with fewer pulses (minimum 2)
+   - More flexible for different magnet types and orientations
+   - Formula: RPM = 60000 / (period_ms × pulses_per_rev)
+
+**Configuration Parameters:**
+- `sensorType`: "rpm"
+- `rpmPin`: Digital input pin for hall effect sensor (uses internal pull-up)
+- `pulsesPerRevolution`: Number of pulses generated per complete rotation (default: 1)
+  - Single magnet: 1 pulse per revolution
+  - Multiple magnets: Set to number of magnets
+- `hallEffectType`: Sensor type - "unipolar", "bipolar", "omnipolar", or "analog"
+- `hallEffectDetection`: Detection method - "pulse" or "time"
+- `highAlarm`: Maximum expected RPM for alarm (e.g., 3000)
+- `lowAlarm`: Minimum expected RPM for alarm (e.g., 100)
+
+**Example Configuration** (Motor monitoring with 4 magnets):
+```json
+{
+  "sensor": "rpm",
+  "rpmPin": 2,
+  "pulsesPerRev": 4,
+  "hallEffectType": "omnipolar",
+  "hallEffectDetection": "time",
+  "highAlarm": 3000,
+  "lowAlarm": 500
+}
+```
+
+**Wiring:**
+- Connect hall effect sensor VCC to 5V or 3.3V (check sensor datasheet)
+- Connect sensor GND to Arduino GND
+- Connect sensor output to configured digital pin
+- No external pull-up needed (Arduino uses internal pull-up)
+
+**Tips:**
+- Use "time" detection for faster response to speed changes
+- Use "pulse" detection for better accuracy at steady speeds
+- For multiple magnets, set `pulsesPerRev` to the number of magnets
+- For omnipolar sensors, each magnet passing creates a pulse (N and S poles both trigger)
+- Monitor both high and low thresholds to detect over-speed and stall conditions
 
 ## Operation
 
