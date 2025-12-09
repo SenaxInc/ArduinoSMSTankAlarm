@@ -1923,20 +1923,14 @@ static float readTankSensor(uint8_t idx) {
           // Determine edge detection based on hall effect sensor type
           switch (cfg.hallEffectType) {
             case HALL_EFFECT_UNIPOLAR:
-              // Unipolar: triggers on one pole (active low), detect falling edge
+            case HALL_EFFECT_ANALOG:
+              // Unipolar and Analog: triggers on one pole (active low), detect falling edge
               edgeDetected = (lastState == HIGH && currentState == LOW);
               break;
             case HALL_EFFECT_BIPOLAR:
-              // Bipolar/Latching: alternates between states, detect both edges
-              edgeDetected = (lastState != currentState);
-              break;
             case HALL_EFFECT_OMNIPOLAR:
-              // Omnipolar: responds to either pole, detect both edges
+              // Bipolar/Latching and Omnipolar: detect both edges (state changes)
               edgeDetected = (lastState != currentState);
-              break;
-            case HALL_EFFECT_ANALOG:
-              // For analog sensors in digital mode, detect falling edge (threshold crossing)
-              edgeDetected = (lastState == HIGH && currentState == LOW);
               break;
           }
           
@@ -2015,20 +2009,14 @@ static float readTankSensor(uint8_t idx) {
           // Determine edge detection based on hall effect sensor type
           switch (cfg.hallEffectType) {
             case HALL_EFFECT_UNIPOLAR:
-              // Unipolar: triggers on one pole, detect falling edge (active low)
+            case HALL_EFFECT_ANALOG:
+              // Unipolar and Analog: triggers on one pole, detect falling edge (active low)
               edgeDetected = (lastState == HIGH && currentState == LOW);
               break;
             case HALL_EFFECT_BIPOLAR:
-              // Bipolar/Latching: alternates between states, count both edges
-              edgeDetected = (lastState != currentState);
-              break;
             case HALL_EFFECT_OMNIPOLAR:
-              // Omnipolar: responds to either pole, count both edges
+              // Bipolar/Latching and Omnipolar: count both edges (state changes)
               edgeDetected = (lastState != currentState);
-              break;
-            case HALL_EFFECT_ANALOG:
-              // For analog sensors in digital mode, detect falling edge
-              edgeDetected = (lastState == HIGH && currentState == LOW);
               break;
           }
           
