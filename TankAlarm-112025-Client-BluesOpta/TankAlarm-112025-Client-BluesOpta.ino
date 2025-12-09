@@ -1890,6 +1890,10 @@ static float readTankSensor(uint8_t idx) {
       // Analog sensors would typically use analog input, but we support digital threshold mode here
       pinMode(pin, INPUT_PULLUP);
       
+      // Validate pulses per revolution (common validation for both methods)
+      uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
+      const float MS_PER_MINUTE = 60000.0f;
+      
       float rpm = 0.0f;
       
       // Choose detection method: pulse counting or time-based
@@ -1906,8 +1910,10 @@ static float readTankSensor(uint8_t idx) {
         const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2;
         unsigned long firstPulseTime = 0;
         unsigned long secondPulseTime = 0;
+        unsigned long localLastPulseTime = 0; // Local tracking for proper debounce
         uint32_t iterationCount = 0;
         bool firstPulseDetected = false;
+        bool secondPulseDetected = false;
         
         // Detect edge transitions based on sensor type
         while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS && iterationCount < MAX_ITERATIONS) {
@@ -1936,14 +1942,17 @@ static float readTankSensor(uint8_t idx) {
           
           if (edgeDetected) {
             unsigned long now = millis();
-            if (now - gRpmLastPulseTime[idx] >= DEBOUNCE_MS) {
+            // Debounce using local tracking within this measurement cycle
+            if (now - localLastPulseTime >= DEBOUNCE_MS) {
+              localLastPulseTime = now;
               if (!firstPulseDetected) {
                 firstPulseTime = now;
                 firstPulseDetected = true;
-              } else {
+              } else if (!secondPulseDetected) {
                 secondPulseTime = now;
                 gRpmPulsePeriodMs[idx] = secondPulseTime - firstPulseTime;
                 gRpmLastPulseTime[idx] = secondPulseTime;
+                secondPulseDetected = true;
                 break; // Got our measurement, exit early
               }
             }
@@ -1965,13 +1974,17 @@ static float readTankSensor(uint8_t idx) {
         gRpmLastSampleMillis[idx] = millis();
         
         // Calculate RPM from pulse period
-        if (gRpmPulsePeriodMs[idx] > 0) {
-          const float MS_PER_MINUTE = 60000.0f;
-          uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
+        if (secondPulseDetected && gRpmPulsePeriodMs[idx] > 0) {
+          // Got a valid measurement this cycle
           // RPM = (60000 ms/min) / (period_ms * pulses_per_rev)
           rpm = MS_PER_MINUTE / ((float)gRpmPulsePeriodMs[idx] * (float)pulsesPerRev);
+        } else if (firstPulseDetected && !secondPulseDetected) {
+          // Only one pulse detected - RPM is very low or stopped
+          // Use a conservative estimate based on the sample duration
+          // If we didn't get a second pulse in 3 seconds, RPM is < 20 (assuming 1 pulse/rev)
+          rpm = 0.0f;
         } else {
-          // No valid period, keep last reading
+          // No pulses detected, keep last reading
           rpm = gRpmLastReading[idx];
         }
         
@@ -2039,9 +2052,7 @@ static float readTankSensor(uint8_t idx) {
         gRpmLastPinState[idx] = lastState;
         gRpmLastSampleMillis[idx] = millis();
         
-        // Calculate RPM from pulse count
-        const float MS_PER_MINUTE = 60000.0f;
-        uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
+        // Calculate RPM from pulse count (using pre-validated pulsesPerRev)
         rpm = ((float)pulseCount * MS_PER_MINUTE) / ((float)RPM_SAMPLE_DURATION_MS * (float)pulsesPerRev);
       }
       
