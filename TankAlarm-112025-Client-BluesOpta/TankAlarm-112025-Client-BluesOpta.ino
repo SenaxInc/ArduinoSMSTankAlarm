@@ -45,7 +45,10 @@
   #include <LittleFileSystem.h>
   #include <BlockDevice.h>
   #include <mbed.h>
+  #include "rtos/ThisThread.h"
   using namespace mbed;
+  using namespace std::chrono;           // For chrono types (e.g., milliseconds)
+  using namespace std::chrono_literals;  // For chrono duration literals (e.g., 100ms)
   #define FILESYSTEM_AVAILABLE
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
@@ -90,6 +93,15 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 
 #ifndef PRODUCT_UID
 #define PRODUCT_UID "com.senax.tankalarm112025"
+#endif
+
+// Power saving configuration for solar-powered installations
+#ifndef SOLAR_OUTBOUND_INTERVAL_MINUTES
+#define SOLAR_OUTBOUND_INTERVAL_MINUTES 360  // Sync every 6 hours for solar installations
+#endif
+
+#ifndef SOLAR_INBOUND_INTERVAL_MINUTES
+#define SOLAR_INBOUND_INTERVAL_MINUTES 60    // Check for inbound every hour for solar installations
 #endif
 
 #ifndef CLIENT_CONFIG_PATH
@@ -358,6 +370,8 @@ struct ClientConfig {
   // Optional clear button configuration
   int8_t clearButtonPin;        // Pin for physical clear button (-1 = disabled)
   bool clearButtonActiveHigh;   // true = button active when HIGH, false = active when LOW (with pullup)
+  // Power saving configuration
+  bool solarPowered;            // true = solar powered (use power saving features), false = grid-tied
 };
 
 struct TankRuntime {
@@ -464,6 +478,7 @@ static bool loadConfigFromFlash(ClientConfig &cfg);
 static bool saveConfigToFlash(const ClientConfig &cfg);
 static void printHardwareRequirements(const ClientConfig &cfg);
 static void initializeNotecard();
+static void configureNotecardHubMode();
 static void syncTimeFromNotecard();
 static double currentEpoch();
 static void scheduleNextDailyReport();
@@ -658,7 +673,12 @@ void loop() {
   }
 
   // Sleep to reduce power consumption between loop iterations
-  delay(100);
+  // Use Mbed OS thread sleep for power efficiency - allows CPU to enter low-power states during sleep periods
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    rtos::ThisThread::sleep_for(std::chrono::milliseconds(100));  // Thread sleep for 100ms - enables power saving
+  #else
+    delay(100);  // Fallback for non-Mbed platforms
+  #endif
 }
 
 static void initializeStorage() {
@@ -767,6 +787,9 @@ static void createDefaultConfig(ClientConfig &cfg) {
   // Clear button defaults (disabled)
   cfg.clearButtonPin = -1;           // -1 = disabled
   cfg.clearButtonActiveHigh = false; // Active LOW with pullup (button connects to GND)
+  
+  // Power saving defaults (grid-tied, no special power saving)
+  cfg.solarPowered = false;          // false = grid-tied (default)
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -842,6 +865,9 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   // Load clear button configuration
   cfg.clearButtonPin = doc["clearButtonPin"].is<int>() ? doc["clearButtonPin"].as<int8_t>() : -1;
   cfg.clearButtonActiveHigh = doc["clearButtonActiveHigh"].is<bool>() ? doc["clearButtonActiveHigh"].as<bool>() : false;
+  
+  // Load power saving configuration
+  cfg.solarPowered = doc["solarPowered"].is<bool>() ? doc["solarPowered"].as<bool>() : false;
 
   cfg.tankCount = doc["tanks"].is<JsonArray>() ? min<uint8_t>(doc["tanks"].size(), MAX_TANKS) : 0;
 
@@ -978,6 +1004,9 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   // Save clear button configuration
   doc["clearButtonPin"] = cfg.clearButtonPin;
   doc["clearButtonActiveHigh"] = cfg.clearButtonActiveHigh;
+  
+  // Save power saving configuration
+  doc["solarPowered"] = cfg.solarPowered;
 
   JsonArray tanks = doc.createNestedArray("tanks");
   for (uint8_t i = 0; i < cfg.tankCount; ++i) {
@@ -1161,6 +1190,44 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   Serial.println(F("-----------------------------"));
 }
 
+static void configureNotecardHubMode() {
+  // Configure Notecard hub mode based on power source
+  J *req = notecard.newRequest("hub.set");
+  if (req) {
+    JAddStringToObject(req, "product", PRODUCT_UID);
+    
+    // Power saving configuration based on power source
+    if (gConfig.solarPowered) {
+      // Solar powered: Use periodic mode with extended inbound check to save power
+      JAddStringToObject(req, "mode", "periodic");
+      JAddIntToObject(req, "outbound", SOLAR_OUTBOUND_INTERVAL_MINUTES);  // Sync every 6 hours
+      JAddIntToObject(req, "inbound", SOLAR_INBOUND_INTERVAL_MINUTES);    // Check for inbound every hour (power saving)
+    } else {
+      // Grid-tied: Use continuous mode for faster response times
+      JAddStringToObject(req, "mode", "continuous");
+      // In continuous mode, outbound/inbound are not used - always connected
+    }
+    
+    notecard.sendRequest(req);
+  }
+  
+  // Disable GPS location tracking for power savings
+  // GPS is one of the most power-hungry components on the Notecard and is not used by this application
+  req = notecard.newRequest("card.location.mode");
+  if (req) {
+    JAddStringToObject(req, "mode", "off");
+    notecard.sendRequest(req);
+  }
+  
+  // Disable accelerometer motion tracking for power savings
+  // The accelerometer is not used by this tank monitoring application
+  req = notecard.newRequest("card.motion.mode");
+  if (req) {
+    JAddStringToObject(req, "mode", "off");
+    notecard.sendRequest(req);
+  }
+}
+
 static void initializeNotecard() {
 #ifdef DEBUG_MODE
   notecard.setDebugOutputStream(Serial);
@@ -1173,15 +1240,8 @@ static void initializeNotecard() {
     notecard.sendRequest(req);
   }
 
-  req = notecard.newRequest("hub.set");
-  if (req) {
-    JAddStringToObject(req, "product", PRODUCT_UID);
-    JAddStringToObject(req, "mode", "periodic");
-    JAddIntToObject(req, "outbound", 360);  // Sync every 6 hours
-    JAddIntToObject(req, "inbound", 10);     // Check for inbound every 10 minutes
-    // No route needed - using fleet-based targeting
-    notecard.sendRequest(req);
-  }
+  // Configure hub mode based on power configuration
+  configureNotecardHubMode();
 
   req = notecard.newRequest("card.uuid");
   J *rsp = notecard.requestAndResponse(req);
@@ -1381,6 +1441,9 @@ static void reinitializeHardware() {
     gTankState[i].lastReportedInches = -9999.0f;
   }
   
+  // Reconfigure Notecard hub settings (may have changed due to power mode)
+  configureNotecardHubMode();
+  
   Serial.println(F("Hardware reinitialized after config update"));
 }
 
@@ -1434,6 +1497,15 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   }
   if (doc.containsKey("clearButtonActiveHigh")) {
     gConfig.clearButtonActiveHigh = doc["clearButtonActiveHigh"].as<bool>();
+  }
+  
+  // Handle power saving configuration
+  if (doc.containsKey("solarPowered")) {
+    bool newSolarPowered = doc["solarPowered"].as<bool>();
+    if (newSolarPowered != gConfig.solarPowered) {
+      gConfig.solarPowered = newSolarPowered;
+      hardwareChanged = true;  // Need to reconfigure Notecard hub settings
+    }
   }
 
   if (doc.containsKey("tanks")) {

@@ -748,6 +748,14 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
           <label class="field"><span>Daily Report Email Recipient</span><input id="dailyEmail" type="email"></label>
         </div>
         
+        <h3>Power Configuration</h3>
+        <div class="form-grid">
+          <label class="field" style="display: flex; align-items: center; gap: 8px; grid-column: 1 / -1;">
+            <input type="checkbox" id="solarPowered" style="width: auto;">
+            <span>Solar Powered<span class="tooltip-icon" tabindex="0" data-tooltip="Enable power saving features for solar-powered installations. Uses periodic mode with 60-minute inbound check intervals and deep sleep routines. When disabled (grid-tied), uses continuous mode for faster response times.">?</span></span>
+          </label>
+        </div>
+        
         <h3>Sensors</h3>
         <div id="sensorsContainer"></div>
         
@@ -1394,6 +1402,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
         reportHour: reportHour,
         reportMinute: reportMinute,
         dailyEmail: document.getElementById('dailyEmail').value.trim(),
+        solarPowered: document.getElementById('solarPowered').checked,
         tanks: []
       };
 
