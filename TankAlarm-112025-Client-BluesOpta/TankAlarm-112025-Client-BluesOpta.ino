@@ -45,6 +45,7 @@
   #include <LittleFileSystem.h>
   #include <BlockDevice.h>
   #include <mbed.h>
+  #include "rtos/ThisThread.h"
   using namespace mbed;
   using namespace std::chrono;           // For chrono types (e.g., milliseconds)
   using namespace std::chrono_literals;  // For chrono duration literals (e.g., 100ms)
@@ -674,7 +675,7 @@ void loop() {
   // Sleep to reduce power consumption between loop iterations
   // Use Mbed OS thread sleep for power efficiency - allows CPU to enter low-power states during sleep periods
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    mbed::ThisThread::sleep_for(std::chrono::milliseconds(100));  // Thread sleep for 100ms - enables power saving
+    rtos::ThisThread::sleep_for(std::chrono::milliseconds(100));  // Thread sleep for 100ms - enables power saving
   #else
     delay(100);  // Fallback for non-Mbed platforms
   #endif
