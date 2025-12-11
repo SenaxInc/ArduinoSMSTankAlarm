@@ -673,7 +673,7 @@ void loop() {
   // Sleep to reduce power consumption between loop iterations
   // Use Mbed OS thread sleep for power efficiency - allows CPU to enter low-power states during sleep periods
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    mbed::ThisThread::sleep_for(100ms);  // Thread sleep for 100ms - enables power saving
+    ThisThread::sleep_for(100ms);  // Thread sleep for 100ms - enables power saving
   #else
     delay(100);  // Fallback for non-Mbed platforms
   #endif
