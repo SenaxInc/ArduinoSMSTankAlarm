@@ -90,8 +90,22 @@ Configure server behavior:
 The server exposes a simple REST API:
 
 - `GET /` - Web dashboard (HTML)
-- `GET /api/status` - JSON status of all clients and tanks
-- `POST /api/config` - Push configuration to a specific client
+- `GET /client-console` - Client configuration console (HTML)
+- `GET /serial-monitor` - Server + client serial log viewer (HTML)
+- `GET /calibration` - Calibration dashboard (HTML)
+- `GET /api/tanks` - Tank records (JSON)
+- `GET /api/clients` - Client metadata + cached configs (JSON)
+- `GET /api/calibration` - Calibration status (JSON)
+- `GET /api/serial-logs?...` - Fetch serial logs (JSON)
+- `GET /api/serial-export?...` - Download serial logs (CSV)
+- `POST /api/pin` - Set/verify/change admin PIN
+- `POST /api/config` - Update server settings and/or push client configuration (PIN required)
+- `POST /api/refresh` - Trigger manual refresh of a client (PIN required)
+- `POST /api/relay` - Send relay command to a client (PIN required)
+- `POST /api/relay/clear` - Clear a relay alarm on a client tank (PIN required if PIN configured)
+- `POST /api/pause` - Pause/resume Notecard processing (PIN required if PIN configured)
+- `POST /api/ftp-backup` - Backup configs to FTP (PIN required)
+- `POST /api/ftp-restore` - Restore configs from FTP (PIN required)
 
 Example: Push config to client
 ```bash
@@ -306,13 +320,14 @@ Ethernet.begin(mac, ip, dns, gateway, subnet);
 ## Security Considerations
 
 **Intranet Use Only:**
-- Web dashboard has no authentication
+- Read-only pages and `GET` endpoints have no authentication
+- Control endpoints are protected by a 4-digit admin PIN once configured
 - Designed for trusted local networks only
 - Do not expose port 80 to internet
 - Use firewall rules to restrict access
 
 **For Internet Access:**
-- Implement authentication (not included)
+- Implement authentication (not included) and avoid exposing the Opta directly
 - Use HTTPS with valid certificates
 - Consider VPN for remote access
 - Add rate limiting and input validation

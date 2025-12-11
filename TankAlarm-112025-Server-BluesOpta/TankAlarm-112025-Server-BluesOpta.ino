@@ -7186,6 +7186,12 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
     }
   }
 
+  // If the body is already too large, don't read it into RAM.
+  // We'll respond with 413 and close the connection.
+  if (bodyTooLarge) {
+    return true;
+  }
+
   if (contentLength > 0) {
     size_t readBytes = 0;
     while (readBytes < contentLength && client.connected()) {

@@ -107,6 +107,11 @@
 #define SUMMARY_FETCH_BASE_HOUR 6
 #endif
 
+// Viewer is intended for GET-only use; cap request bodies to avoid memory exhaustion.
+#ifndef MAX_HTTP_BODY_BYTES
+#define MAX_HTTP_BODY_BYTES 1024
+#endif
+
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
@@ -393,7 +398,7 @@ static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
 static void initializeNotecard();
 static void initializeEthernet();
 static void handleWebRequests();
-static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength);
+static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge);
 static void respondHtml(EthernetClient &client, const char *body, size_t len);
 static void respondJson(EthernetClient &client, const String &body);
 static void respondStatus(EthernetClient &client, int status, const char *message);
@@ -584,9 +589,16 @@ static void handleWebRequests() {
   String path;
   String body;
   size_t contentLength = 0;
+  bool bodyTooLarge = false;
 
-  if (!readHttpRequest(client, method, path, body, contentLength)) {
+  if (!readHttpRequest(client, method, path, body, contentLength, bodyTooLarge)) {
     respondStatus(client, 400, "Bad Request");
+    client.stop();
+    return;
+  }
+
+  if (bodyTooLarge) {
+    respondStatus(client, 413, "Payload Too Large");
     client.stop();
     return;
   }
@@ -603,11 +615,12 @@ static void handleWebRequests() {
   client.stop();
 }
 
-static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength) {
+static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge) {
   method = "";
   path = "";
   contentLength = 0;
   body = "";
+  bodyTooLarge = false;
 
   String line;
   bool firstLine = true;
@@ -648,6 +661,10 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
           headerValue.trim();
           if (headerKey.equalsIgnoreCase("Content-Length")) {
             contentLength = headerValue.toInt();
+            if (contentLength > MAX_HTTP_BODY_BYTES) {
+              bodyTooLarge = true;
+              contentLength = MAX_HTTP_BODY_BYTES;
+            }
           }
         }
       }
@@ -667,6 +684,10 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
         char c = client.read();
         body += c;
         readBytes++;
+      }
+      if (readBytes >= MAX_HTTP_BODY_BYTES) {
+        bodyTooLarge = true;
+        break;
       }
     }
   }
