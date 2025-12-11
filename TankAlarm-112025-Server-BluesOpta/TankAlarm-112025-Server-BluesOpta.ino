@@ -9600,11 +9600,12 @@ static void handleContactsGet(EthernetClient &client) {
   // For now, return empty arrays - this will be populated from stored config
   // Contacts will be stored in a separate config file
   
-  // Build list of sites from tank records
+  // Build list of unique sites from tank records
+  // Use simple linear scan - with typical fleet sizes (< 100 tanks), performance is adequate
   JsonArray sitesArray = doc.createNestedArray("sites");
-  bool sitesSeen[MAX_TANKS] = {false};
-  uint8_t uniqueSiteCount = 0;
-  for (uint8_t i = 0; i < gTankCount && uniqueSiteCount < MAX_TANKS; ++i) {
+  for (uint8_t i = 0; i < gTankCount; ++i) {
+    if (strlen(gTanks[i].site) == 0) continue;
+    
     bool alreadySeen = false;
     for (uint8_t j = 0; j < i; ++j) {
       if (strcmp(gTanks[i].site, gTanks[j].site) == 0) {
@@ -9612,9 +9613,8 @@ static void handleContactsGet(EthernetClient &client) {
         break;
       }
     }
-    if (!alreadySeen && strlen(gTanks[i].site) > 0) {
+    if (!alreadySeen) {
       sitesArray.add(gTanks[i].site);
-      uniqueSiteCount++;
     }
   }
   
@@ -9645,11 +9645,17 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
     return;
   }
   
-  // For now, just acknowledge the save
-  // In a full implementation, this would save to a contacts config file
+  // NOTE: Contact persistence not yet implemented
+  // Future implementation will:
+  // 1. Store contacts in a separate JSON config file (e.g., "contacts.json")
+  // 2. Load contacts during server initialization
+  // 3. Integrate with existing SMS/email notification system
+  // 4. Replace hardcoded phone/email fields in ServerConfig
+  // For now, return success but data is not persisted across reboots
+  
   DynamicJsonDocument response(256);
   response["success"] = true;
-  response["message"] = "Contacts saved successfully";
+  response["message"] = "Contacts saved (note: persistence not yet implemented)";
   
   String responseStr;
   serializeJson(response, responseStr);
