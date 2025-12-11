@@ -46,6 +46,7 @@
   #include <BlockDevice.h>
   #include <mbed.h>
   using namespace mbed;
+  using namespace std::chrono_literals;  // For chrono duration literals (e.g., 100ms)
   #define FILESYSTEM_AVAILABLE
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
@@ -90,6 +91,15 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 
 #ifndef PRODUCT_UID
 #define PRODUCT_UID "com.senax.tankalarm112025"
+#endif
+
+// Power saving configuration for solar-powered installations
+#ifndef SOLAR_OUTBOUND_INTERVAL_MINUTES
+#define SOLAR_OUTBOUND_INTERVAL_MINUTES 360  // Sync every 6 hours for solar installations
+#endif
+
+#ifndef SOLAR_INBOUND_INTERVAL_MINUTES
+#define SOLAR_INBOUND_INTERVAL_MINUTES 60    // Check for inbound every hour for solar installations
 #endif
 
 #ifndef CLIENT_CONFIG_PATH
@@ -466,6 +476,7 @@ static bool loadConfigFromFlash(ClientConfig &cfg);
 static bool saveConfigToFlash(const ClientConfig &cfg);
 static void printHardwareRequirements(const ClientConfig &cfg);
 static void initializeNotecard();
+static void configureNotecardHubMode();
 static void syncTimeFromNotecard();
 static double currentEpoch();
 static void scheduleNextDailyReport();
@@ -660,9 +671,9 @@ void loop() {
   }
 
   // Sleep to reduce power consumption between loop iterations
-  // Use Mbed OS deep sleep for better power efficiency (reduces idle current significantly)
+  // Use Mbed OS thread sleep for power efficiency - allows CPU to enter low-power states during sleep periods
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    ThisThread::sleep_for(100ms);  // Deep sleep for 100ms - CPU enters low-power state
+    ThisThread::sleep_for(100ms);  // Thread sleep for 100ms - enables power saving
   #else
     delay(100);  // Fallback for non-Mbed platforms
   #endif
@@ -1177,6 +1188,28 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   Serial.println(F("-----------------------------"));
 }
 
+static void configureNotecardHubMode() {
+  // Configure Notecard hub mode based on power source
+  J *req = notecard.newRequest("hub.set");
+  if (req) {
+    JAddStringToObject(req, "product", PRODUCT_UID);
+    
+    // Power saving configuration based on power source
+    if (gConfig.solarPowered) {
+      // Solar powered: Use periodic mode with extended inbound check to save power
+      JAddStringToObject(req, "mode", "periodic");
+      JAddIntToObject(req, "outbound", SOLAR_OUTBOUND_INTERVAL_MINUTES);  // Sync every 6 hours
+      JAddIntToObject(req, "inbound", SOLAR_INBOUND_INTERVAL_MINUTES);    // Check for inbound every hour (power saving)
+    } else {
+      // Grid-tied: Use continuous mode for faster response times
+      JAddStringToObject(req, "mode", "continuous");
+      // In continuous mode, outbound/inbound are not used - always connected
+    }
+    
+    notecard.sendRequest(req);
+  }
+}
+
 static void initializeNotecard() {
 #ifdef DEBUG_MODE
   notecard.setDebugOutputStream(Serial);
@@ -1189,25 +1222,8 @@ static void initializeNotecard() {
     notecard.sendRequest(req);
   }
 
-  req = notecard.newRequest("hub.set");
-  if (req) {
-    JAddStringToObject(req, "product", PRODUCT_UID);
-    
-    // Power saving configuration based on power source
-    if (gConfig.solarPowered) {
-      // Solar powered: Use periodic mode with extended inbound check to save power
-      JAddStringToObject(req, "mode", "periodic");
-      JAddIntToObject(req, "outbound", 360);  // Sync every 6 hours
-      JAddIntToObject(req, "inbound", 60);    // Check for inbound every 60 minutes (power saving)
-    } else {
-      // Grid-tied: Use continuous mode for faster response times
-      JAddStringToObject(req, "mode", "continuous");
-      // In continuous mode, outbound/inbound are not used - always connected
-    }
-    
-    // No route needed - using fleet-based targeting
-    notecard.sendRequest(req);
-  }
+  // Configure hub mode based on power configuration
+  configureNotecardHubMode();
 
   req = notecard.newRequest("card.uuid");
   J *rsp = notecard.requestAndResponse(req);
@@ -1406,6 +1422,9 @@ static void reinitializeHardware() {
     gTankState[i].hasLastValidReading = false;
     gTankState[i].lastReportedInches = -9999.0f;
   }
+  
+  // Reconfigure Notecard hub settings (may have changed due to power mode)
+  configureNotecardHubMode();
   
   Serial.println(F("Hardware reinitialized after config update"));
 }
