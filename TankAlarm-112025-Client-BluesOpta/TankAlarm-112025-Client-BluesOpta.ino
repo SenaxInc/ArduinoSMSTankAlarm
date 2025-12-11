@@ -1208,6 +1208,36 @@ static void configureNotecardHubMode() {
     
     notecard.sendRequest(req);
   }
+  
+  // Disable GPS location tracking for power savings
+  // GPS is one of the most power-hungry components on the Notecard
+  req = notecard.newRequest("card.location.mode");
+  if (req) {
+    if (gConfig.solarPowered) {
+      // Solar mode: Disable periodic GPS tracking to save power
+      JAddStringToObject(req, "mode", "off");
+    } else {
+      // Grid-tied mode: Can enable GPS if needed for future features
+      // For now, keep it off as location tracking is not used by this application
+      JAddStringToObject(req, "mode", "off");
+    }
+    notecard.sendRequest(req);
+  }
+  
+  // Disable accelerometer motion tracking for power savings
+  // The accelerometer is not used by this tank monitoring application
+  req = notecard.newRequest("card.motion.mode");
+  if (req) {
+    if (gConfig.solarPowered) {
+      // Solar mode: Disable motion tracking to save power
+      JAddStringToObject(req, "mode", "off");
+    } else {
+      // Grid-tied mode: Can enable motion if needed for future features
+      // For now, keep it off as motion tracking is not used by this application
+      JAddStringToObject(req, "mode", "off");
+    }
+    notecard.sendRequest(req);
+  }
 }
 
 static void initializeNotecard() {
