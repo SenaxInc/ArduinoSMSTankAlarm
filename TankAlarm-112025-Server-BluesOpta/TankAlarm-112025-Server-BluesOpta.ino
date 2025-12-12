@@ -3824,7 +3824,7 @@ static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(
           })
           .catch(err => {
             console.error('Failed to load contacts:', err);
-            showToast('Failed to load contacts data');
+            showToast('Failed to load contacts data: ' + (err && err.message ? err.message : err) + '. Please check your network connection and try again.');
           });
       }
 
@@ -3849,7 +3849,7 @@ static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(
           })
           .catch(err => {
             console.error('Failed to save contacts:', err);
-            showToast('Failed to save changes');
+            showToast('Failed to save changes: ' + (err && err.message ? err.message : err));
           });
       }
 
@@ -3938,8 +3938,8 @@ static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(
                   </div>
                 </div>
                 <div class="contact-actions">
-                  <button class="btn btn-small btn-secondary" onclick="editContact('${contact.id}')">Edit</button>
-                  <button class="btn btn-small btn-danger" onclick="deleteContact('${contact.id}')">Delete</button>
+                  <button class="btn btn-small btn-secondary" data-contact-id="${escapeHtml(contact.id)}" data-action="edit">Edit</button>
+                  <button class="btn btn-small btn-danger" data-contact-id="${escapeHtml(contact.id)}" data-action="delete">Delete</button>
                 </div>
               </div>
               ${associatedAlarms.length > 0 ? `
@@ -3950,8 +3950,8 @@ static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(
                       <div class="association-list">
                         ${groupedBySite[site].map(alarm => `
                           <div class="association-tag">
-                            ${escapeHtml(alarm.tank)} (${alarm.type})
-                            <button class="remove-tag" onclick="removeAlarmAssociation('${contact.id}', '${alarm.id}')">&times;</button>
+                            ${escapeHtml(alarm.tank)} (${escapeHtml(alarm.type)})
+                            <button class="remove-tag" data-contact-id="${escapeHtml(contact.id)}" data-alarm-id="${escapeHtml(alarm.id)}">&times;</button>
                           </div>
                         `).join('')}
                       </div>
@@ -3962,6 +3962,19 @@ static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(
             </div>
           `;
         }).join('');
+        
+        // Attach event listeners for contact actions using event delegation
+        container.querySelectorAll('[data-action="edit"]').forEach(btn => {
+          btn.addEventListener('click', () => editContact(btn.dataset.contactId));
+        });
+        container.querySelectorAll('[data-action="delete"]').forEach(btn => {
+          btn.addEventListener('click', () => deleteContact(btn.dataset.contactId));
+        });
+        container.querySelectorAll('.remove-tag').forEach(btn => {
+          btn.addEventListener('click', function() {
+            removeAlarmAssociation(this.dataset.contactId, this.dataset.alarmId);
+          });
+        });
       }
 
       // Render daily report recipients
@@ -3983,10 +3996,15 @@ static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(
                 <strong>${escapeHtml(contact.name)}</strong>
                 ${contact.email ? ` - ${escapeHtml(contact.email)}` : ''}
               </div>
-              <button class="btn btn-small btn-danger" onclick="removeDailyReportRecipient('${recipientId}')">Remove</button>
+              <button class="btn btn-small btn-danger" data-recipient-id="${escapeHtml(recipientId)}" data-action="remove-recipient">Remove</button>
             </div>
           `;
-        }).join('');
+        }).filter(Boolean).join('');
+        
+        // Attach event listeners for daily report recipients
+        container.querySelectorAll('[data-action="remove-recipient"]').forEach(btn => {
+          btn.addEventListener('click', () => removeDailyReportRecipient(btn.dataset.recipientId));
+        });
       }
 
       // Contact modal management
@@ -4037,15 +4055,19 @@ static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(
         container.innerHTML = Object.keys(groupedBySite).map(site => `
           <div style="grid-column: 1 / -1;">
             <strong style="display: block; margin-bottom: 8px;">${escapeHtml(site)}</strong>
-            ${groupedBySite[site].map(alarm => `
-              <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+            ${groupedBySite[site].map((alarm, idx) => {
+              const checkboxId = 'alarm_' + escapeHtml(alarm.id) + '_' + idx;
+              return `
+              <label for="${checkboxId}" style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
                 <input type="checkbox" 
+                       id="${checkboxId}"
                        name="alarmAssoc" 
-                       value="${alarm.id}"
+                       value="${escapeHtml(alarm.id)}"
                        ${selectedAlarms.includes(alarm.id) ? 'checked' : ''}>
-                <span>${escapeHtml(alarm.tank)} (${alarm.type})</span>
+                <span>${escapeHtml(alarm.tank)} (${escapeHtml(alarm.type)})</span>
               </label>
-            `).join('')}
+              `;
+            }).join('')}
           </div>
         `).join('');
       }
@@ -4082,7 +4104,7 @@ static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(
         } else {
           // Add new contact
           const newContact = {
-            id: 'contact_' + Date.now(),
+            id: 'contact_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
             name: name,
             phone: phone,
             email: email,
@@ -4149,6 +4171,7 @@ static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(
         if (!dailyReportRecipients.includes(contactId)) {
           dailyReportRecipients.push(contactId);
           saveData();
+          loadData();
         }
 
         closeDailyReportModal();
@@ -9598,7 +9621,49 @@ static void handleContactsGet(EthernetClient &client) {
   JsonArray dailyReportArray = doc.createNestedArray("dailyReportRecipients");
   
   // For now, return empty arrays - this will be populated from stored config
-  // Contacts will be stored in a separate config file
+  /*
+    Contacts will be stored in a separate config file.
+
+    Planned implementation details:
+
+    - File path: "/contacts_config.json" (stored in LittleFS)
+    - Format: JSON object with contacts array and dailyReportRecipients array
+    - JSON schema for each contact:
+        {
+          "id": string,            // Unique identifier (e.g., "contact_1234567890_abc123")
+          "name": string,          // Full name of the contact
+          "phone": string,         // Phone number in E.164 format (for SMS)
+          "email": string,         // Email address (for daily reports)
+          "alarmAssociations": [string]  // Array of alarm IDs (format: "clientUid_tankNumber")
+        }
+
+    - Example contacts_config.json:
+      {
+        "contacts": [
+          {
+            "id": "contact_1234567890_abc123",
+            "name": "Alice Smith",
+            "phone": "+15551234567",
+            "email": "alice@example.com",
+            "alarmAssociations": ["dev:123456_1", "dev:789012_2"]
+          }
+        ],
+        "dailyReportRecipients": ["contact_1234567890_abc123"]
+      }
+
+    - Integration with ServerConfig:
+        The contacts config will be loaded at startup and whenever updated via web UI.
+        When building alarm/email notifications, the server will:
+        1. Look up contact by alarm ID in alarmAssociations
+        2. Send SMS to contact.phone if present
+        3. Send email to contact.email if present
+        4. For daily reports, iterate dailyReportRecipients and send to each contact.email
+
+    - Migration path:
+        Existing hardcoded smsPrimary/smsSecondary/dailyEmail in ServerConfig will be
+        migrated to contacts on first boot after upgrade. Migration creates contacts
+        from legacy fields if contacts_config.json doesn't exist.
+  */
   
   // Build list of unique sites from tank records
   // Use simple linear scan - with typical fleet sizes (< 100 tanks), performance is adequate
@@ -9645,9 +9710,45 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
     return;
   }
   
+  // Validate contacts structure even though not persisted yet
+  if (doc.containsKey("contacts") && doc["contacts"].is<JsonArray>()) {
+    JsonArray contactsArray = doc["contacts"].as<JsonArray>();
+    
+    // Limit number of contacts to prevent memory issues
+    if (contactsArray.size() > 100) {
+      respondStatus(client, 400, F("Too many contacts (max 100)"));
+      return;
+    }
+    
+    // Basic validation of each contact
+    for (JsonVariant contactVar : contactsArray) {
+      JsonObject contact = contactVar.as<JsonObject>();
+      
+      // Validate required fields
+      if (!contact.containsKey("name") || !contact["name"].is<const char*>()) {
+        respondStatus(client, 400, F("Contact missing required 'name' field"));
+        return;
+      }
+      
+      // Validate that at least phone or email is present
+      bool hasPhone = contact.containsKey("phone") && contact["phone"].is<const char*>() && strlen(contact["phone"]) > 0;
+      bool hasEmail = contact.containsKey("email") && contact["email"].is<const char*>() && strlen(contact["email"]) > 0;
+      if (!hasPhone && !hasEmail) {
+        respondStatus(client, 400, F("Contact must have phone or email"));
+        return;
+      }
+      
+      // Validate alarm associations array if present
+      if (contact.containsKey("alarmAssociations") && !contact["alarmAssociations"].is<JsonArray>()) {
+        respondStatus(client, 400, F("alarmAssociations must be an array"));
+        return;
+      }
+    }
+  }
+  
   // NOTE: Contact persistence not yet implemented
   // Future implementation will:
-  // 1. Store contacts in a separate JSON config file (e.g., "contacts.json")
+  // 1. Store validated contacts in "/contacts_config.json"
   // 2. Load contacts during server initialization
   // 3. Integrate with existing SMS/email notification system
   // 4. Replace hardcoded phone/email fields in ServerConfig
@@ -9655,7 +9756,7 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
   
   DynamicJsonDocument response(256);
   response["success"] = true;
-  response["message"] = "Contacts saved (note: persistence not yet implemented)";
+  response["message"] = "Contacts validated successfully (note: persistence not yet implemented)";
   
   String responseStr;
   serializeJson(response, responseStr);
