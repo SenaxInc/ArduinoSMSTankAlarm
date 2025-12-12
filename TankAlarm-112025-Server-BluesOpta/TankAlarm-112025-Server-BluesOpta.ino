@@ -1,4 +1,4 @@
-/*
+﻿/*
   Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
   Version: 1.0.0
 
@@ -402,6 +402,12 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
   return len;
 }
 #endif
+
+// Helper to round float to N decimal places for data savings
+static float roundTo(float val, int decimals) {
+  float multiplier = pow(10, decimals);
+  return round(val * multiplier) / multiplier;
+}
 
 static bool isValidPin(const char *pin) {
   if (!pin) {
@@ -8096,9 +8102,9 @@ static void sendDailyEmail() {
     obj["site"] = gTankRecords[i].site;
     obj["label"] = gTankRecords[i].label;
     obj["tank"] = gTankRecords[i].tankNumber;
-    obj["levelInches"] = gTankRecords[i].levelInches;
-    obj["sensorMa"] = gTankRecords[i].sensorMa;
-    obj["percent"] = gTankRecords[i].percent;
+    obj["levelInches"] = roundTo(gTankRecords[i].levelInches, 1);
+    obj["sensorMa"] = roundTo(gTankRecords[i].sensorMa, 2);
+    obj["percent"] = roundTo(gTankRecords[i].percent, 1);
     obj["alarm"] = gTankRecords[i].alarmActive;
     obj["alarmType"] = gTankRecords[i].alarmType;
   }
@@ -8143,10 +8149,10 @@ static void publishViewerSummary() {
     obj["s"] = gTankRecords[i].site;
     obj["n"] = gTankRecords[i].label;
     obj["k"] = gTankRecords[i].tankNumber;
-    obj["h"] = gTankRecords[i].heightInches;
-    obj["l"] = gTankRecords[i].levelInches;
-    obj["ma"] = gTankRecords[i].sensorMa;
-    obj["p"] = gTankRecords[i].percent;
+    obj["h"] = roundTo(gTankRecords[i].heightInches, 1);
+    obj["l"] = roundTo(gTankRecords[i].levelInches, 1);
+    obj["ma"] = roundTo(gTankRecords[i].sensorMa, 2);
+    obj["p"] = roundTo(gTankRecords[i].percent, 1);
     obj["a"] = gTankRecords[i].alarmActive;
     obj["at"] = gTankRecords[i].alarmType;
     obj["u"] = gTankRecords[i].lastUpdateEpoch;
@@ -8154,7 +8160,7 @@ static void publishViewerSummary() {
     // Add VIN voltage from client metadata if available
     ClientMetadata *meta = findClientMetadata(gTankRecords[i].clientUid);
     if (meta && meta->vinVoltage > 0.0f) {
-      obj["v"] = meta->vinVoltage;
+      obj["v"] = roundTo(meta->vinVoltage, 2);
     }
   }
 

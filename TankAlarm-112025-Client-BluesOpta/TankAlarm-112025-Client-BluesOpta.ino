@@ -91,6 +91,12 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
 }
 #endif
 
+// Helper to round float to N decimal places for data savings
+static float roundTo(float val, int decimals) {
+  float multiplier = pow(10, decimals);
+  return round(val * multiplier) / multiplier;
+}
+
 #ifndef PRODUCT_UID
 #define PRODUCT_UID "com.senax.tankalarm112025"
 #endif
@@ -2332,10 +2338,10 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
     doc["l"] = state.currentInches;  // 1.0 or 0.0
   } else if (cfg.sensorType == SENSOR_CURRENT_LOOP) {
     doc["st"] = "currentLoop";
-    doc["l"] = state.currentInches;
-    doc["ma"] = state.currentSensorMa;  // Raw 4-20mA reading
+    doc["l"] = roundTo(state.currentInches, 1);
+    doc["ma"] = roundTo(state.currentSensorMa, 2);  // Raw 4-20mA reading
   } else {
-    doc["l"] = state.currentInches;
+    doc["l"] = roundTo(state.currentInches, 1);
   }
   doc["r"] = reason;
   doc["t"] = currentEpoch();
@@ -2467,9 +2473,9 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     doc["n"] = cfg.name;
     doc["k"] = cfg.tankNumber;
     doc["y"] = alarmType;
-    doc["l"] = inches;
-    doc["th"] = cfg.highAlarmThreshold;
-    doc["tl"] = cfg.lowAlarmThreshold;
+    doc["l"] = roundTo(inches, 1);
+    doc["th"] = roundTo(cfg.highAlarmThreshold, 1);
+    doc["tl"] = roundTo(cfg.lowAlarmThreshold, 1);
     doc["se"] = allowSmsEscalation;
     doc["t"] = currentEpoch();
 
