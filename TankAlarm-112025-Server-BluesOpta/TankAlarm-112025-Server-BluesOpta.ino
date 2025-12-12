@@ -9603,25 +9603,25 @@ static void handleContactsGet(EthernetClient &client) {
   // Build list of unique sites from tank records
   // Use simple linear scan - with typical fleet sizes (< 100 tanks), performance is adequate
   JsonArray sitesArray = doc.createNestedArray("sites");
-  for (uint8_t i = 0; i < gTankCount; ++i) {
-    if (strlen(gTanks[i].site) == 0) continue;
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    if (strlen(gTankRecords[i].site) == 0) continue;
     
     bool alreadySeen = false;
     for (uint8_t j = 0; j < i; ++j) {
-      if (strcmp(gTanks[i].site, gTanks[j].site) == 0) {
+      if (strcmp(gTankRecords[i].site, gTankRecords[j].site) == 0) {
         alreadySeen = true;
         break;
       }
     }
     if (!alreadySeen) {
-      sitesArray.add(gTanks[i].site);
+      sitesArray.add(gTankRecords[i].site);
     }
   }
   
   // Build list of alarms (tanks with alarm configurations)
   JsonArray alarmsArray = doc.createNestedArray("alarms");
-  for (uint8_t i = 0; i < gTankCount; ++i) {
-    TankRecord &tank = gTanks[i];
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    TankRecord &tank = gTankRecords[i];
     if (strlen(tank.alarmType) > 0) {
       JsonObject alarmObj = alarmsArray.createNestedObject();
       char alarmId[64];
