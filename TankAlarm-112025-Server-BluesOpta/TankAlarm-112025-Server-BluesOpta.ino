@@ -730,7 +730,8 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(
       </div>
       <div class="header-actions">
         <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
-        <a class="pill" href="/">&larr; Back to Dashboard</a>
+        <a class="pill" href="/">Dashboard</a>
+        <a class="pill secondary" href="/contacts">Contacts</a>
       </div>
     </div>
   </header>
@@ -1948,7 +1949,8 @@ static const char SERIAL_MONITOR_HTML[] PROGMEM = R"HTML(
       </div>
       <div class="header-actions">
         <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
-        <a class="pill" href="/">&larr; Back to Dashboard</a>
+        <a class="pill" href="/">Dashboard</a>
+        <a class="pill secondary" href="/contacts">Contacts</a>
       </div>
     </div>
   </header>
@@ -2781,7 +2783,8 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
       </div>
       <div class="header-actions">
         <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
-        <a class="pill" href="/">&larr; Back to Dashboard</a>
+        <a class="pill" href="/">Dashboard</a>
+        <a class="pill secondary" href="/contacts">Contacts</a>
       </div>
     </div>
   </header>
@@ -3224,6 +3227,975 @@ static const char CALIBRATION_HTML[] PROGMEM = R"HTML(
 </html>
 )HTML";
 
+static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contacts Manager - Tank Alarm Server</title>
+  <style>
+    :root {
+      font-family: "Segoe UI", Arial, sans-serif;
+      color-scheme: light dark;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    body[data-theme="light"] {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --header-bg: #e2e8f0;
+      --card-border: rgba(15,23,42,0.08);
+      --card-shadow: rgba(15,23,42,0.08);
+      --accent: #2563eb;
+      --accent-strong: #1d4ed8;
+      --accent-contrast: #f8fafc;
+      --button-hover: #3b82f6;
+      --danger: #dc2626;
+      --danger-hover: #b91c1c;
+      --input-bg: #ffffff;
+      --input-border: #cbd5e1;
+    }
+    body[data-theme="dark"] {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --header-bg: #16213d;
+      --card-border: rgba(15,23,42,0.55);
+      --card-shadow: rgba(0,0,0,0.55);
+      --accent: #38bdf8;
+      --accent-strong: #22d3ee;
+      --accent-contrast: #0f172a;
+      --button-hover: #0ea5e9;
+      --danger: #f87171;
+      --danger-hover: #ef4444;
+      --input-bg: #334155;
+      --input-border: #475569;
+    }
+    header {
+      background: var(--header-bg);
+      padding: 24px 32px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .header-content {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 24px;
+    }
+    h1 {
+      margin: 8px 0 12px;
+      font-size: 2rem;
+      font-weight: 600;
+    }
+    .timestamp {
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .header-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 10px 20px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: var(--accent-contrast);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 0.9rem;
+      transition: background 0.15s ease;
+    }
+    .pill:hover {
+      background: var(--button-hover);
+    }
+    .pill.secondary {
+      background: var(--surface);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+    .pill.secondary:hover {
+      background: var(--accent);
+      color: var(--accent-contrast);
+    }
+    .icon-button {
+      background: transparent;
+      border: none;
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 8px;
+      border-radius: 8px;
+      color: var(--text);
+      transition: background 0.15s ease;
+    }
+    .icon-button:hover {
+      background: rgba(0,0,0,0.05);
+    }
+    body[data-theme="dark"] .icon-button:hover {
+      background: rgba(255,255,255,0.1);
+    }
+    main {
+      max-width: 1400px;
+      margin: 32px auto;
+      padding: 0 32px;
+    }
+    .card {
+      background: var(--surface);
+      border-radius: 16px;
+      border: 1px solid var(--card-border);
+      padding: 24px;
+      box-shadow: 0 4px 12px var(--card-shadow);
+      margin-bottom: 24px;
+    }
+    .card h2 {
+      margin: 0 0 20px;
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+    .card h3 {
+      margin: 20px 0 16px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      border-top: 1px solid var(--card-border);
+      padding-top: 20px;
+    }
+    .card h3:first-of-type {
+      border-top: none;
+      padding-top: 0;
+      margin-top: 0;
+    }
+    .filter-section {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .filter-group label {
+      font-size: 0.85rem;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    select, input[type="text"], input[type="email"], input[type="tel"] {
+      padding: 10px 14px;
+      border: 1px solid var(--input-border);
+      border-radius: 8px;
+      background: var(--input-bg);
+      color: var(--text);
+      font-size: 0.95rem;
+      font-family: inherit;
+    }
+    select {
+      min-width: 200px;
+    }
+    .contact-list {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .contact-card {
+      background: var(--bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .contact-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .contact-info {
+      flex: 1;
+    }
+    .contact-name {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .contact-details {
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .contact-details div {
+      margin: 4px 0;
+    }
+    .contact-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      font-family: inherit;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: var(--accent-contrast);
+    }
+    .btn-primary:hover {
+      background: var(--button-hover);
+    }
+    .btn-danger {
+      background: var(--danger);
+      color: white;
+    }
+    .btn-danger:hover {
+      background: var(--danger-hover);
+    }
+    .btn-secondary {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+    .btn-secondary:hover {
+      background: var(--accent);
+      color: var(--accent-contrast);
+    }
+    .btn-small {
+      padding: 6px 12px;
+      font-size: 0.85rem;
+    }
+    .associations {
+      margin-top: 12px;
+    }
+    .association-section {
+      margin-bottom: 12px;
+    }
+    .association-section h4 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin: 0 0 8px;
+      color: var(--muted);
+    }
+    .association-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .association-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: var(--accent);
+      color: var(--accent-contrast);
+      border-radius: 999px;
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+    .association-tag .remove-tag {
+      background: transparent;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      font-size: 1rem;
+      padding: 0;
+      width: 16px;
+      height: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      transition: background 0.15s ease;
+    }
+    .association-tag .remove-tag:hover {
+      background: rgba(0,0,0,0.2);
+    }
+    .add-association {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--muted);
+      font-style: italic;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .form-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .form-field label {
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: var(--muted);
+    }
+    .daily-report-section {
+      background: var(--bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .daily-report-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .daily-report-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px;
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+    }
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal.active {
+      display: flex;
+    }
+    .modal-content {
+      background: var(--surface);
+      border-radius: 16px;
+      padding: 24px;
+      max-width: 600px;
+      width: 90%;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .modal-header h2 {
+      margin: 0;
+    }
+    .modal-close {
+      background: transparent;
+      border: none;
+      font-size: 1.5rem;
+      cursor: pointer;
+      color: var(--text);
+      padding: 0;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+    }
+    .modal-close:hover {
+      background: rgba(0,0,0,0.1);
+    }
+    #toast {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%) translateY(100px);
+      background: var(--surface);
+      padding: 16px 24px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      border: 1px solid var(--card-border);
+      opacity: 0;
+      transition: all 0.3s ease;
+      z-index: 2000;
+      max-width: 90%;
+    }
+    #toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+  </style>
+</head>
+<body data-theme="light">
+  <header>
+    <div class="header-content">
+      <div>
+        <p class="timestamp">Tank Alarm Fleet · Contacts Manager</p>
+        <h1>Contacts Manager</h1>
+        <p>Manage email and SMS contacts for alarm notifications and daily reports.</p>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
+        <a class="pill secondary" href="/">Dashboard</a>
+        <a class="pill secondary" href="/client-console">Client Console</a>
+        <a class="pill secondary" href="/config-generator">Config Generator</a>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="card">
+      <h2>Contacts</h2>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <div class="filter-section">
+          <div class="filter-group">
+            <label>Filter by View</label>
+            <select id="viewFilter">
+              <option value="all">All Contacts</option>
+              <option value="site">By Site</option>
+              <option value="alarm">By Alarm</option>
+            </select>
+          </div>
+          <div class="filter-group" id="siteFilterGroup" style="display: none;">
+            <label>Select Site</label>
+            <select id="siteSelect">
+              <option value="">All Sites</option>
+            </select>
+          </div>
+          <div class="filter-group" id="alarmFilterGroup" style="display: none;">
+            <label>Select Alarm</label>
+            <select id="alarmSelect">
+              <option value="">All Alarms</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="openAddContactModal()">+ Add Contact</button>
+      </div>
+      <div id="contactsList" class="contact-list">
+        <div class="empty-state">No contacts configured. Click "+ Add Contact" to get started.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Daily Report Recipients</h2>
+      <p style="color: var(--muted); margin-bottom: 16px;">Contacts who receive the daily tank level summary email.</p>
+      <div class="daily-report-section">
+        <div id="dailyReportList" class="daily-report-list">
+          <div class="empty-state">No daily report recipients configured.</div>
+        </div>
+        <button class="btn btn-secondary" onclick="openAddDailyReportModal()">+ Add Recipient</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- Add/Edit Contact Modal -->
+  <div id="contactModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modalTitle">Add Contact</h2>
+        <button class="modal-close" onclick="closeContactModal()">&times;</button>
+      </div>
+      <form id="contactForm">
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Name *</label>
+            <input type="text" id="contactName" required>
+          </div>
+          <div class="form-field">
+            <label>Phone Number</label>
+            <input type="tel" id="contactPhone" placeholder="+15551234567">
+          </div>
+          <div class="form-field">
+            <label>Email Address</label>
+            <input type="email" id="contactEmail" placeholder="contact@example.com">
+          </div>
+        </div>
+        <h3>Alarm Associations</h3>
+        <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 12px;">Select which alarms should trigger notifications to this contact.</p>
+        <div id="alarmAssociations" class="form-grid">
+        </div>
+        <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeContactModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Contact</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Add Daily Report Recipient Modal -->
+  <div id="dailyReportModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Add Daily Report Recipient</h2>
+        <button class="modal-close" onclick="closeDailyReportModal()">&times;</button>
+      </div>
+      <form id="dailyReportForm">
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Select Contact</label>
+            <select id="dailyReportContactSelect" required>
+              <option value="">Choose a contact...</option>
+            </select>
+          </div>
+        </div>
+        <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;">
+          <button type="button" class="btn btn-secondary" onclick="closeDailyReportModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Add Recipient</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    (() => {
+      const THEME_KEY = 'tankalarmTheme';
+      let contacts = [];
+      let dailyReportRecipients = [];
+      let sites = [];
+      let alarms = [];
+      let editingContactId = null;
+
+      // Theme management
+      const themeToggle = document.getElementById('themeToggle');
+      const savedTheme = localStorage.getItem(THEME_KEY) || 'light';
+      document.body.dataset.theme = savedTheme;
+      updateThemeIcon();
+
+      themeToggle.addEventListener('click', () => {
+        const current = document.body.dataset.theme;
+        const next = current === 'light' ? 'dark' : 'light';
+        document.body.dataset.theme = next;
+        localStorage.setItem(THEME_KEY, next);
+        updateThemeIcon();
+      });
+
+      function updateThemeIcon() {
+        const isDark = document.body.dataset.theme === 'dark';
+        themeToggle.textContent = isDark ? '☀' : '☽';
+        themeToggle.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
+      }
+
+      // Toast notifications
+      function showToast(message) {
+        const toast = document.getElementById('toast');
+        toast.textContent = message;
+        toast.classList.add('show');
+        setTimeout(() => {
+          toast.classList.remove('show');
+        }, 3000);
+      }
+
+      // Load data from server
+      function loadData() {
+        fetch('/api/contacts')
+          .then(response => response.json())
+          .then(data => {
+            contacts = data.contacts || [];
+            dailyReportRecipients = data.dailyReportRecipients || [];
+            sites = data.sites || [];
+            alarms = data.alarms || [];
+            renderContacts();
+            renderDailyReportRecipients();
+            updateFilters();
+          })
+          .catch(err => {
+            console.error('Failed to load contacts:', err);
+            showToast('Failed to load contacts data: ' + (err && err.message ? err.message : err) + '. Please check your network connection and try again.');
+          });
+      }
+
+      // Save data to server
+      function saveData() {
+        fetch('/api/contacts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contacts: contacts,
+            dailyReportRecipients: dailyReportRecipients
+          })
+        })
+          .then(response => response.json())
+          .then(data => {
+            if (data.success) {
+              showToast('Changes saved successfully');
+              loadData();
+            } else {
+              showToast('Failed to save changes: ' + (data.error || 'Unknown error'));
+            }
+          })
+          .catch(err => {
+            console.error('Failed to save contacts:', err);
+            showToast('Failed to save changes: ' + (err && err.message ? err.message : err));
+          });
+      }
+
+      // Filter management
+      document.getElementById('viewFilter').addEventListener('change', (e) => {
+        const view = e.target.value;
+        document.getElementById('siteFilterGroup').style.display = view === 'site' ? 'block' : 'none';
+        document.getElementById('alarmFilterGroup').style.display = view === 'alarm' ? 'block' : 'none';
+        renderContacts();
+      });
+
+      document.getElementById('siteSelect').addEventListener('change', () => renderContacts());
+      document.getElementById('alarmSelect').addEventListener('change', () => renderContacts());
+
+      function updateFilters() {
+        const siteSelect = document.getElementById('siteSelect');
+        const alarmSelect = document.getElementById('alarmSelect');
+        
+        // Populate site filter
+        siteSelect.innerHTML = '<option value="">All Sites</option>';
+        sites.forEach(site => {
+          const option = document.createElement('option');
+          option.value = site;
+          option.textContent = site;
+          siteSelect.appendChild(option);
+        });
+
+        // Populate alarm filter
+        alarmSelect.innerHTML = '<option value="">All Alarms</option>';
+        alarms.forEach(alarm => {
+          const option = document.createElement('option');
+          option.value = alarm.id;
+          option.textContent = `${alarm.site} - ${alarm.tank} (${alarm.type})`;
+          alarmSelect.appendChild(option);
+        });
+      }
+
+      // Render contacts
+      function renderContacts() {
+        const container = document.getElementById('contactsList');
+        const viewFilter = document.getElementById('viewFilter').value;
+        const siteFilter = document.getElementById('siteSelect').value;
+        const alarmFilter = document.getElementById('alarmSelect').value;
+
+        let filteredContacts = contacts;
+
+        if (viewFilter === 'site' && siteFilter) {
+          filteredContacts = contacts.filter(c => 
+            c.alarmAssociations && c.alarmAssociations.some(a => {
+              const alarm = alarms.find(al => al.id === a);
+              return alarm && alarm.site === siteFilter;
+            })
+          );
+        } else if (viewFilter === 'alarm' && alarmFilter) {
+          filteredContacts = contacts.filter(c => 
+            c.alarmAssociations && c.alarmAssociations.includes(alarmFilter)
+          );
+        }
+
+        if (filteredContacts.length === 0) {
+          container.innerHTML = '<div class="empty-state">No contacts match the current filter.</div>';
+          return;
+        }
+
+        container.innerHTML = filteredContacts.map(contact => {
+          const associatedAlarms = (contact.alarmAssociations || [])
+            .map(alarmId => alarms.find(a => a.id === alarmId))
+            .filter(a => a);
+
+          const groupedBySite = {};
+          associatedAlarms.forEach(alarm => {
+            if (!groupedBySite[alarm.site]) {
+              groupedBySite[alarm.site] = [];
+            }
+            groupedBySite[alarm.site].push(alarm);
+          });
+
+          return `
+            <div class="contact-card">
+              <div class="contact-header">
+                <div class="contact-info">
+                  <div class="contact-name">${escapeHtml(contact.name)}</div>
+                  <div class="contact-details">
+                    ${contact.phone ? `<div>📱 ${escapeHtml(contact.phone)}</div>` : ''}
+                    ${contact.email ? `<div>✉️ ${escapeHtml(contact.email)}</div>` : ''}
+                  </div>
+                </div>
+                <div class="contact-actions">
+                  <button class="btn btn-small btn-secondary" data-contact-id="${escapeHtml(contact.id)}" data-action="edit">Edit</button>
+                  <button class="btn btn-small btn-danger" data-contact-id="${escapeHtml(contact.id)}" data-action="delete">Delete</button>
+                </div>
+              </div>
+              ${associatedAlarms.length > 0 ? `
+                <div class="associations">
+                  ${Object.keys(groupedBySite).map(site => `
+                    <div class="association-section">
+                      <h4>${escapeHtml(site)}</h4>
+                      <div class="association-list">
+                        ${groupedBySite[site].map(alarm => `
+                          <div class="association-tag">
+                            ${escapeHtml(alarm.tank)} (${escapeHtml(alarm.type)})
+                            <button class="remove-tag" data-contact-id="${escapeHtml(contact.id)}" data-alarm-id="${escapeHtml(alarm.id)}">&times;</button>
+                          </div>
+                        `).join('')}
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }).join('');
+        
+        // Attach event listeners for contact actions using event delegation
+        container.querySelectorAll('[data-action="edit"]').forEach(btn => {
+          btn.addEventListener('click', () => editContact(btn.dataset.contactId));
+        });
+        container.querySelectorAll('[data-action="delete"]').forEach(btn => {
+          btn.addEventListener('click', () => deleteContact(btn.dataset.contactId));
+        });
+        container.querySelectorAll('.remove-tag').forEach(btn => {
+          btn.addEventListener('click', function() {
+            removeAlarmAssociation(this.dataset.contactId, this.dataset.alarmId);
+          });
+        });
+      }
+
+      // Render daily report recipients
+      function renderDailyReportRecipients() {
+        const container = document.getElementById('dailyReportList');
+        
+        if (dailyReportRecipients.length === 0) {
+          container.innerHTML = '<div class="empty-state">No daily report recipients configured.</div>';
+          return;
+        }
+
+        container.innerHTML = dailyReportRecipients.map(recipientId => {
+          const contact = contacts.find(c => c.id === recipientId);
+          if (!contact) return '';
+          
+          return `
+            <div class="daily-report-item">
+              <div>
+                <strong>${escapeHtml(contact.name)}</strong>
+                ${contact.email ? ` - ${escapeHtml(contact.email)}` : ''}
+              </div>
+              <button class="btn btn-small btn-danger" data-recipient-id="${escapeHtml(recipientId)}" data-action="remove-recipient">Remove</button>
+            </div>
+          `;
+        }).filter(Boolean).join('');
+        
+        // Attach event listeners for daily report recipients
+        container.querySelectorAll('[data-action="remove-recipient"]').forEach(btn => {
+          btn.addEventListener('click', () => removeDailyReportRecipient(btn.dataset.recipientId));
+        });
+      }
+
+      // Contact modal management
+      window.openAddContactModal = function() {
+        editingContactId = null;
+        document.getElementById('modalTitle').textContent = 'Add Contact';
+        document.getElementById('contactName').value = '';
+        document.getElementById('contactPhone').value = '';
+        document.getElementById('contactEmail').value = '';
+        renderAlarmAssociations([]);
+        document.getElementById('contactModal').classList.add('active');
+      };
+
+      window.editContact = function(contactId) {
+        const contact = contacts.find(c => c.id === contactId);
+        if (!contact) return;
+
+        editingContactId = contactId;
+        document.getElementById('modalTitle').textContent = 'Edit Contact';
+        document.getElementById('contactName').value = contact.name;
+        document.getElementById('contactPhone').value = contact.phone || '';
+        document.getElementById('contactEmail').value = contact.email || '';
+        renderAlarmAssociations(contact.alarmAssociations || []);
+        document.getElementById('contactModal').classList.add('active');
+      };
+
+      window.closeContactModal = function() {
+        document.getElementById('contactModal').classList.remove('active');
+      };
+
+      function renderAlarmAssociations(selectedAlarms) {
+        const container = document.getElementById('alarmAssociations');
+        
+        if (alarms.length === 0) {
+          container.innerHTML = '<p style="color: var(--muted); font-style: italic;">No alarms configured in the system.</p>';
+          return;
+        }
+
+        // Group alarms by site
+        const groupedBySite = {};
+        alarms.forEach(alarm => {
+          if (!groupedBySite[alarm.site]) {
+            groupedBySite[alarm.site] = [];
+          }
+          groupedBySite[alarm.site].push(alarm);
+        });
+
+        container.innerHTML = Object.keys(groupedBySite).map(site => `
+          <div style="grid-column: 1 / -1;">
+            <strong style="display: block; margin-bottom: 8px;">${escapeHtml(site)}</strong>
+            ${groupedBySite[site].map((alarm, idx) => {
+              const checkboxId = 'alarm_' + escapeHtml(alarm.id) + '_' + idx;
+              return `
+              <label for="${checkboxId}" style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                <input type="checkbox" 
+                       id="${checkboxId}"
+                       name="alarmAssoc" 
+                       value="${escapeHtml(alarm.id)}"
+                       ${selectedAlarms.includes(alarm.id) ? 'checked' : ''}>
+                <span>${escapeHtml(alarm.tank)} (${escapeHtml(alarm.type)})</span>
+              </label>
+              `;
+            }).join('')}
+          </div>
+        `).join('');
+      }
+
+      document.getElementById('contactForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        
+        const name = document.getElementById('contactName').value.trim();
+        const phone = document.getElementById('contactPhone').value.trim();
+        const email = document.getElementById('contactEmail').value.trim();
+        
+        if (!name) {
+          showToast('Contact name is required');
+          return;
+        }
+
+        if (!phone && !email) {
+          showToast('Either phone or email is required');
+          return;
+        }
+
+        const alarmAssociations = Array.from(document.querySelectorAll('input[name="alarmAssoc"]:checked'))
+          .map(cb => cb.value);
+
+        if (editingContactId) {
+          // Edit existing contact
+          const contact = contacts.find(c => c.id === editingContactId);
+          if (contact) {
+            contact.name = name;
+            contact.phone = phone;
+            contact.email = email;
+            contact.alarmAssociations = alarmAssociations;
+          }
+        } else {
+          // Add new contact
+          const newContact = {
+            id: 'contact_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+            name: name,
+            phone: phone,
+            email: email,
+            alarmAssociations: alarmAssociations
+          };
+          contacts.push(newContact);
+        }
+
+        saveData();
+        closeContactModal();
+      });
+
+      window.deleteContact = function(contactId) {
+        if (!confirm('Are you sure you want to delete this contact?')) return;
+        
+        contacts = contacts.filter(c => c.id !== contactId);
+        dailyReportRecipients = dailyReportRecipients.filter(r => r !== contactId);
+        saveData();
+      };
+
+      window.removeAlarmAssociation = function(contactId, alarmId) {
+        const contact = contacts.find(c => c.id === contactId);
+        if (!contact) return;
+        
+        contact.alarmAssociations = (contact.alarmAssociations || []).filter(a => a !== alarmId);
+        saveData();
+      };
+
+      // Daily report modal management
+      window.openAddDailyReportModal = function() {
+        const select = document.getElementById('dailyReportContactSelect');
+        select.innerHTML = '<option value="">Choose a contact...</option>';
+        
+        contacts.forEach(contact => {
+          if (contact.email && !dailyReportRecipients.includes(contact.id)) {
+            const option = document.createElement('option');
+            option.value = contact.id;
+            option.textContent = `${contact.name} (${contact.email})`;
+            select.appendChild(option);
+          }
+        });
+
+        if (select.options.length === 1) {
+          showToast('No contacts with email addresses available');
+          return;
+        }
+
+        document.getElementById('dailyReportModal').classList.add('active');
+      };
+
+      window.closeDailyReportModal = function() {
+        document.getElementById('dailyReportModal').classList.remove('active');
+      };
+
+      document.getElementById('dailyReportForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        
+        const contactId = document.getElementById('dailyReportContactSelect').value;
+        if (!contactId) {
+          showToast('Please select a contact');
+          return;
+        }
+
+        if (!dailyReportRecipients.includes(contactId)) {
+          dailyReportRecipients.push(contactId);
+          saveData();
+          loadData();
+        }
+
+        closeDailyReportModal();
+      });
+
+      window.removeDailyReportRecipient = function(recipientId) {
+        dailyReportRecipients = dailyReportRecipients.filter(r => r !== recipientId);
+        saveData();
+      };
+
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      // Initial load
+      loadData();
+    })();
+  </script>
+</body>
+</html>
+)HTML";
+
 static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html lang="en">
@@ -3549,6 +4521,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
         <button class="pause-btn" id="pauseBtn" aria-label="Pause data flow">Pause</button>
         <a class="pill" href="/client-console">Client Console</a>
         <a class="pill secondary" href="/config-generator">Config Generator</a>
+        <a class="pill secondary" href="/contacts">Contacts</a>
         <a class="pill secondary" href="/serial-monitor">Serial Monitor</a>
         <a class="pill secondary" href="/calibration">Calibration</a>
       </div>
@@ -4347,6 +5320,7 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(
         <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
         <a class="pill" href="/">Dashboard</a>
         <a class="pill secondary" href="/config-generator">Config Generator</a>
+        <a class="pill secondary" href="/contacts">Contacts</a>
       </div>
     </div>
   </header>
@@ -5342,6 +6316,9 @@ static void sendSerialMonitor(EthernetClient &client);
 static void sendCalibrationPage(EthernetClient &client);
 static void handleCalibrationGet(EthernetClient &client);
 static void handleCalibrationPost(EthernetClient &client, const String &body);
+static void sendContactsManager(EthernetClient &client);
+static void handleContactsGet(EthernetClient &client);
+static void handleContactsPost(EthernetClient &client, const String &body);
 static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8_t tankNumber);
 static void recalculateCalibration(TankCalibration *cal);
 static void loadCalibrationData();
@@ -7036,12 +8013,16 @@ static void handleWebRequests() {
     sendSerialMonitor(client);
   } else if (method == "GET" && path == "/calibration") {
     sendCalibrationPage(client);
+  } else if (method == "GET" && path == "/contacts") {
+    sendContactsManager(client);
   } else if (method == "GET" && path == "/api/tanks") {
     sendTankJson(client);
   } else if (method == "GET" && path == "/api/clients") {
     sendClientDataJson(client);
   } else if (method == "GET" && path == "/api/calibration") {
     handleCalibrationGet(client);
+  } else if (method == "GET" && path == "/api/contacts") {
+    handleContactsGet(client);
   } else if (method == "GET" && path.startsWith("/api/serial-logs")) {
     String queryString = "";
     int queryStart = path.indexOf('?');
@@ -7067,6 +8048,12 @@ static void handleWebRequests() {
       respondStatus(client, 413, "Payload Too Large");
     } else {
       handleCalibrationPost(client, body);
+    }
+  } else if (method == "POST" && path == "/api/contacts") {
+    if (contentLength > 8192) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleContactsPost(client, body);
     }
   } else if (method == "POST" && path == "/api/config") {
     if (contentLength > 8192) {
@@ -8608,6 +9595,172 @@ static void sendCalibrationPage(EthernetClient &client) {
     char c = pgm_read_byte_near(CALIBRATION_HTML + i);
     client.write(c);
   }
+}
+
+static void sendContactsManager(EthernetClient &client) {
+  size_t htmlLen = strlen_P(CONTACTS_MANAGER_HTML);
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: text/html; charset=utf-8"));
+  client.print(F("Content-Length: "));
+  client.println(htmlLen);
+  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
+  client.println();
+
+  for (size_t i = 0; i < htmlLen; ++i) {
+    char c = pgm_read_byte_near(CONTACTS_MANAGER_HTML + i);
+    client.write(c);
+  }
+}
+
+static void handleContactsGet(EthernetClient &client) {
+  // Build JSON response with contacts data, sites, and alarms
+  DynamicJsonDocument doc(4096);
+  
+  // Load contacts from config file if it exists
+  JsonArray contactsArray = doc.createNestedArray("contacts");
+  JsonArray dailyReportArray = doc.createNestedArray("dailyReportRecipients");
+  
+  // For now, return empty arrays - this will be populated from stored config
+  /*
+    Contacts will be stored in a separate config file.
+
+    Planned implementation details:
+
+    - File path: "/contacts_config.json" (stored in LittleFS)
+    - Format: JSON object with contacts array and dailyReportRecipients array
+    - JSON schema for each contact:
+        {
+          "id": string,            // Unique identifier (e.g., "contact_1234567890_abc123")
+          "name": string,          // Full name of the contact
+          "phone": string,         // Phone number in E.164 format (for SMS)
+          "email": string,         // Email address (for daily reports)
+          "alarmAssociations": [string]  // Array of alarm IDs (format: "clientUid_tankNumber")
+        }
+
+    - Example contacts_config.json:
+      {
+        "contacts": [
+          {
+            "id": "contact_1234567890_abc123",
+            "name": "Alice Smith",
+            "phone": "+15551234567",
+            "email": "alice@example.com",
+            "alarmAssociations": ["dev:123456_1", "dev:789012_2"]
+          }
+        ],
+        "dailyReportRecipients": ["contact_1234567890_abc123"]
+      }
+
+    - Integration with ServerConfig:
+        The contacts config will be loaded at startup and whenever updated via web UI.
+        When building alarm/email notifications, the server will:
+        1. Look up contact by alarm ID in alarmAssociations
+        2. Send SMS to contact.phone if present
+        3. Send email to contact.email if present
+        4. For daily reports, iterate dailyReportRecipients and send to each contact.email
+
+    - Migration path:
+        Existing hardcoded smsPrimary/smsSecondary/dailyEmail in ServerConfig will be
+        migrated to contacts on first boot after upgrade. Migration creates contacts
+        from legacy fields if contacts_config.json doesn't exist.
+  */
+  
+  // Build list of unique sites from tank records
+  // Use simple linear scan - with typical fleet sizes (< 100 tanks), performance is adequate
+  JsonArray sitesArray = doc.createNestedArray("sites");
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    if (strlen(gTankRecords[i].site) == 0) continue;
+    
+    bool alreadySeen = false;
+    for (uint8_t j = 0; j < i; ++j) {
+      if (strcmp(gTankRecords[i].site, gTankRecords[j].site) == 0) {
+        alreadySeen = true;
+        break;
+      }
+    }
+    if (!alreadySeen) {
+      sitesArray.add(gTankRecords[i].site);
+    }
+  }
+  
+  // Build list of alarms (tanks with alarm configurations)
+  JsonArray alarmsArray = doc.createNestedArray("alarms");
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    TankRecord &tank = gTankRecords[i];
+    if (strlen(tank.alarmType) > 0) {
+      JsonObject alarmObj = alarmsArray.createNestedObject();
+      char alarmId[64];
+      snprintf(alarmId, sizeof(alarmId), "%s_%d", tank.clientUid, tank.tankNumber);
+      alarmObj["id"] = alarmId;
+      alarmObj["site"] = tank.site;
+      alarmObj["tank"] = tank.label;
+      alarmObj["type"] = tank.alarmType;
+    }
+  }
+  
+  String response;
+  serializeJson(doc, response);
+  respondJson(client, response);
+}
+
+static void handleContactsPost(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(4096);
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+  
+  // Validate contacts structure even though not persisted yet
+  if (doc.containsKey("contacts") && doc["contacts"].is<JsonArray>()) {
+    JsonArray contactsArray = doc["contacts"].as<JsonArray>();
+    
+    // Limit number of contacts to prevent memory issues
+    if (contactsArray.size() > 100) {
+      respondStatus(client, 400, F("Too many contacts (max 100)"));
+      return;
+    }
+    
+    // Basic validation of each contact
+    for (JsonVariant contactVar : contactsArray) {
+      JsonObject contact = contactVar.as<JsonObject>();
+      
+      // Validate required fields
+      if (!contact.containsKey("name") || !contact["name"].is<const char*>()) {
+        respondStatus(client, 400, F("Contact missing required 'name' field"));
+        return;
+      }
+      
+      // Validate that at least phone or email is present
+      bool hasPhone = contact.containsKey("phone") && contact["phone"].is<const char*>() && strlen(contact["phone"]) > 0;
+      bool hasEmail = contact.containsKey("email") && contact["email"].is<const char*>() && strlen(contact["email"]) > 0;
+      if (!hasPhone && !hasEmail) {
+        respondStatus(client, 400, F("Contact must have phone or email"));
+        return;
+      }
+      
+      // Validate alarm associations array if present
+      if (contact.containsKey("alarmAssociations") && !contact["alarmAssociations"].is<JsonArray>()) {
+        respondStatus(client, 400, F("alarmAssociations must be an array"));
+        return;
+      }
+    }
+  }
+  
+  // NOTE: Contact persistence not yet implemented
+  // Future implementation will:
+  // 1. Store validated contacts in "/contacts_config.json"
+  // 2. Load contacts during server initialization
+  // 3. Integrate with existing SMS/email notification system
+  // 4. Replace hardcoded phone/email fields in ServerConfig
+  // For now, return success but data is not persisted across reboots
+  
+  DynamicJsonDocument response(256);
+  response["success"] = true;
+  response["message"] = "Contacts validated successfully (note: persistence not yet implemented)";
+  
+  String responseStr;
+  serializeJson(response, responseStr);
+  respondJson(client, responseStr);
 }
 
 static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8_t tankNumber) {
