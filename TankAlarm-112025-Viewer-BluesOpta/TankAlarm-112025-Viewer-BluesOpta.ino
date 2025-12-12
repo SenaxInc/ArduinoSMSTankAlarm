@@ -168,232 +168,7 @@ static double gNextSummaryFetchEpoch = 0.0;
 static double gLastSyncedEpoch = 0.0;
 static unsigned long gLastSyncMillis = 0;
 
-static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Tank Alarm Viewer</title>
-  <style>
-    :root {
-      --bg: #f8fafc;
-      --text: #0f172a;
-      --header-bg: #ffffff;
-      --meta-color: #475569;
-      --card-bg: #ffffff;
-      --table-border: rgba(15,23,42,0.08);
-    }
-    body[data-theme="dark"] {
-      --bg: #0f172a;
-      --text: #e2e8f0;
-      --header-bg: #1e293b;
-      --meta-color: #94a3b8;
-      --card-bg: #1e293b;
-      --table-border: rgba(255,255,255,0.08);
-    }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); transition: background 0.3s, color 0.3s; }
-    header { padding: 20px 28px; background: var(--header-bg); box-shadow: 0 2px 10px rgba(0,0,0,0.15); }
-    header h1 { margin: 0; font-size: 1.7rem; }
-    header .meta { margin-top: 12px; font-size: 0.95rem; color: var(--meta-color); display: flex; gap: 16px; flex-wrap: wrap; }
-    .title-row { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
-    .header-actions { display: flex; gap: 12px; align-items: center; }
-    .icon-button { width: 40px; height: 40px; border-radius: 50%; border: 1px solid rgba(148,163,184,0.4); background: var(--card-bg); color: var(--text); font-size: 1.1rem; cursor: pointer; }
-    main { padding: 24px; max-width: 1400px; margin: 0 auto; }
-    .card { background: var(--card-bg); border-radius: 16px; padding: 20px; box-shadow: 0 25px 60px rgba(15,23,42,0.15); border: 1px solid rgba(15,23,42,0.08); }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--table-border); }
-    th { text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.75rem; color: var(--meta-color); }
-    tr:last-child td { border-bottom: none; }
-    tr.alarm { background: rgba(220,38,38,0.08); }
-    body[data-theme="dark"] tr.alarm { background: rgba(220,38,38,0.18); }
-    .status-pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 12px; font-size: 0.85rem; }
-    .status-pill.ok { background: rgba(16,185,129,0.15); color: #34d399; }
-    .status-pill.alarm { background: rgba(248,113,113,0.2); color: #fca5a5; }
-    .timestamp { font-feature-settings: "tnum"; color: var(--meta-color); font-size: 0.9rem; }
-    footer { margin-top: 20px; color: var(--meta-color); font-size: 0.85rem; text-align: center; }
-  </style>
-</head>
-<body data-theme="light">
-  <header>
-    <div class="title-row">
-      <div>
-        <h1 id="viewerName">Tank Alarm Viewer</h1>
-        <div class="meta">
-          <span>Viewer UID: <code id="viewerUid">--</code></span>
-          <span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span>
-          <span>Summary Generated: <span id="summaryGenerated">--</span></span>
-          <span>Last Fetch: <span id="lastFetch">--</span></span>
-          <span>Next Scheduled Fetch: <span id="nextFetch">--</span></span>
-          <span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span>
-        </div>
-      </div>
-      <div class="header-actions">
-        <button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button>
-      </div>
-    </div>
-  </header>
-  <main>
-    <section class="card">
-      <div style="display:flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;">
-        <h2 style="margin:0; font-size:1.2rem;">Fleet Snapshot</h2>
-        <span class="timestamp">Dashboard auto-refresh: )HTML" STR(WEB_REFRESH_MINUTES) R"HTML( min</span>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Site</th>
-            <th>Tank</th>
-            <th>Level (ft/in)</th>
-            <th>24hr Change</th>
-            <th>Updated</th>
-          </tr>
-        </thead>
-        <tbody id="tankBody"></tbody>
-      </table>
-    </section>
-    <footer>
-      Viewer nodes are read-only mirrors. Configuration and permissions stay on the server fleet.
-    </footer>
-  </main>
-  <script>
-    (() => {
-      const THEME_KEY = 'tankalarmTheme';
-      const themeToggle = document.getElementById('themeToggle');
-      function applyTheme(next) {
-        const theme = next === 'dark' ? 'dark' : 'light';
-        document.body.dataset.theme = theme;
-        themeToggle.textContent = theme === 'dark' ? '☀' : '☾';
-        themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
-        localStorage.setItem(THEME_KEY, theme);
-      }
-      applyTheme(localStorage.getItem(THEME_KEY) || 'light');
-      themeToggle.addEventListener('click', () => {
-        const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
-        applyTheme(next);
-      });
-
-      const REFRESH_SECONDS = )HTML" STR(WEB_REFRESH_SECONDS) R"HTML(;
-      const els = {
-        viewerName: document.getElementById('viewerName'),
-        viewerUid: document.getElementById('viewerUid'),
-        sourceServer: document.getElementById('sourceServer'),
-        sourceUid: document.getElementById('sourceUid'),
-        summaryGenerated: document.getElementById('summaryGenerated'),
-        lastFetch: document.getElementById('lastFetch'),
-        nextFetch: document.getElementById('nextFetch'),
-        refreshHint: document.getElementById('refreshHint'),
-        tankBody: document.getElementById('tankBody')
-      };
-
-      const state = {
-        tanks: []
-      };
-
-      function applyTankData(data) {
-        els.viewerName.textContent = data.viewerName || 'Tank Alarm Viewer';
-        els.viewerUid.textContent = data.viewerUid || '--';
-        els.sourceServer.textContent = data.sourceServerName || 'Server';
-        els.sourceUid.textContent = data.sourceServerUid || '--';
-        els.summaryGenerated.textContent = formatEpoch(data.generatedEpoch);
-        els.lastFetch.textContent = formatEpoch(data.lastFetchEpoch);
-        els.nextFetch.textContent = formatEpoch(data.nextFetchEpoch);
-        els.refreshHint.textContent = describeCadence(data.refreshSeconds, data.baseHour);
-        state.tanks = data.tanks || [];
-        renderTankRows();
-      }
-
-      async function fetchTanks() {
-        try {
-          const res = await fetch('/api/tanks');
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          const data = await res.json();
-          applyTankData(data);
-        } catch (err) {
-          console.error('Viewer refresh failed', err);
-        }
-      }
-
-      function renderTankRows() {
-        const tbody = els.tankBody;
-        tbody.innerHTML = '';
-        const rows = state.tanks;
-        if (!rows.length) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = '<td colspan="5">No tank data available</td>';
-          tbody.appendChild(tr);
-          return;
-        }
-        const now = Date.now();
-        const staleThresholdMs = 93600000; // 26 hours
-        rows.forEach(tank => {
-          const tr = document.createElement('tr');
-          if (tank.alarm) tr.classList.add('alarm');
-          const isStale = tank.lastUpdate && ((now - (tank.lastUpdate * 1000)) > staleThresholdMs);
-          const staleWarning = isStale ? ' ⚠️' : '';
-          tr.innerHTML = `
-            <td>${escapeHtml(tank.site, '--')}</td>
-            <td>${escapeHtml(tank.label || 'Tank')} #${escapeHtml((tank.tank ?? '?'))}</td>
-            <td>${formatFeetInches(tank.levelInches)}</td>
-            <td>--</td>
-            <td>${formatEpoch(tank.lastUpdate)}${staleWarning}</td>`;
-          if (isStale) {
-            tr.style.opacity = '0.6';
-            tr.title = 'Data is over 26 hours old';
-          }
-          tbody.appendChild(tr);
-        });
-      }
-
-      function statusBadge(tank) {
-        if (!tank.alarm) {
-          return '<span class="status-pill ok">Normal</span>';
-        }
-        const label = escapeHtml(tank.alarmType || 'Alarm', 'Alarm');
-        return `<span class="status-pill alarm">${label}</span>`;
-      }
-
-      function formatFeetInches(inches) {
-        if (typeof inches !== 'number' || !isFinite(inches) || inches < 0) return '--';
-        const feet = Math.floor(inches / 12);
-        const remainingInches = inches - (feet * 12);
-        return `${feet}' ${remainingInches.toFixed(1)}"`;
-      }
-
-      function formatEpoch(epoch) {
-        if (!epoch) return '--';
-        const date = new Date(epoch * 1000);
-        if (isNaN(date.getTime())) return '--';
-        return date.toLocaleString();
-      }
-
-      function describeCadence(seconds, baseHour) {
-        const hours = seconds ? (seconds / 3600).toFixed(1).replace(/\.0$/, '') : '6';
-        const hourLabel = (typeof baseHour === 'number') ? baseHour : 6;
-        return `${hours} h cadence · starts ${hourLabel}:00`;
-      }
-
-      function escapeHtml(value, fallback = '') {
-        if (value === undefined || value === null || value === '') {
-          return fallback;
-        }
-        const entityMap = {
-          '&': '&amp;',
-          '<': '&lt;',
-          '>': '&gt;',
-          '"': '&quot;',
-          "'": '&#39;'
-        };
-        return String(value).replace(/[&<>"']/g, c => entityMap[c] || c);
-      }
-
-      fetchTanks();
-      setInterval(() => fetchTanks(), REFRESH_SECONDS * 1000);
-    })();
-  </script>
-</body>
-</html>
-)HTML";
+static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tank Alarm Viewer</title><style>:root{--bg:#f8fafc;--text:#0f172a;--header-bg:#ffffff;--meta-color:#475569;--card-bg:#ffffff;--table-border:rgba(15,23,42,0.08)}body[data-theme="dark"]{--bg:#0f172a;--text:#e2e8f0;--header-bg:#1e293b;--meta-color:#94a3b8;--card-bg:#1e293b;--table-border:rgba(255,255,255,0.08)}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);transition:background 0.3s,color 0.3s}header{padding:20px 28px;background:var(--header-bg);box-shadow:0 2px 10px rgba(0,0,0,0.15)}header h1{margin:0;font-size:1.7rem}header .meta{margin-top:12px;font-size:0.95rem;color:var(--meta-color);display:flex;gap:16px;flex-wrap:wrap}.title-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start}.header-actions{display:flex;gap:12px;align-items:center}.icon-button{width:40px;height:40px;border-radius:50%;border:1px solid rgba(148,163,184,0.4);background:var(--card-bg);color:var(--text);font-size:1.1rem;cursor:pointer}main{padding:24px;max-width:1400px;margin:0 auto}.card{background:var(--card-bg);border-radius:16px;padding:20px;box-shadow:0 25px 60px rgba(15,23,42,0.15);border:1px solid rgba(15,23,42,0.08)}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--table-border)}th{text-transform:uppercase;letter-spacing:0.05em;font-size:0.75rem;color:var(--meta-color)}tr:last-child td{border-bottom:none}tr.alarm{background:rgba(220,38,38,0.08)}body[data-theme="dark"] tr.alarm{background:rgba(220,38,38,0.18)}.status-pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:4px 12px;font-size:0.85rem}.status-pill.ok{background:rgba(16,185,129,0.15);color:#34d399}.status-pill.alarm{background:rgba(248,113,113,0.2);color:#fca5a5}.timestamp{font-feature-settings:"tnum";color:var(--meta-color);font-size:0.9rem}footer{margin-top:20px;color:var(--meta-color);font-size:0.85rem;text-align:center}</style></head><body data-theme="light"><header><div class="title-row"><div><h1 id="viewerName">Tank Alarm Viewer</h1><div class="meta"><span>Viewer UID: <code id="viewerUid">--</code></span><span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span><span>Summary Generated: <span id="summaryGenerated">--</span></span><span>Last Fetch: <span id="lastFetch">--</span></span><span>Next Scheduled Fetch: <span id="nextFetch">--</span></span><span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span></div></div><div class="header-actions"><button class="icon-button" id="themeToggle" aria-label="Switch to dark mode">&#9789;</button></div></div></header><main><section class="card"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"><h2 style="margin:0;font-size:1.2rem">Fleet Snapshot</h2><span class="timestamp">Dashboard auto-refresh: )HTML" STR(WEB_REFRESH_MINUTES) R"HTML( min</span></div><table><thead><tr><th>Site</th><th>Tank</th><th>Level (ft/in)</th><th>24hr Change</th><th>Updated</th></tr></thead><tbody id="tankBody"></tbody></table></section><footer>Viewer nodes are read-only mirrors. Configuration and permissions stay on the server fleet.</footer></main><script>(()=>{const THEME_KEY='tankalarmTheme';const themeToggle=document.getElementById('themeToggle');function applyTheme(next){const theme=next==='dark'?'dark':'light';document.body.dataset.theme=theme;themeToggle.textContent=theme==='dark'?'☀':'☾';themeToggle.setAttribute('aria-label',theme==='dark'?'Switch to light mode':'Switch to dark mode');localStorage.setItem(THEME_KEY,theme)}applyTheme(localStorage.getItem(THEME_KEY)||'light');themeToggle.addEventListener('click',()=>{const next=document.body.dataset.theme==='dark'?'light':'dark';applyTheme(next)});const REFRESH_SECONDS=)HTML" STR(WEB_REFRESH_SECONDS) R"HTML(;const els={viewerName:document.getElementById('viewerName'),viewerUid:document.getElementById('viewerUid'),sourceServer:document.getElementById('sourceServer'),sourceUid:document.getElementById('sourceUid'),summaryGenerated:document.getElementById('summaryGenerated'),lastFetch:document.getElementById('lastFetch'),nextFetch:document.getElementById('nextFetch'),refreshHint:document.getElementById('refreshHint'),tankBody:document.getElementById('tankBody')};const state={tanks:[]};function applyTankData(d){els.viewerName.textContent=d.vn||d.viewerName||'Tank Alarm Viewer';els.viewerUid.textContent=d.vi||d.viewerUid||'--';els.sourceServer.textContent=d.sn||d.sourceServerName||'Server';els.sourceUid.textContent=d.si||d.sourceServerUid||'--';els.summaryGenerated.textContent=formatEpoch(d.ge||d.generatedEpoch);els.lastFetch.textContent=formatEpoch(d.lf||d.lastFetchEpoch);els.nextFetch.textContent=formatEpoch(d.nf||d.nextFetchEpoch);els.refreshHint.textContent=describeCadence(d.rs||d.refreshSeconds,d.bh||d.baseHour);state.tanks=d.tanks||[];renderTankRows()}async function fetchTanks(){try{const res=await fetch('/api/tanks');if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();applyTankData(data)}catch(err){console.error('Viewer refresh failed',err)}}function renderTankRows(){const tbody=els.tankBody;tbody.innerHTML='';const rows=state.tanks;if(!rows.length){const tr=document.createElement('tr');tr.innerHTML='<td colspan="5">No tank data available</td>';tbody.appendChild(tr);return}const now=Date.now();const staleThresholdMs=93600000;rows.forEach(t=>{const tr=document.createElement('tr');const alarm=t.a!==undefined?t.a:t.alarm;if(alarm)tr.classList.add('alarm');const lastUpdate=t.u||t.lastUpdate;const isStale=lastUpdate&&((now-(lastUpdate*1000))>staleThresholdMs);const staleWarning=isStale?' ⚠️':'';tr.innerHTML=`<td>${escapeHtml(t.s||t.site,'--')}</td><td>${escapeHtml(t.n||t.label||'Tank')} #${escapeHtml((t.k??t.tank??'?'))}</td><td>${formatFeetInches(t.l!==undefined?t.l:t.levelInches)}</td><td>--</td><td>${formatEpoch(lastUpdate)}${staleWarning}</td>`;if(isStale){tr.style.opacity='0.6';tr.title='Data is over 26 hours old'}tbody.appendChild(tr)})}function statusBadge(t){const alarm=t.a!==undefined?t.a:t.alarm;if(!alarm){return'<span class="status-pill ok">Normal</span>'}const label=escapeHtml(t.at||t.alarmType||'Alarm','Alarm');return`<span class="status-pill alarm">${label}</span>`}function formatFeetInches(inches){if(typeof inches!=='number'||!isFinite(inches)||inches<0)return'--';const feet=Math.floor(inches/12);const remainingInches=inches-(feet*12);return`${feet}' ${remainingInches.toFixed(1)}"`}function formatEpoch(epoch){if(!epoch)return'--';const date=new Date(epoch*1000);if(isNaN(date.getTime()))return'--';return date.toLocaleString()}function describeCadence(seconds,baseHour){const hours=seconds?(seconds/3600).toFixed(1).replace(/\.0$/,''):'6';const hourLabel=(typeof baseHour==='number')?baseHour:6;return`${hours} h cadence · starts ${hourLabel}:00`}function escapeHtml(value,fallback=''){if(value===undefined||value===null||value==='')return fallback;const entityMap={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};return String(value).replace(/[&<>"']/g,c=>entityMap[c]||c)}fetchTanks();setInterval(()=>fetchTanks(),REFRESH_SECONDS*1000)})();</script></body></html>)HTML";
 
 static void initializeNotecard();
 static void initializeEthernet();
@@ -751,34 +526,34 @@ static void sendDashboard(EthernetClient &client) {
 
 static void sendTankJson(EthernetClient &client) {
   DynamicJsonDocument doc(TANK_JSON_CAPACITY + 256);
-  doc["viewerName"] = VIEWER_NAME;
-  doc["viewerUid"] = gViewerUid;
-  doc["sourceServerName"] = gSourceServerName;
-  doc["sourceServerUid"] = gSourceServerUid;
-  doc["generatedEpoch"] = gLastSummaryGeneratedEpoch;
-  doc["lastFetchEpoch"] = gLastSummaryFetchEpoch;
-  doc["nextFetchEpoch"] = gNextSummaryFetchEpoch;
-  doc["refreshSeconds"] = gSourceRefreshSeconds;
-  doc["baseHour"] = gSourceBaseHour;
-  doc["summaryFile"] = VIEWER_SUMMARY_FILE;
-  doc["records"] = gTankRecordCount;
-  doc["lastSyncEpoch"] = gLastSyncedEpoch;
+  doc["vn"] = VIEWER_NAME;
+  doc["vi"] = gViewerUid;
+  doc["sn"] = gSourceServerName;
+  doc["si"] = gSourceServerUid;
+  doc["ge"] = gLastSummaryGeneratedEpoch;
+  doc["lf"] = gLastSummaryFetchEpoch;
+  doc["nf"] = gNextSummaryFetchEpoch;
+  doc["rs"] = gSourceRefreshSeconds;
+  doc["bh"] = gSourceBaseHour;
+  doc["sf"] = VIEWER_SUMMARY_FILE;
+  doc["rc"] = gTankRecordCount;
+  doc["ls"] = gLastSyncedEpoch;
 
   JsonArray arr = doc.createNestedArray("tanks");
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
     JsonObject obj = arr.createNestedObject();
-    obj["client"] = gTankRecords[i].clientUid;
-    obj["site"] = gTankRecords[i].site;
-    obj["label"] = gTankRecords[i].label;
-    obj["tank"] = gTankRecords[i].tankNumber;
-    obj["heightInches"] = gTankRecords[i].heightInches;
-    obj["levelInches"] = gTankRecords[i].levelInches;
-    obj["percent"] = gTankRecords[i].percent;
-    obj["alarm"] = gTankRecords[i].alarmActive;
-    obj["alarmType"] = gTankRecords[i].alarmType;
-    obj["lastUpdate"] = gTankRecords[i].lastUpdateEpoch;
+    obj["c"] = gTankRecords[i].clientUid;
+    obj["s"] = gTankRecords[i].site;
+    obj["n"] = gTankRecords[i].label;
+    obj["k"] = gTankRecords[i].tankNumber;
+    obj["h"] = gTankRecords[i].heightInches;
+    obj["l"] = gTankRecords[i].levelInches;
+    obj["p"] = gTankRecords[i].percent;
+    obj["a"] = gTankRecords[i].alarmActive;
+    obj["at"] = gTankRecords[i].alarmType;
+    obj["u"] = gTankRecords[i].lastUpdateEpoch;
     if (gTankRecords[i].vinVoltage > 0.0f) {
-      obj["vinVoltage"] = gTankRecords[i].vinVoltage;
+      obj["v"] = gTankRecords[i].vinVoltage;
     }
   }
 
@@ -825,22 +600,29 @@ static void fetchViewerSummary() {
 }
 
 static void handleViewerSummary(JsonDocument &doc, double epoch) {
-  const char *serverName = doc["serverName"] | "Tank Alarm Server";
-  const char *serverUid = doc["serverUid"] | "";
+  const char *serverName = doc["sn"] | doc["serverName"] | "Tank Alarm Server";
+  const char *serverUid = doc["si"] | doc["serverUid"] | "";
   strlcpy(gSourceServerName, serverName, sizeof(gSourceServerName));
   strlcpy(gSourceServerUid, serverUid, sizeof(gSourceServerUid));
 
-  if (doc.containsKey("refreshSeconds")) {
+  if (doc.containsKey("rs")) {
+    gSourceRefreshSeconds = doc["rs"].as<uint32_t>();
+  } else if (doc.containsKey("refreshSeconds")) {
     gSourceRefreshSeconds = doc["refreshSeconds"].as<uint32_t>();
-    if (gSourceRefreshSeconds == 0) {
-      gSourceRefreshSeconds = SUMMARY_FETCH_INTERVAL_SECONDS;
-    }
   }
-  if (doc.containsKey("baseHour")) {
+  if (gSourceRefreshSeconds == 0) {
+    gSourceRefreshSeconds = SUMMARY_FETCH_INTERVAL_SECONDS;
+  }
+
+  if (doc.containsKey("bh")) {
+    gSourceBaseHour = doc["bh"].as<uint8_t>();
+  } else if (doc.containsKey("baseHour")) {
     gSourceBaseHour = doc["baseHour"].as<uint8_t>();
   }
 
-  if (doc.containsKey("generatedEpoch")) {
+  if (doc.containsKey("ge")) {
+    gLastSummaryGeneratedEpoch = doc["ge"].as<double>();
+  } else if (doc.containsKey("generatedEpoch")) {
     gLastSummaryGeneratedEpoch = doc["generatedEpoch"].as<double>();
   } else {
     gLastSummaryGeneratedEpoch = (epoch > 0.0) ? epoch : currentEpoch();
@@ -855,17 +637,17 @@ static void handleViewerSummary(JsonDocument &doc, double epoch) {
       }
       TankRecord &rec = gTankRecords[gTankRecordCount++];
       memset(&rec, 0, sizeof(TankRecord));
-      strlcpy(rec.clientUid, item["client"] | "", sizeof(rec.clientUid));
-      strlcpy(rec.site, item["site"] | "", sizeof(rec.site));
-      strlcpy(rec.label, item["label"] | "Tank", sizeof(rec.label));
-      rec.tankNumber = item["tank"].is<uint8_t>() ? item["tank"].as<uint8_t>() : gTankRecordCount;
-      rec.heightInches = item["heightInches"].as<float>();
-      rec.levelInches = item["levelInches"].as<float>();
-      rec.percent = item["percent"].as<float>();
-      rec.alarmActive = item["alarm"].as<bool>();
-      strlcpy(rec.alarmType, item["alarmType"] | (rec.alarmActive ? "alarm" : "clear"), sizeof(rec.alarmType));
-      rec.lastUpdateEpoch = item["lastUpdate"].as<double>();
-      rec.vinVoltage = item["vinVoltage"].as<float>();
+      strlcpy(rec.clientUid, item["c"] | item["client"] | "", sizeof(rec.clientUid));
+      strlcpy(rec.site, item["s"] | item["site"] | "", sizeof(rec.site));
+      strlcpy(rec.label, item["n"] | item["label"] | "Tank", sizeof(rec.label));
+      rec.tankNumber = (item["k"] | item["tank"]).is<uint8_t>() ? (item["k"] | item["tank"]).as<uint8_t>() : gTankRecordCount;
+      rec.heightInches = (item["h"] | item["heightInches"]).as<float>();
+      rec.levelInches = (item["l"] | item["levelInches"]).as<float>();
+      rec.percent = (item["p"] | item["percent"]).as<float>();
+      rec.alarmActive = (item["a"] | item["alarm"]).as<bool>();
+      strlcpy(rec.alarmType, item["at"] | item["alarmType"] | (rec.alarmActive ? "alarm" : "clear"), sizeof(rec.alarmType));
+      rec.lastUpdateEpoch = (item["u"] | item["lastUpdate"]).as<double>();
+      rec.vinVoltage = (item["v"] | item["vinVoltage"]).as<float>();
     }
   }
 

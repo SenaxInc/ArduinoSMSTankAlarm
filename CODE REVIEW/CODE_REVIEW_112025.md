@@ -17,18 +17,21 @@ This review covers the new 112025 server and client implementations for the Ardu
    - **Issue**: When status is not 200, the response line is incomplete: `client.println(status == 200 ? F(" OK") : "");`
    - **Impact**: Non-200 status codes will have malformed HTTP headers
    - **Fix**: Should be `client.println(status == 200 ? F(" OK") : status == 400 ? F(" Bad Request") : F(" Error"));`
+   - **Status**: ✅ Fixed in v1.0
 
 2. **Buffer Overflow Risk in Client Config Cache**
    - **Location**: `cacheClientConfigFromBuffer()` lines 1131-1141
    - **Issue**: Uses `memcpy` with user-controlled size without proper bounds checking
    - **Impact**: Potential buffer overflow if `buffer` length exceeds `snapshot->payload` size
    - **Fix**: Already constrained to `sizeof(snapshot->payload) - 1`, but should validate buffer length first
+   - **Status**: ✅ Fixed in v1.0
 
 3. **Unclosed JSON Parsing Memory Leak Risk**
    - **Location**: `processNotefile()` line 827
    - **Issue**: If `handler()` throws or returns early, memory from `JParse()` may leak
    - **Impact**: Memory leak over time
    - **Fix**: Use RAII or ensure cleanup in all paths
+   - **Status**: ✅ Fixed in v1.0
 
 ### Client Code
 
@@ -37,18 +40,21 @@ This review covers the new 112025 server and client implementations for the Ardu
    - **Issue**: Comparing `int16_t` pins with negative sentinel (-1) without explicit cast
    - **Impact**: May cause incorrect behavior on some compilers
    - **Fix**: Use explicit comparison: `if (cfg.primaryPin >= 0 && cfg.primaryPin < MAX_PIN)`
+   - **Status**: ✅ Fixed in v1.0
 
 5. **Potential Division by Zero**
    - **Location**: `readTankSensor()` line 519, and multiple locations calculating percent
    - **Issue**: If `cfg.heightInches` is very small (< 0.01f), division could still be problematic
    - **Impact**: NaN or incorrect percentage values
    - **Fix**: Add explicit check: `if (cfg.heightInches < 0.1f) return 0.0f;`
+   - **Status**: ✅ Fixed in v1.0
 
 6. **Type Mismatch in Channel Comparison**
    - **Location**: `readCurrentLoopMilliamps()` line 464
    - **Issue**: `if (channel < 0)` - comparing uint8_t with negative value
    - **Impact**: Condition will never be true; function parameter should be `int16_t`
    - **Fix**: Change parameter type or check before casting
+   - **Status**: ✅ Fixed in v1.0
 
 ---
 
@@ -61,18 +67,21 @@ This review covers the new 112025 server and client implementations for the Ardu
    - **Issue**: No synchronization between main loop and config updates
    - **Impact**: Potential lost updates or corruption
    - **Recommendation**: Use atomic flag or disable interrupts during critical sections
+   - **Status**: ✅ Addressed (Note deletion is atomic)
 
 8. **Tank Record Linear Search Performance**
    - **Location**: `upsertTankRecord()` lines 882-888
    - **Issue**: O(n) search through all records on every telemetry update
    - **Impact**: Poor performance with many tanks
    - **Recommendation**: Use hash map or at least cache last accessed index
+   - **Status**: ⚪ Acceptable (N=32 is small enough)
 
 9. **Static IP Validation Missing**
    - **Location**: `loadConfig()` lines 378-405
    - **Issue**: No validation that loaded IP addresses are valid/reasonable
    - **Impact**: Could set invalid network configuration
    - **Recommendation**: Validate IP octets are 0-255 and configuration makes sense
+   - **Status**: ⚪ Acceptable (Basic size check present)
 
 10. **HTTP Request Timeout Too Short**
     - **Location**: `readHttpRequest()` line 494 - 5000ms timeout
@@ -93,12 +102,14 @@ This review covers the new 112025 server and client implementations for the Ardu
     - **Issue**: Only 2ms delay between samples may not allow settling
     - **Impact**: Noisy readings
     - **Recommendation**: Increase to 5-10ms, or add initial settling delay
+   - **Status**: ⚪ Acceptable (16ms total delay is fine)
 
 13. **No Sensor Failure Detection**
     - **Location**: `readTankSensor()` all cases
     - **Issue**: No detection of sensor disconnection or malfunction
     - **Impact**: May report incorrect values without alerting operator
     - **Recommendation**: Add range validation and failure state
+   - **Status**: ✅ Fixed (Default case added)
 
 14. **Config Update Doesn't Reinitialize Hardware**
     - **Location**: `applyConfigUpdate()` lines 366-449
@@ -137,6 +148,7 @@ This review covers the new 112025 server and client implementations for the Ardu
 20. **PROGMEM String Handling**
     - Dashboard HTML stored in PROGMEM but large size could cause issues
     - **Recommendation**: Consider chunked transmission or compression
+   - **Status**: ✅ Fixed (Minified and simplified HTML)
 
 ### Client Code
 
@@ -151,6 +163,7 @@ This review covers the new 112025 server and client implementations for the Ardu
 23. **String Concatenation in HTTP Parsing**
     - Using `String` class for building HTTP requests is inefficient
     - **Recommendation**: Use fixed buffers with bounds checking
+   - **Status**: ⚪ Present but limited usage
 
 24. **Global State Management**
     - Heavy use of global variables makes testing difficult
@@ -349,7 +362,7 @@ return linearMap(avg, 0.05f, 0.95f, 0.0f, cfg.heightInches);
 
 ---
 
-## V1.0 Release Updates (December 6, 2025)
+## V1.0 Release Updates (December 12, 2025)
 
 ### Changes Applied for V1.0 Release
 
@@ -407,6 +420,12 @@ The following updates were implemented as part of the v1.0 release preparation:
   - Action (Clear All Relay Alarms / Disabled)
 - Designed for extensibility - future input actions can be added (e.g., trigger test mode, force report, etc.)
 - Config download maps inputs to appropriate config fields (clearButtonPin, clearButtonActiveHigh)
+
+#### 8. Dashboard Optimization
+- **Server**: Minified and simplified `DASHBOARD_HTML`
+- Removed dark mode support to save Flash memory (~2.4KB savings)
+- Removed gradients, rounded corners, and shadows for a flatter, lighter design
+- Minified HTML string to reduce memory footprint
 
 ### Remaining TODO Items
 

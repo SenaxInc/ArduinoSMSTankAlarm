@@ -642,17 +642,22 @@ void loop() {
     sampleTanks();
   }
 
-  if (now - gLastConfigCheckMillis >= 600000UL) {  // Check every 10 minutes
+  // Determine polling interval based on power source
+  unsigned long inboundInterval = gConfig.solarPowered ? 
+      (unsigned long)SOLAR_INBOUND_INTERVAL_MINUTES * 60000UL : 
+      600000UL; // 10 minutes for grid power
+
+  if (now - gLastConfigCheckMillis >= inboundInterval) {
     gLastConfigCheckMillis = now;
     pollForConfigUpdates();
   }
 
-  if (now - gLastRelayCheckMillis >= 600000UL) {  // Check every 10 minutes
+  if (now - gLastRelayCheckMillis >= inboundInterval) {
     gLastRelayCheckMillis = now;
     pollForRelayCommands();
   }
 
-  if (now - gLastSerialRequestCheckMillis >= 600000UL) {  // Check every 10 minutes
+  if (now - gLastSerialRequestCheckMillis >= inboundInterval) {
     gLastSerialRequestCheckMillis = now;
     pollForSerialRequests();
   }
@@ -2313,27 +2318,27 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   TankRuntime &state = gTankState[idx];
 
   DynamicJsonDocument doc(768);
-  doc["client"] = gDeviceUID;
-  doc["site"] = gConfig.siteName;
-  doc["label"] = cfg.name;
-  doc["tank"] = cfg.tankNumber;
-  doc["id"] = String(cfg.id);
+  doc["c"] = gDeviceUID;
+  doc["s"] = gConfig.siteName;
+  doc["n"] = cfg.name;
+  doc["k"] = cfg.tankNumber;
+  doc["i"] = String(cfg.id);
   
   // Handle digital sensors differently in telemetry
   if (cfg.sensorType == SENSOR_DIGITAL) {
-    doc["sensorType"] = "digital";
+    doc["st"] = "digital";
     bool activated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
-    doc["activated"] = activated;  // Boolean state: true = switch activated
-    doc["levelInches"] = state.currentInches;  // 1.0 or 0.0
+    doc["act"] = activated;  // Boolean state: true = switch activated
+    doc["l"] = state.currentInches;  // 1.0 or 0.0
   } else if (cfg.sensorType == SENSOR_CURRENT_LOOP) {
-    doc["sensorType"] = "currentLoop";
-    doc["levelInches"] = state.currentInches;
-    doc["sensorMa"] = state.currentSensorMa;  // Raw 4-20mA reading
+    doc["st"] = "currentLoop";
+    doc["l"] = state.currentInches;
+    doc["ma"] = state.currentSensorMa;  // Raw 4-20mA reading
   } else {
-    doc["levelInches"] = state.currentInches;
+    doc["l"] = state.currentInches;
   }
-  doc["reason"] = reason;
-  doc["time"] = currentEpoch();
+  doc["r"] = reason;
+  doc["t"] = currentEpoch();
 
   publishNote(TELEMETRY_FILE, doc, syncNow);
 }
@@ -2457,16 +2462,16 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
   // Try to send via network if available
   if (gNotecardAvailable) {
     DynamicJsonDocument doc(768);
-    doc["client"] = gDeviceUID;
-    doc["site"] = gConfig.siteName;
-    doc["label"] = cfg.name;
-    doc["tank"] = cfg.tankNumber;
-    doc["type"] = alarmType;
-    doc["levelInches"] = inches;
-    doc["highThreshold"] = cfg.highAlarmThreshold;
-    doc["lowThreshold"] = cfg.lowAlarmThreshold;
-    doc["smsEnabled"] = allowSmsEscalation;
-    doc["time"] = currentEpoch();
+    doc["c"] = gDeviceUID;
+    doc["s"] = gConfig.siteName;
+    doc["n"] = cfg.name;
+    doc["k"] = cfg.tankNumber;
+    doc["y"] = alarmType;
+    doc["l"] = inches;
+    doc["th"] = cfg.highAlarmThreshold;
+    doc["tl"] = cfg.lowAlarmThreshold;
+    doc["se"] = allowSmsEscalation;
+    doc["t"] = currentEpoch();
 
     publishNote(ALARM_FILE, doc, true);
     Serial.print(F("Alarm sent for tank "));
