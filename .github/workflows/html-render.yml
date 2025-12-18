@@ -197,127 +197,96 @@ jobs:
           with open(ino_file, 'r', encoding='utf-8', errors='ignore') as f:
               content = f.read()
           
-          # Find the DASHBOARD_HTML constant
-          html_pattern = r'static const char DASHBOARD_HTML\[\] PROGMEM = R"HTML\((.*?)\)HTML"'
-          match = re.search(html_pattern, content, re.DOTALL)
+          current_time = int(time.time())
           
-          if match:
-              html_content = match.group(1)
+          # Sample data for dashboard and client console
+          sample_clients_data = {
+              "si": "dev:server001",
+              "srv": {
+                  "n": "Demo Tank Alarm Server",
+                  "cf": "demo-tankalarm-clients",
+                  "ps": False,
+                  "pc": True
+              },
+              "nde": current_time + 43200,
+              "lse": current_time - 180,
+              "cs": [
+                  {"c": "dev:client001", "s": "North Facility", "n": "Primary", "k": "1", "l": 78.5, "p": 85.3, "a": False, "u": current_time - 180, "v": 12.4},
+                  {"c": "dev:client001", "s": "North Facility", "n": "Secondary", "k": "2", "l": 45.2, "p": 52.1, "a": False, "u": current_time - 180, "v": 12.4},
+                  {"c": "dev:client002", "s": "South Facility", "n": "Storage", "k": "1", "l": 18.3, "p": 22.5, "a": True, "aType": "LOW", "u": current_time - 240, "v": 11.8},
+                  {"c": "dev:client003", "s": "East Facility", "n": "Main", "k": "1", "l": 92.1, "p": 95.8, "a": False, "u": current_time - 150, "v": 12.6},
+                  {"c": "dev:client004", "s": "West Facility", "n": "Backup", "k": "1", "l": 12.7, "p": 15.2, "a": True, "aType": "CRITICAL", "u": current_time - 90, "v": 10.2}
+              ]
+          }
+          
+          # Extract all HTML pages
+          html_pages = {
+              'DASHBOARD_HTML': 'dashboard',
+              'CONFIG_GENERATOR_HTML': 'config-generator',
+              'SERIAL_MONITOR_HTML': 'serial-monitor',
+              'CALIBRATION_HTML': 'calibration',
+              'CONTACTS_MANAGER_HTML': 'contacts',
+              'CLIENT_CONSOLE_HTML': 'client-console'
+          }
+          
+          for const_name, file_name in html_pages.items():
+              pattern = rf'static const char {const_name}\[\] PROGMEM = R"HTML\((.*?)\)HTML"'
+              match = re.search(pattern, content, re.DOTALL)
               
-              # Create sample data for the server dashboard
-              current_time = int(time.time())
-              sample_data = {
-                  "serverUid": "dev:server001",
-                  "server": {
-                      "name": "Demo Tank Alarm Server",
-                      "clientFleet": "demo-tankalarm-clients",
-                      "webRefreshSeconds": 60,
-                      "pinConfigured": True
-                  },
-                  "nextDailyEmailEpoch": current_time + 43200,  # 12 hours from now
-                  "lastSyncEpoch": current_time - 180,  # 3 minutes ago
-                  "clients": [
-                      {
-                          "uid": "dev:client001",
-                          "site": "North Facility",
-                          "lastUpdate": current_time - 180,
-                          "tanks": [
-                              {
-                                  "tank": 1,
-                                  "label": "Primary",
-                                  "levelInches": 78.5,
-                                  "percent": 85.3,
-                                  "alarm": False,
-                                  "lastUpdate": current_time - 180
-                              },
-                              {
-                                  "tank": 2,
-                                  "label": "Secondary",
-                                  "levelInches": 45.2,
-                                  "percent": 52.1,
-                                  "alarm": False,
-                                  "lastUpdate": current_time - 180
-                              }
-                          ]
-                      },
-                      {
-                          "uid": "dev:client002",
-                          "site": "South Facility",
-                          "lastUpdate": current_time - 240,
-                          "tanks": [
-                              {
-                                  "tank": 1,
-                                  "label": "Storage",
-                                  "levelInches": 18.3,
-                                  "percent": 22.5,
-                                  "alarm": True,
-                                  "alarmType": "LOW",
-                                  "lastUpdate": current_time - 240
-                              }
-                          ]
-                      },
-                      {
-                          "uid": "dev:client003",
-                          "site": "East Facility",
-                          "lastUpdate": current_time - 150,
-                          "tanks": [
-                              {
-                                  "tank": 1,
-                                  "label": "Main",
-                                  "levelInches": 92.1,
-                                  "percent": 95.8,
-                                  "alarm": False,
-                                  "lastUpdate": current_time - 150
-                              }
-                          ]
-                      },
-                      {
-                          "uid": "dev:client004",
-                          "site": "West Facility",
-                          "lastUpdate": current_time - 90,
-                          "tanks": [
-                              {
-                                  "tank": 1,
-                                  "label": "Backup",
-                                  "levelInches": 12.7,
-                                  "percent": 15.2,
-                                  "alarm": True,
-                                  "alarmType": "CRITICAL",
-                                  "lastUpdate": current_time - 90
-                              }
+              if match:
+                  html_content = match.group(1)
+                  
+                  # For dashboard, inject sample data
+                  if const_name == 'DASHBOARD_HTML':
+                      sample_json = json.dumps(sample_clients_data)
+                      html_content = html_content.replace('refreshData();', f'applyServerData({sample_json});')
+                  
+                  # For client console, inject sample data
+                  elif const_name == 'CLIENT_CONSOLE_HTML':
+                      sample_json = json.dumps(sample_clients_data)
+                      html_content = html_content.replace('refreshData();', f'applyServerData({sample_json}, "dev:client001");')
+                  
+                  # For serial monitor, inject sample log data
+                  elif const_name == 'SERIAL_MONITOR_HTML':
+                      sample_logs = {
+                          "logs": [
+                              {"timestamp": current_time - 60, "level": "INFO", "source": "server", "message": "Server initialized successfully"},
+                              {"timestamp": current_time - 45, "level": "INFO", "source": "server", "message": "Connected to Notehub"},
+                              {"timestamp": current_time - 30, "level": "DEBUG", "source": "server", "message": "Polling for client updates..."},
+                              {"timestamp": current_time - 15, "level": "INFO", "source": "server", "message": "Received telemetry from dev:client001"}
                           ]
                       }
-                  ]
-              }
-              
-              # Inject the sample data
-              sample_data_json = json.dumps(sample_data)
-              
-              # Replace the refreshData() call with data injection
-              html_content = html_content.replace(
-                  'refreshData();',
-                  f'applyServerData({sample_data_json}, null);'
-              )
-              
-              output_file = output_dir + '/dashboard.html'
-              with open(output_file, 'w', encoding='utf-8') as out:
-                  out.write(html_content)
-              
-              print(f'Extracted dashboard HTML: {len(html_content)} bytes')
-              print(f'Injected sample data with {len(sample_data["clients"])} clients')
-          
-          # Find the CONFIG_GENERATOR_HTML constant
-          config_pattern = r'static const char CONFIG_GENERATOR_HTML\[\] PROGMEM = R"HTML\((.*?)\)HTML"'
-          config_match = re.search(config_pattern, content, re.DOTALL)
-          
-          if config_match:
-              config_html = config_match.group(1)
-              
-              config_file = output_dir + '/config-generator.html'
-              with open(config_file, 'w', encoding='utf-8') as out:
-                  out.write(config_html)
-              
-              print(f'Extracted config generator HTML: {len(config_html)} bytes')
+                      sample_json = json.dumps(sample_logs)
+                      html_content = html_content.replace('refreshServerLogs();', f'renderLogs(els.serverLogs, {sample_json}.logs);')
+                  
+                  # For calibration, inject sample calibration data
+                  elif const_name == 'CALIBRATION_HTML':
+                      sample_cal = {
+                          "calibrations": [
+                              {"clientUid": "dev:client001", "tankNumber": 1, "entryCount": 5, "hasLearnedCalibration": True, "rSquared": 0.987, "learnedSlope": 7.42, "originalMaxValue": 120, "lastCalibrationEpoch": current_time - 86400},
+                              {"clientUid": "dev:client002", "tankNumber": 1, "entryCount": 2, "hasLearnedCalibration": False, "rSquared": 0, "learnedSlope": 0, "originalMaxValue": 96, "lastCalibrationEpoch": current_time - 172800}
+                          ],
+                          "logs": []
+                      }
+                      sample_tanks = {
+                          "tanks": [
+                              {"client": "dev:client001", "tank": 1, "site": "North Facility", "label": "Primary", "heightInches": 120, "levelInches": 78.5, "sensorMa": 14.2},
+                              {"client": "dev:client002", "tank": 1, "site": "South Facility", "label": "Storage", "heightInches": 96, "levelInches": 18.3, "sensorMa": 6.8}
+                          ]
+                      }
+                      html_content = html_content.replace('loadTanks();', f'tanks = {json.dumps(sample_tanks["tanks"])}; populateTankDropdowns();')
+                      html_content = html_content.replace('loadCalibrationData();', f'calibrations = {json.dumps(sample_cal["calibrations"])}; calibrationLogs = []; updateCalibrationStats(); updateCalibrationTable(); updateCalibrationLog();')
+                  
+                  # For contacts, inject sample contact data
+                  elif const_name == 'CONTACTS_MANAGER_HTML':
+                      # Just render the page without API calls
+                      html_content = html_content.replace('loadData();', '// Sample data mode - loadData() disabled for static preview')
+                  
+                  output_file = f'{output_dir}/{file_name}.html'
+                  with open(output_file, 'w', encoding='utf-8') as out:
+                      out.write(html_content)
+                  
+                  print(f'Extracted {file_name} HTML: {len(html_content)} bytes')
           EOF
 
       - name: Extract and render HTML for 112025 Viewer
@@ -601,11 +570,37 @@ jobs:
 
           This document contains screenshots of the web interface served by the TankAlarm-112025-Server-BluesOpta.
 
+          All web pages have been optimized for reduced resource usage on Arduino Opta devices using minified CSS and JavaScript.
+
           ## Dashboard
+          Main fleet telemetry dashboard showing server metadata, statistics, and fleet telemetry table with relay controls.
+
           ![Dashboard](screenshots/dashboard.png)
 
+          ## Client Console
+          Configuration management interface for remote clients with PIN-protected controls.
+
+          ![Client Console](screenshots/client-console.png)
+
           ## Config Generator
+          Create new client configurations with sensor definitions and alarm thresholds.
+
           ![Config Generator](screenshots/config-generator.png)
+
+          ## Serial Monitor
+          Debug log viewer with server and client serial output.
+
+          ![Serial Monitor](screenshots/serial-monitor.png)
+
+          ## Calibration
+          Calibration learning system with manual level reading submission and drift analysis.
+
+          ![Calibration](screenshots/calibration.png)
+
+          ## Contacts Manager
+          Contact and notification management with alarm associations.
+
+          ![Contacts Manager](screenshots/contacts.png)
 
           ---
           *Screenshots automatically generated by GitHub Actions*
@@ -619,7 +614,11 @@ jobs:
 
           This document contains screenshots of the web interface served by the TankAlarm-112025-Viewer-BluesOpta.
 
+          All web pages have been optimized for reduced resource usage on Arduino Opta devices using minified CSS and JavaScript.
+
           ## Dashboard
+          Read-only fleet telemetry dashboard showing server metadata and fleet snapshot with tank levels.
+
           ![Dashboard](screenshots/dashboard.png)
 
           ---
