@@ -2,8 +2,6 @@
 
 This document contains screenshots of the web interface served by the TankAlarm-112025-Server-BluesOpta.
 
-All web pages have been optimized for reduced resource usage on Arduino Opta devices using minified CSS and JavaScript.
-
 ## Dashboard
 Main fleet telemetry dashboard showing server metadata, statistics, and fleet telemetry table with relay controls.
 
