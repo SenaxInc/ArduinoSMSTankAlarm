@@ -3,6 +3,8 @@
 This document contains screenshots of the web interface served by the TankAlarm-112025-Viewer-BluesOpta.
 
 ## Dashboard
+Read-only fleet telemetry dashboard showing server metadata and fleet snapshot with tank levels.
+
 ![Dashboard](screenshots/dashboard.png)
 
 ---
