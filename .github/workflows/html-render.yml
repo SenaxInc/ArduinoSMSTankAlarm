@@ -264,7 +264,7 @@ setTimeout(() => {{
                       html_unlocked = html_content.replace('refreshData();', f'''
 // Inject sample data and simulate unlocked state
 pinState.configured = true;
-pinState.value = '1234';  // Simulated unlocked state
+pinState.value = 'PREVIEW';  // Simulated unlocked state for preview only
 applyServerData({sample_json}, "dev:client001");
 
 // Force hide the PIN modal for the unlocked preview
@@ -327,7 +327,8 @@ setTimeout(() => {{
                           out.write(html_with_pin)
                       print(f'Extracted client-console-pin-setup HTML: {len(html_with_pin)} bytes')
                       
-                      # Write the unlocked version (overwrite the main one)
+                      # Replace the primary version with the unlocked version
+                      # (The original html_content was written above, now replace with unlocked version)
                       output_file_unlocked = f'{output_dir}/{file_name}.html'
                       with open(output_file_unlocked, 'w', encoding='utf-8') as out:
                           out.write(html_unlocked)
