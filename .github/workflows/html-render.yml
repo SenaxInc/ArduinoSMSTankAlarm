@@ -243,10 +243,38 @@ jobs:
                       sample_json = json.dumps(sample_clients_data)
                       html_content = html_content.replace('refreshData();', f'applyServerData({sample_json});')
                   
-                  # For client console, inject sample data
+                  # For client console, inject sample data and create TWO versions
                   elif const_name == 'CLIENT_CONSOLE_HTML':
                       sample_json = json.dumps(sample_clients_data)
-                      html_content = html_content.replace('refreshData();', f'applyServerData({sample_json}, "dev:client001");')
+                      
+                      # Version 1: With PIN modal showing (PIN setup view)
+                      html_with_pin = html_content.replace('refreshData();', f'''
+// Inject sample data
+applyServerData({sample_json}, "dev:client001");
+
+// Show PIN setup modal immediately for preview
+setTimeout(() => {{
+  pinState.configured = false;
+  pinState.value = '';
+  showPinModal('setup');
+}}, 100);
+''')
+                      
+                      # Version 2: Without PIN modal (unlocked view)
+                      html_unlocked = html_content.replace('refreshData();', f'''
+// Inject sample data and simulate unlocked state
+pinState.configured = true;
+pinState.value = 'PREVIEW';  // Simulated unlocked state for preview only
+applyServerData({sample_json}, "dev:client001");
+
+// Force hide the PIN modal for the unlocked preview
+setTimeout(() => {{
+  const modal = document.getElementById('pinModal');
+  if (modal) {{
+    modal.classList.add('hidden');
+  }}
+}}, 200);
+''')
                   
                   # For serial monitor, inject sample log data
                   elif const_name == 'SERIAL_MONITOR_HTML':
@@ -284,11 +312,25 @@ jobs:
                       # Just render the page without API calls
                       html_content = html_content.replace('loadData();', '// Sample data mode - loadData() disabled for static preview')
                   
-                  output_file = f'{output_dir}/{file_name}.html'
-                  with open(output_file, 'w', encoding='utf-8') as out:
-                      out.write(html_content)
-                  
-                  print(f'Extracted {file_name} HTML: {len(html_content)} bytes')
+                  # For CLIENT_CONSOLE_HTML, write the special versions
+                  if const_name == 'CLIENT_CONSOLE_HTML':
+                      # Write the PIN setup version
+                      output_file_pin = f'{output_dir}/client-console-pin-setup.html'
+                      with open(output_file_pin, 'w', encoding='utf-8') as out:
+                          out.write(html_with_pin)
+                      print(f'Extracted client-console-pin-setup HTML: {len(html_with_pin)} bytes')
+                      
+                      # Write the unlocked version as the primary file
+                      output_file = f'{output_dir}/{file_name}.html'
+                      with open(output_file, 'w', encoding='utf-8') as out:
+                          out.write(html_unlocked)
+                      print(f'Extracted client-console (unlocked) HTML: {len(html_unlocked)} bytes')
+                  else:
+                      # Write the primary version for all other pages
+                      output_file = f'{output_dir}/{file_name}.html'
+                      with open(output_file, 'w', encoding='utf-8') as out:
+                          out.write(html_content)
+                      print(f'Extracted {file_name} HTML: {len(html_content)} bytes')
           EOF
 
       - name: Extract and render HTML for 112025 Viewer
@@ -577,8 +619,13 @@ jobs:
 
           ![Dashboard](screenshots/dashboard.png)
 
+          ## Client Console - PIN Setup
+          PIN setup modal shown on first access to secure the configuration interface.
+
+          ![Client Console - PIN Setup](screenshots/client-console-pin-setup.png)
+
           ## Client Console
-          Configuration management interface for remote clients with PIN-protected controls.
+          Configuration management interface for remote clients with PIN-protected controls (unlocked view).
 
           ![Client Console](screenshots/client-console.png)
 
