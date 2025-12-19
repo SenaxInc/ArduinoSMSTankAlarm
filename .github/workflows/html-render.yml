@@ -249,32 +249,32 @@ jobs:
                       
                       # Version 1: With PIN modal showing (PIN setup view)
                       html_with_pin = html_content.replace('refreshData();', f'''
-// Inject sample data
-applyServerData({sample_json}, "dev:client001");
-
-// Show PIN setup modal immediately for preview
-setTimeout(() => {{
-  pinState.configured = false;
-  pinState.value = '';
-  showPinModal('setup');
-}}, 100);
-''')
+          // Inject sample data
+          applyServerData({sample_json}, "dev:client001");
+          
+          // Show PIN setup modal immediately for preview
+          setTimeout(() => {{
+            pinState.configured = false;
+            pinState.value = '';
+            showPinModal('setup');
+          }}, 100);
+          ''')
                       
                       # Version 2: Without PIN modal (unlocked view)
                       html_unlocked = html_content.replace('refreshData();', f'''
-// Inject sample data and simulate unlocked state
-pinState.configured = true;
-pinState.value = 'PREVIEW';  // Simulated unlocked state for preview only
-applyServerData({sample_json}, "dev:client001");
-
-// Force hide the PIN modal for the unlocked preview
-setTimeout(() => {{
-  const modal = document.getElementById('pinModal');
-  if (modal) {{
-    modal.classList.add('hidden');
-  }}
-}}, 200);
-''')
+          // Inject sample data and simulate unlocked state
+          pinState.configured = true;
+          pinState.value = 'PREVIEW';  // Simulated unlocked state for preview only
+          applyServerData({sample_json}, "dev:client001");
+          
+          // Force hide the PIN modal for the unlocked preview
+          setTimeout(() => {{
+            const modal = document.getElementById('pinModal');
+            if (modal) {{
+              modal.classList.add('hidden');
+            }}
+          }}, 200);
+          ''')
                   
                   # For serial monitor, inject sample log data
                   elif const_name == 'SERIAL_MONITOR_HTML':
