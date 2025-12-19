@@ -266,6 +266,14 @@ setTimeout(() => {{
 pinState.configured = true;
 pinState.value = '1234';  // Simulated unlocked state
 applyServerData({sample_json}, "dev:client001");
+
+// Force hide the PIN modal for the unlocked preview
+setTimeout(() => {{
+  const modal = document.getElementById('pinModal');
+  if (modal) {{
+    modal.classList.add('hidden');
+  }}
+}}, 200);
 ''')
                   
                   # For serial monitor, inject sample log data
