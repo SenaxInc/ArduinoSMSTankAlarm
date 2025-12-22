@@ -1923,7 +1923,7 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
   if (SD.exists(CLIENT_CONFIG_CACHE_PATH)) {
       SD.remove(CLIENT_CONFIG_CACHE_PATH);
   }
-  File cacheFile = SD.open(CLIENT_CONFIG_CACHE_PATH, FILE_WRITE);
+  SDLib::File cacheFile = SD.open(CLIENT_CONFIG_CACHE_PATH, FILE_WRITE);
   if (!cacheFile) {
       snprintf(error, errorSize, "Failed to open cache file");
       return false;
@@ -3198,9 +3198,9 @@ static void handleFtpRestorePost(EthernetClient &client, const String &body) {
   DynamicJsonDocument resp(192);
   resp["ok"] = ok;
   if (ok) {
-    resp["message"] = F("Restore completed from FTP");
+    resp["message"] = "Restore completed from FTP";
   } else {
-    resp["error"] = strlen(error) ? error : F("Restore failed");
+    resp["error"] = strlen(error) ? error : "Restore failed";
   }
   String json;
   serializeJson(resp, json);

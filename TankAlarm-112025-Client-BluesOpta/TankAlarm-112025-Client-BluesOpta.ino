@@ -428,28 +428,6 @@ struct MonitorRuntime {
   unsigned long lastSensorFaultMillis;
 };
 
-// Helper function: Get tank height/capacity based on sensor configuration
-static float getMonitorHeight(const MonitorConfig &cfg) {
-  if (cfg.sensorInterface == SENSOR_CURRENT_LOOP) {
-    if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
-      // For ultrasonic sensors, mount height IS the tank height (distance to bottom)
-      return cfg.sensorMountHeight;
-    } else {
-      // For pressure sensors, max range + mount height approximates full tank height
-      float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
-      return rangeInches + cfg.sensorMountHeight;
-    }
-  } else if (cfg.sensorInterface == SENSOR_ANALOG) {
-    // For analog sensors, max range + mount height approximates full tank height
-    float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
-    return rangeInches + cfg.sensorMountHeight;
-  } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
-    // Digital sensors are binary, treat 1.0 as full
-    return 1.0f;
-  }
-  return 0.0f;
-}
-
 static ClientConfig gConfig;
 static MonitorRuntime gMonitorState[MAX_TANKS];
 
@@ -517,45 +495,6 @@ struct PulseSamplingRecommendation {
   const char *description;    // Human-readable description
 };
 
-static PulseSamplingRecommendation getRecommendedPulseSampling(float expectedRate) {
-  PulseSamplingRecommendation rec;
-  
-  if (expectedRate <= 0.0f) {
-    // No expected rate configured - use defaults
-    rec.sampleDurationMs = RPM_SAMPLE_DURATION_MS;
-    rec.accumulatedMode = false;
-    rec.description = "Default (60s sample)";
-  } else if (expectedRate < 1.0f) {
-    // Very low rate (< 1 RPM/GPM): use accumulated mode
-    // Count pulses over entire telemetry interval for accuracy
-    rec.sampleDurationMs = 60000;  // 60s sample within each interval
-    rec.accumulatedMode = true;
-    rec.description = "Accumulated mode (very low rate)";
-  } else if (expectedRate < 10.0f) {
-    // Low rate (1-10 RPM/GPM): longer sample for accuracy
-    rec.sampleDurationMs = 60000;  // 60 seconds
-    rec.accumulatedMode = false;
-    rec.description = "60s sample (low rate)";
-  } else if (expectedRate < 100.0f) {
-    // Medium rate (10-100 RPM/GPM): moderate sample
-    rec.sampleDurationMs = 30000;  // 30 seconds
-    rec.accumulatedMode = false;
-    rec.description = "30s sample (medium rate)";
-  } else if (expectedRate < 1000.0f) {
-    // High rate (100-1000 RPM/GPM): shorter sample is sufficient
-    rec.sampleDurationMs = 10000;  // 10 seconds
-    rec.accumulatedMode = false;
-    rec.description = "10s sample (high rate)";
-  } else {
-    // Very high rate (> 1000 RPM): quick sample
-    rec.sampleDurationMs = 3000;   // 3 seconds
-    rec.accumulatedMode = false;
-    rec.description = "3s sample (very high rate)";
-  }
-  
-  return rec;
-}
-
 // Serial log buffer structure for client
 struct SerialLogEntry {
   double timestamp;
@@ -572,6 +511,8 @@ static ClientSerialLog gSerialLog;
 static unsigned long gLastSerialRequestCheckMillis = 0;
 
 // Forward declarations
+static PulseSamplingRecommendation getRecommendedPulseSampling(float expectedRate);
+static float getMonitorHeight(const MonitorConfig &cfg);
 static void initializeStorage();
 static void ensureConfigLoaded();
 static void createDefaultConfig(ClientConfig &cfg);
@@ -787,6 +728,70 @@ void loop() {
   #else
     delay(100);  // Fallback for non-Mbed platforms
   #endif
+}
+
+// Helper: Get recommended pulse sampling parameters based on expected rate
+// This helps configure optimal sampling for the expected RPM/flow rate range
+// Returns: pulseSampleDurationMs, pulseAccumulatedMode recommendations
+static PulseSamplingRecommendation getRecommendedPulseSampling(float expectedRate) {
+  PulseSamplingRecommendation rec;
+  
+  if (expectedRate <= 0.0f) {
+    // No expected rate configured - use defaults
+    rec.sampleDurationMs = RPM_SAMPLE_DURATION_MS;
+    rec.accumulatedMode = false;
+    rec.description = "Default (60s sample)";
+  } else if (expectedRate < 1.0f) {
+    // Very low rate (< 1 RPM/GPM): use accumulated mode
+    // Count pulses over entire telemetry interval for accuracy
+    rec.sampleDurationMs = 60000;  // 60s sample within each interval
+    rec.accumulatedMode = true;
+    rec.description = "Accumulated mode (very low rate)";
+  } else if (expectedRate < 10.0f) {
+    // Low rate (1-10 RPM/GPM): longer sample for accuracy
+    rec.sampleDurationMs = 60000;  // 60 seconds
+    rec.accumulatedMode = false;
+    rec.description = "60s sample (low rate)";
+  } else if (expectedRate < 100.0f) {
+    // Medium rate (10-100 RPM/GPM): moderate sample
+    rec.sampleDurationMs = 30000;  // 30 seconds
+    rec.accumulatedMode = false;
+    rec.description = "30s sample (medium rate)";
+  } else if (expectedRate < 1000.0f) {
+    // High rate (100-1000 RPM/GPM): shorter sample is sufficient
+    rec.sampleDurationMs = 10000;  // 10 seconds
+    rec.accumulatedMode = false;
+    rec.description = "10s sample (high rate)";
+  } else {
+    // Very high rate (> 1000 RPM): quick sample
+    rec.sampleDurationMs = 3000;   // 3 seconds
+    rec.accumulatedMode = false;
+    rec.description = "3s sample (very high rate)";
+  }
+  
+  return rec;
+}
+
+// Helper function: Get tank height/capacity based on sensor configuration
+static float getMonitorHeight(const MonitorConfig &cfg) {
+  if (cfg.sensorInterface == SENSOR_CURRENT_LOOP) {
+    if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
+      // For ultrasonic sensors, mount height IS the tank height (distance to bottom)
+      return cfg.sensorMountHeight;
+    } else {
+      // For pressure sensors, max range + mount height approximates full tank height
+      float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
+      return rangeInches + cfg.sensorMountHeight;
+    }
+  } else if (cfg.sensorInterface == SENSOR_ANALOG) {
+    // For analog sensors, max range + mount height approximates full tank height
+    float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
+    return rangeInches + cfg.sensorMountHeight;
+  } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
+    // Digital sensors are binary, treat 1.0 as full
+    return 1.0f;
+  }
+  return 0.0f;
 }
 
 static void initializeStorage() {
