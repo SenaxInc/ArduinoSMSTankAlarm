@@ -276,28 +276,6 @@ static float getDistanceConversionFactor(const char* unit) {
   return 1.0f; // Default: assume inches
 }
 
-// Helper function: Get tank height/capacity based on sensor configuration
-static float getMonitorHeight(const MonitorConfig &cfg) {
-  if (cfg.sensorInterface == SENSOR_CURRENT_LOOP) {
-    if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
-      // For ultrasonic sensors, mount height IS the tank height (distance to bottom)
-      return cfg.sensorMountHeight;
-    } else {
-      // For pressure sensors, max range + mount height approximates full tank height
-      float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
-      return rangeInches + cfg.sensorMountHeight;
-    }
-  } else if (cfg.sensorInterface == SENSOR_ANALOG) {
-    // For analog sensors, max range + mount height approximates full tank height
-    float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
-    return rangeInches + cfg.sensorMountHeight;
-  } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
-    // Digital sensors are binary, treat 1.0 as full
-    return 1.0f;
-  }
-  return 0.0f;
-}
-
 static const uint8_t NOTECARD_I2C_ADDRESS = 0x17;
 static const uint32_t NOTECARD_I2C_FREQUENCY = 400000UL;
 
@@ -449,6 +427,28 @@ struct MonitorRuntime {
   unsigned long lastClearAlarmMillis;
   unsigned long lastSensorFaultMillis;
 };
+
+// Helper function: Get tank height/capacity based on sensor configuration
+static float getMonitorHeight(const MonitorConfig &cfg) {
+  if (cfg.sensorInterface == SENSOR_CURRENT_LOOP) {
+    if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
+      // For ultrasonic sensors, mount height IS the tank height (distance to bottom)
+      return cfg.sensorMountHeight;
+    } else {
+      // For pressure sensors, max range + mount height approximates full tank height
+      float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
+      return rangeInches + cfg.sensorMountHeight;
+    }
+  } else if (cfg.sensorInterface == SENSOR_ANALOG) {
+    // For analog sensors, max range + mount height approximates full tank height
+    float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
+    return rangeInches + cfg.sensorMountHeight;
+  } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
+    // Digital sensors are binary, treat 1.0 as full
+    return 1.0f;
+  }
+  return 0.0f;
+}
 
 static ClientConfig gConfig;
 static MonitorRuntime gMonitorState[MAX_TANKS];

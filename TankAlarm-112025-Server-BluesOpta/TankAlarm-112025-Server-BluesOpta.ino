@@ -29,6 +29,7 @@
 #else
   #include <Ethernet.h>
 #endif
+#include <SD.h>
 #include <math.h>
 #include <string.h>
 #include <ctype.h>
@@ -3199,7 +3200,7 @@ static void handleFtpRestorePost(EthernetClient &client, const String &body) {
   if (ok) {
     resp["message"] = F("Restore completed from FTP");
   } else {
-    resp["error"] = error.length() ? error : F("Restore failed");
+    resp["error"] = strlen(error) ? error : F("Restore failed");
   }
   String json;
   serializeJson(resp, json);
