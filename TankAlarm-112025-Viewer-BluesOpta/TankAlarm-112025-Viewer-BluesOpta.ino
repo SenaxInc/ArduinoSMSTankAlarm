@@ -18,6 +18,7 @@
 #include <Wire.h>
 #include <ArduinoJson.h>
 #include <Notecard.h>
+#include <memory>
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_PORTENTA_H7_M7) || defined(ARDUINO_PORTENTA_H7_M4)
   #include <PortentaEthernet.h>
   #include <Ethernet.h>
@@ -134,16 +135,15 @@ struct TankRecord {
   char site[32];
   char label[24];
   uint8_t tankNumber;
-  float heightInches;
   float levelInches;
-  float percent;
   bool alarmActive;
   char alarmType[24];
   double lastUpdateEpoch;
   float vinVoltage;  // Blues Notecard VIN voltage
 };
 
-static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(10)) + 768;
+// Tank JSON: each tank object has up to 13 fields - use 16 for headroom
+static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(16)) + 1024;
 
 static byte gMacAddress[6] = { 0x02, 0x00, 0x01, 0x11, 0x20, 0x25 };
 static IPAddress gStaticIp(192, 168, 1, 210);
@@ -525,7 +525,13 @@ static void sendDashboard(EthernetClient &client) {
 }
 
 static void sendTankJson(EthernetClient &client) {
-  DynamicJsonDocument doc(TANK_JSON_CAPACITY + 256);
+  std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(TANK_JSON_CAPACITY + 256));
+  if (!docPtr) {
+    respondStatus(client, 500, F("Out of Memory"));
+    return;
+  }
+  DynamicJsonDocument &doc = *docPtr;
+
   doc["vn"] = VIEWER_NAME;
   doc["vi"] = gViewerUid;
   doc["sn"] = gSourceServerName;
@@ -546,9 +552,7 @@ static void sendTankJson(EthernetClient &client) {
     obj["s"] = gTankRecords[i].site;
     obj["n"] = gTankRecords[i].label;
     obj["k"] = gTankRecords[i].tankNumber;
-    obj["h"] = gTankRecords[i].heightInches;
     obj["l"] = gTankRecords[i].levelInches;
-    obj["p"] = gTankRecords[i].percent;
     obj["a"] = gTankRecords[i].alarmActive;
     obj["at"] = gTankRecords[i].alarmType;
     obj["u"] = gTankRecords[i].lastUpdateEpoch;
@@ -584,14 +588,20 @@ static void fetchViewerSummary() {
     char *json = JConvertToJSONString(body);
     double epoch = JGetNumber(rsp, "time");
     if (json) {
-      DynamicJsonDocument doc(TANK_JSON_CAPACITY + 1024);
-      DeserializationError err = deserializeJson(doc, json);
-      NoteFree(json);
-      if (!err) {
-        handleViewerSummary(doc, epoch);
+      std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(TANK_JSON_CAPACITY + 1024));
+      if (docPtr) {
+        DynamicJsonDocument &doc = *docPtr;
+        DeserializationError err = deserializeJson(doc, json);
+        NoteFree(json);
+        if (!err) {
+          handleViewerSummary(doc, epoch);
+        } else {
+          Serial.print(F("Summary parse failed: "));
+          Serial.println(err.f_str());
+        }
       } else {
-        Serial.print(F("Summary parse failed: "));
-        Serial.println(err.f_str());
+        NoteFree(json);
+        Serial.println(F("OOM processing summary"));
       }
     }
 
@@ -641,9 +651,7 @@ static void handleViewerSummary(JsonDocument &doc, double epoch) {
       strlcpy(rec.site, item["s"] | item["site"] | "", sizeof(rec.site));
       strlcpy(rec.label, item["n"] | item["label"] | "Tank", sizeof(rec.label));
       rec.tankNumber = (item["k"] | item["tank"]).is<uint8_t>() ? (item["k"] | item["tank"]).as<uint8_t>() : gTankRecordCount;
-      rec.heightInches = (item["h"] | item["heightInches"]).as<float>();
       rec.levelInches = (item["l"] | item["levelInches"]).as<float>();
-      rec.percent = (item["p"] | item["percent"]).as<float>();
       rec.alarmActive = (item["a"] | item["alarm"]).as<bool>();
       strlcpy(rec.alarmType, item["at"] | item["alarmType"] | (rec.alarmActive ? "alarm" : "clear"), sizeof(rec.alarmType));
       rec.lastUpdateEpoch = (item["u"] | item["lastUpdate"]).as<double>();

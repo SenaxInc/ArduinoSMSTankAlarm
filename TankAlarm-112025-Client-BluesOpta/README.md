@@ -1,18 +1,42 @@
 # TankAlarm 112025 Client - Blues Opta
 
-Tank level monitoring client using Arduino Opta with Blues Wireless Notecard cellular connectivity.
+Multi-purpose monitoring client using Arduino Opta with Blues Wireless Notecard cellular connectivity.
 
 ## Overview
 
-The TankAlarm 112025 Client monitors tank levels using analog sensors and reports data to a central server via Blues Wireless Notecard. Key features include:
+The TankAlarm 112025 Client monitors tanks, engines, pumps, and other equipment using various sensor types and reports data to a central server via Blues Wireless Notecard. Key features include:
 
 - **Cellular connectivity** via Blues Wireless Notecard
-- **Multi-tank support** - Monitor up to 8 tanks per device
-- **Configurable alarms** - High and low thresholds per tank
+- **Multi-monitor support** - Monitor up to 8 sensors per device
+- **Flexible object types** - Tanks, engines, pumps, gas systems, flow meters
+- **Multiple sensor interfaces** - Digital, analog voltage, 4-20mA, pulse/RPM
+- **Configurable alarms** - High and low thresholds per monitor
 - **Remote configuration** - Update settings from server web interface
 - **Persistent storage** - LittleFS internal flash (no SD card needed)
 - **Fleet-based communication** - Simplified device-to-device routing
 - **Watchdog protection** - Auto-recovery from hangs
+
+## Architecture
+
+### Object Types (What You're Monitoring)
+The system separates **what** is being monitored from **how** it's measured:
+
+| Object Type | Description | Typical Sensors |
+|-------------|-------------|-----------------|
+| `tank` | Liquid storage tank | 4-20mA level sensor, float switch |
+| `engine` | Engine or motor | Hall effect RPM sensor |
+| `pump` | Pump operation | Digital status, flow meter |
+| `gas` | Gas pressure system | 4-20mA pressure transducer |
+| `flow` | Flow measurement | Pulse-based flow meter |
+| `custom` | User-defined | Any sensor type |
+
+### Sensor Interfaces (How You're Measuring)
+| Interface | Description | Output Type |
+|-----------|-------------|-------------|
+| `digital` | Binary on/off | Float state (0/1) |
+| `analog` | Voltage output | Raw voltage (V) |
+| `currentLoop` | 4-20mA | Raw milliamps (mA) |
+| `pulse` | Pulse counting | RPM or flow rate |
 
 ## Hardware
 
@@ -27,7 +51,7 @@ The TankAlarm 112025 Client monitors tank levels using analog sensors and report
 1. Install Blues Wireless for Opta carrier on Arduino Opta
 2. Activate Notecard with Blues Wireless (see [blues.io](https://blues.io))
 3. Connect Arduino Opta Ext A0602 for analog inputs
-4. Connect tank level sensors to analog inputs
+4. Connect sensors to appropriate inputs
 
 ### 2. Software Setup
 1. Install Arduino IDE 2.x or later
@@ -36,7 +60,7 @@ The TankAlarm 112025 Client monitors tank levels using analog sensors and report
    - **ArduinoJson** (version 7.x or later)
    - **Blues Wireless Notecard** (latest)
    - LittleFS (built into Mbed core)
-4. Open `TankAlarm-112025-Client-BluesOpta.ino` in Arduino IDE
+4. Open `TankAlarm-092025-Client-BluesOpta.ino` in Arduino IDE
 5. Update `PRODUCT_UID` to match your Blues Notehub project
 6. Compile and upload to Arduino Opta
 
@@ -56,12 +80,12 @@ The client creates a default configuration on first boot. You can update configu
 1. Deploy the TankAlarm 112025 Server
 2. Access server dashboard at `http://<server-ip>/`
 3. Select client from dropdown
-4. Update settings (site name, tanks, thresholds, etc.)
+4. Update settings (site name, monitors, thresholds, etc.)
 5. Click "Send Config to Client"
 
 **Default Configuration:**
 - Sample interval: 1800 seconds (30 minutes)
-- Single tank: "Tank A" 
+- Single monitor: "Tank A" (tank, analog)
 - High alarm: 110 inches
 - Low alarm: 18 inches
 - Server fleet: "tankalarm-server"
@@ -75,15 +99,17 @@ The client creates a default configuration on first boot. You can update configu
 
 ### Sampling Settings
 - **Sample Interval**: Seconds between sensor readings (default: 1800)
-- **Level Change Threshold**: Inches of change to trigger telemetry (0 to disable)
+- **Level Change Threshold**: Change amount to trigger telemetry (0 to disable)
 
-### Tank Configuration (per tank)
-- **Tank ID**: Single letter identifier (A-H)
-- **Tank Name**: Descriptive name
-- **High Alarm**: Threshold in inches for high level alert
-- **Low Alarm**: Threshold in inches for low level alert
+### Monitor Configuration (per monitor)
+- **Monitor ID**: Single letter identifier (A-H)
+- **Monitor Name**: Descriptive name
+- **Object Type**: What is being monitored (tank, engine, pump, gas, flow, custom)
+- **Sensor Interface**: How measurement is taken (digital, analog, currentLoop, pulse)
+- **High Alarm**: Threshold for high alarm
+- **Low Alarm**: Threshold for low alarm
+- **Measurement Unit**: Display unit ("inches", "rpm", "psi", "gpm", etc.)
 - **Analog Pin**: Arduino Opta analog input (A0-A7, I1-I8)
-- **Sensor Type**: "voltage" (0-10V), "current" (4-20mA), "digital" (float switch), or "rpm" (hall effect)
 
 ### 4-20mA Current Loop Sensor Configuration
 
@@ -240,10 +266,12 @@ Hall effect sensors can be used to measure RPM (rotations per minute) for applic
 **Detection Methods:**
 
 1. **Pulse Counting** (default)
-   - Counts all pulses over a fixed sampling period (3 seconds)
+   - Counts all pulses over a configurable sampling period (default 60 seconds)
    - More accurate for steady speeds
    - Averages multiple revolutions for better precision
    - Formula: RPM = (pulses × 60000) / (sample_duration_ms × pulses_per_rev)
+   - Minimum detectable RPM = 60000 / (sample_duration_ms × pulses_per_rev)
+     - With 60s sampling and 1 pulse/rev: minimum 1 RPM
 
 2. **Time-Based**
    - Measures the period between two consecutive pulses
@@ -251,6 +279,13 @@ Hall effect sensors can be used to measure RPM (rotations per minute) for applic
    - Works with fewer pulses (minimum 2)
    - More flexible for different magnet types and orientations
    - Formula: RPM = 60000 / (period_ms × pulses_per_rev)
+
+3. **Accumulated Mode** (for very low RPM < 1)
+   - Counts pulses between telemetry reports (e.g., 30 minutes)
+   - Enable with `rpmAccumulatedMode: true`
+   - Ideal for slow-moving pumps, flow meters, or agitators
+   - Formula: RPM = (accumulated_pulses × 60000) / (elapsed_ms × pulses_per_rev)
+   - With sampleSeconds=1800 (30 min) and 1 pulse/rev: detects down to 0.033 RPM
 
 **Configuration Parameters:**
 - `sensorType`: "rpm"
@@ -261,6 +296,12 @@ Hall effect sensors can be used to measure RPM (rotations per minute) for applic
   - **Note:** For **bipolar** or **omnipolar** sensors, a single magnet generates 2 pulses per revolution (one for each pole). Set `pulsesPerRevolution` to `2 × number of magnets` in these cases.
 - `hallEffectType`: Sensor type - "unipolar", "bipolar", "omnipolar", or "analog"
 - `hallEffectDetection`: Detection method - "pulse" or "time"
+- `rpmSampleDurationMs`: Sample duration in milliseconds (default: 60000 = 60 seconds)
+  - Longer durations detect lower RPM but increase measurement time
+  - For 0.1 RPM detection without accumulated mode: use 600000 (10 minutes)
+- `rpmAccumulatedMode`: Set to `true` for very low RPM measurement (< 1 RPM)
+  - Counts pulses between telemetry reports instead of during a fixed sample window
+  - Best for applications where RPM is very slow (e.g., 0.1 RPM = 1 rotation per 10 minutes)
 - `highAlarm`: Maximum expected RPM for alarm (e.g., 3000)
 - `lowAlarm`: Minimum expected RPM for alarm (e.g., 100)
 
@@ -278,6 +319,21 @@ Hall effect sensors can be used to measure RPM (rotations per minute) for applic
 ```
 Note: With omnipolar sensor and 4 magnets, use pulsesPerRev = 8 (2 pulses per magnet × 4 magnets)
 
+**Example Configuration** (Slow pump flow meter - 0.1 RPM detection):
+```json
+{
+  "sensor": "rpm",
+  "rpmPin": 3,
+  "pulsesPerRev": 1,
+  "hallEffectType": "unipolar",
+  "hallEffectDetection": "pulse",
+  "rpmAccumulatedMode": true,
+  "highAlarm": 10,
+  "lowAlarm": 0.05
+}
+```
+Note: With accumulated mode enabled and 30-minute sample intervals, this can detect down to 0.033 RPM
+
 **Wiring:**
 - Connect hall effect sensor VCC to 5V or 3.3V (check sensor datasheet)
 - Connect sensor GND to Arduino GND
@@ -287,6 +343,7 @@ Note: With omnipolar sensor and 4 magnets, use pulsesPerRev = 8 (2 pulses per ma
 **Tips:**
 - Use "time" detection for faster response to speed changes
 - Use "pulse" detection for better accuracy at steady speeds
+- Use `rpmAccumulatedMode: true` for very slow rotation (< 1 RPM)
 - For multiple magnets, set `pulsesPerRev` to the number of magnets
 - For omnipolar sensors, each magnet passing creates 2 pulses (both N and S poles trigger)
 - Monitor both high and low thresholds to detect over-speed and stall conditions

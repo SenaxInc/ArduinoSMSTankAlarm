@@ -24,6 +24,7 @@
 #include <Wire.h>
 #include <ArduinoJson.h>
 #include <Notecard.h>
+#include <memory>
 #include <math.h>
 #include <string.h>
 
@@ -275,14 +276,47 @@ static float getDistanceConversionFactor(const char* unit) {
   return 1.0f; // Default: assume inches
 }
 
+// Helper function: Get tank height/capacity based on sensor configuration
+static float getMonitorHeight(const MonitorConfig &cfg) {
+  if (cfg.sensorInterface == SENSOR_CURRENT_LOOP) {
+    if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
+      // For ultrasonic sensors, mount height IS the tank height (distance to bottom)
+      return cfg.sensorMountHeight;
+    } else {
+      // For pressure sensors, max range + mount height approximates full tank height
+      float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
+      return rangeInches + cfg.sensorMountHeight;
+    }
+  } else if (cfg.sensorInterface == SENSOR_ANALOG) {
+    // For analog sensors, max range + mount height approximates full tank height
+    float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
+    return rangeInches + cfg.sensorMountHeight;
+  } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
+    // Digital sensors are binary, treat 1.0 as full
+    return 1.0f;
+  }
+  return 0.0f;
+}
+
 static const uint8_t NOTECARD_I2C_ADDRESS = 0x17;
 static const uint32_t NOTECARD_I2C_FREQUENCY = 400000UL;
 
-enum SensorType : uint8_t {
-  SENSOR_DIGITAL = 0,
-  SENSOR_ANALOG = 1,
-  SENSOR_CURRENT_LOOP = 2,
-  SENSOR_HALL_EFFECT_RPM = 3
+// Object types - what is being monitored
+enum ObjectType : uint8_t {
+  OBJECT_TANK = 0,        // Liquid storage tank (level monitoring)
+  OBJECT_ENGINE = 1,      // Engine or motor (RPM monitoring)
+  OBJECT_PUMP = 2,        // Pump (status or flow monitoring)
+  OBJECT_GAS = 3,         // Gas pressure system (propane, natural gas, etc.)
+  OBJECT_FLOW = 4,        // Flow meter (liquid or gas flow rate)
+  OBJECT_CUSTOM = 255     // User-defined/other
+};
+
+// Sensor interface types - how the measurement is taken
+enum SensorInterface : uint8_t {
+  SENSOR_DIGITAL = 0,       // Binary on/off (float switch, relay contact)
+  SENSOR_ANALOG = 1,        // Voltage output (0-10V, 1-5V)
+  SENSOR_CURRENT_LOOP = 2,  // 4-20mA current loop
+  SENSOR_PULSE = 3          // Pulse/frequency counting (hall effect, flow meter)
 };
 
 // 4-20mA current loop sensor subtypes
@@ -324,20 +358,23 @@ enum RelayMode : uint8_t {
 // Default relay engagement duration (30 minutes in seconds)
 #define RELAY_DEFAULT_MOMENTARY_SECONDS 1800
 
-struct TankConfig {
+struct MonitorConfig {
   char id;                 // Friendly identifier (A, B, C ...)
-  char name[24];           // Site/tank label shown in reports
-  uint8_t tankNumber;      // Numeric tank reference for legacy formatting
-  SensorType sensorType;   // Digital, analog, current loop, or Hall effect RPM
+  char name[24];           // Label shown in reports (e.g., "Fuel Tank", "Main Pump")
+  uint8_t monitorNumber;   // Numeric reference (1, 2, 3...)
+  ObjectType objectType;   // What is being monitored (tank, engine, pump, gas, flow)
+  SensorInterface sensorInterface; // How measurement is taken (digital, analog, currentLoop, pulse)
   int16_t primaryPin;      // Digital pin or analog channel
   int16_t secondaryPin;    // Optional secondary pin (unused by default)
   int16_t currentLoopChannel; // 4-20mA channel index (-1 if unused)
-  int16_t rpmPin;          // Hall effect RPM sensor pin (-1 if unused)
-  uint8_t pulsesPerRevolution; // For RPM sensors: pulses per revolution (default 1)
+  int16_t pulsePin;        // Pulse sensor pin for RPM/flow (-1 if unused)
+  uint8_t pulsesPerUnit;   // Pulses per revolution (RPM) or per gallon (flow), default 1
   HallEffectSensorType hallEffectType; // Type of hall effect sensor (unipolar, bipolar, omnipolar, analog)
   HallEffectDetectionMethod hallEffectDetection; // Detection method (pulse counting or time-based)
-  float highAlarmThreshold;   // High threshold for triggering alarm (inches or RPM)
-  float lowAlarmThreshold;    // Low threshold for triggering alarm (inches or RPM)
+  uint32_t pulseSampleDurationMs; // Sample duration for pulse measurement (default 60000ms = 60s)
+  bool pulseAccumulatedMode; // If true, count pulses between telemetry reports for very low rates
+  float highAlarmThreshold;   // High threshold for triggering alarm
+  float lowAlarmThreshold;    // Low threshold for triggering alarm
   float hysteresisValue;   // Hysteresis band (default 2.0)
   bool enableDailyReport;  // Include in daily summary
   bool enableAlarmSms;     // Escalate SMS when alarms trigger
@@ -360,6 +397,10 @@ struct TankConfig {
   // Analog voltage sensor settings (for sensors like Dwyer 626 with voltage output)
   float analogVoltageMin;  // Minimum voltage output (e.g., 0.0 for 0-10V, 1.0 for 1-5V)
   float analogVoltageMax;  // Maximum voltage output (e.g., 10.0 for 0-10V, 5.0 for 1-5V)
+  // Measurement unit for display/reporting
+  char measurementUnit[8]; // "inches", "psi", "rpm", "gpm", etc.
+  // Expected pulse rate for baseline comparison (by object type)
+  float expectedPulseRate; // Expected RPM for engines, GPM for flow, etc. (0 = not configured)
 };
 
 struct ClientConfig {
@@ -371,8 +412,8 @@ struct ClientConfig {
   float minLevelChangeInches;
   uint8_t reportHour;
   uint8_t reportMinute;
-  uint8_t tankCount;
-  TankConfig tanks[MAX_TANKS];
+  uint8_t monitorCount;
+  MonitorConfig monitors[MAX_TANKS];
   // Optional clear button configuration
   int8_t clearButtonPin;        // Pin for physical clear button (-1 = disabled)
   bool clearButtonActiveHigh;   // true = button active when HIGH, false = active when LOW (with pullup)
@@ -380,9 +421,10 @@ struct ClientConfig {
   bool solarPowered;            // true = solar powered (use power saving features), false = grid-tied
 };
 
-struct TankRuntime {
+struct MonitorRuntime {
   float currentInches;
   float currentSensorMa;        // Raw sensor reading in milliamps (for 4-20mA sensors)
+  float currentSensorVoltage;   // Raw sensor reading in volts (for analog voltage sensors)
   float lastReportedInches;
   float lastDailySentInches;
   bool highAlarmLatched;
@@ -409,7 +451,7 @@ struct TankRuntime {
 };
 
 static ClientConfig gConfig;
-static TankRuntime gTankState[MAX_TANKS];
+static MonitorRuntime gMonitorState[MAX_TANKS];
 
 static Notecard notecard;
 static char gDeviceUID[48] = {0};
@@ -455,11 +497,64 @@ static int gRpmLastPinState[MAX_TANKS];  // Initialized dynamically in setup()
 // For time-based detection: track time between pulses
 static unsigned long gRpmLastPulseTime[MAX_TANKS] = {0};
 static unsigned long gRpmPulsePeriodMs[MAX_TANKS] = {0};
+// For accumulated mode: count pulses between telemetry reports
+static volatile uint32_t gRpmAccumulatedPulses[MAX_TANKS] = {0};
+static unsigned long gRpmAccumulatedStartMillis[MAX_TANKS] = {0};
+static bool gRpmAccumulatedInitialized[MAX_TANKS] = {false};
 
-// RPM sampling duration in milliseconds (sample for a few seconds each period)
+// Default RPM sampling duration in milliseconds (60 seconds for 1 RPM minimum detection)
+// To detect 0.1 RPM, use pulseAccumulatedMode=true with sampleSeconds >= 600
 #ifndef RPM_SAMPLE_DURATION_MS
-#define RPM_SAMPLE_DURATION_MS 3000
+#define RPM_SAMPLE_DURATION_MS 60000
 #endif
+
+// Helper: Get recommended pulse sampling parameters based on expected rate
+// This helps configure optimal sampling for the expected RPM/flow rate range
+// Returns: pulseSampleDurationMs, pulseAccumulatedMode recommendations
+struct PulseSamplingRecommendation {
+  uint32_t sampleDurationMs;  // Recommended sample duration
+  bool accumulatedMode;       // Whether to use accumulated mode
+  const char *description;    // Human-readable description
+};
+
+static PulseSamplingRecommendation getRecommendedPulseSampling(float expectedRate) {
+  PulseSamplingRecommendation rec;
+  
+  if (expectedRate <= 0.0f) {
+    // No expected rate configured - use defaults
+    rec.sampleDurationMs = RPM_SAMPLE_DURATION_MS;
+    rec.accumulatedMode = false;
+    rec.description = "Default (60s sample)";
+  } else if (expectedRate < 1.0f) {
+    // Very low rate (< 1 RPM/GPM): use accumulated mode
+    // Count pulses over entire telemetry interval for accuracy
+    rec.sampleDurationMs = 60000;  // 60s sample within each interval
+    rec.accumulatedMode = true;
+    rec.description = "Accumulated mode (very low rate)";
+  } else if (expectedRate < 10.0f) {
+    // Low rate (1-10 RPM/GPM): longer sample for accuracy
+    rec.sampleDurationMs = 60000;  // 60 seconds
+    rec.accumulatedMode = false;
+    rec.description = "60s sample (low rate)";
+  } else if (expectedRate < 100.0f) {
+    // Medium rate (10-100 RPM/GPM): moderate sample
+    rec.sampleDurationMs = 30000;  // 30 seconds
+    rec.accumulatedMode = false;
+    rec.description = "30s sample (medium rate)";
+  } else if (expectedRate < 1000.0f) {
+    // High rate (100-1000 RPM/GPM): shorter sample is sufficient
+    rec.sampleDurationMs = 10000;  // 10 seconds
+    rec.accumulatedMode = false;
+    rec.description = "10s sample (high rate)";
+  } else {
+    // Very high rate (> 1000 RPM): quick sample
+    rec.sampleDurationMs = 3000;   // 3 seconds
+    rec.accumulatedMode = false;
+    rec.description = "3s sample (very high rate)";
+  }
+  
+  return rec;
+}
 
 // Serial log buffer structure for client
 struct SerialLogEntry {
@@ -589,29 +684,31 @@ void setup() {
     gRelayActiveForTank[i] = false;
   }
 
-  for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
-    gTankState[i].currentInches = 0.0f;
-    gTankState[i].lastReportedInches = -9999.0f;
-    gTankState[i].lastDailySentInches = -9999.0f;
-    gTankState[i].highAlarmLatched = false;
-    gTankState[i].lowAlarmLatched = false;
-    gTankState[i].lastSampleMillis = 0;
-    gTankState[i].lastAlarmSendMillis = 0;
-    gTankState[i].highAlarmDebounceCount = 0;
-    gTankState[i].lowAlarmDebounceCount = 0;
-    gTankState[i].clearDebounceCount = 0;
-    gTankState[i].lastValidReading = 0.0f;
-    gTankState[i].hasLastValidReading = false;
-    gTankState[i].consecutiveFailures = 0;
-    gTankState[i].stuckReadingCount = 0;
-    gTankState[i].sensorFailed = false;
-    gTankState[i].alarmCount = 0;
-    gTankState[i].lastHighAlarmMillis = 0;
-    gTankState[i].lastLowAlarmMillis = 0;
-    gTankState[i].lastClearAlarmMillis = 0;
-    gTankState[i].lastSensorFaultMillis = 0;
+  for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
+    gMonitorState[i].currentInches = 0.0f;
+    gMonitorState[i].currentSensorMa = 0.0f;
+    gMonitorState[i].currentSensorVoltage = 0.0f;
+    gMonitorState[i].lastReportedInches = -9999.0f;
+    gMonitorState[i].lastDailySentInches = -9999.0f;
+    gMonitorState[i].highAlarmLatched = false;
+    gMonitorState[i].lowAlarmLatched = false;
+    gMonitorState[i].lastSampleMillis = 0;
+    gMonitorState[i].lastAlarmSendMillis = 0;
+    gMonitorState[i].highAlarmDebounceCount = 0;
+    gMonitorState[i].lowAlarmDebounceCount = 0;
+    gMonitorState[i].clearDebounceCount = 0;
+    gMonitorState[i].lastValidReading = 0.0f;
+    gMonitorState[i].hasLastValidReading = false;
+    gMonitorState[i].consecutiveFailures = 0;
+    gMonitorState[i].stuckReadingCount = 0;
+    gMonitorState[i].sensorFailed = false;
+    gMonitorState[i].alarmCount = 0;
+    gMonitorState[i].lastHighAlarmMillis = 0;
+    gMonitorState[i].lastLowAlarmMillis = 0;
+    gMonitorState[i].lastClearAlarmMillis = 0;
+    gMonitorState[i].lastSensorFaultMillis = 0;
     for (uint8_t j = 0; j < MAX_ALARMS_PER_HOUR; ++j) {
-      gTankState[i].alarmTimestamps[j] = 0;
+      gMonitorState[i].alarmTimestamps[j] = 0;
     }
   }
 
@@ -758,42 +855,47 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.minLevelChangeInches = DEFAULT_LEVEL_CHANGE_THRESHOLD_INCHES;
   cfg.reportHour = DEFAULT_REPORT_HOUR;
   cfg.reportMinute = DEFAULT_REPORT_MINUTE;
-  cfg.tankCount = 1;
+  cfg.monitorCount = 1;
 
-  cfg.tanks[0].id = 'A';
-  strlcpy(cfg.tanks[0].name, "Primary Tank", sizeof(cfg.tanks[0].name));
-  cfg.tanks[0].tankNumber = 1;
-  cfg.tanks[0].sensorType = SENSOR_ANALOG;
-  cfg.tanks[0].primaryPin = 0; // A0 on Opta Ext
-  cfg.tanks[0].secondaryPin = -1;
-  cfg.tanks[0].currentLoopChannel = -1;
-  cfg.tanks[0].rpmPin = -1; // No RPM sensor by default
-  cfg.tanks[0].pulsesPerRevolution = 1; // Default: 1 pulse per revolution
-  cfg.tanks[0].hallEffectType = HALL_EFFECT_UNIPOLAR; // Default: unipolar sensor
-  cfg.tanks[0].hallEffectDetection = HALL_DETECT_PULSE; // Default: pulse counting method
-  cfg.tanks[0].highAlarmThreshold = 100.0f;
-  cfg.tanks[0].lowAlarmThreshold = 20.0f;
-  cfg.tanks[0].hysteresisValue = 2.0f; // 2 unit hysteresis band
-  cfg.tanks[0].enableDailyReport = true;
-  cfg.tanks[0].enableAlarmSms = true;
-  cfg.tanks[0].enableServerUpload = true;
-  cfg.tanks[0].relayTargetClient[0] = '\0'; // No relay target by default
-  cfg.tanks[0].relayMask = 0; // No relays triggered by default
-  cfg.tanks[0].relayTrigger = RELAY_TRIGGER_ANY; // Default: trigger on any alarm
-  cfg.tanks[0].relayMode = RELAY_MODE_MOMENTARY; // Default: momentary activation
+  cfg.monitors[0].id = 'A';
+  strlcpy(cfg.monitors[0].name, "Primary Tank", sizeof(cfg.monitors[0].name));
+  cfg.monitors[0].monitorNumber = 1;
+  cfg.monitors[0].objectType = OBJECT_TANK;          // Default: tank level monitoring
+  cfg.monitors[0].sensorInterface = SENSOR_ANALOG;   // Default: analog voltage sensor
+  cfg.monitors[0].primaryPin = 0; // A0 on Opta Ext
+  cfg.monitors[0].secondaryPin = -1;
+  cfg.monitors[0].currentLoopChannel = -1;
+  cfg.monitors[0].pulsePin = -1; // No pulse sensor by default
+  cfg.monitors[0].pulsesPerUnit = 1; // Default: 1 pulse per revolution/gallon
+  cfg.monitors[0].hallEffectType = HALL_EFFECT_UNIPOLAR; // Default: unipolar sensor
+  cfg.monitors[0].hallEffectDetection = HALL_DETECT_PULSE; // Default: pulse counting method
+  cfg.monitors[0].pulseSampleDurationMs = RPM_SAMPLE_DURATION_MS; // Default: 60 seconds
+  cfg.monitors[0].pulseAccumulatedMode = false; // Default: single sample mode
+  cfg.monitors[0].highAlarmThreshold = 100.0f;
+  cfg.monitors[0].lowAlarmThreshold = 20.0f;
+  cfg.monitors[0].hysteresisValue = 2.0f; // 2 unit hysteresis band
+  cfg.monitors[0].enableDailyReport = true;
+  cfg.monitors[0].enableAlarmSms = true;
+  cfg.monitors[0].enableServerUpload = true;
+  cfg.monitors[0].relayTargetClient[0] = '\0'; // No relay target by default
+  cfg.monitors[0].relayMask = 0; // No relays triggered by default
+  cfg.monitors[0].relayTrigger = RELAY_TRIGGER_ANY; // Default: trigger on any alarm
+  cfg.monitors[0].relayMode = RELAY_MODE_MOMENTARY; // Default: momentary activation
   // Default: all relays use 30 minutes (0 = use default)
   for (uint8_t r = 0; r < 4; ++r) {
-    cfg.tanks[0].relayMomentarySeconds[r] = 0;
+    cfg.monitors[0].relayMomentarySeconds[r] = 0;
   }
-  cfg.tanks[0].digitalTrigger[0] = '\0'; // Not a digital sensor by default
-  strlcpy(cfg.tanks[0].digitalSwitchMode, "NO", sizeof(cfg.tanks[0].digitalSwitchMode)); // Default: normally-open
-  cfg.tanks[0].currentLoopType = CURRENT_LOOP_PRESSURE; // Default: pressure sensor (most common)
-  cfg.tanks[0].sensorMountHeight = 0.0f; // Default: sensor at tank bottom
-  cfg.tanks[0].sensorRangeMin = 0.0f;    // Default: 0 (e.g., 0 PSI or 0 meters)
-  cfg.tanks[0].sensorRangeMax = 5.0f;    // Default: 5 (e.g., 5 PSI for typical pressure sensor)
-  strlcpy(cfg.tanks[0].sensorRangeUnit, "PSI", sizeof(cfg.tanks[0].sensorRangeUnit)); // Default: PSI
-  cfg.tanks[0].analogVoltageMin = 0.0f;  // Default: 0V (for 0-10V sensors)
-  cfg.tanks[0].analogVoltageMax = 10.0f; // Default: 10V (for 0-10V sensors)
+  cfg.monitors[0].digitalTrigger[0] = '\0'; // Not a digital sensor by default
+  strlcpy(cfg.monitors[0].digitalSwitchMode, "NO", sizeof(cfg.monitors[0].digitalSwitchMode)); // Default: normally-open
+  cfg.monitors[0].currentLoopType = CURRENT_LOOP_PRESSURE; // Default: pressure sensor (most common)
+  cfg.monitors[0].sensorMountHeight = 0.0f; // Default: sensor at tank bottom
+  cfg.monitors[0].sensorRangeMin = 0.0f;    // Default: 0 (e.g., 0 PSI or 0 meters)
+  cfg.monitors[0].sensorRangeMax = 5.0f;    // Default: 5 (e.g., 5 PSI for typical pressure sensor)
+  strlcpy(cfg.monitors[0].sensorRangeUnit, "PSI", sizeof(cfg.monitors[0].sensorRangeUnit)); // Default: PSI
+  cfg.monitors[0].analogVoltageMin = 0.0f;  // Default: 0V (for 0-10V sensors)
+  cfg.monitors[0].analogVoltageMax = 10.0f; // Default: 10V (for 0-10V sensors)
+  strlcpy(cfg.monitors[0].measurementUnit, "inches", sizeof(cfg.monitors[0].measurementUnit)); // Default: inches
+  cfg.monitors[0].expectedPulseRate = 0.0f; // Default: not configured (0 = no baseline)
   
   // Clear button defaults (disabled)
   cfg.clearButtonPin = -1;           // -1 = disabled
@@ -834,7 +936,12 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     buffer[bytesRead] = '\0';
     fclose(file);
     
-    DynamicJsonDocument doc(4096);
+    std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(4096));
+    if (!docPtr) {
+      free(buffer);
+      return false;
+    }
+    DynamicJsonDocument &doc = *docPtr;
     DeserializationError err = deserializeJson(doc, buffer);
     free(buffer);
   #else
@@ -848,7 +955,12 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
       return false;
     }
 
-    DynamicJsonDocument doc(4096);
+    std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(4096));
+    if (!docPtr) {
+      file.close();
+      return false;
+    }
+    DynamicJsonDocument &doc = *docPtr;
     DeserializationError err = deserializeJson(doc, file);
     file.close();
   #endif
@@ -880,114 +992,151 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   // Load power saving configuration
   cfg.solarPowered = doc["solarPowered"].is<bool>() ? doc["solarPowered"].as<bool>() : false;
 
-  cfg.tankCount = doc["tanks"].is<JsonArray>() ? min<uint8_t>(doc["tanks"].size(), MAX_TANKS) : 0;
+  // Support both old "tanks" and new "monitors" array names
+  JsonArray monitorsArray = doc["monitors"].as<JsonArray>();
+  if (!monitorsArray) {
+    monitorsArray = doc["tanks"].as<JsonArray>();
+  }
+  cfg.monitorCount = monitorsArray ? min<uint8_t>(monitorsArray.size(), MAX_TANKS) : 0;
 
-  for (uint8_t i = 0; i < cfg.tankCount; ++i) {
-    JsonObject t = doc["tanks"][i];
-    cfg.tanks[i].id = t["id"].as<const char *>() ? t["id"].as<const char *>()[0] : ('A' + i);
-    strlcpy(cfg.tanks[i].name, t["name"].as<const char *>() ? t["name"].as<const char *>() : "Tank", sizeof(cfg.tanks[i].name));
-    cfg.tanks[i].tankNumber = t["number"].is<uint8_t>() ? t["number"].as<uint8_t>() : (i + 1);
-    const char *sensor = t["sensor"].as<const char *>();
-    if (sensor && strcmp(sensor, "digital") == 0) {
-      cfg.tanks[i].sensorType = SENSOR_DIGITAL;
-    } else if (sensor && strcmp(sensor, "current") == 0) {
-      cfg.tanks[i].sensorType = SENSOR_CURRENT_LOOP;
-    } else if (sensor && strcmp(sensor, "rpm") == 0) {
-      cfg.tanks[i].sensorType = SENSOR_HALL_EFFECT_RPM;
+  for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
+    JsonObject t = monitorsArray[i];
+    cfg.monitors[i].id = t["id"].as<const char *>() ? t["id"].as<const char *>()[0] : ('A' + i);
+    strlcpy(cfg.monitors[i].name, t["name"].as<const char *>() ? t["name"].as<const char *>() : "Tank", sizeof(cfg.monitors[i].name));
+    cfg.monitors[i].monitorNumber = t["number"].is<uint8_t>() ? t["number"].as<uint8_t>() : (i + 1);
+    
+    // Load object type (what is being monitored)
+    const char *objType = t["objectType"].as<const char *>();
+    if (objType && strcmp(objType, "engine") == 0) {
+      cfg.monitors[i].objectType = OBJECT_ENGINE;
+    } else if (objType && strcmp(objType, "pump") == 0) {
+      cfg.monitors[i].objectType = OBJECT_PUMP;
+    } else if (objType && strcmp(objType, "gas") == 0) {
+      cfg.monitors[i].objectType = OBJECT_GAS;
+    } else if (objType && strcmp(objType, "flow") == 0) {
+      cfg.monitors[i].objectType = OBJECT_FLOW;
     } else {
-      cfg.tanks[i].sensorType = SENSOR_ANALOG;
+      cfg.monitors[i].objectType = OBJECT_TANK; // Default
     }
-    cfg.tanks[i].primaryPin = t["primaryPin"].is<int>() ? t["primaryPin"].as<int>() : (cfg.tanks[i].sensorType == SENSOR_DIGITAL ? 2 : 0);
-    cfg.tanks[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : -1;
-    cfg.tanks[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : -1;
-    cfg.tanks[i].rpmPin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : -1;
-    cfg.tanks[i].pulsesPerRevolution = t["pulsesPerRev"].is<uint8_t>() ? max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>()) : 1;
+    
+    // Load sensor interface (how measurement is taken)
+    // Support both old "sensor" and new "sensorInterface" field names
+    const char *sensor = t["sensorInterface"].as<const char *>();
+    if (!sensor) sensor = t["sensor"].as<const char *>();
+    if (sensor && strcmp(sensor, "digital") == 0) {
+      cfg.monitors[i].sensorInterface = SENSOR_DIGITAL;
+    } else if (sensor && strcmp(sensor, "current") == 0 || (sensor && strcmp(sensor, "currentLoop") == 0)) {
+      cfg.monitors[i].sensorInterface = SENSOR_CURRENT_LOOP;
+    } else if (sensor && (strcmp(sensor, "rpm") == 0 || strcmp(sensor, "pulse") == 0)) {
+      cfg.monitors[i].sensorInterface = SENSOR_PULSE;
+    } else {
+      cfg.monitors[i].sensorInterface = SENSOR_ANALOG;
+    }
+    cfg.monitors[i].primaryPin = t["primaryPin"].is<int>() ? t["primaryPin"].as<int>() : (cfg.monitors[i].sensorInterface == SENSOR_DIGITAL ? 2 : 0);
+    cfg.monitors[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : -1;
+    cfg.monitors[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : -1;
+    // Support both old "rpmPin" and new "pulsePin" field names
+    cfg.monitors[i].pulsePin = t["pulsePin"].is<int>() ? t["pulsePin"].as<int>() : 
+                               (t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : -1);
+    // Support both old "pulsesPerRev" and new "pulsesPerUnit" field names
+    cfg.monitors[i].pulsesPerUnit = t["pulsesPerUnit"].is<uint8_t>() ? max((uint8_t)1, t["pulsesPerUnit"].as<uint8_t>()) :
+                                    (t["pulsesPerRev"].is<uint8_t>() ? max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>()) : 1);
     // Load hall effect sensor type
     const char *hallType = t["hallEffectType"].as<const char *>();
     if (hallType && strcmp(hallType, "bipolar") == 0) {
-      cfg.tanks[i].hallEffectType = HALL_EFFECT_BIPOLAR;
+      cfg.monitors[i].hallEffectType = HALL_EFFECT_BIPOLAR;
     } else if (hallType && strcmp(hallType, "omnipolar") == 0) {
-      cfg.tanks[i].hallEffectType = HALL_EFFECT_OMNIPOLAR;
+      cfg.monitors[i].hallEffectType = HALL_EFFECT_OMNIPOLAR;
     } else if (hallType && strcmp(hallType, "analog") == 0) {
-      cfg.tanks[i].hallEffectType = HALL_EFFECT_ANALOG;
+      cfg.monitors[i].hallEffectType = HALL_EFFECT_ANALOG;
     } else if (hallType && strcmp(hallType, "unipolar") == 0) {
-      cfg.tanks[i].hallEffectType = HALL_EFFECT_UNIPOLAR;
+      cfg.monitors[i].hallEffectType = HALL_EFFECT_UNIPOLAR;
     } else {
-      cfg.tanks[i].hallEffectType = HALL_EFFECT_UNIPOLAR; // Default
+      cfg.monitors[i].hallEffectType = HALL_EFFECT_UNIPOLAR; // Default
     }
     // Load hall effect detection method
     const char *hallDetect = t["hallEffectDetection"].as<const char *>();
     if (hallDetect && strcmp(hallDetect, "time") == 0) {
-      cfg.tanks[i].hallEffectDetection = HALL_DETECT_TIME_BASED;
+      cfg.monitors[i].hallEffectDetection = HALL_DETECT_TIME_BASED;
     } else if (hallDetect && strcmp(hallDetect, "pulse") == 0) {
-      cfg.tanks[i].hallEffectDetection = HALL_DETECT_PULSE;
+      cfg.monitors[i].hallEffectDetection = HALL_DETECT_PULSE;
     } else {
-      cfg.tanks[i].hallEffectDetection = HALL_DETECT_PULSE; // Default
+      cfg.monitors[i].hallEffectDetection = HALL_DETECT_PULSE; // Default
     }
-    cfg.tanks[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : 100.0f;
-    cfg.tanks[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : 20.0f;
-    cfg.tanks[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : 2.0f;
-    cfg.tanks[i].enableDailyReport = t["daily"].is<bool>() ? t["daily"].as<bool>() : true;
-    cfg.tanks[i].enableAlarmSms = t["alarmSms"].is<bool>() ? t["alarmSms"].as<bool>() : true;
-    cfg.tanks[i].enableServerUpload = t["upload"].is<bool>() ? t["upload"].as<bool>() : true;
+    // Load RPM sampling configuration
+    cfg.monitors[i].pulseSampleDurationMs = t["pulseSampleDurationMs"].is<uint32_t>() ? 
+        t["pulseSampleDurationMs"].as<uint32_t>() : 
+        (t["rpmSampleDurationMs"].is<uint32_t>() ? t["rpmSampleDurationMs"].as<uint32_t>() : RPM_SAMPLE_DURATION_MS);
+    cfg.monitors[i].pulseAccumulatedMode = t["pulseAccumulatedMode"].is<bool>() ? 
+        t["pulseAccumulatedMode"].as<bool>() : 
+        (t["rpmAccumulatedMode"].is<bool>() ? t["rpmAccumulatedMode"].as<bool>() : false);
+    // Expected pulse rate for baseline comparison (by object type)
+    cfg.monitors[i].expectedPulseRate = t["expectedPulseRate"].is<float>() ? 
+        t["expectedPulseRate"].as<float>() : 0.0f;
+    cfg.monitors[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : 100.0f;
+    cfg.monitors[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : 20.0f;
+    cfg.monitors[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : 2.0f;
+    cfg.monitors[i].enableDailyReport = t["daily"].is<bool>() ? t["daily"].as<bool>() : true;
+    cfg.monitors[i].enableAlarmSms = t["alarmSms"].is<bool>() ? t["alarmSms"].as<bool>() : true;
+    cfg.monitors[i].enableServerUpload = t["upload"].is<bool>() ? t["upload"].as<bool>() : true;
     // Load relay control settings
     const char *relayTarget = t["relayTargetClient"].as<const char *>();
-    strlcpy(cfg.tanks[i].relayTargetClient, relayTarget ? relayTarget : "", sizeof(cfg.tanks[i].relayTargetClient));
-    cfg.tanks[i].relayMask = t["relayMask"].is<uint8_t>() ? t["relayMask"].as<uint8_t>() : 0;
+    strlcpy(cfg.monitors[i].relayTargetClient, relayTarget ? relayTarget : "", sizeof(cfg.monitors[i].relayTargetClient));
+    cfg.monitors[i].relayMask = t["relayMask"].is<uint8_t>() ? t["relayMask"].as<uint8_t>() : 0;
     // Load relay trigger condition (defaults to 'any' for backwards compatibility)
     const char *relayTriggerStr = t["relayTrigger"].as<const char *>();
     if (relayTriggerStr && strcmp(relayTriggerStr, "high") == 0) {
-      cfg.tanks[i].relayTrigger = RELAY_TRIGGER_HIGH;
+      cfg.monitors[i].relayTrigger = RELAY_TRIGGER_HIGH;
     } else if (relayTriggerStr && strcmp(relayTriggerStr, "low") == 0) {
-      cfg.tanks[i].relayTrigger = RELAY_TRIGGER_LOW;
+      cfg.monitors[i].relayTrigger = RELAY_TRIGGER_LOW;
     } else {
-      cfg.tanks[i].relayTrigger = RELAY_TRIGGER_ANY;
+      cfg.monitors[i].relayTrigger = RELAY_TRIGGER_ANY;
     }
     // Load relay mode (defaults to momentary for backwards compatibility)
     const char *relayModeStr = t["relayMode"].as<const char *>();
     if (relayModeStr && strcmp(relayModeStr, "until_clear") == 0) {
-      cfg.tanks[i].relayMode = RELAY_MODE_UNTIL_CLEAR;
+      cfg.monitors[i].relayMode = RELAY_MODE_UNTIL_CLEAR;
     } else if (relayModeStr && strcmp(relayModeStr, "manual_reset") == 0) {
-      cfg.tanks[i].relayMode = RELAY_MODE_MANUAL_RESET;
+      cfg.monitors[i].relayMode = RELAY_MODE_MANUAL_RESET;
     } else {
-      cfg.tanks[i].relayMode = RELAY_MODE_MOMENTARY;
+      cfg.monitors[i].relayMode = RELAY_MODE_MOMENTARY;
     }
     // Load per-relay momentary durations (0 = use default 30 min)
     JsonArrayConst durations = t["relayMomentaryDurations"].as<JsonArrayConst>();
     for (uint8_t r = 0; r < 4; ++r) {
       if (durations && r < durations.size()) {
-        cfg.tanks[i].relayMomentarySeconds[r] = durations[r].as<uint16_t>();
+        cfg.monitors[i].relayMomentarySeconds[r] = durations[r].as<uint16_t>();
       } else {
-        cfg.tanks[i].relayMomentarySeconds[r] = 0; // Default
+        cfg.monitors[i].relayMomentarySeconds[r] = 0; // Default
       }
     }
     // Load digital sensor trigger state (for float switches)
     const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
-    strlcpy(cfg.tanks[i].digitalTrigger, digitalTriggerStr ? digitalTriggerStr : "", sizeof(cfg.tanks[i].digitalTrigger));
+    strlcpy(cfg.monitors[i].digitalTrigger, digitalTriggerStr ? digitalTriggerStr : "", sizeof(cfg.monitors[i].digitalTrigger));
     // Load digital switch mode (NO = normally-open, NC = normally-closed)
     const char *digitalSwitchModeStr = t["digitalSwitchMode"].as<const char *>();
     if (digitalSwitchModeStr && strcmp(digitalSwitchModeStr, "NC") == 0) {
-      strlcpy(cfg.tanks[i].digitalSwitchMode, "NC", sizeof(cfg.tanks[i].digitalSwitchMode));
+      strlcpy(cfg.monitors[i].digitalSwitchMode, "NC", sizeof(cfg.monitors[i].digitalSwitchMode));
     } else {
-      strlcpy(cfg.tanks[i].digitalSwitchMode, "NO", sizeof(cfg.tanks[i].digitalSwitchMode)); // Default: normally-open
+      strlcpy(cfg.monitors[i].digitalSwitchMode, "NO", sizeof(cfg.monitors[i].digitalSwitchMode)); // Default: normally-open
     }
     // Load 4-20mA current loop sensor type (pressure or ultrasonic)
     const char *currentLoopTypeStr = t["currentLoopType"].as<const char *>();
     if (currentLoopTypeStr && strcmp(currentLoopTypeStr, "ultrasonic") == 0) {
-      cfg.tanks[i].currentLoopType = CURRENT_LOOP_ULTRASONIC;
+      cfg.monitors[i].currentLoopType = CURRENT_LOOP_ULTRASONIC;
     } else {
-      cfg.tanks[i].currentLoopType = CURRENT_LOOP_PRESSURE; // Default: pressure sensor
+      cfg.monitors[i].currentLoopType = CURRENT_LOOP_PRESSURE; // Default: pressure sensor
     }
     // Load sensor mount height (for calibration) - validate non-negative
-    cfg.tanks[i].sensorMountHeight = t["sensorMountHeight"].is<float>() ? fmaxf(0.0f, t["sensorMountHeight"].as<float>()) : 0.0f;
+    cfg.monitors[i].sensorMountHeight = t["sensorMountHeight"].is<float>() ? fmaxf(0.0f, t["sensorMountHeight"].as<float>()) : 0.0f;
     // Load sensor native range settings
-    cfg.tanks[i].sensorRangeMin = t["sensorRangeMin"].is<float>() ? t["sensorRangeMin"].as<float>() : 0.0f;
-    cfg.tanks[i].sensorRangeMax = t["sensorRangeMax"].is<float>() ? t["sensorRangeMax"].as<float>() : 5.0f;
+    cfg.monitors[i].sensorRangeMin = t["sensorRangeMin"].is<float>() ? t["sensorRangeMin"].as<float>() : 0.0f;
+    cfg.monitors[i].sensorRangeMax = t["sensorRangeMax"].is<float>() ? t["sensorRangeMax"].as<float>() : 5.0f;
     const char *rangeUnitStr = t["sensorRangeUnit"].as<const char *>();
-    strlcpy(cfg.tanks[i].sensorRangeUnit, rangeUnitStr ? rangeUnitStr : "PSI", sizeof(cfg.tanks[i].sensorRangeUnit));
+    strlcpy(cfg.monitors[i].sensorRangeUnit, rangeUnitStr ? rangeUnitStr : "PSI", sizeof(cfg.monitors[i].sensorRangeUnit));
     // Load analog voltage range settings (for 0-10V, 1-5V, etc. sensors)
-    cfg.tanks[i].analogVoltageMin = t["analogVoltageMin"].is<float>() ? t["analogVoltageMin"].as<float>() : 0.0f;
-    cfg.tanks[i].analogVoltageMax = t["analogVoltageMax"].is<float>() ? t["analogVoltageMax"].as<float>() : 10.0f;
+    cfg.monitors[i].analogVoltageMin = t["analogVoltageMin"].is<float>() ? t["analogVoltageMin"].as<float>() : 0.0f;
+    cfg.monitors[i].analogVoltageMax = t["analogVoltageMax"].is<float>() ? t["analogVoltageMax"].as<float>() : 10.0f;
   }
 
   return true;
@@ -1002,7 +1151,10 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     if (!mbedFS) return false;
   #endif
   
-  DynamicJsonDocument doc(4096);
+  std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(4096));
+  if (!docPtr) return false;
+  DynamicJsonDocument &doc = *docPtr;
+
   doc["site"] = cfg.siteName;
   doc["deviceLabel"] = cfg.deviceLabel;
   doc["serverFleet"] = cfg.serverFleet;
@@ -1020,25 +1172,25 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   doc["solarPowered"] = cfg.solarPowered;
 
   JsonArray tanks = doc.createNestedArray("tanks");
-  for (uint8_t i = 0; i < cfg.tankCount; ++i) {
+  for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
     JsonObject t = tanks.createNestedObject();
-    char idBuffer[2] = {cfg.tanks[i].id, '\0'};
+    char idBuffer[2] = {cfg.monitors[i].id, '\0'};
     t["id"] = idBuffer;
-    t["name"] = cfg.tanks[i].name;
-    t["number"] = cfg.tanks[i].tankNumber;
-    switch (cfg.tanks[i].sensorType) {
+    t["name"] = cfg.monitors[i].name;
+    t["number"] = cfg.monitors[i].monitorNumber;
+    switch (cfg.monitors[i].sensorInterface) {
       case SENSOR_DIGITAL: t["sensor"] = "digital"; break;
       case SENSOR_CURRENT_LOOP: t["sensor"] = "current"; break;
-      case SENSOR_HALL_EFFECT_RPM: t["sensor"] = "rpm"; break;
+      case SENSOR_PULSE: t["sensor"] = "rpm"; break;
       default: t["sensor"] = "analog"; break;
     }
-    t["primaryPin"] = cfg.tanks[i].primaryPin;
-    t["secondaryPin"] = cfg.tanks[i].secondaryPin;
-    t["loopChannel"] = cfg.tanks[i].currentLoopChannel;
-    t["rpmPin"] = cfg.tanks[i].rpmPin;
-    t["pulsesPerRev"] = cfg.tanks[i].pulsesPerRevolution;
+    t["primaryPin"] = cfg.monitors[i].primaryPin;
+    t["secondaryPin"] = cfg.monitors[i].secondaryPin;
+    t["loopChannel"] = cfg.monitors[i].currentLoopChannel;
+    t["rpmPin"] = cfg.monitors[i].pulsePin;
+    t["pulsesPerRev"] = cfg.monitors[i].pulsesPerUnit;
     // Save hall effect sensor type
-    switch (cfg.tanks[i].hallEffectType) {
+    switch (cfg.monitors[i].hallEffectType) {
       case HALL_EFFECT_BIPOLAR: t["hallEffectType"] = "bipolar"; break;
       case HALL_EFFECT_OMNIPOLAR: t["hallEffectType"] = "omnipolar"; break;
       case HALL_EFFECT_ANALOG: t["hallEffectType"] = "analog"; break;
@@ -1046,28 +1198,34 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
       default: t["hallEffectType"] = "unipolar"; break;
     }
     // Save hall effect detection method
-    switch (cfg.tanks[i].hallEffectDetection) {
+    switch (cfg.monitors[i].hallEffectDetection) {
       case HALL_DETECT_TIME_BASED: t["hallEffectDetection"] = "time"; break;
       case HALL_DETECT_PULSE:
       default: t["hallEffectDetection"] = "pulse"; break;
     }
-    t["highAlarm"] = cfg.tanks[i].highAlarmThreshold;
-    t["lowAlarm"] = cfg.tanks[i].lowAlarmThreshold;
-    t["hysteresis"] = cfg.tanks[i].hysteresisValue;
-    t["daily"] = cfg.tanks[i].enableDailyReport;
-    t["alarmSms"] = cfg.tanks[i].enableAlarmSms;
-    t["upload"] = cfg.tanks[i].enableServerUpload;
+    // Save RPM sampling configuration
+    t["pulseSampleDurationMs"] = cfg.monitors[i].pulseSampleDurationMs;
+    t["pulseAccumulatedMode"] = cfg.monitors[i].pulseAccumulatedMode;
+    if (cfg.monitors[i].expectedPulseRate > 0.0f) {
+      t["expectedPulseRate"] = cfg.monitors[i].expectedPulseRate;
+    }
+    t["highAlarm"] = cfg.monitors[i].highAlarmThreshold;
+    t["lowAlarm"] = cfg.monitors[i].lowAlarmThreshold;
+    t["hysteresis"] = cfg.monitors[i].hysteresisValue;
+    t["daily"] = cfg.monitors[i].enableDailyReport;
+    t["alarmSms"] = cfg.monitors[i].enableAlarmSms;
+    t["upload"] = cfg.monitors[i].enableServerUpload;
     // Save relay control settings
-    t["relayTargetClient"] = cfg.tanks[i].relayTargetClient;
-    t["relayMask"] = cfg.tanks[i].relayMask;
+    t["relayTargetClient"] = cfg.monitors[i].relayTargetClient;
+    t["relayMask"] = cfg.monitors[i].relayMask;
     // Save relay trigger condition as string
-    switch (cfg.tanks[i].relayTrigger) {
+    switch (cfg.monitors[i].relayTrigger) {
       case RELAY_TRIGGER_HIGH: t["relayTrigger"] = "high"; break;
       case RELAY_TRIGGER_LOW: t["relayTrigger"] = "low"; break;
       default: t["relayTrigger"] = "any"; break;
     }
     // Save relay mode as string
-    switch (cfg.tanks[i].relayMode) {
+    switch (cfg.monitors[i].relayMode) {
       case RELAY_MODE_UNTIL_CLEAR: t["relayMode"] = "until_clear"; break;
       case RELAY_MODE_MANUAL_RESET: t["relayMode"] = "manual_reset"; break;
       default: t["relayMode"] = "momentary"; break;
@@ -1075,28 +1233,28 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     // Save per-relay momentary durations
     JsonArray durations = t.createNestedArray("relayMomentaryDurations");
     for (uint8_t r = 0; r < 4; ++r) {
-      durations.add(cfg.tanks[i].relayMomentarySeconds[r]);
+      durations.add(cfg.monitors[i].relayMomentarySeconds[r]);
     }
     // Save digital sensor trigger state (for float switches)
-    if (cfg.tanks[i].digitalTrigger[0] != '\0') {
-      t["digitalTrigger"] = cfg.tanks[i].digitalTrigger;
+    if (cfg.monitors[i].digitalTrigger[0] != '\0') {
+      t["digitalTrigger"] = cfg.monitors[i].digitalTrigger;
     }
     // Save digital switch mode (NO/NC)
-    t["digitalSwitchMode"] = cfg.tanks[i].digitalSwitchMode;
+    t["digitalSwitchMode"] = cfg.monitors[i].digitalSwitchMode;
     // Save 4-20mA current loop sensor type
-    switch (cfg.tanks[i].currentLoopType) {
+    switch (cfg.monitors[i].currentLoopType) {
       case CURRENT_LOOP_ULTRASONIC: t["currentLoopType"] = "ultrasonic"; break;
       default: t["currentLoopType"] = "pressure"; break;
     }
     // Save sensor mount height (for calibration)
-    t["sensorMountHeight"] = cfg.tanks[i].sensorMountHeight;
+    t["sensorMountHeight"] = cfg.monitors[i].sensorMountHeight;
     // Save sensor native range settings
-    t["sensorRangeMin"] = cfg.tanks[i].sensorRangeMin;
-    t["sensorRangeMax"] = cfg.tanks[i].sensorRangeMax;
-    t["sensorRangeUnit"] = cfg.tanks[i].sensorRangeUnit;
+    t["sensorRangeMin"] = cfg.monitors[i].sensorRangeMin;
+    t["sensorRangeMax"] = cfg.monitors[i].sensorRangeMax;
+    t["sensorRangeUnit"] = cfg.monitors[i].sensorRangeUnit;
     // Save analog voltage range settings
-    t["analogVoltageMin"] = cfg.tanks[i].analogVoltageMin;
-    t["analogVoltageMax"] = cfg.tanks[i].analogVoltageMax;
+    t["analogVoltageMin"] = cfg.monitors[i].analogVoltageMin;
+    t["analogVoltageMax"] = cfg.monitors[i].analogVoltageMax;
   }
 
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -1157,22 +1315,22 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   bool hasPressureSensor = false;
   bool hasUltrasonicSensor = false;
 
-  for (uint8_t i = 0; i < cfg.tankCount; ++i) {
-    if (cfg.tanks[i].sensorType == SENSOR_ANALOG) {
+  for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
+    if (cfg.monitors[i].sensorInterface == SENSOR_ANALOG) {
       needsAnalogExpansion = true;
     }
-    if (cfg.tanks[i].sensorType == SENSOR_CURRENT_LOOP) {
+    if (cfg.monitors[i].sensorInterface == SENSOR_CURRENT_LOOP) {
       needsCurrentLoop = true;
-      if (cfg.tanks[i].currentLoopType == CURRENT_LOOP_PRESSURE) {
+      if (cfg.monitors[i].currentLoopType == CURRENT_LOOP_PRESSURE) {
         hasPressureSensor = true;
-      } else if (cfg.tanks[i].currentLoopType == CURRENT_LOOP_ULTRASONIC) {
+      } else if (cfg.monitors[i].currentLoopType == CURRENT_LOOP_ULTRASONIC) {
         hasUltrasonicSensor = true;
       }
     }
-    if (cfg.tanks[i].sensorType == SENSOR_HALL_EFFECT_RPM) {
+    if (cfg.monitors[i].sensorInterface == SENSOR_PULSE) {
       needsRpmSensor = true;
     }
-    if (cfg.tanks[i].enableAlarmSms) {
+    if (cfg.monitors[i].enableAlarmSms) {
       needsRelayOutput = true; // indicates coil notifications on Opta outputs
     }
   }
@@ -1411,13 +1569,19 @@ static void pollForConfigUpdates() {
   if (body) {
     char *json = JConvertToJSONString(body);
     if (json) {
-      DynamicJsonDocument doc(4096);
-      DeserializationError err = deserializeJson(doc, json);
-      NoteFree(json);
-      if (!err) {
-        applyConfigUpdate(doc);
+      std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(4096));
+      if (docPtr) {
+        DynamicJsonDocument &doc = *docPtr;
+        DeserializationError err = deserializeJson(doc, json);
+        NoteFree(json);
+        if (!err) {
+          applyConfigUpdate(doc);
+        } else {
+          Serial.println(F("Config update invalid JSON"));
+        }
       } else {
-        Serial.println(F("Config update invalid JSON"));
+        NoteFree(json);
+        Serial.println(F("OOM processing config update"));
       }
     }
   }
@@ -1427,11 +1591,11 @@ static void pollForConfigUpdates() {
 
 static void reinitializeHardware() {
   // Reinitialize all tank sensors with new configuration
-  for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
-    const TankConfig &cfg = gConfig.tanks[i];
+  for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
+    const MonitorConfig &cfg = gConfig.monitors[i];
     
     // Configure digital pins if needed
-    if (cfg.sensorType == SENSOR_DIGITAL) {
+    if (cfg.sensorInterface == SENSOR_DIGITAL) {
       if (cfg.primaryPin >= 0 && cfg.primaryPin < 255) {
         pinMode(cfg.primaryPin, INPUT_PULLUP);
       }
@@ -1441,15 +1605,15 @@ static void reinitializeHardware() {
     }
     
     // Reset tank runtime state for hardware changes
-    gTankState[i].highAlarmDebounceCount = 0;
-    gTankState[i].lowAlarmDebounceCount = 0;
-    gTankState[i].clearDebounceCount = 0;
-    gTankState[i].consecutiveFailures = 0;
-    gTankState[i].stuckReadingCount = 0;
-    gTankState[i].sensorFailed = false;
-    gTankState[i].lastValidReading = 0.0f;
-    gTankState[i].hasLastValidReading = false;
-    gTankState[i].lastReportedInches = -9999.0f;
+    gMonitorState[i].highAlarmDebounceCount = 0;
+    gMonitorState[i].lowAlarmDebounceCount = 0;
+    gMonitorState[i].clearDebounceCount = 0;
+    gMonitorState[i].consecutiveFailures = 0;
+    gMonitorState[i].stuckReadingCount = 0;
+    gMonitorState[i].sensorFailed = false;
+    gMonitorState[i].lastValidReading = 0.0f;
+    gMonitorState[i].hasLastValidReading = false;
+    gMonitorState[i].lastReportedInches = -9999.0f;
   }
   
   // Reconfigure Notecard hub settings (may have changed due to power mode)
@@ -1460,7 +1624,7 @@ static void reinitializeHardware() {
 
 static void resetTelemetryBaselines() {
   for (uint8_t i = 0; i < MAX_TANKS; ++i) {
-    gTankState[i].lastReportedInches = -9999.0f;
+    gMonitorState[i].lastReportedInches = -9999.0f;
   }
 }
 
@@ -1522,90 +1686,105 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   if (doc.containsKey("tanks")) {
     hardwareChanged = true;  // Tank configuration affects hardware
     JsonArrayConst tanks = doc["tanks"].as<JsonArrayConst>();
-    gConfig.tankCount = min<uint8_t>(tanks.size(), MAX_TANKS);
-    for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
+    gConfig.monitorCount = min<uint8_t>(tanks.size(), MAX_TANKS);
+    for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
       JsonObjectConst t = tanks[i];
-      gConfig.tanks[i].id = t["id"].as<const char *>() ? t["id"].as<const char *>()[0] : ('A' + i);
-      strlcpy(gConfig.tanks[i].name, t["name"].as<const char *>() ? t["name"].as<const char *>() : "Tank", sizeof(gConfig.tanks[i].name));
-      gConfig.tanks[i].tankNumber = t["number"].is<uint8_t>() ? t["number"].as<uint8_t>() : (i + 1);
+      gConfig.monitors[i].id = t["id"].as<const char *>() ? t["id"].as<const char *>()[0] : ('A' + i);
+      strlcpy(gConfig.monitors[i].name, t["name"].as<const char *>() ? t["name"].as<const char *>() : "Tank", sizeof(gConfig.monitors[i].name));
+      gConfig.monitors[i].monitorNumber = t["number"].is<uint8_t>() ? t["number"].as<uint8_t>() : (i + 1);
       const char *sensor = t["sensor"].as<const char *>();
       if (sensor && strcmp(sensor, "digital") == 0) {
-        gConfig.tanks[i].sensorType = SENSOR_DIGITAL;
+        gConfig.monitors[i].sensorInterface = SENSOR_DIGITAL;
       } else if (sensor && strcmp(sensor, "current") == 0) {
-        gConfig.tanks[i].sensorType = SENSOR_CURRENT_LOOP;
+        gConfig.monitors[i].sensorInterface = SENSOR_CURRENT_LOOP;
       } else if (sensor && strcmp(sensor, "rpm") == 0) {
-        gConfig.tanks[i].sensorType = SENSOR_HALL_EFFECT_RPM;
+        gConfig.monitors[i].sensorInterface = SENSOR_PULSE;
       } else {
-        gConfig.tanks[i].sensorType = SENSOR_ANALOG;
+        gConfig.monitors[i].sensorInterface = SENSOR_ANALOG;
       }
-      gConfig.tanks[i].primaryPin = t["primaryPin"].is<int>() ? t["primaryPin"].as<int>() : gConfig.tanks[i].primaryPin;
-      gConfig.tanks[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : gConfig.tanks[i].secondaryPin;
-      gConfig.tanks[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : gConfig.tanks[i].currentLoopChannel;
-      gConfig.tanks[i].rpmPin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : gConfig.tanks[i].rpmPin;
+      gConfig.monitors[i].primaryPin = t["primaryPin"].is<int>() ? t["primaryPin"].as<int>() : gConfig.monitors[i].primaryPin;
+      gConfig.monitors[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : gConfig.monitors[i].secondaryPin;
+      gConfig.monitors[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : gConfig.monitors[i].currentLoopChannel;
+      gConfig.monitors[i].pulsePin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : gConfig.monitors[i].pulsePin;
       if (t.containsKey("pulsesPerRev")) {
-        gConfig.tanks[i].pulsesPerRevolution = max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>());
+        gConfig.monitors[i].pulsesPerUnit = max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>());
       }
       // Update hall effect sensor type if provided
       if (t.containsKey("hallEffectType")) {
         const char *hallType = t["hallEffectType"].as<const char *>();
         if (hallType && strcmp(hallType, "bipolar") == 0) {
-          gConfig.tanks[i].hallEffectType = HALL_EFFECT_BIPOLAR;
+          gConfig.monitors[i].hallEffectType = HALL_EFFECT_BIPOLAR;
         } else if (hallType && strcmp(hallType, "omnipolar") == 0) {
-          gConfig.tanks[i].hallEffectType = HALL_EFFECT_OMNIPOLAR;
+          gConfig.monitors[i].hallEffectType = HALL_EFFECT_OMNIPOLAR;
         } else if (hallType && strcmp(hallType, "analog") == 0) {
-          gConfig.tanks[i].hallEffectType = HALL_EFFECT_ANALOG;
+          gConfig.monitors[i].hallEffectType = HALL_EFFECT_ANALOG;
         } else if (hallType && strcmp(hallType, "unipolar") == 0) {
-          gConfig.tanks[i].hallEffectType = HALL_EFFECT_UNIPOLAR;
+          gConfig.monitors[i].hallEffectType = HALL_EFFECT_UNIPOLAR;
         }
       }
       // Update hall effect detection method if provided
       if (t.containsKey("hallEffectDetection")) {
         const char *hallDetect = t["hallEffectDetection"].as<const char *>();
         if (hallDetect && strcmp(hallDetect, "time") == 0) {
-          gConfig.tanks[i].hallEffectDetection = HALL_DETECT_TIME_BASED;
+          gConfig.monitors[i].hallEffectDetection = HALL_DETECT_TIME_BASED;
         } else if (hallDetect && strcmp(hallDetect, "pulse") == 0) {
-          gConfig.tanks[i].hallEffectDetection = HALL_DETECT_PULSE;
+          gConfig.monitors[i].hallEffectDetection = HALL_DETECT_PULSE;
         }
       }
-      gConfig.tanks[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : gConfig.tanks[i].highAlarmThreshold;
-      gConfig.tanks[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : gConfig.tanks[i].lowAlarmThreshold;
-      gConfig.tanks[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : gConfig.tanks[i].hysteresisValue;
+      // Update RPM sampling configuration if provided
+      if (t.containsKey("pulseSampleDurationMs")) {
+        gConfig.monitors[i].pulseSampleDurationMs = t["pulseSampleDurationMs"].as<uint32_t>();
+      }
+      if (t.containsKey("pulseAccumulatedMode")) {
+        gConfig.monitors[i].pulseAccumulatedMode = t["pulseAccumulatedMode"].as<bool>();
+        // Reset accumulated state when mode changes
+        gRpmAccumulatedPulses[i] = 0;
+        gRpmAccumulatedStartMillis[i] = millis();
+        gRpmAccumulatedInitialized[i] = false;
+      }
+      // Expected pulse rate for baseline (by object type: RPM for engines, GPM for flow, etc.)
+      if (t.containsKey("expectedPulseRate")) {
+        gConfig.monitors[i].expectedPulseRate = t["expectedPulseRate"].as<float>();
+      }
+      gConfig.monitors[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : gConfig.monitors[i].highAlarmThreshold;
+      gConfig.monitors[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : gConfig.monitors[i].lowAlarmThreshold;
+      gConfig.monitors[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : gConfig.monitors[i].hysteresisValue;
       if (t.containsKey("daily")) {
-        gConfig.tanks[i].enableDailyReport = t["daily"].as<bool>();
+        gConfig.monitors[i].enableDailyReport = t["daily"].as<bool>();
       }
       if (t.containsKey("alarmSms")) {
-        gConfig.tanks[i].enableAlarmSms = t["alarmSms"].as<bool>();
+        gConfig.monitors[i].enableAlarmSms = t["alarmSms"].as<bool>();
       }
       if (t.containsKey("upload")) {
-        gConfig.tanks[i].enableServerUpload = t["upload"].as<bool>();
+        gConfig.monitors[i].enableServerUpload = t["upload"].as<bool>();
       }
       if (t.containsKey("relayTargetClient")) {
         const char *relayTargetStr = t["relayTargetClient"].as<const char *>();
-        strlcpy(gConfig.tanks[i].relayTargetClient, 
+        strlcpy(gConfig.monitors[i].relayTargetClient, 
                 relayTargetStr ? relayTargetStr : "", 
-                sizeof(gConfig.tanks[i].relayTargetClient));
+                sizeof(gConfig.monitors[i].relayTargetClient));
       }
       if (t.containsKey("relayMask")) {
-        gConfig.tanks[i].relayMask = t["relayMask"].as<uint8_t>();
+        gConfig.monitors[i].relayMask = t["relayMask"].as<uint8_t>();
       }
       if (t.containsKey("relayTrigger")) {
         const char *triggerStr = t["relayTrigger"].as<const char *>();
         if (triggerStr && strcmp(triggerStr, "high") == 0) {
-          gConfig.tanks[i].relayTrigger = RELAY_TRIGGER_HIGH;
+          gConfig.monitors[i].relayTrigger = RELAY_TRIGGER_HIGH;
         } else if (triggerStr && strcmp(triggerStr, "low") == 0) {
-          gConfig.tanks[i].relayTrigger = RELAY_TRIGGER_LOW;
+          gConfig.monitors[i].relayTrigger = RELAY_TRIGGER_LOW;
         } else {
-          gConfig.tanks[i].relayTrigger = RELAY_TRIGGER_ANY;
+          gConfig.monitors[i].relayTrigger = RELAY_TRIGGER_ANY;
         }
       }
       if (t.containsKey("relayMode")) {
         const char *modeStr = t["relayMode"].as<const char *>();
         if (modeStr && strcmp(modeStr, "until_clear") == 0) {
-          gConfig.tanks[i].relayMode = RELAY_MODE_UNTIL_CLEAR;
+          gConfig.monitors[i].relayMode = RELAY_MODE_UNTIL_CLEAR;
         } else if (modeStr && strcmp(modeStr, "manual_reset") == 0) {
-          gConfig.tanks[i].relayMode = RELAY_MODE_MANUAL_RESET;
+          gConfig.monitors[i].relayMode = RELAY_MODE_MANUAL_RESET;
         } else {
-          gConfig.tanks[i].relayMode = RELAY_MODE_MOMENTARY;
+          gConfig.monitors[i].relayMode = RELAY_MODE_MOMENTARY;
         }
       }
       // Handle per-relay momentary durations (in seconds)
@@ -1614,55 +1793,55 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         for (size_t r = 0; r < 4 && r < durations.size(); r++) {
           uint16_t dur = durations[r].as<uint16_t>();
           // Enforce minimum of 1 second, max of 86400 (24 hours)
-          gConfig.tanks[i].relayMomentarySeconds[r] = constrain(dur, 1, 86400);
+          gConfig.monitors[i].relayMomentarySeconds[r] = constrain(dur, 1, 86400);
         }
       }
       // Handle digital sensor trigger state (for float switches)
       if (t.containsKey("digitalTrigger")) {
         const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
-        strlcpy(gConfig.tanks[i].digitalTrigger,
+        strlcpy(gConfig.monitors[i].digitalTrigger,
                 digitalTriggerStr ? digitalTriggerStr : "",
-                sizeof(gConfig.tanks[i].digitalTrigger));
+                sizeof(gConfig.monitors[i].digitalTrigger));
       }
       // Handle digital switch mode (NO/NC) for float switches
       if (t.containsKey("digitalSwitchMode")) {
         const char *digitalSwitchModeStr = t["digitalSwitchMode"].as<const char *>();
         if (digitalSwitchModeStr && strcmp(digitalSwitchModeStr, "NC") == 0) {
-          strlcpy(gConfig.tanks[i].digitalSwitchMode, "NC", sizeof(gConfig.tanks[i].digitalSwitchMode));
+          strlcpy(gConfig.monitors[i].digitalSwitchMode, "NC", sizeof(gConfig.monitors[i].digitalSwitchMode));
         } else {
-          strlcpy(gConfig.tanks[i].digitalSwitchMode, "NO", sizeof(gConfig.tanks[i].digitalSwitchMode));
+          strlcpy(gConfig.monitors[i].digitalSwitchMode, "NO", sizeof(gConfig.monitors[i].digitalSwitchMode));
         }
       }
       // Handle 4-20mA current loop sensor type (pressure or ultrasonic)
       if (t.containsKey("currentLoopType")) {
         const char *currentLoopTypeStr = t["currentLoopType"].as<const char *>();
         if (currentLoopTypeStr && strcmp(currentLoopTypeStr, "ultrasonic") == 0) {
-          gConfig.tanks[i].currentLoopType = CURRENT_LOOP_ULTRASONIC;
+          gConfig.monitors[i].currentLoopType = CURRENT_LOOP_ULTRASONIC;
         } else {
-          gConfig.tanks[i].currentLoopType = CURRENT_LOOP_PRESSURE;
+          gConfig.monitors[i].currentLoopType = CURRENT_LOOP_PRESSURE;
         }
       }
       // Handle sensor mount height (for calibration) - validate non-negative
       if (t.containsKey("sensorMountHeight")) {
-        gConfig.tanks[i].sensorMountHeight = fmaxf(0.0f, t["sensorMountHeight"].as<float>());
+        gConfig.monitors[i].sensorMountHeight = fmaxf(0.0f, t["sensorMountHeight"].as<float>());
       }
       // Handle sensor native range settings
       if (t.containsKey("sensorRangeMin")) {
-        gConfig.tanks[i].sensorRangeMin = t["sensorRangeMin"].as<float>();
+        gConfig.monitors[i].sensorRangeMin = t["sensorRangeMin"].as<float>();
       }
       if (t.containsKey("sensorRangeMax")) {
-        gConfig.tanks[i].sensorRangeMax = t["sensorRangeMax"].as<float>();
+        gConfig.monitors[i].sensorRangeMax = t["sensorRangeMax"].as<float>();
       }
       if (t.containsKey("sensorRangeUnit")) {
         const char *unitStr = t["sensorRangeUnit"].as<const char *>();
-        strlcpy(gConfig.tanks[i].sensorRangeUnit, unitStr ? unitStr : "PSI", sizeof(gConfig.tanks[i].sensorRangeUnit));
+        strlcpy(gConfig.monitors[i].sensorRangeUnit, unitStr ? unitStr : "PSI", sizeof(gConfig.monitors[i].sensorRangeUnit));
       }
       // Handle analog voltage range settings
       if (t.containsKey("analogVoltageMin")) {
-        gConfig.tanks[i].analogVoltageMin = t["analogVoltageMin"].as<float>();
+        gConfig.monitors[i].analogVoltageMin = t["analogVoltageMin"].as<float>();
       }
       if (t.containsKey("analogVoltageMax")) {
-        gConfig.tanks[i].analogVoltageMax = t["analogVoltageMax"].as<float>();
+        gConfig.monitors[i].analogVoltageMax = t["analogVoltageMax"].as<float>();
       }
     }
   }
@@ -1719,12 +1898,12 @@ static float linearMap(float value, float inMin, float inMax, float outMin, floa
 }
 
 static bool validateSensorReading(uint8_t idx, float reading) {
-  if (idx >= gConfig.tankCount) {
+  if (idx >= gConfig.monitorCount) {
     return false;
   }
 
-  const TankConfig &cfg = gConfig.tanks[idx];
-  TankRuntime &state = gTankState[idx];
+  const MonitorConfig &cfg = gConfig.monitors[idx];
+  MonitorRuntime &state = gMonitorState[idx];
 
   // Calculate valid range based on sensor type
   float minValid;
@@ -1732,8 +1911,8 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   
   // Check if sensor has native range configured (current loop or analog with voltage range)
   bool hasNativeRange = (cfg.sensorRangeMax > cfg.sensorRangeMin);
-  bool isCurrentLoop = (cfg.sensorType == SENSOR_CURRENT_LOOP);
-  bool isAnalogWithVoltageRange = (cfg.sensorType == SENSOR_ANALOG && 
+  bool isCurrentLoop = (cfg.sensorInterface == SENSOR_CURRENT_LOOP);
+  bool isAnalogWithVoltageRange = (cfg.sensorInterface == SENSOR_ANALOG && 
                                     cfg.analogVoltageMax > cfg.analogVoltageMin &&
                                     hasNativeRange);
   
@@ -1748,7 +1927,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
       maxValid = (cfg.sensorRangeMax * conversionFactor + cfg.sensorMountHeight) * 1.1f;
     }
     minValid = -maxValid * 0.1f;
-  } else if (cfg.sensorType == SENSOR_DIGITAL) {
+  } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
     // Digital sensors have simple 0/1 values
     minValid = -0.5f;
     maxValid = 1.5f;
@@ -1771,7 +1950,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
           doc["client"] = gDeviceUID;
           doc["site"] = gConfig.siteName;
           doc["label"] = cfg.name;
-          doc["tank"] = cfg.tankNumber;
+          doc["tank"] = cfg.monitorNumber;
           doc["type"] = "sensor-fault";
           doc["reading"] = reading;
           doc["time"] = currentEpoch();
@@ -1796,7 +1975,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
           doc["client"] = gDeviceUID;
           doc["site"] = gConfig.siteName;
           doc["label"] = cfg.name;
-          doc["tank"] = cfg.tankNumber;
+          doc["tank"] = cfg.monitorNumber;
           doc["type"] = "sensor-stuck";
           doc["reading"] = reading;
           doc["time"] = currentEpoch();
@@ -1820,7 +1999,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
     doc["client"] = gDeviceUID;
     doc["site"] = gConfig.siteName;
     doc["label"] = cfg.name;
-    doc["tank"] = cfg.tankNumber;
+    doc["tank"] = cfg.monitorNumber;
     doc["type"] = "sensor-recovered";
     doc["reading"] = reading;
     doc["time"] = currentEpoch();
@@ -1832,13 +2011,13 @@ static bool validateSensorReading(uint8_t idx, float reading) {
 }
 
 static float readTankSensor(uint8_t idx) {
-  if (idx >= gConfig.tankCount) {
+  if (idx >= gConfig.monitorCount) {
     return 0.0f;
   }
 
-  const TankConfig &cfg = gConfig.tanks[idx];
+  const MonitorConfig &cfg = gConfig.monitors[idx];
 
-  switch (cfg.sensorType) {
+  switch (cfg.sensorInterface) {
     case SENSOR_DIGITAL: {
       // Float switch sensor - returns activated/not-activated state
       // The digitalSwitchMode field controls how the hardware is interpreted:
@@ -1893,6 +2072,9 @@ static float readTankSensor(uint8_t idx) {
       }
       float voltage = total / samples;
       
+      // Store raw voltage reading for telemetry
+      gMonitorState[idx].currentSensorVoltage = voltage;
+      
       // Map voltage to sensor's native pressure units
       float pressure = linearMap(voltage, cfg.analogVoltageMin, cfg.analogVoltageMax,
                                  cfg.sensorRangeMin, cfg.sensorRangeMax);
@@ -1914,16 +2096,16 @@ static float readTankSensor(uint8_t idx) {
       int16_t channel = (cfg.currentLoopChannel >= 0 && cfg.currentLoopChannel < 8) ? cfg.currentLoopChannel : 0;
       // Validate that we have a valid sensor range configured
       if (cfg.sensorRangeMax <= cfg.sensorRangeMin) {
-        gTankState[idx].currentSensorMa = 0.0f;
+        gMonitorState[idx].currentSensorMa = 0.0f;
         return 0.0f;
       }
       float milliamps = readCurrentLoopMilliamps(channel);
       if (milliamps < 0.0f) {
-        return gTankState[idx].currentInches; // keep previous on failure
+        return gMonitorState[idx].currentInches; // keep previous on failure
       }
       
       // Store raw mA reading for telemetry
-      gTankState[idx].currentSensorMa = milliamps;
+      gMonitorState[idx].currentSensorMa = milliamps;
       
       // Handle different 4-20mA sensor types using native sensor range
       float levelInches;
@@ -1967,28 +2149,138 @@ static float readTankSensor(uint8_t idx) {
       }
       return levelInches;
     }
-    case SENSOR_HALL_EFFECT_RPM: {
+    case SENSOR_PULSE: {
       // Hall effect RPM sensor - supports multiple sensor types and detection methods
-      // Use rpmPin if available, otherwise use primaryPin
-      int pin = (cfg.rpmPin >= 0 && cfg.rpmPin < 255) ? cfg.rpmPin : 
+      // Now supports configurable sample duration and accumulated mode for very low RPM
+      // Uses expectedPulseRate to auto-configure optimal sampling if not explicitly set
+      
+      // Use pulsePin if available, otherwise use primaryPin
+      int pin = (cfg.pulsePin >= 0 && cfg.pulsePin < 255) ? cfg.pulsePin : 
                 ((cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx));
       
       // Configure pin as input with pullup for digital Hall effect sensors
-      // Analog sensors would typically use analog input, but we support digital threshold mode here
       pinMode(pin, INPUT_PULLUP);
       
-      // Validate pulses per revolution (common validation for both methods)
-      uint8_t pulsesPerRev = (cfg.pulsesPerRevolution > 0) ? cfg.pulsesPerRevolution : 1;
+      // Validate pulses per revolution/unit
+      uint8_t pulsesPerRev = (cfg.pulsesPerUnit > 0) ? cfg.pulsesPerUnit : 1;
       const float MS_PER_MINUTE = 60000.0f;
       
-      // Common constants for both detection methods
+      // Determine sampling parameters:
+      // 1. If explicitly configured, use those values
+      // 2. If expectedPulseRate is set, use recommended values
+      // 3. Otherwise, use defaults
+      uint32_t sampleDurationMs;
+      bool useAccumulatedMode;
+      
+      if (cfg.pulseSampleDurationMs > 0) {
+        // Explicitly configured - use as-is
+        sampleDurationMs = cfg.pulseSampleDurationMs;
+        useAccumulatedMode = cfg.pulseAccumulatedMode;
+      } else if (cfg.expectedPulseRate > 0.0f) {
+        // Use recommendation based on expected rate
+        PulseSamplingRecommendation rec = getRecommendedPulseSampling(cfg.expectedPulseRate);
+        sampleDurationMs = rec.sampleDurationMs;
+        useAccumulatedMode = rec.accumulatedMode;
+      } else {
+        // Use defaults
+        sampleDurationMs = RPM_SAMPLE_DURATION_MS;
+        useAccumulatedMode = cfg.pulseAccumulatedMode;
+      }
+      
+      // Common constants
       const unsigned long DEBOUNCE_MS = 2;
-      const uint32_t MAX_ITERATIONS = RPM_SAMPLE_DURATION_MS * 2;
+      const uint32_t MAX_ITERATIONS = sampleDurationMs * 2;
       
       float rpm = 0.0f;
       
-      // Choose detection method: pulse counting or time-based
-      if (cfg.hallEffectDetection == HALL_DETECT_TIME_BASED) {
+      // ACCUMULATED MODE: Count pulses between telemetry reports
+      // Useful for very low RPM (< 1 RPM) where sample duration would be impractical
+      // With sampleSeconds=1800 (30 min) and 1 pulse/rev, can detect down to 0.033 RPM
+      // Can be auto-enabled based on expectedPulseRate
+      if (useAccumulatedMode) {
+        unsigned long now = millis();
+        
+        // Initialize accumulated counting on first call
+        if (!gRpmAccumulatedInitialized[idx]) {
+          gRpmAccumulatedPulses[idx] = 0;
+          gRpmAccumulatedStartMillis[idx] = now;
+          gRpmLastPinState[idx] = digitalRead(pin);
+          gRpmAccumulatedInitialized[idx] = true;
+          Serial.print(F("Pulse accumulated mode initialized for monitor "));
+          Serial.println(idx);
+        }
+        
+        // Sample for a short burst to catch any recent pulses
+        // This supplements the main loop polling
+        unsigned long burstStart = millis();
+        const unsigned long BURST_DURATION_MS = 1000; // 1 second burst sample
+        int lastState = gRpmLastPinState[idx];
+        unsigned long lastPulseTime = 0;
+        
+        while ((millis() - burstStart) < BURST_DURATION_MS) {
+          int currentState = digitalRead(pin);
+          bool edgeDetected = false;
+          
+          switch (cfg.hallEffectType) {
+            case HALL_EFFECT_UNIPOLAR:
+            case HALL_EFFECT_ANALOG:
+              edgeDetected = (lastState == HIGH && currentState == LOW);
+              break;
+            case HALL_EFFECT_BIPOLAR:
+            case HALL_EFFECT_OMNIPOLAR:
+              edgeDetected = (lastState != currentState);
+              break;
+            default:
+              edgeDetected = (lastState == HIGH && currentState == LOW);
+              break;
+          }
+          
+          if (edgeDetected) {
+            unsigned long pulseTime = millis();
+            if (pulseTime - lastPulseTime >= DEBOUNCE_MS) {
+              gRpmAccumulatedPulses[idx]++;
+              lastPulseTime = pulseTime;
+            }
+          }
+          lastState = currentState;
+          delay(1);
+          
+#ifdef WATCHDOG_AVAILABLE
+          #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+            mbedWatchdog.kick();
+          #else
+            IWatchdog.reload();
+          #endif
+#endif
+        }
+        gRpmLastPinState[idx] = lastState;
+        
+        // Calculate RPM from accumulated pulses over elapsed time
+        unsigned long elapsedMs = now - gRpmAccumulatedStartMillis[idx];
+        if (elapsedMs > 1000 && gRpmAccumulatedPulses[idx] > 0) {
+          // RPM = (pulses * 60000) / (elapsed_ms * pulses_per_rev)
+          rpm = ((float)gRpmAccumulatedPulses[idx] * MS_PER_MINUTE) / 
+                ((float)elapsedMs * (float)pulsesPerRev);
+        } else if (elapsedMs > sampleDurationMs && gRpmAccumulatedPulses[idx] == 0) {
+          // No pulses for longer than sample duration - report 0 RPM
+          rpm = 0.0f;
+        } else {
+          // Not enough time elapsed, use last reading
+          rpm = gRpmLastReading[idx];
+        }
+        
+        // Reset accumulated count after reading (start fresh for next period)
+        gRpmAccumulatedPulses[idx] = 0;
+        gRpmAccumulatedStartMillis[idx] = now;
+        
+        Serial.print(F("RPM accumulated: "));
+        Serial.print(rpm, 2);
+        Serial.print(F(" ("));
+        Serial.print(elapsedMs / 1000);
+        Serial.println(F("s period)"));
+      }
+      // TIME-BASED MODE: Measure period between consecutive pulses
+      else if (cfg.hallEffectDetection == HALL_DETECT_TIME_BASED) {
         // Time-based detection: measure period between pulses
         // More flexible for different magnet types and orientations
         // Requires fewer pulses to get a reading
@@ -2004,7 +2296,8 @@ static float readTankSensor(uint8_t idx) {
         bool secondPulseDetected = false;
         
         // Detect edge transitions based on sensor type
-        while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS && iterationCount < MAX_ITERATIONS) {
+        // Use configurable sample duration
+        while ((millis() - sampleStart) < sampleDurationMs && iterationCount < MAX_ITERATIONS) {
           int currentState = digitalRead(pin);
           bool edgeDetected = false;
           
@@ -2066,11 +2359,10 @@ static float readTankSensor(uint8_t idx) {
           rpm = MS_PER_MINUTE / ((float)gRpmPulsePeriodMs[idx] * (float)pulsesPerRev);
         } else if (firstPulseDetected && !secondPulseDetected) {
           // Only one pulse detected - RPM is very low or stopped
-          // If we didn't get a second pulse within the sample duration, 
-          // RPM is below: 60000ms / (RPM_SAMPLE_DURATION_MS * pulsesPerRev)
-          // For 3s sampling with 1 pulse/rev: < 20 RPM
-          // For 3s sampling with 4 pulses/rev: < 5 RPM
-          // Keep last reading to avoid false zero during temporary signal loss
+          // If we didn't get a second pulse within the sample duration,
+          // RPM is below: 60000ms / (sampleDurationMs * pulsesPerRev)
+          // For 60s sampling with 1 pulse/rev: < 1 RPM
+          // Consider using rpmAccumulatedMode=true for sub-1 RPM measurement
           rpm = gRpmLastReading[idx];
         } else {
           // No pulses detected, keep last reading
@@ -2078,8 +2370,8 @@ static float readTankSensor(uint8_t idx) {
         }
         
       } else {
-        // Pulse counting method (traditional approach)
-        // Sample pulses for RPM_SAMPLE_DURATION_MS (default 3 seconds)
+        // PULSE COUNTING MODE (traditional approach)
+        // Sample pulses for configurable duration (default 60 seconds)
         // This provides accurate RPM measurement by counting multiple pulses
         
         unsigned long sampleStart = millis();
@@ -2092,7 +2384,7 @@ static float readTankSensor(uint8_t idx) {
         unsigned long lastPulseTime = 0;
         uint32_t iterationCount = 0;
         
-        while ((millis() - sampleStart) < (unsigned long)RPM_SAMPLE_DURATION_MS && iterationCount < MAX_ITERATIONS) {
+        while ((millis() - sampleStart) < sampleDurationMs && iterationCount < MAX_ITERATIONS) {
           int currentState = digitalRead(pin);
           bool edgeDetected = false;
           
@@ -2138,7 +2430,8 @@ static float readTankSensor(uint8_t idx) {
         gRpmLastSampleMillis[idx] = millis();
         
         // Calculate RPM from pulse count (using pre-validated pulsesPerRev)
-        rpm = ((float)pulseCount * MS_PER_MINUTE) / ((float)RPM_SAMPLE_DURATION_MS * (float)pulsesPerRev);
+        // RPM = (pulses * 60000) / (sample_duration_ms * pulses_per_rev)
+        rpm = ((float)pulseCount * MS_PER_MINUTE) / ((float)sampleDurationMs * (float)pulsesPerRev);
       }
       
       gRpmLastReading[idx] = rpm;
@@ -2152,35 +2445,35 @@ static float readTankSensor(uint8_t idx) {
 }
 
 static void sampleTanks() {
-  for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
+  for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
     float inches = readTankSensor(i);
     
     // Validate sensor reading
     if (!validateSensorReading(i, inches)) {
       // Keep previous valid reading if sensor failed
-      inches = gTankState[i].currentInches;
+      inches = gMonitorState[i].currentInches;
     } else {
-      gTankState[i].currentInches = inches;
+      gMonitorState[i].currentInches = inches;
     }
     
     evaluateAlarms(i);
 
-    if (gConfig.tanks[i].enableServerUpload && !gTankState[i].sensorFailed) {
+    if (gConfig.monitors[i].enableServerUpload && !gMonitorState[i].sensorFailed) {
       const float threshold = gConfig.minLevelChangeInches;
-      const bool needBaseline = (gTankState[i].lastReportedInches < 0.0f);
+      const bool needBaseline = (gMonitorState[i].lastReportedInches < 0.0f);
       const bool thresholdEnabled = (threshold > 0.0f);
-      const bool changeExceeded = thresholdEnabled && (fabs(inches - gTankState[i].lastReportedInches) >= threshold);
+      const bool changeExceeded = thresholdEnabled && (fabs(inches - gMonitorState[i].lastReportedInches) >= threshold);
       if (needBaseline || changeExceeded) {
         sendTelemetry(i, "sample", false);
-        gTankState[i].lastReportedInches = inches;
+        gMonitorState[i].lastReportedInches = inches;
       }
     }
   }
 }
 
 static void evaluateAlarms(uint8_t idx) {
-  const TankConfig &cfg = gConfig.tanks[idx];
-  TankRuntime &state = gTankState[idx];
+  const MonitorConfig &cfg = gConfig.monitors[idx];
+  MonitorRuntime &state = gMonitorState[idx];
 
   // Skip alarm evaluation if sensor has failed
   if (state.sensorFailed) {
@@ -2188,7 +2481,7 @@ static void evaluateAlarms(uint8_t idx) {
   }
 
   // Handle digital sensors (float switches) differently
-  if (cfg.sensorType == SENSOR_DIGITAL) {
+  if (cfg.sensorInterface == SENSOR_DIGITAL) {
     // For digital sensors, currentInches is either DIGITAL_SENSOR_ACTIVATED_VALUE (1.0) or DIGITAL_SENSOR_NOT_ACTIVATED_VALUE (0.0)
     bool isActivated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
     bool shouldAlarm = false;
@@ -2316,32 +2609,65 @@ static void evaluateAlarms(uint8_t idx) {
 }
 
 static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
-  if (idx >= gConfig.tankCount) {
+  if (idx >= gConfig.monitorCount) {
     return;
   }
 
-  const TankConfig &cfg = gConfig.tanks[idx];
-  TankRuntime &state = gTankState[idx];
+  const MonitorConfig &cfg = gConfig.monitors[idx];
+  MonitorRuntime &state = gMonitorState[idx];
 
   DynamicJsonDocument doc(768);
   doc["c"] = gDeviceUID;
   doc["s"] = gConfig.siteName;
   doc["n"] = cfg.name;
-  doc["k"] = cfg.tankNumber;
+  doc["k"] = cfg.monitorNumber;
   doc["i"] = String(cfg.id);
   
-  // Handle digital sensors differently in telemetry
-  if (cfg.sensorType == SENSOR_DIGITAL) {
-    doc["st"] = "digital";
-    bool activated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
-    doc["act"] = activated;  // Boolean state: true = switch activated
-    doc["l"] = state.currentInches;  // 1.0 or 0.0
-  } else if (cfg.sensorType == SENSOR_CURRENT_LOOP) {
-    doc["st"] = "currentLoop";
-    doc["l"] = roundTo(state.currentInches, 1);
-    doc["ma"] = roundTo(state.currentSensorMa, 2);  // Raw 4-20mA reading
-  } else {
-    doc["l"] = roundTo(state.currentInches, 1);
+  // Include object type (what is being monitored)
+  switch (cfg.objectType) {
+    case OBJECT_TANK:   doc["ot"] = "tank";   break;
+    case OBJECT_ENGINE: doc["ot"] = "engine"; break;
+    case OBJECT_PUMP:   doc["ot"] = "pump";   break;
+    case OBJECT_GAS:    doc["ot"] = "gas";    break;
+    case OBJECT_FLOW:   doc["ot"] = "flow";   break;
+    default:            doc["ot"] = "custom"; break;
+  }
+  
+  // Include measurement unit if configured
+  if (strlen(cfg.measurementUnit) > 0) {
+    doc["mu"] = cfg.measurementUnit;
+  }
+  
+  // Include sensor interface type and type-specific data in telemetry
+  // For current loop and analog sensors, send raw sensor data - server converts using config
+  switch (cfg.sensorInterface) {
+    case SENSOR_DIGITAL:
+      doc["st"] = "digital";
+      {
+        bool activated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
+        doc["act"] = activated;  // Boolean state: true = switch activated
+        doc["fl"] = state.currentInches;  // 1.0 or 0.0 (float switch state)
+      }
+      break;
+    case SENSOR_CURRENT_LOOP:
+      doc["st"] = "currentLoop";
+      // Send raw mA only - server converts to display units using config
+      if (state.currentSensorMa >= 4.0f) {
+        doc["ma"] = roundTo(state.currentSensorMa, 2);
+      }
+      break;
+    case SENSOR_ANALOG:
+      doc["st"] = "analog";
+      // Send raw voltage only - server converts to display units using config
+      if (state.currentSensorVoltage > 0.0f) {
+        doc["vt"] = roundTo(state.currentSensorVoltage, 3);  // voltage in V
+      }
+      break;
+    case SENSOR_PULSE:
+    default:
+      doc["st"] = "pulse";
+      doc["rm"] = roundTo(state.currentInches, 1);  // Pulse/RPM value
+      break;
   }
   doc["r"] = reason;
   doc["t"] = currentEpoch();
@@ -2350,11 +2676,11 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
 }
 
 static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
-  if (idx >= gConfig.tankCount) {
+  if (idx >= gConfig.monitorCount) {
     return false;
   }
 
-  TankRuntime &state = gTankState[idx];
+  MonitorRuntime &state = gMonitorState[idx];
   unsigned long now = millis();
 
   // Check minimum interval between same alarm type
@@ -2446,11 +2772,11 @@ static void activateLocalAlarm(uint8_t idx, bool active) {
 }
 
 static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
-  if (idx >= gConfig.tankCount) {
+  if (idx >= gConfig.monitorCount) {
     return;
   }
 
-  const TankConfig &cfg = gConfig.tanks[idx];
+  const MonitorConfig &cfg = gConfig.monitors[idx];
   bool allowSmsEscalation = cfg.enableAlarmSms;
 
   // Always activate local alarm regardless of rate limits
@@ -2462,7 +2788,7 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     return;  // Rate limit exceeded
   }
 
-  TankRuntime &state = gTankState[idx];
+  MonitorRuntime &state = gMonitorState[idx];
   state.lastAlarmSendMillis = millis();
 
   // Try to send via network if available
@@ -2471,9 +2797,42 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
     doc["n"] = cfg.name;
-    doc["k"] = cfg.tankNumber;
+    doc["k"] = cfg.monitorNumber;
     doc["y"] = alarmType;
-    doc["l"] = roundTo(inches, 1);
+    
+    // Include object type (what is being monitored)
+    switch (cfg.objectType) {
+      case OBJECT_TANK:   doc["ot"] = "tank";   break;
+      case OBJECT_ENGINE: doc["ot"] = "engine"; break;
+      case OBJECT_PUMP:   doc["ot"] = "pump";   break;
+      case OBJECT_GAS:    doc["ot"] = "gas";    break;
+      case OBJECT_FLOW:   doc["ot"] = "flow";   break;
+      default:            doc["ot"] = "custom"; break;
+    }
+    
+    // Include measurement unit if configured
+    if (strlen(cfg.measurementUnit) > 0) {
+      doc["mu"] = cfg.measurementUnit;
+    }
+    
+    // Send sensor-type-appropriate raw data - server converts using config
+    if (cfg.sensorInterface == SENSOR_CURRENT_LOOP) {
+      // Current loop: send raw mA only
+      if (state.currentSensorMa >= 4.0f) {
+        doc["ma"] = roundTo(state.currentSensorMa, 2);
+      }
+    } else if (cfg.sensorInterface == SENSOR_ANALOG) {
+      // Analog voltage: send raw voltage only
+      if (state.currentSensorVoltage > 0.0f) {
+        doc["vt"] = roundTo(state.currentSensorVoltage, 3);
+      }
+    } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
+      // Digital float switch: send float state
+      doc["fl"] = roundTo(inches, 1);
+    } else {
+      // Pulse/RPM: send value
+      doc["rm"] = roundTo(inches, 1);
+    }
     doc["th"] = roundTo(cfg.highAlarmThreshold, 1);
     doc["tl"] = roundTo(cfg.lowAlarmThreshold, 1);
     doc["se"] = allowSmsEscalation;
@@ -2552,8 +2911,8 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
 static void sendDailyReport() {
   uint8_t eligibleIndices[MAX_TANKS];
   uint8_t eligibleCount = 0;
-  for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
-    if (gConfig.tanks[i].enableDailyReport) {
+  for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
+    if (gConfig.monitors[i].enableDailyReport) {
       eligibleIndices[eligibleCount++] = i;
     }
   }
@@ -2572,15 +2931,14 @@ static void sendDailyReport() {
 
   while (tankCursor < eligibleCount) {
     DynamicJsonDocument doc(1024);
-    doc["client"] = gDeviceUID;
-    doc["site"] = gConfig.siteName;
-    doc["email"] = gConfig.dailyEmail;
-    doc["time"] = reportEpoch;
-    doc["part"] = static_cast<uint8_t>(part + 1);
+    doc["c"] = gDeviceUID;
+    doc["s"] = gConfig.siteName;
+    doc["t"] = reportEpoch;
+    doc["p"] = part;  // 0-based part number
 
     // Include VIN voltage in the first part of the daily report
     if (part == 0 && vinVoltage > 0.0f) {
-      doc["vinVoltage"] = vinVoltage;
+      doc["v"] = vinVoltage;
     }
 
     JsonArray tanks = doc.createNestedArray("tanks");
@@ -2610,7 +2968,7 @@ static void sendDailyReport() {
       continue;
     }
 
-    doc["more"] = (tankCursor < eligibleCount);
+    doc["m"] = (tankCursor < eligibleCount);  // more parts follow
     bool syncNow = (tankCursor >= eligibleCount);
     publishNote(DAILY_FILE, doc, syncNow);
     queuedAny = true;
@@ -2623,23 +2981,52 @@ static void sendDailyReport() {
 }
 
 static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit) {
-  if (tankIndex >= gConfig.tankCount) {
+  if (tankIndex >= gConfig.monitorCount) {
     return false;
   }
 
-  const TankConfig &cfg = gConfig.tanks[tankIndex];
-  TankRuntime &state = gTankState[tankIndex];
+  const MonitorConfig &cfg = gConfig.monitors[tankIndex];
+  MonitorRuntime &state = gMonitorState[tankIndex];
 
   JsonObject t = array.createNestedObject();
-  t["label"] = cfg.name;
-  t["tank"] = cfg.tankNumber;
-  t["levelInches"] = state.currentInches;
-  // Include raw sensor mA for current loop sensors
-  if (cfg.sensorType == SENSOR_CURRENT_LOOP && state.currentSensorMa >= 4.0f) {
-    t["sensorMa"] = state.currentSensorMa;
+  t["n"] = cfg.name;                              // label/name
+  t["k"] = cfg.monitorNumber;                     // monitor number
+  
+  // Include object type (what is being monitored)
+  switch (cfg.objectType) {
+    case OBJECT_TANK:   t["ot"] = "tank";   break;
+    case OBJECT_ENGINE: t["ot"] = "engine"; break;
+    case OBJECT_PUMP:   t["ot"] = "pump";   break;
+    case OBJECT_GAS:    t["ot"] = "gas";    break;
+    case OBJECT_FLOW:   t["ot"] = "flow";   break;
+    default:            t["ot"] = "custom"; break;
   }
-  t["high"] = cfg.highAlarmThreshold;
-  t["low"] = cfg.lowAlarmThreshold;
+  
+  // Include measurement unit if configured
+  if (strlen(cfg.measurementUnit) > 0) {
+    t["mu"] = cfg.measurementUnit;
+  }
+  
+  // Send sensor-type-appropriate raw data - server converts using config
+  if (cfg.sensorInterface == SENSOR_CURRENT_LOOP) {
+    // Current loop: send raw mA only - server converts to display units
+    if (state.currentSensorMa >= 4.0f) {
+      t["ma"] = roundTo(state.currentSensorMa, 2);
+    }
+  } else if (cfg.sensorInterface == SENSOR_ANALOG) {
+    // Analog voltage: send raw voltage only - server converts to display units
+    if (state.currentSensorVoltage > 0.0f) {
+      t["vt"] = roundTo(state.currentSensorVoltage, 3);
+    }
+  } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
+    // Digital float switch: send float state
+    t["fl"] = roundTo(state.currentInches, 1);
+  } else {
+    // Pulse/RPM: send value
+    t["rm"] = roundTo(state.currentInches, 1);
+  }
+  // Note: sensor type (st), alarm thresholds (high/low), and email are
+  // already known by the server from telemetry and config - not sent in daily
 
   if (measureJson(doc) > payloadLimit) {
     size_t currentSize = array.size();
@@ -3238,8 +3625,8 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
 // Check and deactivate relays that have exceeded the momentary timeout
 // Uses the minimum duration among the active relays in the mask
 static void checkRelayMomentaryTimeout(unsigned long now) {
-  for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
-    const TankConfig &cfg = gConfig.tanks[i];
+  for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
+    const MonitorConfig &cfg = gConfig.monitors[i];
     
     // Only check tanks with active relays in momentary mode
     if (!gRelayActiveForTank[i] || cfg.relayMode != RELAY_MODE_MOMENTARY) {
@@ -3286,11 +3673,11 @@ static void checkRelayMomentaryTimeout(unsigned long now) {
 
 // Reset relay for a specific tank (called from server manual reset command)
 static void resetRelayForTank(uint8_t idx) {
-  if (idx >= gConfig.tankCount) {
+  if (idx >= gConfig.monitorCount) {
     return;
   }
   
-  const TankConfig &cfg = gConfig.tanks[idx];
+  const MonitorConfig &cfg = gConfig.monitors[idx];
   
   if (gRelayActiveForTank[idx] && cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
     triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
@@ -3378,7 +3765,7 @@ static void checkClearButton(unsigned long now) {
 static void clearAllRelayAlarms() {
   bool anyCleared = false;
   
-  for (uint8_t i = 0; i < gConfig.tankCount; ++i) {
+  for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
     if (gRelayActiveForTank[i]) {
       resetRelayForTank(i);
       anyCleared = true;
