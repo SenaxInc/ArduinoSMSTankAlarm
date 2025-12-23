@@ -1,0 +1,158 @@
+name: Arduino CI - TankAlarm 092025 (Hologram)
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'TankAlarm-092025-Client-Hologram/**'
+      - 'TankAlarm-092025-Server-Hologram/**'
+      - '.github/workflows/arduino-ci-092025.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'TankAlarm-092025-Client-Hologram/**'
+      - 'TankAlarm-092025-Server-Hologram/**'
+      - '.github/workflows/arduino-ci-092025.yml'
+  workflow_dispatch:
+
+jobs:
+  compile-arduino-092025:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v1
+
+      - name: Install Arduino SAMD core
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:samd
+
+      - name: Install required libraries for 092025
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "MKRNB"
+          arduino-cli lib install "SD"
+          arduino-cli lib install "Arduino Low Power"
+          arduino-cli lib install "RTCZero"
+
+      - name: Compile TankAlarm-092025-Client-Hologram
+        id: compile-client
+        continue-on-error: true
+        run: |
+          arduino-cli compile --fqbn arduino:samd:mkrnb1500 \
+            TankAlarm-092025-Client-Hologram/TankAlarm-092025-Client-Hologram.ino
+
+      - name: Compile TankAlarm-092025-Server-Hologram
+        id: compile-server
+        continue-on-error: true
+        run: |
+          arduino-cli compile --fqbn arduino:samd:mkrnb1500 \
+            TankAlarm-092025-Server-Hologram/TankAlarm-092025-Server-Hologram.ino
+
+      - name: Create issue on compilation failure
+        if: |
+          steps.compile-client.outcome == 'failure' || 
+          steps.compile-server.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const date = new Date().toISOString().split('T')[0];
+
+            // Determine which sketch(es) failed
+            const clientFailed = '${{ steps.compile-client.outcome }}' === 'failure';
+            const serverFailed = '${{ steps.compile-server.outcome }}' === 'failure';
+
+            const failedSketches = [];
+            if (clientFailed) failedSketches.push('TankAlarm-092025-Client-Hologram');
+            if (serverFailed) failedSketches.push('TankAlarm-092025-Server-Hologram');
+
+            const sketchName = failedSketches.length === 1 ? failedSketches[0] : 
+                               failedSketches.length > 1 ? 'Multiple Sketches (092025)' : 'Unknown';
+            const searchPattern = 'Arduino Compilation Error - 092025';
+
+            const issueTitle = `Arduino Compilation Error in ${sketchName} (${date})`;
+            const workflowUrl = '${{ github.server_url }}/' +
+              '${{ github.repository }}/actions/runs/${{ github.run_id }}';
+
+            let detailsSection = '### Details\n';
+            
+            // TankAlarm-092025 sketches
+            detailsSection += `#### TankAlarm-092025 (MKR NB 1500)\n`;
+            detailsSection += `- **Client Sketch:** TankAlarm-092025-Client-Hologram/` +
+              `TankAlarm-092025-Client-Hologram.ino ${clientFailed ? '❌' : '✅'}\n`;
+            detailsSection += `- **Server Sketch:** TankAlarm-092025-Server-Hologram/` +
+              `TankAlarm-092025-Server-Hologram.ino ${serverFailed ? '❌' : '✅'}\n`;
+            
+            detailsSection += `\n**Board:**\n`;
+            detailsSection += `- Arduino MKR NB 1500 (arduino:samd:mkrnb1500)\n`;
+            detailsSection += `\n**Triggered by:** ${{ github.event_name }}`;
+
+            const issueBody = `## Arduino Compilation Failed - TankAlarm 092025
+            
+            The Arduino code compilation failed for the TankAlarm-092025 (Hologram) projects.
+            
+            **Workflow Run:** ${workflowUrl}
+            **Commit:** ${{ github.sha }}
+            **Branch:** ${{ github.ref_name }}
+            
+            ${detailsSection}
+            
+            ### Next Steps
+            1. Review the workflow logs for detailed error messages
+            2. Fix compilation errors in the Arduino code
+            3. Re-run the workflow to verify the fix
+            
+            /cc @copilot`;
+
+            // Check if a similar open issue already exists
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: ['arduino', 'compilation-error'],
+              per_page: 10
+            });
+
+            const duplicateIssue = existingIssues.data.find(issue =>
+              issue.title.includes(searchPattern)
+            );
+
+            if (duplicateIssue) {
+              // Add a comment to existing issue instead of creating new one
+              const commentBody = `Another compilation failure detected:\n\n` +
+                `**Workflow Run:** ${workflowUrl}\n` +
+                `**Commit:** ${{ github.sha }}\n` +
+                `**Branch:** ${{ github.ref_name }}\n\n` +
+                detailsSection;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: duplicateIssue.number,
+                body: commentBody
+              });
+              console.log(`Updated existing issue #${duplicateIssue.number}`);
+            } else {
+              // Create a new issue
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: issueTitle,
+                body: issueBody,
+                labels: ['arduino', 'compilation-error', 'bug', '092025']
+              });
+              console.log(`Created issue #${issue.data.number}`);
+            }
+
+      - name: Fail workflow if compilation failed
+        if: |
+          steps.compile-client.outcome == 'failure' || 
+          steps.compile-server.outcome == 'failure'
+        run: exit 1
