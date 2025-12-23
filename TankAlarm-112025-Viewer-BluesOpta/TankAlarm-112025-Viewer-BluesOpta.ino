@@ -527,7 +527,7 @@ static void sendDashboard(EthernetClient &client) {
 static void sendTankJson(EthernetClient &client) {
   std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(TANK_JSON_CAPACITY + 256));
   if (!docPtr) {
-    respondStatus(client, 500, F("Out of Memory"));
+    respondStatus(client, 500, "Out of Memory");
     return;
   }
   DynamicJsonDocument &doc = *docPtr;
