@@ -40,6 +40,7 @@ jobs:
           arduino-cli lib install "SD"
           arduino-cli lib install "Arduino Low Power"
           arduino-cli lib install "RTCZero"
+          arduino-cli lib install "Ethernet"
 
       - name: Compile TankAlarm-092025-Client-Hologram
         id: compile-client
