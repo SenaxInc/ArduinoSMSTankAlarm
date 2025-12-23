@@ -29,7 +29,6 @@
 #else
   #include <Ethernet.h>
 #endif
-#include <SD.h>
 #include <math.h>
 #include <string.h>
 #include <ctype.h>
@@ -1920,14 +1919,22 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
   }
 
   // Open cache file for writing (truncate)
-  if (SD.exists(CLIENT_CONFIG_CACHE_PATH)) {
-      SD.remove(CLIENT_CONFIG_CACHE_PATH);
-  }
-  SDLib::File cacheFile = SD.open(CLIENT_CONFIG_CACHE_PATH, FILE_WRITE);
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  FILE *cacheFile = fopen("/fs/client_config_cache.txt", "w");
   if (!cacheFile) {
       snprintf(error, errorSize, "Failed to open cache file");
       return false;
   }
+#else
+  if (LittleFS.exists(CLIENT_CONFIG_CACHE_PATH)) {
+      LittleFS.remove(CLIENT_CONFIG_CACHE_PATH);
+  }
+  File cacheFile = LittleFS.open(CLIENT_CONFIG_CACHE_PATH, "w");
+  if (!cacheFile) {
+      snprintf(error, errorSize, "Failed to open cache file");
+      return false;
+  }
+#endif
 
   // Parse manifest lines: uid \t site
   char *lineStart = manifest;
@@ -1975,10 +1982,14 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
             while(cEnd >= cStart && isspace(*cEnd)) *cEnd-- = 0;
             
             if (strlen(cStart) > 0) {
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+                fprintf(cacheFile, "%s\t%s\n", uid, cStart);
+#else
                 cacheFile.print(uid);
                 cacheFile.print('\t');
                 cacheFile.print(cStart);
                 cacheFile.print('\n');
+#endif
                 restoredFiles++;
                 Serial.print(F("FTP restore client config: "));
                 Serial.println(remotePath);
@@ -1991,7 +2002,11 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
     lineStart = lineEnd + 1;
   }
   
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  fclose(cacheFile);
+#else
   cacheFile.close();
+#endif
   return true;
 }
 
