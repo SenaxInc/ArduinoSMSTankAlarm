@@ -57,13 +57,12 @@ jobs:
 
       - name: Create issue on compilation failure
         if: |
-          steps.compile-client.outcome == 'failure' || 
+          steps.compile-client.outcome == 'failure' ||
           steps.compile-server.outcome == 'failure'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require('fs');
             const date = new Date().toISOString().split('T')[0];
 
             // Determine which sketch(es) failed
@@ -153,6 +152,6 @@ jobs:
 
       - name: Fail workflow if compilation failed
         if: |
-          steps.compile-client.outcome == 'failure' || 
+          steps.compile-client.outcome == 'failure' ||
           steps.compile-server.outcome == 'failure'
         run: exit 1
