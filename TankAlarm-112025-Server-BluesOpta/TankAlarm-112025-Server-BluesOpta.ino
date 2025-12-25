@@ -449,6 +449,8 @@ struct HistorySettings {
   uint32_t totalRecordsPruned;      // Lifetime pruned records count
 };
 
+#define MAX_HISTORY_SETTINGS_FILE_SIZE 1024  // Max size for history settings JSON file
+
 static HistorySettings gHistorySettings = {
   7,     // hotTierRetentionDays
   24,    // warmTierRetentionMonths
@@ -2613,7 +2615,7 @@ static void loadHistorySettings() {
     long fileSize = ftell(file);
     fseek(file, 0, SEEK_SET);
     
-    if (fileSize <= 0 || fileSize > 1024) {
+    if (fileSize <= 0 || fileSize > MAX_HISTORY_SETTINGS_FILE_SIZE) {
       fclose(file);
       return;
     }
@@ -2625,8 +2627,14 @@ static void loadHistorySettings() {
     }
     
     size_t bytesRead = fread(buffer, 1, fileSize, file);
-    buffer[bytesRead] = '\0';
     fclose(file);
+    
+    // Check if we read the expected amount
+    if (bytesRead != (size_t)fileSize) {
+      free(buffer);
+      return;
+    }
+    buffer[bytesRead] = '\0';
     
     DynamicJsonDocument doc(512);
     DeserializationError err = deserializeJson(doc, buffer);
