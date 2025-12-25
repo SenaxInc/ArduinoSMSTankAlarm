@@ -4497,70 +4497,97 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
     
     // Update SMS settings
     if (serverObj.containsKey("smsPrimary")) {
-      strlcpy(globalServerConfig.smsPrimary, serverObj["smsPrimary"] | "", sizeof(globalServerConfig.smsPrimary));
+      strlcpy(gConfig.smsPrimary, serverObj["smsPrimary"] | "", sizeof(gConfig.smsPrimary));
     }
     if (serverObj.containsKey("smsSecondary")) {
-      strlcpy(globalServerConfig.smsSecondary, serverObj["smsSecondary"] | "", sizeof(globalServerConfig.smsSecondary));
+      strlcpy(gConfig.smsSecondary, serverObj["smsSecondary"] | "", sizeof(gConfig.smsSecondary));
     }
     if (serverObj.containsKey("smsOnHigh")) {
-      globalServerConfig.smsOnHigh = serverObj["smsOnHigh"] | false;
+      gConfig.smsOnHigh = serverObj["smsOnHigh"] | false;
     }
     if (serverObj.containsKey("smsOnLow")) {
-      globalServerConfig.smsOnLow = serverObj["smsOnLow"] | false;
+      gConfig.smsOnLow = serverObj["smsOnLow"] | false;
     }
     if (serverObj.containsKey("smsOnClear")) {
-      globalServerConfig.smsOnClear = serverObj["smsOnClear"] | false;
+      gConfig.smsOnClear = serverObj["smsOnClear"] | false;
     }
 
-    // Update daily email settings
+    // Update daily email settings with validation and schedule tracking
+    bool dailyScheduleChanged = false;
     if (serverObj.containsKey("dailyHour")) {
-      globalServerConfig.dailyHour = serverObj["dailyHour"] | 5;
+      int hour = serverObj["dailyHour"] | 5;
+      // Validate hour range (0-23)
+      if (hour < 0) {
+        hour = 0;
+      } else if (hour > 23) {
+        hour = 23;
+      }
+      if (hour != gConfig.dailyHour) {
+        dailyScheduleChanged = true;
+      }
+      gConfig.dailyHour = hour;
     }
     if (serverObj.containsKey("dailyMinute")) {
-      globalServerConfig.dailyMinute = serverObj["dailyMinute"] | 0;
+      int minute = serverObj["dailyMinute"] | 0;
+      // Validate minute range (0-59)
+      if (minute < 0) {
+        minute = 0;
+      } else if (minute > 59) {
+        minute = 59;
+      }
+      if (minute != gConfig.dailyMinute) {
+        dailyScheduleChanged = true;
+      }
+      gConfig.dailyMinute = minute;
     }
     if (serverObj.containsKey("dailyEmail")) {
-      strlcpy(globalServerConfig.dailyEmail, serverObj["dailyEmail"] | "", sizeof(globalServerConfig.dailyEmail));
+      strlcpy(gConfig.dailyEmail, serverObj["dailyEmail"] | "", sizeof(gConfig.dailyEmail));
     }
 
     // Update FTP settings
     if (serverObj.containsKey("ftp")) {
       JsonObject ftpObj = serverObj["ftp"];
       if (ftpObj.containsKey("enabled")) {
-        globalServerConfig.ftpEnabled = ftpObj["enabled"] | false;
+        gConfig.ftpEnabled = ftpObj["enabled"] | false;
       }
       if (ftpObj.containsKey("passive")) {
-        globalServerConfig.ftpPassive = ftpObj["passive"] | true;
+        gConfig.ftpPassive = ftpObj["passive"] | true;
       }
       if (ftpObj.containsKey("backupOnChange")) {
-        globalServerConfig.ftpBackupOnChange = ftpObj["backupOnChange"] | false;
+        gConfig.ftpBackupOnChange = ftpObj["backupOnChange"] | false;
       }
       if (ftpObj.containsKey("restoreOnBoot")) {
-        globalServerConfig.ftpRestoreOnBoot = ftpObj["restoreOnBoot"] | false;
+        gConfig.ftpRestoreOnBoot = ftpObj["restoreOnBoot"] | false;
       }
       if (ftpObj.containsKey("host")) {
-        strlcpy(globalServerConfig.ftpHost, ftpObj["host"] | "", sizeof(globalServerConfig.ftpHost));
+        strlcpy(gConfig.ftpHost, ftpObj["host"] | "", sizeof(gConfig.ftpHost));
       }
       if (ftpObj.containsKey("port")) {
-        globalServerConfig.ftpPort = ftpObj["port"] | 21;
+        uint32_t port = ftpObj["port"] | 21;
+        // Validate port range (1-65535)
+        if (port > 0 && port <= 65535UL) {
+          gConfig.ftpPort = (uint16_t)port;
+        } else {
+          gConfig.ftpPort = 21;
+        }
       }
       if (ftpObj.containsKey("user")) {
-        strlcpy(globalServerConfig.ftpUser, ftpObj["user"] | "", sizeof(globalServerConfig.ftpUser));
+        strlcpy(gConfig.ftpUser, ftpObj["user"] | "", sizeof(gConfig.ftpUser));
       }
       if (ftpObj.containsKey("pass")) {
-        strlcpy(globalServerConfig.ftpPass, ftpObj["pass"] | "", sizeof(globalServerConfig.ftpPass));
+        strlcpy(gConfig.ftpPass, ftpObj["pass"] | "", sizeof(gConfig.ftpPass));
       }
       if (ftpObj.containsKey("path")) {
-        strlcpy(globalServerConfig.ftpPath, ftpObj["path"] | "/tankalarm/server", sizeof(globalServerConfig.ftpPath));
+        strlcpy(gConfig.ftpPath, ftpObj["path"] | "/tankalarm/server", sizeof(gConfig.ftpPath));
       }
     }
 
-    // Save configuration
-    saveConfig(globalServerConfig);
-
-    // Trigger FTP backup if enabled
-    if (globalServerConfig.ftpEnabled && globalServerConfig.ftpBackupOnChange) {
-      // FTP backup will be handled by existing FTP backup logic
+    // Mark configuration as dirty so the main loop will save it
+    gConfigDirty = true;
+    
+    // Reschedule daily email if time changed
+    if (dailyScheduleChanged) {
+      scheduleNextDailyEmail();
     }
   }
 
