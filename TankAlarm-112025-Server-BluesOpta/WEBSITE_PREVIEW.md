@@ -43,7 +43,7 @@ Server-wide configuration including FTP backup, network settings, and daily emai
 ![Server Settings](screenshots/server-settings.png)
 
 ## Historical Data
-Historical trends, charts, and analytics for tank fleet with level trends, alarm frequency, and site/tank details. Data is aggregated from telemetry and alarm logs.
+Historical trends, charts, and analytics for tank fleet with level trends, alarm frequency, and site/tank details.
 
 ![Historical Data](screenshots/historical.png)
 
