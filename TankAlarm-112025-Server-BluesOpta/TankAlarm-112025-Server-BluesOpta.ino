@@ -469,6 +469,8 @@ static TankHourlyHistory *findOrCreateTankHistory(const char *clientUid, uint8_t
 static void pruneHotTierIfNeeded();
 static bool archiveMonthToFtp(uint16_t year, uint8_t month);
 static bool loadArchivedMonth(uint16_t year, uint8_t month, DynamicJsonDocument &doc);
+static void populateHistorySettingsJson(DynamicJsonDocument &doc);
+static void applyHistorySettingsFromJson(const DynamicJsonDocument &doc);
 static void saveHistorySettings();
 static void loadHistorySettings();
 
@@ -2560,6 +2562,17 @@ static bool loadArchivedMonth(uint16_t year, uint8_t month, DynamicJsonDocument 
   return true;
 }
 
+// Helper to populate history settings JSON document
+static void populateHistorySettingsJson(DynamicJsonDocument &doc) {
+  doc["hotDays"] = gHistorySettings.hotTierRetentionDays;
+  doc["warmMonths"] = gHistorySettings.warmTierRetentionMonths;
+  doc["ftpArchive"] = gHistorySettings.ftpArchiveEnabled;
+  doc["ftpHour"] = gHistorySettings.ftpSyncHour;
+  doc["lastSync"] = gHistorySettings.lastFtpSyncEpoch;
+  doc["lastPrune"] = gHistorySettings.lastPruneEpoch;
+  doc["pruned"] = gHistorySettings.totalRecordsPruned;
+}
+
 // Save history settings to LittleFS
 static void saveHistorySettings() {
 #ifdef FILESYSTEM_AVAILABLE
@@ -2567,39 +2580,43 @@ static void saveHistorySettings() {
     if (!mbedFS) return;
     
     DynamicJsonDocument doc(512);
-    doc["hotDays"] = gHistorySettings.hotTierRetentionDays;
-    doc["warmMonths"] = gHistorySettings.warmTierRetentionMonths;
-    doc["ftpArchive"] = gHistorySettings.ftpArchiveEnabled;
-    doc["ftpHour"] = gHistorySettings.ftpSyncHour;
-    doc["lastSync"] = gHistorySettings.lastFtpSyncEpoch;
-    doc["lastPrune"] = gHistorySettings.lastPruneEpoch;
-    doc["pruned"] = gHistorySettings.totalRecordsPruned;
+    populateHistorySettingsJson(doc);
     
     String output;
     serializeJson(doc, output);
     
     FILE *file = fopen("/fs/history_settings.json", "w");
     if (file) {
-      fwrite(output.c_str(), 1, output.length(), file);
+      size_t expected = output.length();
+      size_t written = fwrite(output.c_str(), 1, expected, file);
       fclose(file);
+      if (written != expected) {
+        // Remove potentially corrupted partial file
+        remove("/fs/history_settings.json");
+      }
     }
   #else
     File f = LittleFS.open("/history_settings.json", "w");
     if (!f) return;
     
     DynamicJsonDocument doc(512);
-    doc["hotDays"] = gHistorySettings.hotTierRetentionDays;
-    doc["warmMonths"] = gHistorySettings.warmTierRetentionMonths;
-    doc["ftpArchive"] = gHistorySettings.ftpArchiveEnabled;
-    doc["ftpHour"] = gHistorySettings.ftpSyncHour;
-    doc["lastSync"] = gHistorySettings.lastFtpSyncEpoch;
-    doc["lastPrune"] = gHistorySettings.lastPruneEpoch;
-    doc["pruned"] = gHistorySettings.totalRecordsPruned;
+    populateHistorySettingsJson(doc);
     
     serializeJson(doc, f);
     f.close();
   #endif
 #endif
+}
+
+// Helper to apply history settings from JSON document
+static void applyHistorySettingsFromJson(const DynamicJsonDocument &doc) {
+  gHistorySettings.hotTierRetentionDays = doc["hotDays"] | 7;
+  gHistorySettings.warmTierRetentionMonths = doc["warmMonths"] | 24;
+  gHistorySettings.ftpArchiveEnabled = doc["ftpArchive"] | false;
+  gHistorySettings.ftpSyncHour = doc["ftpHour"] | 3;
+  gHistorySettings.lastFtpSyncEpoch = doc["lastSync"] | 0.0;
+  gHistorySettings.lastPruneEpoch = doc["lastPrune"] | 0.0;
+  gHistorySettings.totalRecordsPruned = doc["pruned"] | 0;
 }
 
 // Load history settings from LittleFS
@@ -2641,13 +2658,7 @@ static void loadHistorySettings() {
     free(buffer);
     
     if (err == DeserializationError::Ok) {
-      gHistorySettings.hotTierRetentionDays = doc["hotDays"] | 7;
-      gHistorySettings.warmTierRetentionMonths = doc["warmMonths"] | 24;
-      gHistorySettings.ftpArchiveEnabled = doc["ftpArchive"] | false;
-      gHistorySettings.ftpSyncHour = doc["ftpHour"] | 3;
-      gHistorySettings.lastFtpSyncEpoch = doc["lastSync"] | 0.0;
-      gHistorySettings.lastPruneEpoch = doc["lastPrune"] | 0.0;
-      gHistorySettings.totalRecordsPruned = doc["pruned"] | 0;
+      applyHistorySettingsFromJson(doc);
     }
   #else
     File f = LittleFS.open("/history_settings.json", "r");
@@ -2655,13 +2666,7 @@ static void loadHistorySettings() {
     
     DynamicJsonDocument doc(512);
     if (deserializeJson(doc, f) == DeserializationError::Ok) {
-      gHistorySettings.hotTierRetentionDays = doc["hotDays"] | 7;
-      gHistorySettings.warmTierRetentionMonths = doc["warmMonths"] | 24;
-      gHistorySettings.ftpArchiveEnabled = doc["ftpArchive"] | false;
-      gHistorySettings.ftpSyncHour = doc["ftpHour"] | 3;
-      gHistorySettings.lastFtpSyncEpoch = doc["lastSync"] | 0.0;
-      gHistorySettings.lastPruneEpoch = doc["lastPrune"] | 0.0;
-      gHistorySettings.totalRecordsPruned = doc["pruned"] | 0;
+      applyHistorySettingsFromJson(doc);
     }
     f.close();
   #endif
