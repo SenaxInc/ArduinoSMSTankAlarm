@@ -449,6 +449,8 @@ struct HistorySettings {
   uint32_t totalRecordsPruned;      // Lifetime pruned records count
 };
 
+#define MAX_HISTORY_SETTINGS_FILE_SIZE 1024  // Max size for history settings JSON file
+
 static HistorySettings gHistorySettings = {
   7,     // hotTierRetentionDays
   24,    // warmTierRetentionMonths
@@ -467,6 +469,8 @@ static TankHourlyHistory *findOrCreateTankHistory(const char *clientUid, uint8_t
 static void pruneHotTierIfNeeded();
 static bool archiveMonthToFtp(uint16_t year, uint8_t month);
 static bool loadArchivedMonth(uint16_t year, uint8_t month, DynamicJsonDocument &doc);
+static void populateHistorySettingsJson(DynamicJsonDocument &doc);
+static void applyHistorySettingsFromJson(const DynamicJsonDocument &doc);
 static void saveHistorySettings();
 static void loadHistorySettings();
 
@@ -1277,7 +1281,7 @@ void loop() {
     double epoch = currentEpoch();
     
     // Prune hot tier data older than retention period
-    pruneHotTierIfNeeded(epoch);
+    pruneHotTierIfNeeded();
     
     // Check if we need to archive last month to FTP
     if (gHistorySettings.ftpArchiveEnabled && gConfig.ftpEnabled) {
@@ -2558,12 +2562,8 @@ static bool loadArchivedMonth(uint16_t year, uint8_t month, DynamicJsonDocument 
   return true;
 }
 
-// Save history settings to LittleFS
-static void saveHistorySettings() {
-  File f = LittleFS.open("/history_settings.json", "w");
-  if (!f) return;
-  
-  DynamicJsonDocument doc(512);
+// Helper to populate history settings JSON document
+static void populateHistorySettingsJson(DynamicJsonDocument &doc) {
   doc["hotDays"] = gHistorySettings.hotTierRetentionDays;
   doc["warmMonths"] = gHistorySettings.warmTierRetentionMonths;
   doc["ftpArchive"] = gHistorySettings.ftpArchiveEnabled;
@@ -2571,27 +2571,106 @@ static void saveHistorySettings() {
   doc["lastSync"] = gHistorySettings.lastFtpSyncEpoch;
   doc["lastPrune"] = gHistorySettings.lastPruneEpoch;
   doc["pruned"] = gHistorySettings.totalRecordsPruned;
-  
-  serializeJson(doc, f);
-  f.close();
+}
+
+// Save history settings to LittleFS
+static void saveHistorySettings() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return;
+    
+    DynamicJsonDocument doc(512);
+    populateHistorySettingsJson(doc);
+    
+    String output;
+    serializeJson(doc, output);
+    
+    FILE *file = fopen("/fs/history_settings.json", "w");
+    if (file) {
+      size_t expected = output.length();
+      size_t written = fwrite(output.c_str(), 1, expected, file);
+      fclose(file);
+      if (written != expected) {
+        // Remove potentially corrupted partial file
+        remove("/fs/history_settings.json");
+      }
+    }
+  #else
+    File f = LittleFS.open("/history_settings.json", "w");
+    if (!f) return;
+    
+    DynamicJsonDocument doc(512);
+    populateHistorySettingsJson(doc);
+    
+    serializeJson(doc, f);
+    f.close();
+  #endif
+#endif
+}
+
+// Helper to apply history settings from JSON document
+static void applyHistorySettingsFromJson(const DynamicJsonDocument &doc) {
+  gHistorySettings.hotTierRetentionDays = doc["hotDays"] | 7;
+  gHistorySettings.warmTierRetentionMonths = doc["warmMonths"] | 24;
+  gHistorySettings.ftpArchiveEnabled = doc["ftpArchive"] | false;
+  gHistorySettings.ftpSyncHour = doc["ftpHour"] | 3;
+  gHistorySettings.lastFtpSyncEpoch = doc["lastSync"] | 0.0;
+  gHistorySettings.lastPruneEpoch = doc["lastPrune"] | 0.0;
+  gHistorySettings.totalRecordsPruned = doc["pruned"] | 0;
 }
 
 // Load history settings from LittleFS
 static void loadHistorySettings() {
-  File f = LittleFS.open("/history_settings.json", "r");
-  if (!f) return;
-  
-  DynamicJsonDocument doc(512);
-  if (deserializeJson(doc, f) == DeserializationError::Ok) {
-    gHistorySettings.hotTierRetentionDays = doc["hotDays"] | 7;
-    gHistorySettings.warmTierRetentionMonths = doc["warmMonths"] | 24;
-    gHistorySettings.ftpArchiveEnabled = doc["ftpArchive"] | false;
-    gHistorySettings.ftpSyncHour = doc["ftpHour"] | 3;
-    gHistorySettings.lastFtpSyncEpoch = doc["lastSync"] | 0.0;
-    gHistorySettings.lastPruneEpoch = doc["lastPrune"] | 0.0;
-    gHistorySettings.totalRecordsPruned = doc["pruned"] | 0;
-  }
-  f.close();
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return;
+    
+    FILE *file = fopen("/fs/history_settings.json", "r");
+    if (!file) return;
+    
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
+    if (fileSize <= 0 || fileSize > MAX_HISTORY_SETTINGS_FILE_SIZE) {
+      fclose(file);
+      return;
+    }
+    
+    char *buffer = (char *)malloc(fileSize + 1);
+    if (!buffer) {
+      fclose(file);
+      return;
+    }
+    
+    size_t bytesRead = fread(buffer, 1, fileSize, file);
+    fclose(file);
+    
+    // Check if we read the expected amount
+    if (bytesRead != (size_t)fileSize) {
+      free(buffer);
+      return;
+    }
+    buffer[bytesRead] = '\0';
+    
+    DynamicJsonDocument doc(512);
+    DeserializationError err = deserializeJson(doc, buffer);
+    free(buffer);
+    
+    if (err == DeserializationError::Ok) {
+      applyHistorySettingsFromJson(doc);
+    }
+  #else
+    File f = LittleFS.open("/history_settings.json", "r");
+    if (!f) return;
+    
+    DynamicJsonDocument doc(512);
+    if (deserializeJson(doc, f) == DeserializationError::Ok) {
+      applyHistorySettingsFromJson(doc);
+    }
+    f.close();
+  #endif
+#endif
 }
 
 static void printHardwareRequirements() {
@@ -3930,7 +4009,7 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
     vinVoltage = meta->vinVoltage;
   }
   
-  recordTelemetrySnapshot(clientUid, siteName, tankNumber, tankHeight, newLevel, vinVoltage, now);
+  recordTelemetrySnapshot(clientUid, siteName, tankNumber, tankHeight, newLevel, vinVoltage);
 }
 
 static void handleAlarm(JsonDocument &doc, double epoch) {
@@ -4000,14 +4079,14 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
       strlcpy(rec->alarmType, type, sizeof(rec->alarmType));
     }
     // Log alarm clear event
-    clearAlarmEvent(clientUid, tankNumber, (epoch > 0.0) ? epoch : currentEpoch());
+    clearAlarmEvent(clientUid, tankNumber);
   } else {
     rec->alarmActive = true;
     strlcpy(rec->alarmType, type, sizeof(rec->alarmType));
     // Log new alarm event
     const char *siteName = doc["s"] | doc["site"] | "";
     bool isHigh = (strcmp(type, "high") == 0 || strcmp(type, "triggered") == 0);
-    logAlarmEvent(clientUid, siteName, tankNumber, level, isHigh, (epoch > 0.0) ? epoch : currentEpoch());
+    logAlarmEvent(clientUid, siteName, tankNumber, level, isHigh);
   }
   rec->levelInches = level;
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
@@ -4916,38 +4995,6 @@ static void sendHistoryJson(EthernetClient &client) {
     tankObj["change24h"] = roundTo(hist.snapshots[latestIdx].level - oldestRecentLevel, 1);
   }
   
-  // If no stored history, fall back to current clientData
-  if (gTankHistoryCount == 0) {
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-      if (!clientData[i].active || clientData[i].uid[0] == '\0') continue;
-      
-      for (int t = 0; t < clientData[i].numTanks; t++) {
-        JsonObject tankObj = tanksArray.createNestedObject();
-        tankObj["client"] = clientData[i].uid;
-        tankObj["site"] = strlen(clientData[i].siteName) > 0 ? (const char*)clientData[i].siteName : "Unknown Site";
-        tankObj["tank"] = t + 1;
-        tankObj["label"] = clientData[i].tankLabels[t][0] != '\0' ? (const char*)clientData[i].tankLabels[t] : "Tank";
-        tankObj["heightInches"] = clientData[i].tankHeight[t];
-        tankObj["currentLevel"] = clientData[i].levelInches[t];
-        
-        JsonArray readings = tankObj.createNestedArray("readings");
-        JsonObject reading = readings.createNestedObject();
-        reading["timestamp"] = clientData[i].lastUpdate;
-        reading["level"] = clientData[i].levelInches[t];
-        
-        tankObj["change24h"] = 0.0;
-      }
-      
-      // Add voltage reading
-      if (clientData[i].vinVoltage > 0) {
-        JsonObject voltObj = voltageArray.createNestedObject();
-        voltObj["timestamp"] = clientData[i].lastUpdate;
-        voltObj["voltage"] = clientData[i].vinVoltage;
-        voltObj["client"] = clientData[i].uid;
-      }
-    }
-  }
-  
   // Add stored voltage history from tank snapshots
   for (uint8_t h = 0; h < gTankHistoryCount; h++) {
     TankHourlyHistory &hist = gTankHistory[h];
@@ -5014,16 +5061,6 @@ static bool parseYearMonth(const char *str, int &year, int &month) {
 }
 
 // Helper to extract query parameter value
-static String getQueryParam(const String &query, const char *param) {
-  String key = String(param) + "=";
-  int start = query.indexOf(key);
-  if (start < 0) return "";
-  start += key.length();
-  int end = query.indexOf('&', start);
-  if (end < 0) end = query.length();
-  return query.substring(start, end);
-}
-
 // Month-over-month comparison endpoint
 // GET /api/history/compare?current=YYYYMM&previous=YYYYMM
 static void handleHistoryCompare(EthernetClient &client, const String &query) {
