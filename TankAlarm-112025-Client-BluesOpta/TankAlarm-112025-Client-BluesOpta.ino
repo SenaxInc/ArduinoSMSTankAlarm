@@ -198,6 +198,10 @@ static float roundTo(float val, int decimals) {
 #define DAILY_FILE "daily.qi"
 #endif
 
+#ifndef UNLOAD_FILE
+#define UNLOAD_FILE "unload.qi"
+#endif
+
 #ifndef CONFIG_INBOX_FILE
 #define CONFIG_INBOX_FILE "config.qi"
 #endif
@@ -280,6 +284,23 @@ static float roundTo(float val, int decimals) {
 
 #ifndef MIN_ALARM_INTERVAL_SECONDS
 #define MIN_ALARM_INTERVAL_SECONDS 300  // Minimum 5 minutes between same alarm type
+#endif
+
+// Tank unload detection constants
+#ifndef UNLOAD_DEFAULT_DROP_PERCENT
+#define UNLOAD_DEFAULT_DROP_PERCENT 50.0f  // Default: 50% drop from peak = unload event
+#endif
+
+#ifndef UNLOAD_DEFAULT_EMPTY_HEIGHT
+#define UNLOAD_DEFAULT_EMPTY_HEIGHT 2.0f  // Default empty height when at/below sensor (inches)
+#endif
+
+#ifndef UNLOAD_MIN_PEAK_HEIGHT
+#define UNLOAD_MIN_PEAK_HEIGHT 12.0f  // Minimum peak height before tracking starts (inches)
+#endif
+
+#ifndef UNLOAD_DEBOUNCE_COUNT
+#define UNLOAD_DEBOUNCE_COUNT 3  // Require 3 consecutive low readings to confirm unload
 #endif
 
 // Default momentary relay duration (30 minutes in seconds)
@@ -450,6 +471,13 @@ struct MonitorConfig {
   char measurementUnit[8]; // "inches", "psi", "rpm", "gpm", etc.
   // Expected pulse rate for baseline comparison (by object type)
   float expectedPulseRate; // Expected RPM for engines, GPM for flow, etc. (0 = not configured)
+  // Tank unload tracking configuration
+  bool trackUnloads;          // true = this tank is regularly emptied, track unload events
+  float unloadEmptyHeight;    // Default empty height when level drops to/below sensor height (inches)
+  float unloadDropThreshold;  // Minimum drop to consider as unload (inches, default 50% of tank height)
+  float unloadDropPercent;    // Alternative: minimum drop as percentage of peak height (0-100, default 50)
+  bool unloadAlarmSms;        // Send SMS notification when tank is unloaded
+  bool unloadAlarmEmail;      // Include unload events in daily email
 };
 
 struct ClientConfig {
@@ -497,6 +525,11 @@ struct MonitorRuntime {
   unsigned long lastLowAlarmMillis;
   unsigned long lastClearAlarmMillis;
   unsigned long lastSensorFaultMillis;
+  // Tank unload tracking state
+  float unloadPeakInches;         // Highest level seen since last unload event
+  float unloadPeakSensorMa;       // Sensor mA at peak level (for logging)
+  double unloadPeakEpoch;         // Timestamp of peak reading
+  bool unloadTracking;            // true = currently tracking fill cycle
 };
 
 static ClientConfig gConfig;
@@ -627,6 +660,8 @@ static void clearAllRelayAlarms();
 static void addSerialLog(const char *message);
 static void pollForSerialRequests();
 static void sendSerialLogs();
+static void evaluateUnload(uint8_t idx);
+static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, double peakEpoch);
 
 void setup() {
   Serial.begin(115200);
@@ -719,6 +754,11 @@ void setup() {
     gMonitorState[i].lastLowAlarmMillis = 0;
     gMonitorState[i].lastClearAlarmMillis = 0;
     gMonitorState[i].lastSensorFaultMillis = 0;
+    // Initialize unload tracking state
+    gMonitorState[i].unloadPeakInches = 0.0f;
+    gMonitorState[i].unloadPeakSensorMa = 0.0f;
+    gMonitorState[i].unloadPeakEpoch = 0.0;
+    gMonitorState[i].unloadTracking = false;
     for (uint8_t j = 0; j < MAX_ALARMS_PER_HOUR; ++j) {
       gMonitorState[i].alarmTimestamps[j] = 0;
     }
@@ -972,6 +1012,13 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.monitors[0].analogVoltageMax = 10.0f; // Default: 10V (for 0-10V sensors)
   strlcpy(cfg.monitors[0].measurementUnit, "inches", sizeof(cfg.monitors[0].measurementUnit)); // Default: inches
   cfg.monitors[0].expectedPulseRate = 0.0f; // Default: not configured (0 = no baseline)
+  // Tank unload tracking defaults (disabled)
+  cfg.monitors[0].trackUnloads = false;     // Default: not a fill-and-empty tank
+  cfg.monitors[0].unloadEmptyHeight = UNLOAD_DEFAULT_EMPTY_HEIGHT; // Default empty reading
+  cfg.monitors[0].unloadDropThreshold = 0.0f; // Default: use percentage instead
+  cfg.monitors[0].unloadDropPercent = UNLOAD_DEFAULT_DROP_PERCENT; // Default: 50% drop = unload
+  cfg.monitors[0].unloadAlarmSms = false;   // Default: no SMS on unload
+  cfg.monitors[0].unloadAlarmEmail = true;  // Default: include in email summary
   
   // Clear button defaults (disabled)
   cfg.clearButtonPin = -1;           // -1 = disabled
@@ -1213,6 +1260,13 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     // Load analog voltage range settings (for 0-10V, 1-5V, etc. sensors)
     cfg.monitors[i].analogVoltageMin = t["analogVoltageMin"].is<float>() ? t["analogVoltageMin"].as<float>() : 0.0f;
     cfg.monitors[i].analogVoltageMax = t["analogVoltageMax"].is<float>() ? t["analogVoltageMax"].as<float>() : 10.0f;
+    // Load tank unload tracking settings
+    cfg.monitors[i].trackUnloads = t["trackUnloads"].is<bool>() ? t["trackUnloads"].as<bool>() : false;
+    cfg.monitors[i].unloadEmptyHeight = t["unloadEmptyHeight"].is<float>() ? t["unloadEmptyHeight"].as<float>() : UNLOAD_DEFAULT_EMPTY_HEIGHT;
+    cfg.monitors[i].unloadDropThreshold = t["unloadDropThreshold"].is<float>() ? t["unloadDropThreshold"].as<float>() : 0.0f;
+    cfg.monitors[i].unloadDropPercent = t["unloadDropPercent"].is<float>() ? t["unloadDropPercent"].as<float>() : UNLOAD_DEFAULT_DROP_PERCENT;
+    cfg.monitors[i].unloadAlarmSms = t["unloadAlarmSms"].is<bool>() ? t["unloadAlarmSms"].as<bool>() : false;
+    cfg.monitors[i].unloadAlarmEmail = t["unloadAlarmEmail"].is<bool>() ? t["unloadAlarmEmail"].as<bool>() : true;
   }
 
   return true;
@@ -1331,6 +1385,13 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     // Save analog voltage range settings
     t["analogVoltageMin"] = cfg.monitors[i].analogVoltageMin;
     t["analogVoltageMax"] = cfg.monitors[i].analogVoltageMax;
+    // Save tank unload tracking settings
+    t["trackUnloads"] = cfg.monitors[i].trackUnloads;
+    t["unloadEmptyHeight"] = cfg.monitors[i].unloadEmptyHeight;
+    t["unloadDropThreshold"] = cfg.monitors[i].unloadDropThreshold;
+    t["unloadDropPercent"] = cfg.monitors[i].unloadDropPercent;
+    t["unloadAlarmSms"] = cfg.monitors[i].unloadAlarmSms;
+    t["unloadAlarmEmail"] = cfg.monitors[i].unloadAlarmEmail;
   }
 
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -1918,6 +1979,32 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       }
       if (t.containsKey("analogVoltageMax")) {
         gConfig.monitors[i].analogVoltageMax = t["analogVoltageMax"].as<float>();
+      }
+      // Handle tank unload tracking settings
+      if (t.containsKey("trackUnloads")) {
+        gConfig.monitors[i].trackUnloads = t["trackUnloads"].as<bool>();
+        // Reset unload tracking state when config changes
+        if (gConfig.monitors[i].trackUnloads) {
+          gMonitorState[i].unloadTracking = false;
+          gMonitorState[i].unloadPeakInches = 0.0f;
+          gMonitorState[i].unloadPeakEpoch = 0.0;
+        }
+      }
+      if (t.containsKey("unloadEmptyHeight")) {
+        gConfig.monitors[i].unloadEmptyHeight = fmaxf(0.0f, t["unloadEmptyHeight"].as<float>());
+      }
+      if (t.containsKey("unloadDropThreshold")) {
+        gConfig.monitors[i].unloadDropThreshold = fmaxf(0.0f, t["unloadDropThreshold"].as<float>());
+      }
+      if (t.containsKey("unloadDropPercent")) {
+        float pct = t["unloadDropPercent"].as<float>();
+        gConfig.monitors[i].unloadDropPercent = constrain(pct, 10.0f, 95.0f);  // Clamp to 10-95%
+      }
+      if (t.containsKey("unloadAlarmSms")) {
+        gConfig.monitors[i].unloadAlarmSms = t["unloadAlarmSms"].as<bool>();
+      }
+      if (t.containsKey("unloadAlarmEmail")) {
+        gConfig.monitors[i].unloadAlarmEmail = t["unloadAlarmEmail"].as<bool>();
       }
     }
   }
@@ -2533,6 +2620,11 @@ static void sampleTanks() {
     }
     
     evaluateAlarms(i);
+    
+    // Evaluate tank unload if tracking is enabled for this tank
+    if (gConfig.monitors[i].trackUnloads && !gMonitorState[i].sensorFailed) {
+      evaluateUnload(i);
+    }
 
     if (gConfig.monitors[i].enableServerUpload && !gMonitorState[i].sensorFailed) {
       const float threshold = gConfig.minLevelChangeInches;
@@ -2981,6 +3073,168 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     Serial.print(cfg.name);
     Serial.print(F(" type "));
     Serial.println(alarmType);
+  }
+}
+
+// ============================================================================
+// Tank Unload Detection
+// ============================================================================
+// Detects when a tank has been emptied/unloaded and logs the event.
+// 
+// Algorithm:
+// 1. Track the peak (highest) level seen since the last unload event
+// 2. When level drops significantly (configurable %) from peak, trigger unload event
+// 3. If level drops to/below sensor height, use default empty height
+// 4. Log: peak height, new low height, timestamps
+// 5. Optionally send SMS/email notification
+//
+// Use cases:
+// - Fill-and-empty tanks (fuel delivery tanks, milk tanks, etc.)
+// - NOT for tanks that fluctuate through in/out ports
+// ============================================================================
+
+static uint8_t gUnloadDebounceCount[MAX_TANKS] = {0};
+
+static void evaluateUnload(uint8_t idx) {
+  if (idx >= gConfig.monitorCount) {
+    return;
+  }
+
+  const MonitorConfig &cfg = gConfig.monitors[idx];
+  MonitorRuntime &state = gMonitorState[idx];
+
+  // Skip if not tracking unloads or sensor failed
+  if (!cfg.trackUnloads || state.sensorFailed) {
+    return;
+  }
+
+  float currentInches = state.currentInches;
+  
+  // Determine the unload threshold (use percentage or absolute, whichever is configured)
+  float dropPercent = (cfg.unloadDropPercent > 0.0f) ? cfg.unloadDropPercent : UNLOAD_DEFAULT_DROP_PERCENT;
+  float minPeakHeight = UNLOAD_MIN_PEAK_HEIGHT;
+  
+  // If we haven't started tracking yet, wait for tank to reach minimum peak
+  if (!state.unloadTracking) {
+    if (currentInches >= minPeakHeight) {
+      // Start tracking - tank has reached minimum fill level
+      state.unloadTracking = true;
+      state.unloadPeakInches = currentInches;
+      state.unloadPeakSensorMa = state.currentSensorMa;
+      state.unloadPeakEpoch = currentEpoch();
+      Serial.print(F("Unload tracking started for "));
+      Serial.print(cfg.name);
+      Serial.print(F(" at "));
+      Serial.print(currentInches);
+      Serial.println(F(" inches"));
+    }
+    return;
+  }
+
+  // Update peak if current level is higher
+  if (currentInches > state.unloadPeakInches) {
+    state.unloadPeakInches = currentInches;
+    state.unloadPeakSensorMa = state.currentSensorMa;
+    state.unloadPeakEpoch = currentEpoch();
+    gUnloadDebounceCount[idx] = 0;  // Reset debounce on new peak
+    return;
+  }
+
+  // Calculate threshold for unload detection
+  float dropThreshold = state.unloadPeakInches * (dropPercent / 100.0f);
+  float unloadTriggerLevel = state.unloadPeakInches - dropThreshold;
+  
+  // Use configured absolute threshold if set and lower than percentage-based
+  if (cfg.unloadDropThreshold > 0.0f) {
+    float absoluteTrigger = state.unloadPeakInches - cfg.unloadDropThreshold;
+    if (absoluteTrigger < unloadTriggerLevel) {
+      unloadTriggerLevel = absoluteTrigger;
+    }
+  }
+  
+  // Check if level has dropped enough to be considered an unload
+  if (currentInches <= unloadTriggerLevel) {
+    // Debounce: require consecutive low readings
+    gUnloadDebounceCount[idx]++;
+    
+    if (gUnloadDebounceCount[idx] >= UNLOAD_DEBOUNCE_COUNT) {
+      // Determine the "empty" level to report
+      float emptyHeight = currentInches;
+      
+      // If level is at or below sensor mount height, use default empty height
+      if (currentInches <= cfg.sensorMountHeight) {
+        emptyHeight = (cfg.unloadEmptyHeight > 0.0f) ? cfg.unloadEmptyHeight : UNLOAD_DEFAULT_EMPTY_HEIGHT;
+      }
+      
+      // Send unload event
+      sendUnloadEvent(idx, state.unloadPeakInches, emptyHeight, state.unloadPeakEpoch);
+      
+      // Reset tracking for next fill cycle - tank must refill above minimum before next unload
+      state.unloadTracking = false;
+      gUnloadDebounceCount[idx] = 0;
+    }
+  } else {
+    // Level not low enough - reset debounce counter
+    gUnloadDebounceCount[idx] = 0;
+  }
+}
+
+static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, double peakEpoch) {
+  if (idx >= gConfig.monitorCount) {
+    return;
+  }
+
+  const MonitorConfig &cfg = gConfig.monitors[idx];
+  MonitorRuntime &state = gMonitorState[idx];
+
+  Serial.print(F("Tank unload detected: "));
+  Serial.print(cfg.name);
+  Serial.print(F(" peak="));
+  Serial.print(peakInches);
+  Serial.print(F("in, current="));
+  Serial.print(currentInches);
+  Serial.println(F("in"));
+
+  // Log to serial
+  char logMsg[128];
+  snprintf(logMsg, sizeof(logMsg), "Unload: %s peak=%.1fin, empty=%.1fin", 
+           cfg.name, peakInches, currentInches);
+  addSerialLog(logMsg);
+
+  // Send unload event via Notecard if network available
+  if (gNotecardAvailable) {
+    DynamicJsonDocument doc(768);
+    doc["c"] = gDeviceUID;
+    doc["s"] = gConfig.siteName;
+    doc["n"] = cfg.name;
+    doc["k"] = cfg.monitorNumber;
+    doc["type"] = "unload";
+    doc["pk"] = roundTo(peakInches, 1);      // Peak height
+    doc["em"] = roundTo(currentInches, 1);   // Empty/low height
+    doc["pt"] = peakEpoch;                    // Peak timestamp
+    doc["t"] = currentEpoch();               // Event timestamp
+    
+    // Include raw sensor readings if available
+    if (state.unloadPeakSensorMa >= 4.0f) {
+      doc["pma"] = roundTo(state.unloadPeakSensorMa, 2);  // Peak sensor mA
+    }
+    if (state.currentSensorMa >= 4.0f) {
+      doc["ema"] = roundTo(state.currentSensorMa, 2);     // Empty sensor mA
+    }
+    
+    // Include SMS/email flags
+    doc["sms"] = cfg.unloadAlarmSms;
+    doc["email"] = cfg.unloadAlarmEmail;
+    
+    // Include measurement unit if configured
+    if (strlen(cfg.measurementUnit) > 0) {
+      doc["mu"] = cfg.measurementUnit;
+    }
+
+    publishNote(UNLOAD_FILE, doc, true);
+    Serial.println(F("Unload event sent to server"));
+  } else {
+    Serial.println(F("Network offline - unload event not sent"));
   }
 }
 

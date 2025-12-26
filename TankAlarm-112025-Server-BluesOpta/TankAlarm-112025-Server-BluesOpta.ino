@@ -115,6 +115,10 @@
 #define DAILY_FILE "daily.qi"
 #endif
 
+#ifndef UNLOAD_FILE
+#define UNLOAD_FILE "unload.qi"
+#endif
+
 #ifndef CONFIG_OUTBOX_FILE
 #define CONFIG_OUTBOX_FILE "config.qo"
 #endif
@@ -405,6 +409,38 @@ struct AlarmLogEntry {
 static AlarmLogEntry alarmLog[MAX_ALARM_LOG_ENTRIES];
 static uint8_t alarmLogCount = 0;
 static uint8_t alarmLogWriteIndex = 0;  // Ring buffer write pointer
+
+// ============================================================================
+// Tank Unload Log System
+// ============================================================================
+// Logs when fill-and-empty tanks are unloaded (significant level drop from peak)
+#ifndef MAX_UNLOAD_LOG_ENTRIES
+#define MAX_UNLOAD_LOG_ENTRIES 50  // Ring buffer of recent unload events
+#endif
+
+struct UnloadLogEntry {
+  double eventTimestamp;      // When unload was detected
+  double peakTimestamp;       // When peak level was recorded
+  char siteName[32];          // Site name
+  char clientUid[48];         // Client UID
+  char tankLabel[24];         // Tank label/name
+  uint8_t tankNumber;         // Tank number
+  float peakInches;           // Peak level before unload
+  float emptyInches;          // Level after unload (empty reading)
+  float peakSensorMa;         // Sensor reading at peak (for diagnostics)
+  float emptySensorMa;        // Sensor reading at empty (for diagnostics)
+  bool smsNotified;           // Whether SMS was sent for this event
+  bool emailNotified;         // Whether included in email summary
+};
+
+static UnloadLogEntry gUnloadLog[MAX_UNLOAD_LOG_ENTRIES];
+static uint8_t gUnloadLogCount = 0;
+static uint8_t gUnloadLogWriteIndex = 0;  // Ring buffer write pointer
+
+// Forward declarations for unload functions
+static void handleUnload(JsonDocument &doc, double epoch);
+static void logUnloadEvent(const UnloadLogEntry &entry);
+static void sendUnloadSms(const UnloadLogEntry &entry);
 
 // Structure for hourly telemetry snapshots (hot tier)
 #ifndef MAX_HOURLY_HISTORY_PER_TANK
@@ -760,6 +796,7 @@ static void sendDashboard(EthernetClient &client);
 static void sendClientConsole(EthernetClient &client);
 static void sendConfigGenerator(EthernetClient &client);
 static void sendTankJson(EthernetClient &client);
+static void sendUnloadLogJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client);
 static void handleConfigPost(EthernetClient &client, const String &body);
 static void handlePausePost(EthernetClient &client, const String &body);
@@ -3019,6 +3056,8 @@ static void handleWebRequests() {
     handleHistoryYearOverYear(client, queryString);
   } else if (method == "GET" && path == "/api/tanks") {
     sendTankJson(client);
+  } else if (method == "GET" && path == "/api/unloads") {
+    sendUnloadLogJson(client);
   } else if (method == "GET" && path == "/api/clients") {
     sendClientDataJson(client);
   } else if (method == "GET" && path == "/api/calibration") {
@@ -3401,6 +3440,56 @@ static void sendTankJson(EthernetClient &client) {
   String json;
   if (serializeJson(doc, json) == 0) {
     respondStatus(client, 500, F("Failed to encode tank data"));
+    return;
+  }
+  respondJson(client, json);
+}
+
+// ============================================================================
+// Unload Log JSON API
+// ============================================================================
+static void sendUnloadLogJson(EthernetClient &client) {
+  // Estimate JSON size: ~200 bytes per entry
+  size_t capacity = JSON_ARRAY_SIZE(MAX_UNLOAD_LOG_ENTRIES) + 
+                    (MAX_UNLOAD_LOG_ENTRIES * JSON_OBJECT_SIZE(12)) + 2048;
+  DynamicJsonDocument doc(capacity);
+  doc["count"] = gUnloadLogCount;
+  JsonArray arr = doc.createNestedArray("unloads");
+  
+  // Return entries in reverse chronological order (newest first)
+  for (uint8_t i = 0; i < gUnloadLogCount; ++i) {
+    // Calculate index going backwards from write pointer
+    uint8_t idx = (gUnloadLogWriteIndex + MAX_UNLOAD_LOG_ENTRIES - 1 - i) % MAX_UNLOAD_LOG_ENTRIES;
+    const UnloadLogEntry &entry = gUnloadLog[idx];
+    
+    JsonObject obj = arr.createNestedObject();
+    obj["t"] = entry.eventTimestamp;        // Event timestamp
+    obj["pt"] = entry.peakTimestamp;         // Peak timestamp
+    obj["s"] = entry.siteName;               // Site name
+    obj["c"] = entry.clientUid;              // Client UID
+    obj["n"] = entry.tankLabel;              // Tank label
+    obj["k"] = entry.tankNumber;             // Tank number
+    obj["pk"] = entry.peakInches;            // Peak height
+    obj["em"] = entry.emptyInches;           // Empty height
+    obj["dl"] = entry.peakInches - entry.emptyInches;  // Delivered amount
+    if (entry.peakSensorMa >= 4.0f) {
+      obj["pma"] = entry.peakSensorMa;       // Peak sensor mA
+    }
+    if (entry.emptySensorMa >= 4.0f) {
+      obj["ema"] = entry.emptySensorMa;      // Empty sensor mA
+    }
+    obj["sms"] = entry.smsNotified;          // SMS notification sent
+  }
+  
+  if (doc.overflowed()) {
+    Serial.println(F("[ERROR] Unload log JSON document overflowed"));
+    respondStatus(client, 500, F("Unload data too large"));
+    return;
+  }
+
+  String json;
+  if (serializeJson(doc, json) == 0) {
+    respondStatus(client, 500, F("Failed to encode unload data"));
     return;
   }
   respondJson(client, json);
@@ -3989,6 +4078,7 @@ static void pollNotecard() {
   processNotefile(TELEMETRY_FILE, handleTelemetry);
   processNotefile(ALARM_FILE, handleAlarm);
   processNotefile(DAILY_FILE, handleDaily);
+  processNotefile(UNLOAD_FILE, handleUnload);
   processNotefile(SERIAL_LOG_FILE, handleSerialLog);
   processNotefile(SERIAL_ACK_FILE, handleSerialAck);
 }
@@ -4415,6 +4505,119 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     rec->levelInches = newLevel;
     rec->lastUpdateEpoch = now;
   }
+}
+
+// ============================================================================
+// Tank Unload Event Handler
+// ============================================================================
+// Processes unload events from clients (fill-and-empty tanks)
+static void handleUnload(JsonDocument &doc, double epoch) {
+  const char *clientUid = doc["c"] | doc["client"] | "";
+  const char *siteName = doc["s"] | doc["site"] | "";
+  const char *tankLabel = doc["n"] | doc["label"] | "Tank";
+  uint8_t tankNumber = doc["k"] | doc["tank"].as<uint8_t>();
+  
+  if (!clientUid || strlen(clientUid) == 0) {
+    Serial.println(F("Unload event missing client UID"));
+    return;
+  }
+  
+  // Extract unload event data
+  float peakInches = doc["pk"] | doc["peakInches"].as<float>();
+  float emptyInches = doc["em"] | doc["emptyInches"].as<float>();
+  double peakEpoch = doc["pt"] | doc["peakTimestamp"].as<double>();
+  double eventEpoch = doc["t"] | doc["timestamp"].as<double>();
+  if (eventEpoch <= 0.0) {
+    eventEpoch = (epoch > 0.0) ? epoch : currentEpoch();
+  }
+  
+  // Extract raw sensor data if available
+  float peakSensorMa = doc["pma"] | doc["peakSensorMa"].as<float>();
+  float emptySensorMa = doc["ema"] | doc["emptySensorMa"].as<float>();
+  
+  // Extract notification preferences
+  bool wantsSms = doc["sms"] | doc["smsEnabled"].as<bool>();
+  bool wantsEmail = doc["email"] | doc["emailEnabled"].as<bool>();
+  
+  // Get measurement unit if provided
+  const char *unit = doc["mu"] | doc["measurementUnit"] | "inches";
+  
+  Serial.print(F("Unload event received: "));
+  Serial.print(siteName);
+  Serial.print(F(" #"));
+  Serial.print(tankNumber);
+  Serial.print(F(" ("));
+  Serial.print(tankLabel);
+  Serial.print(F(") peak="));
+  Serial.print(peakInches);
+  Serial.print(F(unit));
+  Serial.print(F(", empty="));
+  Serial.print(emptyInches);
+  Serial.println(unit);
+  
+  // Create unload log entry
+  UnloadLogEntry entry;
+  memset(&entry, 0, sizeof(entry));
+  entry.eventTimestamp = eventEpoch;
+  entry.peakTimestamp = peakEpoch;
+  strlcpy(entry.siteName, siteName, sizeof(entry.siteName));
+  strlcpy(entry.clientUid, clientUid, sizeof(entry.clientUid));
+  strlcpy(entry.tankLabel, tankLabel, sizeof(entry.tankLabel));
+  entry.tankNumber = tankNumber;
+  entry.peakInches = peakInches;
+  entry.emptyInches = emptyInches;
+  entry.peakSensorMa = peakSensorMa;
+  entry.emptySensorMa = emptySensorMa;
+  entry.smsNotified = false;
+  entry.emailNotified = wantsEmail;
+  
+  // Log the unload event
+  logUnloadEvent(entry);
+  
+  // Send SMS notification if requested
+  if (wantsSms && (strlen(gConfig.smsPrimary) > 0 || strlen(gConfig.smsSecondary) > 0)) {
+    sendUnloadSms(entry);
+  }
+  
+  // Update tank record with current level
+  TankRecord *rec = upsertTankRecord(clientUid, tankNumber);
+  if (rec) {
+    strlcpy(rec->site, siteName, sizeof(rec->site));
+    strlcpy(rec->label, tankLabel, sizeof(rec->label));
+    rec->levelInches = emptyInches;
+    rec->lastUpdateEpoch = eventEpoch;
+  }
+}
+
+static void logUnloadEvent(const UnloadLogEntry &entry) {
+  // Store in ring buffer
+  gUnloadLog[gUnloadLogWriteIndex] = entry;
+  gUnloadLogWriteIndex = (gUnloadLogWriteIndex + 1) % MAX_UNLOAD_LOG_ENTRIES;
+  if (gUnloadLogCount < MAX_UNLOAD_LOG_ENTRIES) {
+    gUnloadLogCount++;
+  }
+  
+  Serial.print(F("Unload logged: "));
+  Serial.print(entry.siteName);
+  Serial.print(F(" #"));
+  Serial.print(entry.tankNumber);
+  Serial.print(F(" delivered "));
+  Serial.print(entry.peakInches - entry.emptyInches, 1);
+  Serial.println(F(" inches"));
+}
+
+static void sendUnloadSms(const UnloadLogEntry &entry) {
+  char message[160];
+  float delivered = entry.peakInches - entry.emptyInches;
+  
+  snprintf(message, sizeof(message), 
+           "%s #%d unloaded: %.1f in delivered (peak %.1f, now %.1f)",
+           entry.siteName, entry.tankNumber, delivered, 
+           entry.peakInches, entry.emptyInches);
+  
+  sendSmsAlert(message);
+  Serial.print(F("Unload SMS sent: "));
+  Serial.println(message);
 }
 
 static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber) {
