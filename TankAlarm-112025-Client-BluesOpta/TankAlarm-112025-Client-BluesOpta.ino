@@ -28,6 +28,18 @@
 #include <math.h>
 #include <string.h>
 
+// POSIX-compliant standard library headers
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <sys/types.h>
+
+// POSIX file I/O types (for platforms that support it)
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  #include <fcntl.h>
+  #include <sys/stat.h>
+#endif
+
 // Firmware version for production tracking
 #define FIRMWARE_VERSION "1.0.0"
 #define FIRMWARE_BUILD_DATE __DATE__
@@ -42,7 +54,8 @@
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
 #elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  // Arduino Opta with Mbed OS - use Mbed OS APIs
+  // Arduino Opta with Mbed OS - use POSIX-compliant Mbed OS APIs
+  // Mbed OS provides POSIX-compatible file operations through its VFS layer
   #include <LittleFileSystem.h>
   #include <BlockDevice.h>
   #include <mbed.h>
@@ -53,11 +66,15 @@
   #define FILESYSTEM_AVAILABLE
   #define WATCHDOG_AVAILABLE
   #define WATCHDOG_TIMEOUT_SECONDS 30
+  #define POSIX_FILE_IO_AVAILABLE  // Mbed OS supports POSIX file operations
   
-  // Mbed OS filesystem instance
+  // Mbed OS filesystem instance - mounted at "/fs" for POSIX path compatibility
   static LittleFileSystem *mbedFS = nullptr;
   static BlockDevice *mbedBD = nullptr;
   static Watchdog &mbedWatchdog = Watchdog::get_instance();
+  
+  // POSIX-compatible file path prefix for Mbed OS VFS
+  #define POSIX_FS_PREFIX "/fs"
 #endif
 
 // Debug mode - controls Serial output and Notecard debug logging
@@ -89,6 +106,60 @@ static size_t strlcpy(char *dst, const char *src, size_t size) {
   memcpy(dst, src, copyLen);
   dst[copyLen] = '\0';
   return len;
+}
+#endif
+
+// ============================================================================
+// POSIX File I/O Helper Functions
+// ============================================================================
+// These helpers provide a consistent POSIX-compliant interface for file operations
+// across both Mbed OS and STM32duino platforms.
+//
+// On Mbed OS (Arduino Opta):
+//   - Uses standard POSIX file operations: fopen(), fread(), fwrite(), fclose()
+//   - Files are accessed via the VFS at "/fs/" prefix
+//   - Full POSIX semantics including errno support
+//
+// On STM32duino:
+//   - Uses Arduino LittleFS API (non-POSIX but functionally equivalent)
+//   - Files accessed without prefix
+// ============================================================================
+
+#if defined(POSIX_FILE_IO_AVAILABLE)
+// POSIX-compliant file size retrieval using fseek/ftell
+static long posix_file_size(FILE *fp) {
+  if (!fp) return -1;
+  long currentPos = ftell(fp);
+  if (currentPos < 0) return -1;
+  if (fseek(fp, 0, SEEK_END) != 0) return -1;
+  long size = ftell(fp);
+  fseek(fp, currentPos, SEEK_SET);  // Restore position
+  return size;
+}
+
+// POSIX-compliant file existence check
+static bool posix_file_exists(const char *path) {
+  FILE *fp = fopen(path, "r");
+  if (fp) {
+    fclose(fp);
+    return true;
+  }
+  return false;
+}
+
+// POSIX-compliant error logging helper
+static void posix_log_error(const char *operation, const char *path) {
+  #ifdef DEBUG_MODE
+  Serial.print(F("POSIX error in "));
+  Serial.print(operation);
+  Serial.print(F(" for "));
+  Serial.print(path);
+  Serial.print(F(": errno="));
+  Serial.println(errno);
+  #else
+  (void)operation;
+  (void)path;
+  #endif
 }
 #endif
 
