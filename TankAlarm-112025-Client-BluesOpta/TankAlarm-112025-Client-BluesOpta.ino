@@ -430,7 +430,8 @@ enum RelayMode : uint8_t {
 
 struct MonitorConfig {
   char id;                 // Friendly identifier (A, B, C ...)
-  char name[24];           // Label shown in reports (e.g., "Fuel Tank", "Main Pump")
+  char name[24];           // Label shown in reports (e.g., "North Tank", "Main Pump")
+  char contents[24];       // What the tank contains (e.g., "Diesel", "Water") - not used for RPM monitors
   uint8_t monitorNumber;   // Numeric reference (1, 2, 3...)
   ObjectType objectType;   // What is being monitored (tank, engine, pump, gas, flow)
   SensorInterface sensorInterface; // How measurement is taken (digital, analog, currentLoop, pulse)
@@ -975,6 +976,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
 
   cfg.monitors[0].id = 'A';
   strlcpy(cfg.monitors[0].name, "Primary Tank", sizeof(cfg.monitors[0].name));
+  cfg.monitors[0].contents[0] = '\0'; // Empty by default
   cfg.monitors[0].monitorNumber = 1;
   cfg.monitors[0].objectType = OBJECT_TANK;          // Default: tank level monitoring
   cfg.monitors[0].sensorInterface = SENSOR_ANALOG;   // Default: analog voltage sensor
@@ -1126,6 +1128,7 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     JsonObject t = monitorsArray[i];
     cfg.monitors[i].id = t["id"].as<const char *>() ? t["id"].as<const char *>()[0] : ('A' + i);
     strlcpy(cfg.monitors[i].name, t["name"].as<const char *>() ? t["name"].as<const char *>() : "Tank", sizeof(cfg.monitors[i].name));
+    strlcpy(cfg.monitors[i].contents, t["contents"].as<const char *>() ? t["contents"].as<const char *>() : "", sizeof(cfg.monitors[i].contents));
     cfg.monitors[i].monitorNumber = t["number"].is<uint8_t>() ? t["number"].as<uint8_t>() : (i + 1);
     
     // Load object type (what is being monitored)
@@ -1307,6 +1310,9 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     char idBuffer[2] = {cfg.monitors[i].id, '\0'};
     t["id"] = idBuffer;
     t["name"] = cfg.monitors[i].name;
+    if (cfg.monitors[i].contents[0] != '\0') {
+      t["contents"] = cfg.monitors[i].contents;
+    }
     t["number"] = cfg.monitors[i].monitorNumber;
     switch (cfg.monitors[i].sensorInterface) {
       case SENSOR_DIGITAL: t["sensor"] = "digital"; break;
@@ -1828,6 +1834,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       JsonObjectConst t = tanks[i];
       gConfig.monitors[i].id = t["id"].as<const char *>() ? t["id"].as<const char *>()[0] : ('A' + i);
       strlcpy(gConfig.monitors[i].name, t["name"].as<const char *>() ? t["name"].as<const char *>() : "Tank", sizeof(gConfig.monitors[i].name));
+      strlcpy(gConfig.monitors[i].contents, t["contents"].as<const char *>() ? t["contents"].as<const char *>() : "", sizeof(gConfig.monitors[i].contents));
       gConfig.monitors[i].monitorNumber = t["number"].is<uint8_t>() ? t["number"].as<uint8_t>() : (i + 1);
       const char *sensor = t["sensor"].as<const char *>();
       if (sensor && strcmp(sensor, "digital") == 0) {
@@ -2787,7 +2794,6 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   DynamicJsonDocument doc(768);
   doc["c"] = gDeviceUID;
   doc["s"] = gConfig.siteName;
-  doc["n"] = cfg.name;
   doc["k"] = cfg.monitorNumber;
   doc["i"] = String(cfg.id);
   
@@ -2964,7 +2970,6 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     DynamicJsonDocument doc(768);
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
-    doc["n"] = cfg.name;
     doc["k"] = cfg.monitorNumber;
     doc["y"] = alarmType;
     
@@ -3206,7 +3211,6 @@ static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, 
     DynamicJsonDocument doc(768);
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
-    doc["n"] = cfg.name;
     doc["k"] = cfg.monitorNumber;
     doc["type"] = "unload";
     doc["pk"] = roundTo(peakInches, 1);      // Peak height
