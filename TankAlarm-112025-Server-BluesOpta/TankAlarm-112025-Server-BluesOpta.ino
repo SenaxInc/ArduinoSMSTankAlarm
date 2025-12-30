@@ -24,7 +24,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
-#include <Notecard.h>
 #include <memory>
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_PORTENTA_H7_M7) || defined(ARDUINO_PORTENTA_H7_M4)
   #include <PortentaEthernet.h>

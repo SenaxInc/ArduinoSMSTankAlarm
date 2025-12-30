@@ -26,7 +26,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
-#include <Notecard.h>
 #include <memory>
 #include <math.h>
 #include <string.h>
@@ -290,9 +289,6 @@ static float getDistanceConversionFactor(const char* unit) {
   if (strcmp(unit, "ft") == 0) return FEET_TO_INCHES;
   return 1.0f; // Default: assume inches
 }
-
-static const uint8_t NOTECARD_I2C_ADDRESS = 0x17;
-static const uint32_t NOTECARD_I2C_FREQUENCY = 400000UL;
 
 // Object types - what is being monitored
 enum ObjectType : uint8_t {
