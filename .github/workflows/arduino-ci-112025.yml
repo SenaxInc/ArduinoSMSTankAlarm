@@ -7,6 +7,7 @@ on:
       - 'TankAlarm-112025-Client-BluesOpta/**'
       - 'TankAlarm-112025-Server-BluesOpta/**'
       - 'TankAlarm-112025-Viewer-BluesOpta/**'
+      - 'TankAlarm-112025-Common/**'
       - '.github/workflows/arduino-ci-112025.yml'
   pull_request:
     branches: [main, master]
@@ -14,6 +15,7 @@ on:
       - 'TankAlarm-112025-Client-BluesOpta/**'
       - 'TankAlarm-112025-Server-BluesOpta/**'
       - 'TankAlarm-112025-Viewer-BluesOpta/**'
+      - 'TankAlarm-112025-Common/**'
       - '.github/workflows/arduino-ci-112025.yml'
   workflow_dispatch:
 
@@ -47,6 +49,7 @@ jobs:
         continue-on-error: true
         run: |
           arduino-cli compile --fqbn arduino:mbed_opta:opta \
+            --library TankAlarm-112025-Common \
             TankAlarm-112025-Client-BluesOpta/TankAlarm-112025-Client-BluesOpta.ino
 
       - name: Compile TankAlarm-112025-Server-BluesOpta
@@ -54,6 +57,7 @@ jobs:
         continue-on-error: true
         run: |
           arduino-cli compile --fqbn arduino:mbed_opta:opta \
+            --library TankAlarm-112025-Common \
             TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino
 
       - name: Compile TankAlarm-112025-Viewer-BluesOpta
@@ -61,6 +65,7 @@ jobs:
         continue-on-error: true
         run: |
           arduino-cli compile --fqbn arduino:mbed_opta:opta \
+            --library TankAlarm-112025-Common \
             TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino
 
       - name: Create issue on compilation failure
