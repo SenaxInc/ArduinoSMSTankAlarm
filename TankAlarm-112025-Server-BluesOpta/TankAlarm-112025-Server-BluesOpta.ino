@@ -18,6 +18,9 @@
   Using GitHub Copilot for code generation
 */
 
+// Shared library - common constants and utilities
+#include <TankAlarm_Common.h>
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
@@ -46,85 +49,34 @@
   #include <sys/stat.h>
 #endif
 
-// Firmware version for production tracking
-#define FIRMWARE_VERSION "1.0.0"
-#define FIRMWARE_BUILD_DATE __DATE__
-
 // Debug mode - controls Serial output and Notecard debug logging
 // For PRODUCTION: Leave commented out (default) to save power consumption
 // For DEVELOPMENT: Uncomment the line below for troubleshooting and monitoring
 //#define DEBUG_MODE
-#if defined(ARDUINO_ARCH_AVR)
-  #include <avr/pgmspace.h>
-#else
-  #ifndef PROGMEM
-    #define PROGMEM
-  #endif
-  #ifndef pgm_read_byte_near
-    #define pgm_read_byte_near(addr) (*(const uint8_t *)(addr))
-  #endif
-#endif
 
-// Filesystem and Watchdog support
-// Note: Arduino Opta uses Mbed OS, which has different APIs than STM32duino
-#if defined(ARDUINO_ARCH_STM32) && !defined(ARDUINO_ARCH_MBED)
-  // STM32duino platform (non-Mbed)
-  #include <LittleFS.h>
-  #include <IWatchdog.h>
-  #define FILESYSTEM_AVAILABLE
-  #define WATCHDOG_AVAILABLE
-  #define WATCHDOG_TIMEOUT_SECONDS 30
-#elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  // Arduino Opta with Mbed OS - use POSIX-compliant Mbed OS APIs
-  // Mbed OS provides POSIX-compatible file operations through its VFS layer
-  #include <LittleFileSystem.h>
-  #include <BlockDevice.h>
-  #include <mbed.h>
-  using namespace mbed;
-  #define FILESYSTEM_AVAILABLE
-  #define WATCHDOG_AVAILABLE
-  #define WATCHDOG_TIMEOUT_SECONDS 30
-  #define POSIX_FILE_IO_AVAILABLE  // Mbed OS supports POSIX file operations
-  
+// Filesystem support - Mbed OS filesystem instance
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
   // Mbed OS filesystem instance - mounted at "/fs" for POSIX path compatibility
   static LittleFileSystem *mbedFS = nullptr;
   static BlockDevice *mbedBD = nullptr;
-  static Watchdog &mbedWatchdog = Watchdog::get_instance();
+  static MbedWatchdogHelper mbedWatchdog;
   
   // POSIX-compatible file path prefix for Mbed OS VFS
   #define POSIX_FS_PREFIX "/fs"
+  #define FILESYSTEM_AVAILABLE
+  #define POSIX_FILE_IO_AVAILABLE
+#elif defined(ARDUINO_ARCH_STM32)
+  #include <LittleFS.h>
+  #include <IWatchdog.h>
+  #define FILESYSTEM_AVAILABLE
 #endif
 
-#ifndef SERVER_PRODUCT_UID
-#define SERVER_PRODUCT_UID "com.senax.tankalarm112025:server"
+#ifndef DEFAULT_SERVER_PRODUCT_UID
+#define DEFAULT_SERVER_PRODUCT_UID "com.senax.tankalarm112025:server"
 #endif
 
 #ifndef SERVER_CONFIG_PATH
 #define SERVER_CONFIG_PATH "/server_config.json"
-#endif
-
-#ifndef TELEMETRY_FILE
-#define TELEMETRY_FILE "telemetry.qi"
-#endif
-
-#ifndef ALARM_FILE
-#define ALARM_FILE "alarm.qi"
-#endif
-
-#ifndef DAILY_FILE
-#define DAILY_FILE "daily.qi"
-#endif
-
-#ifndef UNLOAD_FILE
-#define UNLOAD_FILE "unload.qi"
-#endif
-
-#ifndef CONFIG_OUTBOX_FILE
-#define CONFIG_OUTBOX_FILE "config.qo"
-#endif
-
-#ifndef MAX_TANK_RECORDS
-#define MAX_TANK_RECORDS 32
 #endif
 
 // Email buffer must accommodate all tanks. Per-tank JSON: ~230 bytes worst-case
@@ -132,18 +84,6 @@
 // 32 tanks * 230 = 7360 + overhead. Using 16KB for ~70 tanks capacity with margin.
 #ifndef MAX_EMAIL_BUFFER
 #define MAX_EMAIL_BUFFER 16384
-#endif
-
-#ifndef NOTECARD_I2C_ADDRESS
-#define NOTECARD_I2C_ADDRESS 0x17
-#endif
-
-#ifndef NOTECARD_I2C_FREQUENCY
-#define NOTECARD_I2C_FREQUENCY 400000UL
-#endif
-
-#ifndef ETHERNET_PORT
-#define ETHERNET_PORT 80
 #endif
 
 #ifndef DAILY_EMAIL_HOUR_DEFAULT
@@ -269,6 +209,7 @@ static IPAddress gStaticDns(8, 8, 8, 8);
 struct ServerConfig {
   char serverName[32];
   char clientFleet[32];  // Target fleet for client devices (e.g., "tankalarm-clients")
+  char productUid[64];   // Notehub product UID (configurable for different fleets)
   char smsPrimary[20];
   char smsSecondary[20];
   char dailyEmail[64];
@@ -276,7 +217,7 @@ struct ServerConfig {
   uint8_t dailyHour;
   uint8_t dailyMinute;
   uint16_t webRefreshSeconds;
-  bool useStaticIp;
+  bool useStaticIp;      // false = DHCP (default), true = use static settings
   bool smsOnHigh;
   bool smsOnLow;
   bool smsOnClear;
@@ -536,6 +477,77 @@ static bool gPaused = false;  // When true, pause Notecard processing for mainte
 static TankRecord gTankRecords[MAX_TANK_RECORDS];
 static uint8_t gTankRecordCount = 0;
 
+// Hash table for O(1) tank lookups by clientUid + tankNumber
+// Uses djb2 hash algorithm with linear probing for collision resolution
+#define TANK_HASH_TABLE_SIZE 128  // Must be power of 2, >= 2 * MAX_TANK_RECORDS
+#define TANK_HASH_EMPTY 0xFF      // Sentinel value for empty slot
+
+static uint8_t gTankHashTable[TANK_HASH_TABLE_SIZE];  // Index into gTankRecords, or TANK_HASH_EMPTY
+
+// djb2 hash function - fast and good distribution for strings
+static uint32_t hashTankKey(const char *clientUid, uint8_t tankNumber) {
+  uint32_t hash = 5381;
+  const char *p = clientUid;
+  while (*p) {
+    hash = ((hash << 5) + hash) ^ (uint8_t)*p++;  // hash * 33 ^ c
+  }
+  hash = ((hash << 5) + hash) ^ tankNumber;
+  return hash;
+}
+
+// Initialize hash table (call after clearing gTankRecords)
+static void initTankHashTable() {
+  memset(gTankHashTable, TANK_HASH_EMPTY, sizeof(gTankHashTable));
+}
+
+// Insert tank record into hash table
+static void insertTankIntoHash(uint8_t recordIndex) {
+  if (recordIndex >= gTankRecordCount) return;
+  TankRecord &rec = gTankRecords[recordIndex];
+  uint32_t hash = hashTankKey(rec.clientUid, rec.tankNumber);
+  uint32_t idx = hash & (TANK_HASH_TABLE_SIZE - 1);  // Fast mod for power of 2
+  
+  // Linear probing to find empty slot
+  for (uint32_t i = 0; i < TANK_HASH_TABLE_SIZE; ++i) {
+    uint32_t probeIdx = (idx + i) & (TANK_HASH_TABLE_SIZE - 1);
+    if (gTankHashTable[probeIdx] == TANK_HASH_EMPTY) {
+      gTankHashTable[probeIdx] = recordIndex;
+      return;
+    }
+  }
+  // Table full - should not happen if TANK_HASH_TABLE_SIZE >= 2 * MAX_TANK_RECORDS
+}
+
+// Rebuild hash table from scratch (call after bulk operations)
+static void rebuildTankHashTable() {
+  initTankHashTable();
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    insertTankIntoHash(i);
+  }
+}
+
+// Find tank record using hash table - O(1) average case
+static TankRecord *findTankByHash(const char *clientUid, uint8_t tankNumber) {
+  uint32_t hash = hashTankKey(clientUid, tankNumber);
+  uint32_t idx = hash & (TANK_HASH_TABLE_SIZE - 1);
+  
+  // Linear probing to find matching entry
+  for (uint32_t i = 0; i < TANK_HASH_TABLE_SIZE; ++i) {
+    uint32_t probeIdx = (idx + i) & (TANK_HASH_TABLE_SIZE - 1);
+    uint8_t recordIdx = gTankHashTable[probeIdx];
+    
+    if (recordIdx == TANK_HASH_EMPTY) {
+      return nullptr;  // Not found
+    }
+    
+    TankRecord &rec = gTankRecords[recordIdx];
+    if (strcmp(rec.clientUid, clientUid) == 0 && rec.tankNumber == tankNumber) {
+      return &rec;
+    }
+  }
+  return nullptr;  // Table full (should not happen)
+}
+
 struct ClientConfigSnapshot {
   char uid[48];
   char site[32];
@@ -563,75 +575,14 @@ static bool gLastLinkState = false;
 static double gLastDailyEmailSentEpoch = 0.0;
 #define MIN_DAILY_EMAIL_INTERVAL_SECONDS 3600  // Minimum 1 hour between daily emails
 
-// strlcpy is provided by Notecard library on Mbed platforms
-#if !defined(ARDUINO_ARCH_MBED) && !defined(strlcpy)
-static size_t strlcpy(char *dst, const char *src, size_t size) {
-  if (!dst || !src || size == 0) {
-    return 0;
-  }
-  size_t len = strlen(src);
-  size_t copyLen = (len >= size) ? (size - 1) : len;
-  memcpy(dst, src, copyLen);
-  dst[copyLen] = '\0';
-  return len;
-}
-#endif
-
-// ============================================================================
-// POSIX File I/O Helper Functions
-// ============================================================================
-// These helpers provide a consistent POSIX-compliant interface for file operations
-// across both Mbed OS and STM32duino platforms.
-//
-// On Mbed OS (Arduino Opta):
-//   - Uses standard POSIX file operations: fopen(), fread(), fwrite(), fclose()
-//   - Files are accessed via the VFS at "/fs/" prefix
-//   - Full POSIX semantics including errno support
-//
-// On STM32duino:
-//   - Uses Arduino LittleFS API (non-POSIX but functionally equivalent)
-//   - Files accessed without prefix
-// ============================================================================
-
+// POSIX file helpers - use tankalarm_ prefixed versions from shared library
+// Keep posix_write_file and posix_read_file locally as they have custom implementations
 #if defined(POSIX_FILE_IO_AVAILABLE)
-// POSIX-compliant file size retrieval using fseek/ftell
-static long posix_file_size(FILE *fp) {
-  if (!fp) return -1;
-  long currentPos = ftell(fp);
-  if (currentPos < 0) return -1;
-  if (fseek(fp, 0, SEEK_END) != 0) return -1;
-  long size = ftell(fp);
-  fseek(fp, currentPos, SEEK_SET);  // Restore position
-  return size;
-}
-
-// POSIX-compliant file existence check
-static bool posix_file_exists(const char *path) {
-  FILE *fp = fopen(path, "r");
-  if (fp) {
-    fclose(fp);
-    return true;
-  }
-  return false;
-}
-
-// POSIX-compliant error logging helper
-static void posix_log_error(const char *operation, const char *path) {
-  #ifdef DEBUG_MODE
-  Serial.print(F("POSIX error in "));
-  Serial.print(operation);
-  Serial.print(F(" for "));
-  Serial.print(path);
-  Serial.print(F(": errno="));
-  Serial.println(errno);
-  #else
-  (void)operation;
-  (void)path;
-  #endif
-}
+static inline long posix_file_size(FILE *fp) { return tankalarm_posix_file_size(fp); }
+static inline bool posix_file_exists(const char *path) { return tankalarm_posix_file_exists(path); }
+static inline void posix_log_error(const char *op, const char *path) { tankalarm_posix_log_error(op, path); }
 
 // POSIX-compliant safe file write with error handling
-// Returns true on success, false on failure (sets errno)
 static bool posix_write_file(const char *path, const char *data, size_t len) {
   FILE *fp = fopen(path, "w");
   if (!fp) {
@@ -649,7 +600,6 @@ static bool posix_write_file(const char *path, const char *data, size_t len) {
 }
 
 // POSIX-compliant safe file read with error handling
-// Returns bytes read, or -1 on error (sets errno)
 static ssize_t posix_read_file(const char *path, char *buffer, size_t bufSize) {
   FILE *fp = fopen(path, "r");
   if (!fp) {
@@ -657,21 +607,13 @@ static ssize_t posix_read_file(const char *path, char *buffer, size_t bufSize) {
     return -1;
   }
   
-  // Get file size
-  if (fseek(fp, 0, SEEK_END) != 0) {
-    posix_log_error("fseek", path);
-    fclose(fp);
-    return -1;
-  }
-  long fileSize = ftell(fp);
+  long fileSize = posix_file_size(fp);
   if (fileSize < 0) {
-    posix_log_error("ftell", path);
     fclose(fp);
     return -1;
   }
   fseek(fp, 0, SEEK_SET);
   
-  // Clamp to buffer size
   size_t toRead = (size_t)fileSize;
   if (toRead > bufSize - 1) {
     toRead = bufSize - 1;
@@ -691,11 +633,8 @@ static ssize_t posix_read_file(const char *path, char *buffer, size_t bufSize) {
 }
 #endif
 
-// Helper to round float to N decimal places for data savings
-static float roundTo(float val, int decimals) {
-  float multiplier = pow(10, decimals);
-  return round(val * multiplier) / multiplier;
-}
+// Wrapper for shared library roundTo function
+static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(val, decimals); }
 
 static bool isValidPin(const char *pin) {
   if (!pin) {
@@ -1318,6 +1257,9 @@ void setup() {
   // Initialize serial log buffers
   memset(&gServerSerial, 0, sizeof(ServerSerialBuffer));
   gClientSerialBufferCount = 0;
+  
+  // Initialize hash table for tank lookups
+  initTankHashTable();
 
   initializeStorage();
   ensureConfigLoaded();
@@ -1545,6 +1487,7 @@ static void createDefaultConfig(ServerConfig &cfg) {
   memset(&cfg, 0, sizeof(ServerConfig));
   strlcpy(cfg.serverName, "Tank Alarm Server", sizeof(cfg.serverName));
   strlcpy(cfg.clientFleet, "tankalarm-clients", sizeof(cfg.clientFleet));
+  strlcpy(cfg.productUid, DEFAULT_SERVER_PRODUCT_UID, sizeof(cfg.productUid));  // Configurable product UID
   strlcpy(cfg.smsPrimary, "+12223334444", sizeof(cfg.smsPrimary));
   strlcpy(cfg.smsSecondary, "+15556667777", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, "reports@example.com", sizeof(cfg.dailyEmail));
@@ -1813,6 +1756,29 @@ static bool saveConfig(const ServerConfig &cfg) {
 
 struct FtpSession {
   EthernetClient ctrl;
+};
+
+// Detailed FTP operation result structure for better error reporting
+struct FtpResult {
+  bool success;               // Overall operation success
+  uint8_t filesProcessed;     // Number of files successfully processed
+  uint8_t filesFailed;        // Number of files that failed
+  char failedFiles[256];      // Comma-separated list of failed file names
+  char errorMessage[128];     // Human-readable error message
+  
+  FtpResult() : success(false), filesProcessed(0), filesFailed(0) {
+    failedFiles[0] = '\0';
+    errorMessage[0] = '\0';
+  }
+  
+  void addFailedFile(const char *fileName) {
+    if (strlen(failedFiles) > 0 && strlen(failedFiles) + strlen(fileName) + 2 < sizeof(failedFiles)) {
+      strncat(failedFiles, ", ", sizeof(failedFiles) - strlen(failedFiles) - 1);
+    }
+    if (strlen(failedFiles) + strlen(fileName) < sizeof(failedFiles)) {
+      strncat(failedFiles, fileName, sizeof(failedFiles) - strlen(failedFiles) - 1);
+    }
+  }
 };
 
 struct BackupFileEntry {
@@ -2325,35 +2291,39 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
   return true;
 }
 
-static bool performFtpBackup(char *errorOut, size_t errorSize) {
+// FTP backup with detailed result reporting
+static FtpResult performFtpBackupDetailed() {
+  FtpResult result;
+  
   if (!gConfig.ftpEnabled) {
-    if (errorOut) snprintf(errorOut, errorSize, "FTP disabled");
-    return false;
+    strlcpy(result.errorMessage, "FTP disabled", sizeof(result.errorMessage));
+    return result;
   }
 
   FtpSession session;
   char err[128];
   if (!ftpConnectAndLogin(session, err, sizeof(err))) {
-    if (errorOut) snprintf(errorOut, errorSize, "%s", err);
-    return false;
+    strlcpy(result.errorMessage, err, sizeof(result.errorMessage));
+    return result;
   }
 
-  uint8_t uploaded = 0;
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
     const BackupFileEntry &entry = kBackupFiles[i];
     char contents[2048];
     size_t len = 0;
     if (!readFileToBuffer(entry.localPath, contents, sizeof(contents), len)) {
-      continue;  // Missing or too large; skip quietly
+      continue;  // Missing or too large; skip quietly (not counted as failure)
     }
 
     char remotePath[192];
     buildRemotePath(remotePath, sizeof(remotePath), entry.remoteName);
     if (ftpStoreBuffer(session, remotePath, (const uint8_t *)contents, len, err, sizeof(err))) {
-      uploaded++;
+      result.filesProcessed++;
       Serial.print(F("FTP backup: "));
       Serial.println(remotePath);
     } else {
+      result.filesFailed++;
+      result.addFailedFile(entry.remoteName);
       Serial.print(F("FTP upload failed for "));
       Serial.println(remotePath);
     }
@@ -2361,33 +2331,48 @@ static bool performFtpBackup(char *errorOut, size_t errorSize) {
 
   // Also back up per-client cached configs (manifest + per-uid JSON)
   uint8_t clientUploaded = 0;
-  ftpBackupClientConfigs(session, err, sizeof(err), clientUploaded);
-  uploaded += clientUploaded;
+  if (ftpBackupClientConfigs(session, err, sizeof(err), clientUploaded)) {
+    result.filesProcessed += clientUploaded;
+  }
 
   ftpQuit(session);
 
-  if (uploaded == 0) {
-    if (errorOut) snprintf(errorOut, errorSize, "No files uploaded");
-    return false;
+  result.success = (result.filesProcessed > 0);
+  if (!result.success) {
+    strlcpy(result.errorMessage, "No files uploaded", sizeof(result.errorMessage));
+  } else if (result.filesFailed > 0) {
+    snprintf(result.errorMessage, sizeof(result.errorMessage), 
+             "%d files uploaded, %d failed", result.filesProcessed, result.filesFailed);
   }
 
-  return true;
+  return result;
 }
 
-static bool performFtpRestore(char *errorOut, size_t errorSize) {
+// Legacy wrapper for backward compatibility
+static bool performFtpBackup(char *errorOut, size_t errorSize) {
+  FtpResult result = performFtpBackupDetailed();
+  if (errorOut && errorSize > 0) {
+    strlcpy(errorOut, result.errorMessage, errorSize);
+  }
+  return result.success;
+}
+
+// FTP restore with detailed result reporting
+static FtpResult performFtpRestoreDetailed() {
+  FtpResult result;
+  
   if (!gConfig.ftpEnabled) {
-    if (errorOut) snprintf(errorOut, errorSize, "FTP disabled");
-    return false;
+    strlcpy(result.errorMessage, "FTP disabled", sizeof(result.errorMessage));
+    return result;
   }
 
   FtpSession session;
   char err[128];
   if (!ftpConnectAndLogin(session, err, sizeof(err))) {
-    if (errorOut) snprintf(errorOut, errorSize, "%s", err);
-    return false;
+    strlcpy(result.errorMessage, err, sizeof(result.errorMessage));
+    return result;
   }
 
-  uint8_t restored = 0;
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
     const BackupFileEntry &entry = kBackupFiles[i];
     char contents[2048];
@@ -2396,29 +2381,47 @@ static bool performFtpRestore(char *errorOut, size_t errorSize) {
     char remotePath[192];
     buildRemotePath(remotePath, sizeof(remotePath), entry.remoteName);
     if (!ftpRetrieveBuffer(session, remotePath, contents, sizeof(contents), len, err, sizeof(err))) {
+      result.filesFailed++;
+      result.addFailedFile(entry.remoteName);
       continue;
     }
 
     if (writeBufferToFile(entry.localPath, (const uint8_t *)contents, len)) {
-      restored++;
+      result.filesProcessed++;
       Serial.print(F("FTP restore: "));
       Serial.println(entry.localPath);
+    } else {
+      result.filesFailed++;
+      result.addFailedFile(entry.remoteName);
     }
   }
 
   // Attempt to restore per-client cached configs (optional)
   uint8_t clientRestored = 0;
-  ftpRestoreClientConfigs(session, err, sizeof(err), clientRestored);
-  restored += clientRestored;
+  if (ftpRestoreClientConfigs(session, err, sizeof(err), clientRestored)) {
+    result.filesProcessed += clientRestored;
+  }
 
   ftpQuit(session);
 
-  if (restored == 0) {
-    if (errorOut) snprintf(errorOut, errorSize, "No files restored");
-    return false;
+  result.success = (result.filesProcessed > 0);
+  if (!result.success) {
+    strlcpy(result.errorMessage, "No files restored", sizeof(result.errorMessage));
+  } else if (result.filesFailed > 0) {
+    snprintf(result.errorMessage, sizeof(result.errorMessage), 
+             "%d files restored, %d failed", result.filesProcessed, result.filesFailed);
   }
 
-  return true;
+  return result;
+}
+
+// Legacy wrapper for backward compatibility
+static bool performFtpRestore(char *errorOut, size_t errorSize) {
+  FtpResult result = performFtpRestoreDetailed();
+  if (errorOut && errorSize > 0) {
+    strlcpy(errorOut, result.errorMessage, errorSize);
+  }
+  return result.success;
 }
 
 // ============================================================================
@@ -2865,9 +2868,13 @@ static void initializeNotecard() {
 
   req = notecard.newRequest("hub.set");
   if (req) {
-    JAddStringToObject(req, "product", SERVER_PRODUCT_UID);
+    // Use configurable product UID - allows fleet-specific deployments without recompilation
+    const char *productUid = (gConfig.productUid[0] != '\0') ? gConfig.productUid : DEFAULT_SERVER_PRODUCT_UID;
+    JAddStringToObject(req, "product", productUid);
     JAddStringToObject(req, "mode", "continuous");
     notecard.sendRequest(req);
+    Serial.print(F("Product UID: "));
+    Serial.println(productUid);
   }
 
   req = notecard.newRequest("card.uuid");
@@ -3990,19 +3997,31 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
     return;
   }
 
-  char error[128];
-  bool ok = performFtpBackup(error, sizeof(error));
+  // Use detailed result for comprehensive error reporting
+  FtpResult result = performFtpBackupDetailed();
 
-  DynamicJsonDocument resp(192);
-  resp["ok"] = ok;
-  if (ok) {
-    resp["message"] = F("Backup uploaded to FTP");
+  DynamicJsonDocument resp(512);
+  resp["ok"] = result.success;
+  resp["filesUploaded"] = result.filesProcessed;
+  resp["filesFailed"] = result.filesFailed;
+  if (result.success) {
+    if (result.filesFailed > 0) {
+      resp["message"] = result.errorMessage;  // "X files uploaded, Y failed"
+      resp["failedFiles"] = result.failedFiles;
+    } else {
+      char msg[64];
+      snprintf(msg, sizeof(msg), "%d files backed up to FTP", result.filesProcessed);
+      resp["message"] = msg;
+    }
   } else {
-    resp["error"] = (strlen(error) > 0) ? error : "Backup failed";
+    resp["error"] = (strlen(result.errorMessage) > 0) ? result.errorMessage : "Backup failed";
+    if (strlen(result.failedFiles) > 0) {
+      resp["failedFiles"] = result.failedFiles;
+    }
   }
   String json;
   serializeJson(resp, json);
-  respondJson(client, json, ok ? 200 : 500);
+  respondJson(client, json, result.success ? 200 : 500);
 }
 
 static void handleFtpRestorePost(EthernetClient &client, const String &body) {
@@ -4017,10 +4036,10 @@ static void handleFtpRestorePost(EthernetClient &client, const String &body) {
     return;
   }
 
-  char error[128];
-  bool ok = performFtpRestore(error, sizeof(error));
+  // Use detailed result for comprehensive error reporting
+  FtpResult result = performFtpRestoreDetailed();
 
-  if (ok) {
+  if (result.success) {
     // Reload in-memory views now that on-disk state changed
     ensureConfigLoaded();
     loadClientConfigSnapshots();
@@ -4029,16 +4048,28 @@ static void handleFtpRestorePost(EthernetClient &client, const String &body) {
     scheduleNextViewerSummary();
   }
 
-  DynamicJsonDocument resp(192);
-  resp["ok"] = ok;
-  if (ok) {
-    resp["message"] = "Restore completed from FTP";
+  DynamicJsonDocument resp(512);
+  resp["ok"] = result.success;
+  resp["filesRestored"] = result.filesProcessed;
+  resp["filesFailed"] = result.filesFailed;
+  if (result.success) {
+    if (result.filesFailed > 0) {
+      resp["message"] = result.errorMessage;  // "X files restored, Y failed"
+      resp["failedFiles"] = result.failedFiles;
+    } else {
+      char msg[64];
+      snprintf(msg, sizeof(msg), "%d files restored from FTP", result.filesProcessed);
+      resp["message"] = msg;
+    }
   } else {
-    resp["error"] = strlen(error) ? error : "Restore failed";
+    resp["error"] = (strlen(result.errorMessage) > 0) ? result.errorMessage : "Restore failed";
+    if (strlen(result.failedFiles) > 0) {
+      resp["failedFiles"] = result.failedFiles;
+    }
   }
   String json;
   serializeJson(resp, json);
-  respondJson(client, json, ok ? 200 : 500);
+  respondJson(client, json, result.success ? 200 : 500);
 }
 
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
@@ -4649,14 +4680,18 @@ static void sendUnloadSms(const UnloadLogEntry &entry) {
 }
 
 static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber) {
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    if (strcmp(gTankRecords[i].clientUid, clientUid) == 0 && gTankRecords[i].tankNumber == tankNumber) {
-      return &gTankRecords[i];
-    }
+  // Use O(1) hash lookup instead of O(n) linear search
+  TankRecord *existing = findTankByHash(clientUid, tankNumber);
+  if (existing) {
+    return existing;
   }
+  
   if (gTankRecordCount >= MAX_TANK_RECORDS) {
     return nullptr;
   }
+  
+  // Create new record
+  uint8_t newIndex = gTankRecordCount;
   TankRecord &rec = gTankRecords[gTankRecordCount++];
   memset(&rec, 0, sizeof(TankRecord));
   strlcpy(rec.clientUid, clientUid, sizeof(rec.clientUid));
@@ -4667,6 +4702,10 @@ static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber) {
   for (uint8_t i = 0; i < 10; ++i) {
     rec.smsAlertTimestamps[i] = 0.0;
   }
+  
+  // Insert into hash table
+  insertTankIntoHash(newIndex);
+  
   return &rec;
 }
 

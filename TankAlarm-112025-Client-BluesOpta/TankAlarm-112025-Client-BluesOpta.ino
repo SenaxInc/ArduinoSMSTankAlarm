@@ -20,6 +20,9 @@
   Using GitHub Copilot for code generation
 */
 
+// Shared library - common constants and utilities
+#include <TankAlarm_Common.h>
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
@@ -40,41 +43,25 @@
   #include <sys/stat.h>
 #endif
 
-// Firmware version for production tracking
-#define FIRMWARE_VERSION "1.0.0"
-#define FIRMWARE_BUILD_DATE __DATE__
-
-// Filesystem and Watchdog support
-// Note: Arduino Opta uses Mbed OS, which has different APIs than STM32duino
-#if defined(ARDUINO_ARCH_STM32) && !defined(ARDUINO_ARCH_MBED)
-  // STM32duino platform (non-Mbed)
-  #include <LittleFS.h>
-  #include <IWatchdog.h>
-  #define FILESYSTEM_AVAILABLE
-  #define WATCHDOG_AVAILABLE
-  #define WATCHDOG_TIMEOUT_SECONDS 30
-#elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  // Arduino Opta with Mbed OS - use POSIX-compliant Mbed OS APIs
-  // Mbed OS provides POSIX-compatible file operations through its VFS layer
-  #include <LittleFileSystem.h>
-  #include <BlockDevice.h>
-  #include <mbed.h>
+// Filesystem support - Mbed OS filesystem instance
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
   #include "rtos/ThisThread.h"
-  using namespace mbed;
-  using namespace std::chrono;           // For chrono types (e.g., milliseconds)
-  using namespace std::chrono_literals;  // For chrono duration literals (e.g., 100ms)
-  #define FILESYSTEM_AVAILABLE
-  #define WATCHDOG_AVAILABLE
-  #define WATCHDOG_TIMEOUT_SECONDS 30
-  #define POSIX_FILE_IO_AVAILABLE  // Mbed OS supports POSIX file operations
+  using namespace std::chrono;
+  using namespace std::chrono_literals;
   
   // Mbed OS filesystem instance - mounted at "/fs" for POSIX path compatibility
   static LittleFileSystem *mbedFS = nullptr;
   static BlockDevice *mbedBD = nullptr;
-  static Watchdog &mbedWatchdog = Watchdog::get_instance();
+  static MbedWatchdogHelper mbedWatchdog;
   
   // POSIX-compatible file path prefix for Mbed OS VFS
   #define POSIX_FS_PREFIX "/fs"
+  #define FILESYSTEM_AVAILABLE
+  #define POSIX_FILE_IO_AVAILABLE
+#elif defined(ARDUINO_ARCH_STM32)
+  #include <LittleFS.h>
+  #include <IWatchdog.h>
+  #define FILESYSTEM_AVAILABLE
 #endif
 
 // Debug mode - controls Serial output and Notecard debug logging
@@ -95,82 +82,18 @@
   #define DEBUG_PRINTF(x, y)
 #endif
 
-// strlcpy is provided by Notecard library on Mbed platforms
-#if !defined(ARDUINO_ARCH_MBED) && !defined(strlcpy)
-static size_t strlcpy(char *dst, const char *src, size_t size) {
-  if (!dst || !src || size == 0) {
-    return 0;
-  }
-  size_t len = strlen(src);
-  size_t copyLen = (len >= size) ? (size - 1) : len;
-  memcpy(dst, src, copyLen);
-  dst[copyLen] = '\0';
-  return len;
-}
-#endif
-
-// ============================================================================
-// POSIX File I/O Helper Functions
-// ============================================================================
-// These helpers provide a consistent POSIX-compliant interface for file operations
-// across both Mbed OS and STM32duino platforms.
-//
-// On Mbed OS (Arduino Opta):
-//   - Uses standard POSIX file operations: fopen(), fread(), fwrite(), fclose()
-//   - Files are accessed via the VFS at "/fs/" prefix
-//   - Full POSIX semantics including errno support
-//
-// On STM32duino:
-//   - Uses Arduino LittleFS API (non-POSIX but functionally equivalent)
-//   - Files accessed without prefix
-// ============================================================================
-
+// POSIX file helpers - use tankalarm_ prefixed versions from shared library
 #if defined(POSIX_FILE_IO_AVAILABLE)
-// POSIX-compliant file size retrieval using fseek/ftell
-static long posix_file_size(FILE *fp) {
-  if (!fp) return -1;
-  long currentPos = ftell(fp);
-  if (currentPos < 0) return -1;
-  if (fseek(fp, 0, SEEK_END) != 0) return -1;
-  long size = ftell(fp);
-  fseek(fp, currentPos, SEEK_SET);  // Restore position
-  return size;
-}
-
-// POSIX-compliant file existence check
-static bool posix_file_exists(const char *path) {
-  FILE *fp = fopen(path, "r");
-  if (fp) {
-    fclose(fp);
-    return true;
-  }
-  return false;
-}
-
-// POSIX-compliant error logging helper
-static void posix_log_error(const char *operation, const char *path) {
-  #ifdef DEBUG_MODE
-  Serial.print(F("POSIX error in "));
-  Serial.print(operation);
-  Serial.print(F(" for "));
-  Serial.print(path);
-  Serial.print(F(": errno="));
-  Serial.println(errno);
-  #else
-  (void)operation;
-  (void)path;
-  #endif
-}
+static inline long posix_file_size(FILE *fp) { return tankalarm_posix_file_size(fp); }
+static inline bool posix_file_exists(const char *path) { return tankalarm_posix_file_exists(path); }
+static inline void posix_log_error(const char *op, const char *path) { tankalarm_posix_log_error(op, path); }
 #endif
 
-// Helper to round float to N decimal places for data savings
-static float roundTo(float val, int decimals) {
-  float multiplier = pow(10, decimals);
-  return round(val * multiplier) / multiplier;
-}
+// Wrapper for shared library roundTo function
+static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(val, decimals); }
 
-#ifndef PRODUCT_UID
-#define PRODUCT_UID "com.senax.tankalarm112025"
+#ifndef DEFAULT_PRODUCT_UID
+#define DEFAULT_PRODUCT_UID "com.senax.tankalarm112025"
 #endif
 
 // Power saving configuration for solar-powered installations
@@ -485,6 +408,7 @@ struct ClientConfig {
   char siteName[32];
   char deviceLabel[24];
   char serverFleet[32]; // Target fleet name for server (e.g., "tankalarm-server")
+  char productUid[64];  // Notehub product UID (configurable for different fleets)
   char dailyEmail[64];
   uint16_t sampleSeconds;
   float minLevelChangeInches;
@@ -1506,7 +1430,11 @@ static void configureNotecardHubMode() {
   // Configure Notecard hub mode based on power source
   J *req = notecard.newRequest("hub.set");
   if (req) {
-    JAddStringToObject(req, "product", PRODUCT_UID);
+    // Use configurable product UID - allows fleet-specific deployments without recompilation
+    const char *productUid = (gConfig.productUid[0] != '\0') ? gConfig.productUid : DEFAULT_PRODUCT_UID;
+    JAddStringToObject(req, "product", productUid);
+    Serial.print(F("Product UID: "));
+    Serial.println(productUid);
     
     // Power saving configuration based on power source
     if (gConfig.solarPowered) {

@@ -14,6 +14,9 @@
   Created: November 2025
 */
 
+// Shared library - common constants and utilities
+#include <TankAlarm_Common.h>
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
@@ -28,64 +31,28 @@
 #include <math.h>
 #include <string.h>
 
-// Firmware version for production tracking
-#define FIRMWARE_VERSION "1.0.0"
-#define FIRMWARE_BUILD_DATE __DATE__
-
 // Debug mode - controls Serial output and Notecard debug logging
 // For PRODUCTION: Leave commented out (default) to save power consumption
 // For DEVELOPMENT: Uncomment the line below for troubleshooting and monitoring
 //#define DEBUG_MODE
 
-#if defined(ARDUINO_ARCH_AVR)
-  #include <avr/pgmspace.h>
-#else
-  #ifndef PROGMEM
-    #define PROGMEM
-  #endif
-  #ifndef pgm_read_byte_near
-    #define pgm_read_byte_near(addr) (*(const uint8_t *)(addr))
-  #endif
-#endif
-
-// Watchdog support
-// Note: Arduino Opta uses Mbed OS, which has different APIs than STM32duino
-#if defined(ARDUINO_ARCH_STM32) && !defined(ARDUINO_ARCH_MBED)
-  // STM32duino platform (non-Mbed)
+// Watchdog support - use shared library helper
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  static MbedWatchdogHelper mbedWatchdog;
+#elif defined(ARDUINO_ARCH_STM32)
   #include <IWatchdog.h>
-  #define WATCHDOG_AVAILABLE
-  #define WATCHDOG_TIMEOUT_SECONDS 30
-#elif defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  // Arduino Opta with Mbed OS - use Mbed OS Watchdog API
-  #include <mbed.h>
-  using namespace mbed;
-  #define WATCHDOG_AVAILABLE
-  #define WATCHDOG_TIMEOUT_SECONDS 30
-  static Watchdog &mbedWatchdog = Watchdog::get_instance();
 #endif
 
-#ifndef VIEWER_PRODUCT_UID
-#define VIEWER_PRODUCT_UID "com.senax.tankalarm112025:viewer"
+#ifndef DEFAULT_VIEWER_PRODUCT_UID
+#define DEFAULT_VIEWER_PRODUCT_UID "com.senax.tankalarm112025:viewer"
 #endif
 
 #ifndef VIEWER_SUMMARY_FILE
 #define VIEWER_SUMMARY_FILE "viewer_summary.qi"
 #endif
 
-#ifndef NOTECARD_I2C_ADDRESS
-#define NOTECARD_I2C_ADDRESS 0x17
-#endif
-
-#ifndef NOTECARD_I2C_FREQUENCY
-#define NOTECARD_I2C_FREQUENCY 400000UL
-#endif
-
-#ifndef ETHERNET_PORT
-#define ETHERNET_PORT 80
-#endif
-
-#ifndef MAX_TANK_RECORDS
-#define MAX_TANK_RECORDS 32
+#ifndef VIEWER_CONFIG_PATH
+#define VIEWER_CONFIG_PATH "/viewer_config.json"
 #endif
 
 #ifndef VIEWER_NAME
@@ -116,19 +83,17 @@
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
-// strlcpy is provided by Notecard library on Mbed platforms
-#if !defined(ARDUINO_ARCH_MBED) && !defined(strlcpy)
-static size_t strlcpy(char *dst, const char *src, size_t size) {
-  if (!dst || !src || size == 0) {
-    return 0;
-  }
-  size_t len = strlen(src);
-  size_t copyLen = (len >= size) ? (size - 1) : len;
-  memcpy(dst, src, copyLen);
-  dst[copyLen] = '\0';
-  return len;
-}
-#endif
+// Viewer configuration - supports DHCP by default or static IP via config file
+struct ViewerConfig {
+  char viewerName[32];           // Display name for this viewer
+  char productUid[64];           // Notehub product UID (can be customized per fleet)
+  bool useStaticIp;              // false = DHCP (default), true = use static settings below
+  uint8_t macAddress[6];         // MAC address for Ethernet
+  uint8_t staticIp[4];           // Static IP address
+  uint8_t staticGateway[4];      // Gateway IP
+  uint8_t staticSubnet[4];       // Subnet mask
+  uint8_t staticDns[4];          // DNS server
+};
 
 struct TankRecord {
   char clientUid[48];
@@ -145,12 +110,24 @@ struct TankRecord {
 // Tank JSON: each tank object has up to 13 fields - use 16 for headroom
 static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(16)) + 1024;
 
-static byte gMacAddress[6] = { 0x02, 0x00, 0x01, 0x11, 0x20, 0x25 };
-static IPAddress gStaticIp(192, 168, 1, 210);
-static IPAddress gStaticGateway(192, 168, 1, 1);
-static IPAddress gStaticSubnet(255, 255, 255, 0);
-static IPAddress gStaticDns(8, 8, 8, 8);
-static bool gUseStaticIp = true;
+// Default network configuration - used if config file not found
+static byte gDefaultMacAddress[6] = { 0x02, 0x00, 0x01, 0x11, 0x20, 0x25 };
+static IPAddress gDefaultStaticIp(192, 168, 1, 210);
+static IPAddress gDefaultStaticGateway(192, 168, 1, 1);
+static IPAddress gDefaultStaticSubnet(255, 255, 255, 0);
+static IPAddress gDefaultStaticDns(8, 8, 8, 8);
+
+// Global configuration instance with defaults
+static ViewerConfig gConfig = {
+  "Tank Alarm Viewer",           // viewerName
+  DEFAULT_VIEWER_PRODUCT_UID,    // productUid - default, can be overridden
+  false,                         // useStaticIp - DHCP by default
+  { 0x02, 0x00, 0x01, 0x11, 0x20, 0x25 },  // macAddress
+  { 192, 168, 1, 210 },          // staticIp
+  { 192, 168, 1, 1 },            // staticGateway  
+  { 255, 255, 255, 0 },          // staticSubnet
+  { 8, 8, 8, 8 }                 // staticDns
+};
 
 static TankRecord gTankRecords[MAX_TANK_RECORDS];
 static uint8_t gTankRecordCount = 0;
@@ -263,10 +240,14 @@ static void initializeNotecard() {
 
   req = notecard.newRequest("hub.set");
   if (req) {
-    JAddStringToObject(req, "product", VIEWER_PRODUCT_UID);
+    // Use configurable product UID (allows fleet-specific deployments without recompilation)
+    JAddStringToObject(req, "product", gConfig.productUid);
     JAddStringToObject(req, "mode", "continuous");
     notecard.sendRequest(req);
   }
+  
+  Serial.print(F("Product UID: "));
+  Serial.println(gConfig.productUid);
 
   req = notecard.newRequest("card.uuid");
   J *rsp = notecard.requestAndResponse(req);
@@ -283,51 +264,15 @@ static void initializeNotecard() {
 }
 
 static void ensureTimeSync() {
-  if (gLastSyncedEpoch <= 0.0 || millis() - gLastSyncMillis > 6UL * 60UL * 60UL * 1000UL) {
-    J *req = notecard.newRequest("card.time");
-    if (!req) {
-      return;
-    }
-    JAddStringToObject(req, "mode", "auto");
-    J *rsp = notecard.requestAndResponse(req);
-    if (!rsp) {
-      return;
-    }
-    // Check for error response (e.g., "time is not yet set {no-time}")
-    // This is normal during startup before Notecard syncs with cloud
-    const char *err = JGetString(rsp, "err");
-    if (err && strlen(err) > 0) {
-      // Time not yet available - this is expected during startup
-      // Will retry on next call
-      notecard.deleteResponse(rsp);
-      return;
-    }
-    double time = JGetNumber(rsp, "time");
-    if (time > 0) {
-      gLastSyncedEpoch = time;
-      gLastSyncMillis = millis();
-    }
-    notecard.deleteResponse(rsp);
-  }
+  tankalarm_ensureTimeSync(notecard, gLastSyncedEpoch, gLastSyncMillis);
 }
 
 static double currentEpoch() {
-  if (gLastSyncedEpoch <= 0.0) {
-    return 0.0;
-  }
-  unsigned long delta = millis() - gLastSyncMillis;
-  return gLastSyncedEpoch + (double)delta / 1000.0;
+  return tankalarm_currentEpoch(gLastSyncedEpoch, gLastSyncMillis);
 }
 
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds) {
-  if (epoch <= 0.0 || intervalSeconds == 0) {
-    return 0.0;
-  }
-  double aligned = floor(epoch / 86400.0) * 86400.0 + (double)baseHour * 3600.0;
-  while (aligned <= epoch) {
-    aligned += (double)intervalSeconds;
-  }
-  return aligned;
+  return tankalarm_computeNextAlignedEpoch(epoch, baseHour, intervalSeconds);
 }
 
 static void scheduleNextSummaryFetch() {
@@ -339,18 +284,33 @@ static void scheduleNextSummaryFetch() {
 
 static void initializeEthernet() {
   Serial.print(F("Initializing Ethernet..."));
+  
+  // Prepare IP addresses from config
+  IPAddress staticIp(gConfig.staticIp[0], gConfig.staticIp[1], gConfig.staticIp[2], gConfig.staticIp[3]);
+  IPAddress staticGateway(gConfig.staticGateway[0], gConfig.staticGateway[1], gConfig.staticGateway[2], gConfig.staticGateway[3]);
+  IPAddress staticSubnet(gConfig.staticSubnet[0], gConfig.staticSubnet[1], gConfig.staticSubnet[2], gConfig.staticSubnet[3]);
+  IPAddress staticDns(gConfig.staticDns[0], gConfig.staticDns[1], gConfig.staticDns[2], gConfig.staticDns[3]);
+  
   int status;
-  if (gUseStaticIp) {
-    status = Ethernet.begin(gMacAddress, gStaticIp, gStaticDns, gStaticGateway, gStaticSubnet);
+  if (gConfig.useStaticIp) {
+    Serial.print(F(" (static) "));
+    status = Ethernet.begin(gConfig.macAddress, staticIp, staticDns, staticGateway, staticSubnet);
   } else {
-    status = Ethernet.begin(gMacAddress);
+    Serial.print(F(" (DHCP) "));
+    status = Ethernet.begin(gConfig.macAddress);
   }
+  
   if (status == 0) {
-    Serial.println(F(" failed"));
+    Serial.println(F(" FAILED"));
+    if (!gConfig.useStaticIp) {
+      Serial.println(F("DHCP failed - check network cable and DHCP server"));
+    }
   } else {
     Serial.println(F(" ok"));
     Serial.print(F("IP Address: "));
     Serial.println(Ethernet.localIP());
+    Serial.print(F("Gateway: "));
+    Serial.println(Ethernet.gatewayIP());
   }
 }
 
