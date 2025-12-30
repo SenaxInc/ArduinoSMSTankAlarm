@@ -39,7 +39,13 @@
   #include <LittleFileSystem.h>
   #include <BlockDevice.h>
   #include <mbed.h>
-  using namespace mbed;
+  // Bring specific mbed types into global namespace
+  using mbed::LittleFileSystem;
+  using mbed::BlockDevice;
+  using mbed::Watchdog;
+  // Bring arduino types into global namespace for library compatibility
+  using arduino::Stream;
+  using arduino::Print;
   #define TANKALARM_FILESYSTEM_AVAILABLE
   #define TANKALARM_WATCHDOG_AVAILABLE
   #define TANKALARM_POSIX_FILE_IO_AVAILABLE
