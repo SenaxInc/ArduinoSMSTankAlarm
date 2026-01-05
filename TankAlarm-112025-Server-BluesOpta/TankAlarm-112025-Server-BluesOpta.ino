@@ -731,9 +731,7 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
 static void respondHtml(EthernetClient &client, const String &body);
 static void respondJson(EthernetClient &client, const String &body, int status = 200);
 // Note: respondStatus is forward-declared earlier in the file (before requireValidPin)
-static void sendDashboard(EthernetClient &client);
-static void sendClientConsole(EthernetClient &client);
-static void sendConfigGenerator(EthernetClient &client);
+
 static void sendTankJson(EthernetClient &client);
 static void sendUnloadLogJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client);
@@ -762,13 +760,8 @@ static void handleRelayClearPost(EthernetClient &client, const String &body);
 static void handleSerialLogsGet(EthernetClient &client, const String &queryString);
 static void handleSerialLogsDownload(EthernetClient &client, const String &queryString);
 static void handleSerialRequestPost(EthernetClient &client, const String &body);
-static void sendSerialMonitor(EthernetClient &client);
-static void sendCalibrationPage(EthernetClient &client);
 static void handleCalibrationGet(EthernetClient &client);
 static void handleCalibrationPost(EthernetClient &client, const String &body);
-static void sendContactsManager(EthernetClient &client);
-static void sendServerSettings(EthernetClient &client);
-static void sendHistoricalData(EthernetClient &client);
 static void sendHistoryJson(EthernetClient &client);
 static void handleHistoryCompare(EthernetClient &client, const String &query);
 static void handleHistoryYearOverYear(EthernetClient &client, const String &query);
@@ -3003,6 +2996,21 @@ static void initializeEthernet() {
   }
 }
 
+static void serveFile(EthernetClient &client, const char* htmlContent) {
+  size_t htmlLen = strlen_P(htmlContent);
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: text/html; charset=utf-8"));
+  client.print(F("Content-Length: "));
+  client.println(htmlLen);
+  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
+  client.println();
+
+  for (size_t i = 0; i < htmlLen; ++i) {
+    char c = pgm_read_byte_near(htmlContent + i);
+    client.write(c);
+  }
+}
+
 static void handleWebRequests() {
   EthernetClient client = gWebServer.available();
   if (!client) {
@@ -3028,21 +3036,21 @@ static void handleWebRequests() {
   }
 
   if (method == "GET" && path == "/") {
-    sendDashboard(client);
+    serveFile(client, DASHBOARD_HTML);
   } else if (method == "GET" && path == "/client-console") {
-    sendClientConsole(client);
+    serveFile(client, CLIENT_CONSOLE_HTML);
   } else if (method == "GET" && path == "/config-generator") {
-    sendConfigGenerator(client);
+    serveFile(client, CONFIG_GENERATOR_HTML);
   } else if (method == "GET" && path == "/serial-monitor") {
-    sendSerialMonitor(client);
+    serveFile(client, SERIAL_MONITOR_HTML);
   } else if (method == "GET" && path == "/calibration") {
-    sendCalibrationPage(client);
+    serveFile(client, CALIBRATION_HTML);
   } else if (method == "GET" && path == "/contacts") {
-    sendContactsManager(client);
+    serveFile(client, CONTACTS_MANAGER_HTML);
   } else if (method == "GET" && path == "/server-settings") {
-    sendServerSettings(client);
+    serveFile(client, SERVER_SETTINGS_HTML);
   } else if (method == "GET" && path == "/historical") {
-    sendHistoricalData(client);
+    serveFile(client, HISTORICAL_DATA_HTML);
   } else if (method == "GET" && path == "/api/history") {
     sendHistoryJson(client);
   } else if (method == "GET" && path.startsWith("/api/history/compare")) {
@@ -3348,65 +3356,7 @@ static void respondStatus(EthernetClient &client, int status, const String &mess
   respondStatus(client, status, message.c_str());
 }
 
-static void sendDashboard(EthernetClient &client) {
-  size_t htmlLen = strlen_P(DASHBOARD_HTML);
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Content-Type: text/html; charset=utf-8"));
-  client.print(F("Content-Length: "));
-  client.println(htmlLen);
-  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
-  client.println();
 
-  for (size_t i = 0; i < htmlLen; ++i) {
-    char c = pgm_read_byte_near(DASHBOARD_HTML + i);
-    client.write(c);
-  }
-}
-
-static void sendClientConsole(EthernetClient &client) {
-  size_t htmlLen = strlen_P(CLIENT_CONSOLE_HTML);
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Content-Type: text/html; charset=utf-8"));
-  client.print(F("Content-Length: "));
-  client.println(htmlLen);
-  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
-  client.println();
-
-  for (size_t i = 0; i < htmlLen; ++i) {
-    char c = pgm_read_byte_near(CLIENT_CONSOLE_HTML + i);
-    client.write(c);
-  }
-}
-
-static void sendConfigGenerator(EthernetClient &client) {
-  size_t htmlLen = strlen_P(CONFIG_GENERATOR_HTML);
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Content-Type: text/html; charset=utf-8"));
-  client.print(F("Content-Length: "));
-  client.println(htmlLen);
-  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
-  client.println();
-
-  for (size_t i = 0; i < htmlLen; ++i) {
-    char c = pgm_read_byte_near(CONFIG_GENERATOR_HTML + i);
-    client.write(c);
-  }
-}
-
-static void sendSerialMonitor(EthernetClient &client) {
-  size_t htmlLen = strlen_P(SERIAL_MONITOR_HTML);
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Content-Type: text/html; charset=utf-8"));
-  client.print(F("Content-Length: "));
-  client.println(htmlLen);
-  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
-  client.println();
-
-  for (size_t i = 0; i < htmlLen; ++i) {
-    char c = pgm_read_byte_near(SERIAL_MONITOR_HTML + i);
-    client.write(c);
-  }
-}
 
 static void sendTankJson(EthernetClient &client) {
   DynamicJsonDocument doc(TANK_JSON_CAPACITY);
@@ -5274,65 +5224,7 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
 // Calibration Learning System Implementation
 // ============================================================================
 
-static void sendCalibrationPage(EthernetClient &client) {
-  size_t htmlLen = strlen_P(CALIBRATION_HTML);
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Content-Type: text/html; charset=utf-8"));
-  client.print(F("Content-Length: "));
-  client.println(htmlLen);
-  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
-  client.println();
 
-  for (size_t i = 0; i < htmlLen; ++i) {
-    char c = pgm_read_byte_near(CALIBRATION_HTML + i);
-    client.write(c);
-  }
-}
-
-static void sendContactsManager(EthernetClient &client) {
-  size_t htmlLen = strlen_P(CONTACTS_MANAGER_HTML);
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Content-Type: text/html; charset=utf-8"));
-  client.print(F("Content-Length: "));
-  client.println(htmlLen);
-  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
-  client.println();
-
-  for (size_t i = 0; i < htmlLen; ++i) {
-    char c = pgm_read_byte_near(CONTACTS_MANAGER_HTML + i);
-    client.write(c);
-  }
-}
-
-static void sendServerSettings(EthernetClient &client) {
-  size_t htmlLen = strlen_P(SERVER_SETTINGS_HTML);
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Content-Type: text/html; charset=utf-8"));
-  client.print(F("Content-Length: "));
-  client.println(htmlLen);
-  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
-  client.println();
-
-  for (size_t i = 0; i < htmlLen; ++i) {
-    char c = pgm_read_byte_near(SERVER_SETTINGS_HTML + i);
-    client.write(c);
-  }
-}
-
-static void sendHistoricalData(EthernetClient &client) {
-  size_t htmlLen = strlen_P(HISTORICAL_DATA_HTML);
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Content-Type: text/html; charset=utf-8"));
-  client.print(F("Content-Length: "));
-  client.println(htmlLen);
-  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
-  client.println();
-
-  for (size_t i = 0; i < htmlLen; ++i) {
-    char c = pgm_read_byte_near(HISTORICAL_DATA_HTML + i);
-    client.write(c);
-  }
-}
 
 static void sendHistoryJson(EthernetClient &client) {
   // Build JSON response with historical tank data for charting
