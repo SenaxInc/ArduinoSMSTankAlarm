@@ -1,0 +1,105 @@
+name: Update Setup Presentation
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'TankAlarm-112025-Server-BluesOpta/*.ino'
+      - 'TankAlarm-112025-Client-BluesOpta/*.ino'
+      - 'TankAlarm-112025-Server-BluesOpta/screenshots/*.png'
+      - 'TankAlarm-112025-Client-BluesOpta/screenshots/*.png'
+      - 'generate_presentation.py'
+      - '.github/workflows/update-presentation.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'TankAlarm-112025-Server-BluesOpta/*.ino'
+      - 'TankAlarm-112025-Client-BluesOpta/*.ino'
+      - 'TankAlarm-112025-Server-BluesOpta/screenshots/*.png'
+      - 'TankAlarm-112025-Client-BluesOpta/screenshots/*.png'
+      - 'generate_presentation.py'
+      - '.github/workflows/update-presentation.yml'
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force update presentation even without changes'
+        required: false
+        default: 'false'
+
+jobs:
+  update-presentation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          pip install python-pptx Pillow requests
+
+      - name: Generate presentation
+        run: |
+          python3 generate_presentation.py
+          echo "Presentation generated successfully"
+
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if [ -f "TankAlarm_112025_Setup_Guide.pptx" ]; then
+            echo "Presentation file exists"
+            git add TankAlarm_112025_Setup_Guide.pptx
+            if git diff --cached --quiet; then
+              echo "changes=false" >> $GITHUB_OUTPUT
+              echo "No changes to presentation"
+            else
+              echo "changes=true" >> $GITHUB_OUTPUT
+              echo "Presentation has changes"
+            fi
+          else
+            echo "changes=false" >> $GITHUB_OUTPUT
+            echo "Presentation file not found"
+          fi
+
+      - name: Commit and push changes
+        if: steps.check_changes.outputs.changes == 'true' || github.event.inputs.force_update == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add TankAlarm_112025_Setup_Guide.pptx
+          git commit -m "Auto-update: Regenerate setup presentation [skip ci]" || echo "No changes to commit"
+          git push || echo "Nothing to push"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'pull_request' && steps.check_changes.outputs.changes == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ Setup presentation has been automatically updated with the latest changes.'
+            })
+
+      - name: Upload presentation as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-presentation
+          path: TankAlarm_112025_Setup_Guide.pptx
+          retention-days: 90

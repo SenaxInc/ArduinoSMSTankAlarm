@@ -12,6 +12,14 @@ The 112025 version uses Arduino Opta with Blues Wireless Notecard for cellular c
 - **Web-based configuration** - Update clients remotely from server dashboard
 - **Intranet dashboard** - Real-time monitoring via Ethernet web interface
 
+### 📊 Setup Presentation
+- **[PowerPoint Setup Guide](TankAlarm_112025_Setup_Guide.pptx)** - Comprehensive visual guide with screenshots
+  - Hardware wiring diagrams
+  - Step-by-step software installation
+  - Blues Notehub configuration
+  - Web interface tutorials
+  - See [PRESENTATION_README.md](PRESENTATION_README.md) for details
+
 ### Quick Links - 112025 Client (Tank Monitor)
 - **[Installation Guide](TankAlarm-112025-Client-BluesOpta/INSTALLATION.md)** - Complete Arduino IDE setup with library installation
 - **[Fleet Implementation Summary](TankAlarm-112025-Client-BluesOpta/FLEET_IMPLEMENTATION_SUMMARY.md)** - Architecture overview
