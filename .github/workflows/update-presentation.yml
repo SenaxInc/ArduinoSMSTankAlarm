@@ -79,7 +79,10 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add TankAlarm_112025_Setup_Guide.pptx
-          git commit -m "Auto-update: Regenerate setup presentation [skip ci]" || echo "No changes to commit"
+          # Skip this workflow only to prevent infinite loop, other workflows will still run
+          git commit -m "Auto-update: Regenerate setup presentation
+
+          [skip actions]" || echo "No changes to commit"
           git push || echo "Nothing to push"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

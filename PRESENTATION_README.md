@@ -27,7 +27,6 @@ This PowerPoint presentation includes:
 
 The presentation uses existing screenshots from:
 - `TankAlarm-112025-Server-BluesOpta/screenshots/`
-- `TankAlarm-112025-Viewer-BluesOpta/screenshots/`
 
 Screenshots show:
 - Server dashboard interface
@@ -37,6 +36,8 @@ Screenshots show:
 - Calibration interface
 - Historical data view
 - Server settings
+
+Note: The viewer project has its own dashboard screenshot in `TankAlarm-112025-Viewer-BluesOpta/screenshots/`, which is not currently included in the main setup presentation as it's a separate read-only viewer component.
 
 ## Automatic Updates
 

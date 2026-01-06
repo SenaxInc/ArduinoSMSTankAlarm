@@ -11,10 +11,19 @@ from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.dml.color import RGBColor
 from pathlib import Path
 
-# Constants
+# Presentation Configuration
 PRESENTATION_TITLE = "TankAlarm 112025 - Opta Setup Guide"
 SUBTITLE = "Hardware Wiring & Software Installation"
 OUTPUT_FILE = "TankAlarm_112025_Setup_Guide.pptx"
+
+# Slide Dimensions (in inches)
+SLIDE_WIDTH = 10.0
+SLIDE_HEIGHT = 7.5
+
+# Color Scheme (Arduino-themed)
+COLOR_ARDUINO_BLUE = RGBColor(0, 32, 96)      # Dark blue for titles
+COLOR_SECTION_BLUE = RGBColor(0, 120, 215)   # Bright blue for sections
+COLOR_BLACK = RGBColor(0, 0, 0)              # Black for body text
 
 # Screenshot paths (relative to script location)
 SCREENSHOT_BASE = Path(__file__).parent
@@ -35,7 +44,7 @@ def add_title_slide(prs, title, subtitle):
     title_para = title_frame.paragraphs[0]
     title_para.font.size = Pt(44)
     title_para.font.bold = True
-    title_para.font.color.rgb = RGBColor(0, 32, 96)  # Arduino blue
+    title_para.font.color.rgb = COLOR_ARDUINO_BLUE
 
 def add_section_slide(prs, section_title):
     """Add section divider slide"""
@@ -50,7 +59,7 @@ def add_section_slide(prs, section_title):
     title_para = title_frame.paragraphs[0]
     title_para.font.size = Pt(40)
     title_para.font.bold = True
-    title_para.font.color.rgb = RGBColor(0, 120, 215)  # Blue
+    title_para.font.color.rgb = COLOR_SECTION_BLUE
 
 def add_content_slide(prs, title, content_items, image_path=None):
     """Add content slide with bullet points and optional image"""
@@ -156,8 +165,8 @@ def add_image_slide(prs, title, image_path, caption=None):
 def create_presentation():
     """Create the complete presentation"""
     prs = Presentation()
-    prs.slide_width = Inches(10)
-    prs.slide_height = Inches(7.5)
+    prs.slide_width = Inches(SLIDE_WIDTH)
+    prs.slide_height = Inches(SLIDE_HEIGHT)
     
     # Title slide
     add_title_slide(prs, PRESENTATION_TITLE, SUBTITLE)
