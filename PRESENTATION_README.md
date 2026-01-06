@@ -72,7 +72,7 @@ You can also trigger an update through GitHub Actions:
 - Python 3.8 or later
 - Required Python packages:
   ```bash
-  pip install python-pptx Pillow requests
+  pip install python-pptx Pillow
   ```
 
 ### Steps
@@ -85,7 +85,7 @@ You can also trigger an update through GitHub Actions:
 
 2. Install dependencies:
    ```bash
-   pip install python-pptx Pillow requests
+   pip install python-pptx Pillow
    ```
 
 3. Run the generation script:
@@ -149,7 +149,7 @@ The `generate_presentation.py` script:
 - Automatically locates and includes screenshots
 - Creates consistent slide layouts and styling
 - Handles missing screenshots gracefully (creates placeholders)
-- Generates 50+ slides covering complete setup process
+- Generates 55 slides covering complete setup process
 
 ### Slide Types
 

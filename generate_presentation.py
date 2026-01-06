@@ -7,7 +7,7 @@ This script creates a comprehensive setup guide with screenshots and step-by-ste
 import os
 from pptx import Presentation
 from pptx.util import Inches, Pt
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
 from pathlib import Path
 
@@ -23,7 +23,6 @@ SLIDE_HEIGHT = 7.5
 # Color Scheme (Arduino-themed)
 COLOR_ARDUINO_BLUE = RGBColor(0, 32, 96)      # Dark blue for titles
 COLOR_SECTION_BLUE = RGBColor(0, 120, 215)   # Bright blue for sections
-COLOR_BLACK = RGBColor(0, 0, 0)              # Black for body text
 
 # Screenshot paths (relative to script location)
 SCREENSHOT_BASE = Path(__file__).parent

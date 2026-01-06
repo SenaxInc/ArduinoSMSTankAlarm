@@ -77,9 +77,8 @@ REQUIREMENTS:
 - Python 3.8+
 - python-pptx library
 - Pillow library
-- requests library
 
-Install: pip install python-pptx Pillow requests
+Install: pip install python-pptx Pillow
 
 BENEFITS:
 ---------
