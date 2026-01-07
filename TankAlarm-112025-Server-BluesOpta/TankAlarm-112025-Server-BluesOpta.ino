@@ -481,6 +481,10 @@ static uint8_t gTankRecordCount = 0;
 #define TANK_HASH_TABLE_SIZE 128  // Must be power of 2, >= 2 * MAX_TANK_RECORDS
 #define TANK_HASH_EMPTY 0xFF      // Sentinel value for empty slot
 
+// Compile-time validation: hash table must be at least 2x the max records for good performance
+static_assert(TANK_HASH_TABLE_SIZE >= 2 * MAX_TANK_RECORDS, "Hash table too small - must be >= 2 * MAX_TANK_RECORDS");
+static_assert((TANK_HASH_TABLE_SIZE & (TANK_HASH_TABLE_SIZE - 1)) == 0, "Hash table size must be power of 2");
+
 static uint8_t gTankHashTable[TANK_HASH_TABLE_SIZE];  // Index into gTankRecords, or TANK_HASH_EMPTY
 
 // djb2 hash function - fast and good distribution for strings
@@ -569,6 +573,13 @@ static double gLastViewerSummaryEpoch = 0.0;
 static unsigned long gLastPollMillis = 0;
 static unsigned long gLastLinkCheckMillis = 0;
 static bool gLastLinkState = false;
+
+// DFU (Device Firmware Update) state tracking
+static unsigned long gLastDfuCheckMillis = 0;
+#define DFU_CHECK_INTERVAL_MS 3600000UL  // Check for firmware updates every hour
+static bool gDfuUpdateAvailable = false;
+static char gDfuVersion[32] = {0};
+static bool gDfuInProgress = false;
 
 // Email rate limiting
 static double gLastDailyEmailSentEpoch = 0.0;
@@ -726,6 +737,8 @@ static double currentEpoch();
 static void scheduleNextDailyEmail();
 static void scheduleNextViewerSummary();
 static void initializeEthernet();
+static void checkForFirmwareUpdate();
+static void enableDfuMode();
 static void handleWebRequests();
 static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge);
 static void respondHtml(EthernetClient &client, const String &body);
@@ -768,6 +781,8 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
 static void handleServerSettingsPost(EthernetClient &client, const String &body);
 static void handleContactsGet(EthernetClient &client);
 static void handleContactsPost(EthernetClient &client, const String &body);
+static void handleDfuStatusGet(EthernetClient &client);
+static void handleDfuEnablePost(EthernetClient &client, const String &body);
 static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8_t tankNumber);
 static void recalculateCalibration(TankCalibration *cal);
 static void loadCalibrationData();
@@ -1037,6 +1052,11 @@ static void handleSerialRequestPost(EthernetClient &client, const String &body) 
   const char *clientUid = doc["client"].as<const char *>();
   if (!clientUid || strlen(clientUid) == 0) {
     respondStatus(client, 400, "Missing client UID");
+    return;
+  }
+  // Validate client UID length to prevent buffer overflow in downstream operations
+  if (strlen(clientUid) >= 48) {
+    respondStatus(client, 400, "Client UID too long (max 47 chars)");
     return;
   }
 
@@ -1399,6 +1419,19 @@ void loop() {
           archiveYear--;
         }
         archiveMonthToFtp(archiveYear, archiveMonth);
+      }
+    }
+  }
+  
+  // Periodic firmware update check via Notecard DFU
+  if (now - gLastDfuCheckMillis > DFU_CHECK_INTERVAL_MS) {
+    gLastDfuCheckMillis = now;
+    if (!gDfuInProgress) {
+      checkForFirmwareUpdate();
+      // Auto-enable DFU if update is available (can be disabled for manual control)
+      // Comment out next 3 lines to require manual enableDfuMode() call via web API
+      if (gDfuUpdateAvailable) {
+        enableDfuMode();
       }
     }
   }
@@ -2934,6 +2967,98 @@ static void scheduleNextDailyEmail() {
   gNextDailyEmailEpoch = scheduled;
 }
 
+// ============================================================================
+// Device Firmware Update (DFU) via Blues Notecard
+// ============================================================================
+
+static void checkForFirmwareUpdate() {
+  // Query Notecard for DFU status
+  J *req = notecard.newRequest("dfu.status");
+  if (!req) {
+    return;
+  }
+  
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    return;
+  }
+  
+  // Check if firmware update is available
+  // DFU status response fields:
+  // - "on": true if DFU mode is active
+  // - "version": firmware version available from Notehub
+  // - "body": any additional status info
+  bool dfuActive = JGetBool(rsp, "on");
+  const char *version = JGetString(rsp, "version");
+  
+  if (dfuActive && version && strlen(version) > 0) {
+    // Update available
+    if (!gDfuUpdateAvailable || strcmp(gDfuVersion, version) != 0) {
+      // New update detected
+      gDfuUpdateAvailable = true;
+      strlcpy(gDfuVersion, version, sizeof(gDfuVersion));
+      
+      Serial.println(F("========================================"));
+      Serial.print(F("FIRMWARE UPDATE AVAILABLE: v"));
+      Serial.println(gDfuVersion);
+      Serial.print(F("Current version: "));
+      Serial.println(F(FIRMWARE_VERSION));
+      Serial.println(F("Call enableDfuMode() to start update"));
+      Serial.println(F("========================================"));
+      
+      addServerSerialLog("Firmware update available", "info", "dfu");
+    }
+  } else if (gDfuUpdateAvailable) {
+    // Update was available but is now gone (applied or cancelled)
+    gDfuUpdateAvailable = false;
+    gDfuVersion[0] = '\0';
+  }
+  
+  notecard.deleteResponse(rsp);
+}
+
+static void enableDfuMode() {
+  if (gDfuInProgress) {
+    Serial.println(F("DFU already in progress"));
+    return;
+  }
+  
+  Serial.println(F("========================================"));
+  Serial.println(F("ENABLING DFU MODE"));
+  Serial.println(F("Device will download and apply update"));
+  Serial.println(F("System will reset when complete"));
+  Serial.println(F("========================================"));
+  
+  // Mark DFU in progress to prevent multiple triggers
+  gDfuInProgress = true;
+  addServerSerialLog("DFU mode enabled - updating firmware", "info", "dfu");
+  
+  // Save any pending config before rebooting
+  if (gConfigDirty) {
+    saveConfig(gConfig);
+    gConfigDirty = false;
+  }
+  
+  // Enable DFU mode on Notecard
+  J *req = notecard.newRequest("dfu.mode");
+  if (!req) {
+    Serial.println(F("ERROR: Failed to create DFU request"));
+    gDfuInProgress = false;
+    return;
+  }
+  
+  JAddBoolToObject(req, "on", true);
+  
+  // Send request - device will reboot after download completes
+  if (!notecard.sendRequest(req)) {
+    Serial.println(F("ERROR: Failed to enable DFU mode"));
+    gDfuInProgress = false;
+  }
+  
+  // Device will now download firmware and reset automatically
+  // No need to return from this function - reset is imminent
+}
+
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds) {
   if (epoch <= 0.0 || intervalSeconds == 0) {
     return 0.0;
@@ -3164,6 +3289,14 @@ static void handleWebRequests() {
       respondStatus(client, 413, "Payload Too Large");
     } else {
       handleFtpRestorePost(client, body);
+    }
+  } else if (method == "GET" && path == "/api/dfu/status") {
+    handleDfuStatusGet(client);
+  } else if (method == "POST" && path == "/api/dfu/enable") {
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleDfuEnablePost(client, body);
     }
   } else {
     respondStatus(client, 404, F("Not Found"));
@@ -4742,7 +4875,7 @@ static void sendSmsAlert(const char *message) {
   JAddBoolToObject(req, "sync", true);
   J *body = JParse(buffer);
   if (!body) {
-    notecard.deleteResponse(req);  // Free the request to prevent memory leak
+    JDelete(req);  // Free the request (use JDelete for newRequest objects, not deleteResponse)
     return;
   }
   JAddItemToObject(req, "body", body);
@@ -6515,5 +6648,43 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   } else {
     respondStatus(client, 200, F("Calibration entry saved"));
   }
+}
+
+// ============================================================================
+// DFU (Device Firmware Update) Web API Handlers
+// ============================================================================
+
+static void handleDfuStatusGet(EthernetClient &client) {
+  String responseStr = "{";
+  responseStr += "\"currentVersion\":\"" + String(FIRMWARE_VERSION) + "\",";
+  responseStr += "\"buildDate\":\"" + String(FIRMWARE_BUILD_DATE) + "\",";
+  responseStr += "\"updateAvailable\":" + String(gDfuUpdateAvailable ? "true" : "false") + ",";
+  responseStr += "\"availableVersion\":\"" + String(gDfuUpdateAvailable ? gDfuVersion : "") + "\",";
+  responseStr += "\"dfuInProgress\":" + String(gDfuInProgress ? "true" : "false");
+  responseStr += "}";
+  respondJson(client, responseStr);
+}
+
+static void handleDfuEnablePost(EthernetClient &client, const String &body) {
+  StaticJsonDocument<256> doc;
+  DeserializationError error = deserializeJson(doc, body);
+
+  if (error) {
+    respondStatus(client, 400, "Invalid JSON");
+    return;
+  }
+
+  // Require valid PIN for authentication
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
+    return;
+  }
+
+  // Enable DFU mode
+  enableDfuMode();
+  
+  // Respond before system resets
+  String responseStr = "{\"success\":true,\"message\":\"DFU mode enabled - device will update and restart\"}";
+  respondJson(client, responseStr);
 }
 

@@ -144,6 +144,12 @@ static double gNextSummaryFetchEpoch = 0.0;
 static double gLastSyncedEpoch = 0.0;
 static unsigned long gLastSyncMillis = 0;
 
+// DFU State
+static unsigned long gLastDfuCheckMillis = 0;
+static bool gDfuUpdateAvailable = false;
+static char gDfuVersion[32] = {0};
+static bool gDfuInProgress = false;
+
 static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tank Alarm Viewer</title><style>:root{--bg:#f8fafc;--text:#0f172a;--header-bg:#ffffff;--meta-color:#475569;--card-bg:#ffffff;--table-border:rgba(15,23,42,0.08)}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);transition:background 0.3s,color 0.3s}header{padding:20px 28px;background:var(--header-bg);box-shadow:0 2px 10px rgba(0,0,0,0.15)}header h1{margin:0;font-size:1.7rem}header .meta{margin-top:12px;font-size:0.95rem;color:var(--meta-color);display:flex;gap:16px;flex-wrap:wrap}.title-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start}.header-actions{display:flex;gap:12px;align-items:center}.icon-button{width:40px;height:40px;border:1px solid rgba(148,163,184,0.4);background:var(--card-bg);color:var(--text);font-size:1.1rem;cursor:pointer}main{padding:24px;max-width:1400px;margin:0 auto}.card{background:var(--card-bg);padding:20px;box-shadow:0 25px 60px rgba(15,23,42,0.15);border:1px solid rgba(15,23,42,0.08)}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--table-border)}th{text-transform:uppercase;letter-spacing:0.05em;font-size:0.75rem;color:var(--meta-color)}tr:last-child td{border-bottom:none}tr.alarm{background:rgba(220,38,38,0.08)}.status-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;font-size:0.85rem}.status-pill.ok{background:rgba(16,185,129,0.15);color:#34d399}.status-pill.alarm{background:rgba(248,113,113,0.2);color:#fca5a5}.timestamp{font-feature-settings:"tnum";color:var(--meta-color);font-size:0.9rem}footer{margin-top:20px;color:var(--meta-color);font-size:0.85rem;text-align:center}</style></head><body><header><div class="title-row"><div><h1 id="viewerName">Tank Alarm Viewer</h1><div class="meta"><span>Viewer UID: <code id="viewerUid">--</code></span><span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span><span>Summary Generated: <span id="summaryGenerated">--</span></span><span>Last Fetch: <span id="lastFetch">--</span></span><span>Next Scheduled Fetch: <span id="nextFetch">--</span></span><span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span></div></div></div></header><main><section class="card"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"><h2 style="margin:0;font-size:1.2rem">Fleet Snapshot</h2><span class="timestamp">Dashboard auto-refresh: )HTML" STR(WEB_REFRESH_MINUTES) R"HTML( min</span></div><table><thead><tr><th>Site</th><th>Tank</th><th>Level (ft/in)</th><th>24hr Change</th><th>Updated</th></tr></thead><tbody id="tankBody"></tbody></table></section><footer>Viewer nodes are read-only mirrors. Configuration and permissions stay on the server fleet.</footer></main><script>(()=>{const REFRESH_SECONDS=)HTML" STR(WEB_REFRESH_SECONDS)R"HTML(;const els={viewerName:document.getElementById('viewerName'),viewerUid:document.getElementById('viewerUid'),sourceServer:document.getElementById('sourceServer'),sourceUid:document.getElementById('sourceUid'),summaryGenerated:document.getElementById('summaryGenerated'),lastFetch:document.getElementById('lastFetch'),nextFetch:document.getElementById('nextFetch'),refreshHint:document.getElementById('refreshHint'),tankBody:document.getElementById('tankBody')};const state={tanks:[]};function applyTankData(d){els.viewerName.textContent=d.vn||d.viewerName||'Tank Alarm Viewer';els.viewerUid.textContent=d.vi||d.viewerUid||'--';els.sourceServer.textContent=d.sn||d.sourceServerName||'Server';els.sourceUid.textContent=d.si||d.sourceServerUid||'--';els.summaryGenerated.textContent=formatEpoch(d.ge||d.generatedEpoch);els.lastFetch.textContent=formatEpoch(d.lf||d.lastFetchEpoch);els.nextFetch.textContent=formatEpoch(d.nf||d.nextFetchEpoch);els.refreshHint.textContent=describeCadence(d.rs||d.refreshSeconds,d.bh||d.baseHour);state.tanks=d.tanks||[];renderTankRows()}async function fetchTanks(){try{const res=await fetch('/api/tanks');if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();applyTankData(data)}catch(err){console.error('Viewer refresh failed',err)}}function renderTankRows(){const tbody=els.tankBody;tbody.innerHTML='';const rows=state.tanks;if(!rows.length){const tr=document.createElement('tr');tr.innerHTML='<td colspan="5">No tank data available</td>';tbody.appendChild(tr);return}const now=Date.now();const staleThresholdMs=93600000;rows.forEach(t=>{const tr=document.createElement('tr');const alarm=t.a!==undefined?t.a:t.alarm;if(alarm)tr.classList.add('alarm');const lastUpdate=t.u||t.lastUpdate;const isStale=lastUpdate&&((now-(lastUpdate*1000))>staleThresholdMs);const staleWarning=isStale?' ⚠️':'';tr.innerHTML=`<td>${escapeHtml(t.s||t.site,'--')}</td><td>${escapeHtml(t.n||t.label||'Tank')}&nbsp;#${escapeHtml((t.k??t.tank??'?'))}</td><td>${formatFeetInches(t.l!==undefined?t.l:t.levelInches)}</td><td>--</td><td>${formatEpoch(lastUpdate)}${staleWarning}</td>`;if(isStale){tr.style.opacity='0.6';tr.title='Data is over 26 hours old'}tbody.appendChild(tr)})}function statusBadge(t){const alarm=t.a!==undefined?t.a:t.alarm;if(!alarm){return'<span class="status-pill ok">Normal</span>'}const label=escapeHtml(t.at||t.alarmType||'Alarm','Alarm');return`<span class="status-pill alarm">${label}</span>`}function formatFeetInches(inches){if(typeof inches!=='number'||!isFinite(inches)||inches<0)return'--';const feet=Math.floor(inches/12);const remainingInches=inches-(feet*12);return`${feet}' ${remainingInches.toFixed(1)}"`}function formatEpoch(epoch){if(!epoch)return'--';const date=new Date(epoch*1000);if(isNaN(date.getTime()))return'--';return date.toLocaleString()}function describeCadence(seconds,baseHour){const hours=seconds?(seconds/3600).toFixed(1).replace(/\.0$/,''):'6';const hourLabel=(typeof baseHour==='number')?baseHour:6;return`${hours}h cadence · starts ${hourLabel}:00`}function escapeHtml(value,fallback=''){if(value===undefined||value===null||value==='')return fallback;const entityMap={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};return String(value).replace(/[&<>"']/g,c=>entityMap[c]||c)}fetchTanks();setInterval(()=>fetchTanks(),REFRESH_SECONDS*1000)})();</script></body></html>)HTML";
 
 static void initializeNotecard();
@@ -161,6 +167,8 @@ static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t i
 static void scheduleNextSummaryFetch();
 static void fetchViewerSummary();
 static void handleViewerSummary(JsonDocument &doc, double epoch);
+static void checkForFirmwareUpdate();
+static void enableDfuMode();
 
 void setup() {
   Serial.begin(115200);
@@ -222,6 +230,13 @@ void loop() {
   if (gNextSummaryFetchEpoch > 0.0 && currentEpoch() >= gNextSummaryFetchEpoch) {
     fetchViewerSummary();
     scheduleNextSummaryFetch();
+  }
+
+  // Check for firmware updates every hour
+  unsigned long currentMillis = millis();
+  if (!gDfuInProgress && (currentMillis - gLastDfuCheckMillis >= DFU_CHECK_INTERVAL_MS)) {
+    gLastDfuCheckMillis = currentMillis;
+    checkForFirmwareUpdate();
   }
 }
 
@@ -622,4 +637,116 @@ static void handleViewerSummary(JsonDocument &doc, double epoch) {
   Serial.print(F("Viewer summary applied ("));
   Serial.print(gTankRecordCount);
   Serial.println(F(" tanks)"));
+}
+
+// ========================== DFU Functions ==========================
+
+/**
+ * @brief Check for firmware updates via Blues Notecard DFU
+ *
+ * Queries the Notecard for available firmware updates. If an update is found,
+ * marks it as available in global state. Auto-enables DFU if DFU_AUTO_ENABLE is true.
+ */
+static void checkForFirmwareUpdate() {
+  Serial.println(F("Checking for firmware update..."));
+
+  J *req = notecard.newRequest("dfu.status");
+  if (!req) {
+    Serial.println(F("DFU status request failed (allocation)"));
+    return;
+  }
+
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    Serial.println(F("DFU status request failed (no response)"));
+    return;
+  }
+
+  // Check for errors
+  if (notecard.responseError(rsp)) {
+    const char *err = JGetString(rsp, "err");
+    Serial.print(F("DFU status error: "));
+    Serial.println(err ? err : "unknown");
+    notecard.deleteResponse(rsp);
+    return;
+  }
+
+  // Check mode field
+  const char *mode = JGetString(rsp, "mode");
+  const char *body = JGetString(rsp, "body");
+
+  // If mode is already "downloading" or "download-pending", update is in progress
+  if (mode && (strcmp(mode, "downloading") == 0 || strcmp(mode, "download-pending") == 0)) {
+    Serial.println(F("DFU download in progress..."));
+    gDfuInProgress = true;
+    notecard.deleteResponse(rsp);
+    return;
+  }
+
+  // If mode is "ready" and body includes version info, an update is available
+  bool updateAvailable = false;
+  if (mode && strcmp(mode, "ready") == 0 && body && strlen(body) > 0) {
+    updateAvailable = true;
+  }
+
+  if (updateAvailable) {
+    Serial.print(F("Firmware update available: "));
+    Serial.println(body);
+    gDfuUpdateAvailable = true;
+    strlcpy(gDfuVersion, body, sizeof(gDfuVersion));
+
+#if DFU_AUTO_ENABLE
+    Serial.println(F("Auto-enabling DFU..."));
+    enableDfuMode();
+#else
+    Serial.println(F("DFU available but auto-enable is disabled"));
+#endif
+  } else {
+    Serial.println(F("No firmware update available"));
+    gDfuUpdateAvailable = false;
+    gDfuVersion[0] = '\0';
+  }
+
+  notecard.deleteResponse(rsp);
+}
+
+/**
+ * @brief Enable DFU mode to trigger firmware update
+ *
+ * Sends dfu.mode request to the Notecard, transitioning it into download mode.
+ * The Notecard will download the firmware from Notehub and then reset the host MCU.
+ */
+static void enableDfuMode() {
+  if (!gDfuUpdateAvailable) {
+    Serial.println(F("No DFU update available to enable"));
+    return;
+  }
+
+  Serial.print(F("Enabling DFU mode for version: "));
+  Serial.println(gDfuVersion);
+
+  J *req = notecard.newRequest("dfu.mode");
+  if (!req) {
+    Serial.println(F("DFU mode request failed (allocation)"));
+    return;
+  }
+
+  JAddBoolToObject(req, "on", true);
+  J *rsp = notecard.requestAndResponse(req);
+
+  if (!rsp) {
+    Serial.println(F("DFU mode request failed (no response)"));
+    return;
+  }
+
+  if (notecard.responseError(rsp)) {
+    const char *err = JGetString(rsp, "err");
+    Serial.print(F("DFU mode error: "));
+    Serial.println(err ? err : "unknown");
+  } else {
+    Serial.println(F("DFU mode enabled. Device will reset after download."));
+    gDfuInProgress = true;
+  }
+
+  notecard.deleteResponse(rsp);
 }

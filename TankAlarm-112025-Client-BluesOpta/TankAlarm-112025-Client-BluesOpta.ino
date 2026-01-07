@@ -417,6 +417,8 @@ struct ClientConfig {
   bool clearButtonActiveHigh;   // true = button active when HIGH, false = active when LOW (with pullup)
   // Power saving configuration
   bool solarPowered;            // true = solar powered (use power saving features), false = grid-tied
+  // I2C sensor configuration  
+  uint8_t currentLoopI2cAddress; // I2C address for 4-20mA current loop sensor (default 0x64)
 };
 
 struct MonitorRuntime {
@@ -464,6 +466,13 @@ static unsigned long gLastTimeSyncMillis = 0;
 static double gLastSyncedEpoch = 0.0;
 static double gNextDailyReportEpoch = 0.0;
 
+// DFU (Device Firmware Update) state tracking
+static unsigned long gLastDfuCheckMillis = 0;
+#define DFU_CHECK_INTERVAL_MS 3600000UL  // Check for firmware updates every hour
+static bool gDfuUpdateAvailable = false;
+static char gDfuVersion[32] = {0};
+static bool gDfuInProgress = false;
+
 static bool gConfigDirty = false;
 static bool gHardwareSummaryPrinted = false;
 
@@ -504,6 +513,36 @@ static unsigned long gRpmPulsePeriodMs[MAX_TANKS] = {0};
 static volatile uint32_t gRpmAccumulatedPulses[MAX_TANKS] = {0};
 static unsigned long gRpmAccumulatedStartMillis[MAX_TANKS] = {0};
 static bool gRpmAccumulatedInitialized[MAX_TANKS] = {false};
+
+// Atomic access helpers for volatile pulse counter (protects against future interrupt use)
+// On 32-bit ARM (Cortex-M7 in STM32H747XI), 32-bit aligned reads/writes are atomic,
+// but we use interrupt guards for portability and read-modify-write safety
+static inline uint32_t atomicReadAndResetPulses(uint8_t idx) {
+  noInterrupts();
+  uint32_t count = gRpmAccumulatedPulses[idx];
+  gRpmAccumulatedPulses[idx] = 0;
+  interrupts();
+  return count;
+}
+
+static inline void atomicResetPulses(uint8_t idx) {
+  noInterrupts();
+  gRpmAccumulatedPulses[idx] = 0;
+  interrupts();
+}
+
+static inline void atomicIncrementPulses(uint8_t idx) {
+  noInterrupts();
+  gRpmAccumulatedPulses[idx]++;
+  interrupts();
+}
+
+static inline uint32_t atomicReadPulses(uint8_t idx) {
+  noInterrupts();
+  uint32_t count = gRpmAccumulatedPulses[idx];
+  interrupts();
+  return count;
+}
 
 // Default RPM sampling duration in milliseconds (60 seconds for 1 RPM minimum detection)
 // To detect 0.1 RPM, use pulseAccumulatedMode=true with sampleSeconds >= 600
@@ -549,6 +588,8 @@ static void configureNotecardHubMode();
 static void syncTimeFromNotecard();
 static double currentEpoch();
 static void scheduleNextDailyReport();
+static void checkForFirmwareUpdate();
+static void enableDfuMode();
 static void pollForConfigUpdates();
 static void applyConfigUpdate(const JsonDocument &doc);
 static void persistConfigIfDirty();
@@ -743,6 +784,19 @@ void loop() {
   
   // Check for physical clear button press
   checkClearButton(now);
+  
+  // Periodic firmware update check via Notecard DFU
+  if (now - gLastDfuCheckMillis > DFU_CHECK_INTERVAL_MS) {
+    gLastDfuCheckMillis = now;
+    if (!gDfuInProgress && gNotecardAvailable) {
+      checkForFirmwareUpdate();
+      // Auto-enable DFU if update is available (can be disabled for manual control)
+      // Comment out next 3 lines to require manual trigger
+      if (gDfuUpdateAvailable) {
+        enableDfuMode();
+      }
+    }
+  }
 
   persistConfigIfDirty();
   ensureTimeSync();
@@ -948,6 +1002,9 @@ static void createDefaultConfig(ClientConfig &cfg) {
   
   // Power saving defaults (grid-tied, no special power saving)
   cfg.solarPowered = false;          // false = grid-tied (default)
+  
+  // I2C address defaults
+  cfg.currentLoopI2cAddress = CURRENT_LOOP_I2C_ADDRESS; // Default 0x64
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -1036,6 +1093,11 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   
   // Load power saving configuration
   cfg.solarPowered = doc["solarPowered"].is<bool>() ? doc["solarPowered"].as<bool>() : false;
+  
+  // Load I2C address configuration (allows runtime override of compile-time default)
+  cfg.currentLoopI2cAddress = doc["currentLoopI2cAddress"].is<int>() 
+    ? (uint8_t)doc["currentLoopI2cAddress"].as<int>() 
+    : CURRENT_LOOP_I2C_ADDRESS;
 
   // Support both old "tanks" and new "monitors" array names
   JsonArray monitorsArray = doc["monitors"].as<JsonArray>();
@@ -1071,7 +1133,7 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     if (!sensor) sensor = t["sensor"].as<const char *>();
     if (sensor && strcmp(sensor, "digital") == 0) {
       cfg.monitors[i].sensorInterface = SENSOR_DIGITAL;
-    } else if (sensor && strcmp(sensor, "current") == 0 || (sensor && strcmp(sensor, "currentLoop") == 0)) {
+    } else if (sensor && (strcmp(sensor, "current") == 0 || strcmp(sensor, "currentLoop") == 0)) {
       cfg.monitors[i].sensorInterface = SENSOR_CURRENT_LOOP;
     } else if (sensor && (strcmp(sensor, "rpm") == 0 || strcmp(sensor, "pulse") == 0)) {
       cfg.monitors[i].sensorInterface = SENSOR_PULSE;
@@ -1223,6 +1285,9 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   
   // Save power saving configuration
   doc["solarPowered"] = cfg.solarPowered;
+  
+  // Save I2C address configuration
+  doc["currentLoopI2cAddress"] = cfg.currentLoopI2cAddress;
 
   JsonArray tanks = doc.createNestedArray("tanks");
   for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
@@ -1594,6 +1659,97 @@ static void scheduleNextDailyReport() {
   gNextDailyReportEpoch = scheduled;
 }
 
+// ============================================================================
+// Device Firmware Update (DFU) via Blues Notecard
+// ============================================================================
+
+static void checkForFirmwareUpdate() {
+  // Query Notecard for DFU status
+  J *req = notecard.newRequest("dfu.status");
+  if (!req) {
+    return;
+  }
+  
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    return;
+  }
+  
+  // Check if firmware update is available
+  // DFU status response fields:
+  // - "on": true if DFU mode is active
+  // - "version": firmware version available from Notehub
+  // - "body": any additional status info
+  bool dfuActive = JGetBool(rsp, "on");
+  const char *version = JGetString(rsp, "version");
+  
+  if (dfuActive && version && strlen(version) > 0) {
+    // Update available
+    if (!gDfuUpdateAvailable || strcmp(gDfuVersion, version) != 0) {
+      // New update detected
+      gDfuUpdateAvailable = true;
+      strlcpy(gDfuVersion, version, sizeof(gDfuVersion));
+      
+      Serial.println(F("========================================"));
+      Serial.print(F("FIRMWARE UPDATE AVAILABLE: v"));
+      Serial.println(gDfuVersion);
+      Serial.print(F("Current version: "));
+      Serial.println(F(FIRMWARE_VERSION));
+      Serial.println(F("Device will auto-update on next check"));
+      Serial.println(F("========================================"));
+      
+      addSerialLog("Firmware update available");
+    }
+  } else if (gDfuUpdateAvailable) {
+    // Update was available but is now gone (applied or cancelled)
+    gDfuUpdateAvailable = false;
+    gDfuVersion[0] = '\0';
+  }
+  
+  notecard.deleteResponse(rsp);
+}
+
+static void enableDfuMode() {
+  if (gDfuInProgress) {
+    Serial.println(F("DFU already in progress"));
+    return;
+  }
+  
+  Serial.println(F("========================================"));
+  Serial.println(F("ENABLING DFU MODE"));
+  Serial.println(F("Device will download and apply update"));
+  Serial.println(F("System will reset when complete"));
+  Serial.println(F("========================================"));
+  
+  // Mark DFU in progress to prevent multiple triggers
+  gDfuInProgress = true;
+  addSerialLog("DFU mode enabled - updating firmware");
+  
+  // Save any pending config before rebooting
+  if (gConfigDirty) {
+    persistConfigIfDirty();
+  }
+  
+  // Enable DFU mode on Notecard
+  J *req = notecard.newRequest("dfu.mode");
+  if (!req) {
+    Serial.println(F("ERROR: Failed to create DFU request"));
+    gDfuInProgress = false;
+    return;
+  }
+  
+  JAddBoolToObject(req, "on", true);
+  
+  // Send request - device will reboot after download completes
+  if (!notecard.sendRequest(req)) {
+    Serial.println(F("ERROR: Failed to enable DFU mode"));
+    gDfuInProgress = false;
+  }
+  
+  // Device will now download firmware and reset automatically
+  // No need to return from this function - reset is imminent
+}
+
 static void updateDailyScheduleIfNeeded() {
   if (gNextDailyReportEpoch <= 0.0 && gLastSyncedEpoch > 0.0) {
     scheduleNextDailyReport();
@@ -1805,8 +1961,8 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       }
       if (t.containsKey("pulseAccumulatedMode")) {
         gConfig.monitors[i].pulseAccumulatedMode = t["pulseAccumulatedMode"].as<bool>();
-        // Reset accumulated state when mode changes
-        gRpmAccumulatedPulses[i] = 0;
+        // Reset accumulated state when mode changes (use atomic access)
+        atomicResetPulses(i);
         gRpmAccumulatedStartMillis[i] = millis();
         gRpmAccumulatedInitialized[i] = false;
       }
@@ -1967,14 +2123,17 @@ static float readCurrentLoopMilliamps(int16_t channel) {
   if (channel < 0) {
     return -1.0f;
   }
+  
+  // Use runtime-configurable I2C address (falls back to compile-time default)
+  uint8_t i2cAddr = gConfig.currentLoopI2cAddress ? gConfig.currentLoopI2cAddress : CURRENT_LOOP_I2C_ADDRESS;
 
-  Wire.beginTransmission(CURRENT_LOOP_I2C_ADDRESS);
+  Wire.beginTransmission(i2cAddr);
   Wire.write((uint8_t)channel);
   if (Wire.endTransmission(false) != 0) {
     return -1.0f;
   }
 
-  if (Wire.requestFrom(CURRENT_LOOP_I2C_ADDRESS, (uint8_t)2) != 2) {
+  if (Wire.requestFrom(i2cAddr, (uint8_t)2) != 2) {
     return -1.0f;
   }
 
@@ -2296,7 +2455,7 @@ static float readTankSensor(uint8_t idx) {
         
         // Initialize accumulated counting on first call
         if (!gRpmAccumulatedInitialized[idx]) {
-          gRpmAccumulatedPulses[idx] = 0;
+          atomicResetPulses(idx);
           gRpmAccumulatedStartMillis[idx] = now;
           gRpmLastPinState[idx] = digitalRead(pin);
           gRpmAccumulatedInitialized[idx] = true;
@@ -2332,7 +2491,7 @@ static float readTankSensor(uint8_t idx) {
           if (edgeDetected) {
             unsigned long pulseTime = millis();
             if (pulseTime - lastPulseTime >= DEBOUNCE_MS) {
-              gRpmAccumulatedPulses[idx]++;
+              atomicIncrementPulses(idx);
               lastPulseTime = pulseTime;
             }
           }
@@ -2350,12 +2509,14 @@ static float readTankSensor(uint8_t idx) {
         gRpmLastPinState[idx] = lastState;
         
         // Calculate RPM from accumulated pulses over elapsed time
+        // Use atomic read to get consistent pulse count
         unsigned long elapsedMs = now - gRpmAccumulatedStartMillis[idx];
-        if (elapsedMs > 1000 && gRpmAccumulatedPulses[idx] > 0) {
+        uint32_t pulseCount = atomicReadPulses(idx);
+        if (elapsedMs > 1000 && pulseCount > 0) {
           // RPM = (pulses * 60000) / (elapsed_ms * pulses_per_rev)
-          rpm = ((float)gRpmAccumulatedPulses[idx] * MS_PER_MINUTE) / 
+          rpm = ((float)pulseCount * MS_PER_MINUTE) / 
                 ((float)elapsedMs * (float)pulsesPerRev);
-        } else if (elapsedMs > sampleDurationMs && gRpmAccumulatedPulses[idx] == 0) {
+        } else if (elapsedMs > sampleDurationMs && pulseCount == 0) {
           // No pulses for longer than sample duration - report 0 RPM
           rpm = 0.0f;
         } else {
@@ -2364,7 +2525,7 @@ static float readTankSensor(uint8_t idx) {
         }
         
         // Reset accumulated count after reading (start fresh for next period)
-        gRpmAccumulatedPulses[idx] = 0;
+        atomicResetPulses(idx);
         gRpmAccumulatedStartMillis[idx] = now;
         
         Serial.print(F("RPM accumulated: "));
