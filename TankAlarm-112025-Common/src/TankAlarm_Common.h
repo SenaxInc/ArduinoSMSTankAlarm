@@ -87,6 +87,10 @@
 #define TIME_SYNC_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)  // 6 hours
 #endif
 
+#ifndef DFU_CHECK_INTERVAL_MS
+#define DFU_CHECK_INTERVAL_MS (60UL * 60UL * 1000UL)  // 1 hour
+#endif
+
 // ============================================================================
 // Include all common headers
 // ============================================================================
