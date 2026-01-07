@@ -468,6 +468,10 @@ static void applyHistorySettingsFromJson(const DynamicJsonDocument &doc);
 static void saveHistorySettings();
 static void loadHistorySettings();
 
+// Forward declarations for FTP structs
+struct FtpSession;
+struct FtpResult;
+
 // Forward declarations for FTP functions
 static bool ftpSendCommand(FtpSession &session, const char *command, int &code, char *message, size_t maxLen);
 static bool ftpConnectAndLogin(FtpSession &session, char *error, size_t errorSize);
