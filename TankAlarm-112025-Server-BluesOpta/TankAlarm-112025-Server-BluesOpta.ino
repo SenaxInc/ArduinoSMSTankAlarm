@@ -468,6 +468,18 @@ static void applyHistorySettingsFromJson(const DynamicJsonDocument &doc);
 static void saveHistorySettings();
 static void loadHistorySettings();
 
+// Forward declarations for FTP functions
+static bool ftpSendCommand(FtpSession &session, const char *command, int &code, char *message, size_t maxLen);
+static bool ftpConnectAndLogin(FtpSession &session, char *error, size_t errorSize);
+static bool ftpEnterPassive(FtpSession &session, IPAddress &dataHost, uint16_t &dataPort, char *error, size_t errorSize);
+static bool ftpStoreBuffer(FtpSession &session, const char *remoteFile, const uint8_t *data, size_t len, char *error, size_t errorSize);
+static bool ftpRetrieveBuffer(FtpSession &session, const char *remoteFile, char *out, size_t outMax, size_t &outLen, char *error, size_t errorSize);
+static void ftpQuit(FtpSession &session);
+static bool ftpBackupClientConfigs(FtpSession &session, char *error, size_t errorSize, uint8_t &uploadedFiles);
+static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t errorSize, uint8_t &restoredFiles);
+static FtpResult performFtpBackupDetailed();
+static FtpResult performFtpRestoreDetailed();
+
 static ServerConfig gConfig;
 static bool gConfigDirty = false;
 static bool gPendingFtpBackup = false;
@@ -1970,8 +1982,6 @@ static bool ftpSendCommand(FtpSession &session, const char *command, int &code, 
   return ftpReadResponse(session.ctrl, code, message, maxLen);
 }
 
-static bool ftpBackupClientConfigs(FtpSession &session, char *error, size_t errorSize, uint8_t &uploadedFiles);
-static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t errorSize, uint8_t &restoredFiles);
 static bool ftpConnectAndLogin(FtpSession &session, char *error, size_t errorSize) {
   if (!gConfig.ftpEnabled || strlen(gConfig.ftpHost) == 0) {
     snprintf(error, errorSize, "FTP disabled or host missing");
