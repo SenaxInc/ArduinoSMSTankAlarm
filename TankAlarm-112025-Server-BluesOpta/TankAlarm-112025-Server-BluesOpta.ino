@@ -557,6 +557,33 @@ struct ClientConfigSnapshot {
   char payload[1536];
 };
 
+// FTP session and result structures for backup/restore operations
+struct FtpSession {
+  EthernetClient ctrl;
+};
+
+struct FtpResult {
+  bool success;               // Overall operation success
+  uint8_t filesProcessed;     // Number of files successfully processed
+  uint8_t filesFailed;        // Number of files that failed
+  char failedFiles[256];      // Comma-separated list of failed file names
+  char errorMessage[128];     // Human-readable error message
+  
+  FtpResult() : success(false), filesProcessed(0), filesFailed(0) {
+    failedFiles[0] = '\0';
+    errorMessage[0] = '\0';
+  }
+  
+  void addFailedFile(const char *fileName) {
+    if (strlen(failedFiles) > 0 && strlen(failedFiles) + strlen(fileName) + 2 < sizeof(failedFiles)) {
+      strncat(failedFiles, ", ", sizeof(failedFiles) - strlen(failedFiles) - 1);
+    }
+    if (strlen(failedFiles) + strlen(fileName) < sizeof(failedFiles)) {
+      strncat(failedFiles, fileName, sizeof(failedFiles) - strlen(failedFiles) - 1);
+    }
+  }
+};
+
 static ClientConfigSnapshot gClientConfigs[MAX_CLIENT_CONFIG_SNAPSHOTS];
 static uint8_t gClientConfigCount = 0;
 
@@ -1775,33 +1802,6 @@ static bool saveConfig(const ServerConfig &cfg) {
 // ---------------------------------------------------------------------------
 // FTP backup/restore helpers
 // ---------------------------------------------------------------------------
-
-struct FtpSession {
-  EthernetClient ctrl;
-};
-
-// Detailed FTP operation result structure for better error reporting
-struct FtpResult {
-  bool success;               // Overall operation success
-  uint8_t filesProcessed;     // Number of files successfully processed
-  uint8_t filesFailed;        // Number of files that failed
-  char failedFiles[256];      // Comma-separated list of failed file names
-  char errorMessage[128];     // Human-readable error message
-  
-  FtpResult() : success(false), filesProcessed(0), filesFailed(0) {
-    failedFiles[0] = '\0';
-    errorMessage[0] = '\0';
-  }
-  
-  void addFailedFile(const char *fileName) {
-    if (strlen(failedFiles) > 0 && strlen(failedFiles) + strlen(fileName) + 2 < sizeof(failedFiles)) {
-      strncat(failedFiles, ", ", sizeof(failedFiles) - strlen(failedFiles) - 1);
-    }
-    if (strlen(failedFiles) + strlen(fileName) < sizeof(failedFiles)) {
-      strncat(failedFiles, fileName, sizeof(failedFiles) - strlen(failedFiles) - 1);
-    }
-  }
-};
 
 struct BackupFileEntry {
   const char *localPath;
