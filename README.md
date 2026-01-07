@@ -4,34 +4,51 @@ Arduino LTE cellular system that monitors tank levels and sends SMS alerts when 
 
 Arduino will check sensor data on a scheduled basis. If sensor data is over a set threshold, the arduino will send an SMS text message to defined phone numbers. It will also send a daily reading of the sensor data at a set time of day.
 
-## Version 112025 (Blues Wireless + Arduino Opta)
+## Version 112025 (Blues Wireless + Arduino Opta) ⭐ **Current Version**
 
 The 112025 version uses Arduino Opta with Blues Wireless Notecard for cellular connectivity. Features include:
 - **Internal flash storage** (LittleFS) - No SD card required
 - **Fleet-based communication** - Simplified device-to-device data exchange via Blues Notehub
 - **Web-based configuration** - Update clients remotely from server dashboard
 - **Intranet dashboard** - Real-time monitoring via Ethernet web interface
+- **OTA firmware updates** - Update devices remotely via Blues Notecard DFU
 
-### 📊 Setup Presentation
-- **[PowerPoint Setup Guide](TankAlarm_112025_Setup_Guide.pptx)** - Comprehensive visual guide with screenshots
-  - Hardware wiring diagrams
-  - Step-by-step software installation
-  - Blues Notehub configuration
-  - Web interface tutorials
-  - See [PRESENTATION_README.md](PRESENTATION_README.md) for details
+### 📚 Professional Tutorial Library
 
-### Quick Links - 112025 Client (Tank Monitor)
-- **[Installation Guide](TankAlarm-112025-Client-BluesOpta/INSTALLATION.md)** - Complete Arduino IDE setup with library installation
-- **[Fleet Implementation Summary](TankAlarm-112025-Client-BluesOpta/FLEET_IMPLEMENTATION_SUMMARY.md)** - Architecture overview
-- **[Migration Guide](TankAlarm-112025-Client-BluesOpta/MIGRATION_GUIDE.md)** - Upgrading from route-based setup
+**[→ View Complete Tutorial Library](Tutorials/README.md)** - All guides in one place
 
-### Quick Links - 112025 Server (Data Aggregation)
-- **[Installation Guide](TankAlarm-112025-Server-BluesOpta/INSTALLATION.md)** - Complete Arduino IDE setup with library installation
-- **[Fleet Setup Guide](TankAlarm-112025-Server-BluesOpta/FLEET_SETUP.md)** - Blues Notehub fleet configuration
+#### Quick Start (30 Minutes)
+- **[Quick Start Guide](Tutorials/QUICK_START_GUIDE.md)** - Get your first system running fast
+  - Single server + client setup
+  - Step-by-step from zero to dashboard
+  - Perfect for first-time users
 
-### Configuration Approach (112025)
+#### Installation Guides
+- **[Client Installation Guide](Tutorials/CLIENT_INSTALLATION_GUIDE.md)** - Field device setup
+  - Hardware assembly and wiring
+  - Sensor configuration (4-20mA, 0-10V, digital)
+  - Arduino IDE and firmware upload
+  - Troubleshooting and calibration
+  
+- **[Server Installation Guide](Tutorials/SERVER_INSTALLATION_GUIDE.md)** - Central dashboard setup
+  - Network configuration (DHCP/static IP)
+  - Web interface access
+  - Client management and configuration
+  - Security and backup procedures
 
-The 112025 version uses a **simplified configuration system**:
+#### Deployment and Management
+- **[Fleet Setup Guide](Tutorials/FLEET_SETUP_GUIDE.md)** - Multi-site deployment
+  - Blues Notehub fleet creation
+  - Device-to-device communication
+  - Scaling from pilot to production (1-100+ devices)
+  - Best practices for large fleets
+
+- **[Firmware Update Guide](Tutorials/FIRMWARE_UPDATE_GUIDE.md)** - OTA updates
+  - Blues Notecard DFU walkthrough
+  - Fleet-wide deployment strategies
+  - Rollback procedures
+
+### Key Features (112025)
 
 1. **LittleFS Internal Storage** - Configuration persisted to device flash
    - No SD card required
@@ -47,6 +64,11 @@ The 112025 version uses a **simplified configuration system**:
    - Just assign devices to fleets in Blues Notehub
    - No manual route configuration needed
    - Easier scaling for multiple devices
+
+4. **Over-the-Air Updates** - Update firmware remotely
+   - Blues Notecard DFU support
+   - No site visits required
+   - Fleet-wide or targeted deployments
 
 ## Version 092025 (Current - Recommended for MKR NB 1500)
 
