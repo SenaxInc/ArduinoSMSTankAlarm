@@ -52,6 +52,7 @@
   static LittleFileSystem *mbedFS = nullptr;
   static BlockDevice *mbedBD = nullptr;
   static MbedWatchdogHelper mbedWatchdog;
+  static bool gStorageAvailable = false;
   
   // POSIX-compatible file path prefix for Mbed OS VFS
   #define POSIX_FS_PREFIX "/fs"
@@ -61,7 +62,20 @@
   #include <LittleFS.h>
   #include <IWatchdog.h>
   #define FILESYSTEM_AVAILABLE
+  static bool gStorageAvailable = false;
 #endif
+
+static inline bool isStorageAvailable() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    return gStorageAvailable && (mbedFS != nullptr);
+  #else
+    return gStorageAvailable;
+  #endif
+#else
+  return false;
+#endif
+}
 
 // Debug mode - controls Serial output and Notecard debug logging
 // For PRODUCTION: Leave commented out (default) to save 5-10% power consumption
@@ -884,6 +898,7 @@ static void initializeStorage() {
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     // Mbed OS LittleFileSystem initialization
+    gStorageAvailable = false;
     mbedBD = BlockDevice::get_default_instance();
     if (!mbedBD) {
       Serial.println(F("Error: No default block device found"));
@@ -898,23 +913,22 @@ static void initializeStorage() {
       Serial.println(F("Filesystem mount failed, attempting to reformat..."));
       err = mbedFS->reformat(mbedBD);
       if (err) {
-        Serial.println(F("LittleFS format failed; halting"));
+        Serial.println(F("LittleFS format failed; running without persistence"));
         delete mbedFS;
         mbedFS = nullptr;
-        while (true) {
-          delay(1000);
-        }
+        return;
       }
     }
+    gStorageAvailable = true;
     Serial.println(F("Mbed OS LittleFileSystem initialized"));
   #else
     // STM32duino LittleFS
     if (!LittleFS.begin()) {
-      Serial.println(F("LittleFS init failed; halting"));
-      while (true) {
-        delay(1000);
-      }
+      gStorageAvailable = false;
+      Serial.println(F("LittleFS init failed; running without persistence"));
+      return;
     }
+    gStorageAvailable = true;
   #endif
 #else
   Serial.println(F("Warning: Filesystem not available on this platform - configuration will not persist"));
@@ -923,6 +937,12 @@ static void initializeStorage() {
 
 static void ensureConfigLoaded() {
 #ifdef FILESYSTEM_AVAILABLE
+  if (!isStorageAvailable()) {
+    // Degraded mode: run with defaults in RAM only.
+    createDefaultConfig(gConfig);
+    Serial.println(F("Warning: Using default config (filesystem unavailable)"));
+    return;
+  }
   if (!loadConfigFromFlash(gConfig)) {
     createDefaultConfig(gConfig);
     gConfigDirty = true;
@@ -2114,6 +2134,18 @@ static void persistConfigIfDirty() {
   if (!gConfigDirty) {
     return;
   }
+
+#ifdef FILESYSTEM_AVAILABLE
+  static bool warned = false;
+  if (!isStorageAvailable()) {
+    if (!warned) {
+      Serial.println(F("Warning: Filesystem unavailable - skipping config persistence"));
+      warned = true;
+    }
+    return;
+  }
+#endif
+
   if (saveConfigToFlash(gConfig)) {
     gConfigDirty = false;
   }

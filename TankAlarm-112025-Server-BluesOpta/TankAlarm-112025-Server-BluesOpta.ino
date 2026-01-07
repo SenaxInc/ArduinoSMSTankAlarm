@@ -743,7 +743,14 @@ static void handleWebRequests();
 static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge);
 static void respondHtml(EthernetClient &client, const String &body);
 static void respondJson(EthernetClient &client, const String &body, int status = 200);
+static bool respondJson(EthernetClient &client, const JsonDocument &doc, int status = 200);
 // Note: respondStatus is forward-declared earlier in the file (before requireValidPin)
+
+static void beginChunkedCsvDownload(EthernetClient &client, const String &filename);
+static void sendChunk(EthernetClient &client, const char *data, size_t len);
+static void sendChunk(EthernetClient &client, const String &data);
+static void endChunkedResponse(EthernetClient &client);
+static size_t buildSerialLogCsvLine(char *out, size_t outSize, const SerialLogEntry &entry, const char *clientLabel);
 
 static void sendTankJson(EthernetClient &client);
 static void sendUnloadLogJson(EthernetClient &client);
@@ -947,9 +954,7 @@ static void handleSerialLogsGet(EthernetClient &client, const String &queryStrin
     }
   }
 
-  String json;
-  serializeJson(doc, json);
-  respondJson(client, json);
+  respondJson(client, doc);
 }
 
 static void handleSerialLogsDownload(EthernetClient &client, const String &queryString) {
@@ -974,25 +979,25 @@ static void handleSerialLogsDownload(EthernetClient &client, const String &query
     sinceEpoch = sinceParam.toDouble();
   }
 
-  String csv = "timestamp,level,source,client,message\n";
   int added = 0;
 
-  auto appendCsvLine = [&](const SerialLogEntry &entry, const char *clientLabel) {
+  String filename;
+  filename.reserve(72);
+  filename += (source == "client" && clientUid.length()) ? clientUid : source;
+  filename += F("-serial.csv");
+
+  beginChunkedCsvDownload(client, filename);
+  sendChunk(client, "timestamp,level,source,client,message\n", strlen("timestamp,level,source,client,message\n"));
+
+  auto emitCsvLine = [&](const SerialLogEntry &entry, const char *clientLabel) {
     if (entry.message[0] == '\0') {
       return;
     }
-    csv += String(entry.timestamp, 3);
-    csv += ',';
-    csv += entry.level;
-    csv += ',';
-    csv += entry.source;
-    csv += ',';
-    csv += clientLabel;
-    csv += ",\"";
-    String msg(entry.message);
-    msg.replace("\"", "\"\"");
-    csv += msg;
-    csv += "\"\n";
+    char line[640];
+    size_t len = buildSerialLogCsvLine(line, sizeof(line), entry, clientLabel);
+    if (len > 0) {
+      sendChunk(client, line, len);
+    }
   };
 
   if (source == "server") {
@@ -1003,7 +1008,7 @@ static void handleSerialLogsDownload(EthernetClient &client, const String &query
       if (sinceEpoch > 0.0 && entry.timestamp <= sinceEpoch) {
         continue;
       }
-      appendCsvLine(entry, "server");
+      emitCsvLine(entry, "server");
       added++;
       if (maxEntries > 0 && added >= maxEntries) {
         break;
@@ -1020,7 +1025,7 @@ static void handleSerialLogsDownload(EthernetClient &client, const String &query
           if (sinceEpoch > 0.0 && entry.timestamp <= sinceEpoch) {
             continue;
           }
-          appendCsvLine(entry, buf.clientUid);
+          emitCsvLine(entry, buf.clientUid);
           added++;
           if (maxEntries > 0 && added >= maxEntries) {
             break;
@@ -1031,15 +1036,7 @@ static void handleSerialLogsDownload(EthernetClient &client, const String &query
     }
   }
 
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Content-Type: text/csv"));
-  client.print(F("Content-Disposition: attachment; filename=\""));
-  client.print(source == "client" && clientUid.length() ? clientUid : source);
-  client.println(F("-serial.csv\""));
-  client.print(F("Content-Length: "));
-  client.println(csv.length());
-  client.println();
-  client.print(csv);
+  endChunkedResponse(client);
 }
 
 static void handleSerialRequestPost(EthernetClient &client, const String &body) {
@@ -3463,6 +3460,105 @@ static void respondJson(EthernetClient &client, const String &body, int status) 
   client.print(body);
 }
 
+static bool respondJson(EthernetClient &client, const JsonDocument &doc, int status) {
+  const size_t length = measureJson(doc);
+  client.print(F("HTTP/1.1 "));
+  client.print(status);
+  if (status == 200) {
+    client.println(F(" OK"));
+  } else {
+    client.println();
+  }
+  client.println(F("Content-Type: application/json"));
+  client.print(F("Content-Length: "));
+  client.println(length);
+  client.println();
+  return serializeJson(doc, client) > 0;
+}
+
+static void beginChunkedCsvDownload(EthernetClient &client, const String &filename) {
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: text/csv"));
+  client.print(F("Content-Disposition: attachment; filename=\""));
+  client.print(filename);
+  client.println(F("\""));
+  client.println(F("Transfer-Encoding: chunked"));
+  client.println();
+}
+
+static void sendChunk(EthernetClient &client, const char *data, size_t len) {
+  if (!data || len == 0) {
+    return;
+  }
+  client.print(len, HEX);
+  client.print("\r\n");
+  client.write(reinterpret_cast<const uint8_t *>(data), len);
+  client.print("\r\n");
+}
+
+static void sendChunk(EthernetClient &client, const String &data) {
+  sendChunk(client, data.c_str(), data.length());
+}
+
+static void endChunkedResponse(EthernetClient &client) {
+  client.print("0\r\n\r\n");
+}
+
+static size_t buildSerialLogCsvLine(char *out, size_t outSize, const SerialLogEntry &entry, const char *clientLabel) {
+  if (!out || outSize == 0) {
+    return 0;
+  }
+
+  String ts(entry.timestamp, 3);
+  size_t pos = 0;
+
+  auto appendRaw = [&](const char *s, size_t n) {
+    if (!s || n == 0) {
+      return true;
+    }
+    if (pos + n >= outSize) {
+      return false;
+    }
+    memcpy(out + pos, s, n);
+    pos += n;
+    return true;
+  };
+
+  auto appendCStr = [&](const char *s) {
+    return appendRaw(s, s ? strlen(s) : 0);
+  };
+
+  auto appendChar = [&](char c) {
+    if (pos + 1 >= outSize) {
+      return false;
+    }
+    out[pos++] = c;
+    return true;
+  };
+
+  if (!appendCStr(ts.c_str())) return 0;
+  if (!appendChar(',')) return 0;
+  if (!appendCStr(entry.level)) return 0;
+  if (!appendChar(',')) return 0;
+  if (!appendCStr(entry.source)) return 0;
+  if (!appendChar(',')) return 0;
+  if (!appendCStr(clientLabel ? clientLabel : "")) return 0;
+  if (!appendRaw(",\"", 2)) return 0;
+
+  const char *msg = entry.message;
+  for (size_t i = 0; msg && msg[i] != '\0'; ++i) {
+    if (msg[i] == '"') {
+      if (!appendRaw("\"\"", 2)) return 0;
+    } else {
+      if (!appendChar(msg[i])) return 0;
+    }
+  }
+
+  if (!appendRaw("\"\n", 2)) return 0;
+  out[pos] = '\0';
+  return pos;
+}
+
 static void respondStatus(EthernetClient &client, int status, const char *message) {
   client.print(F("HTTP/1.1 "));
   client.print(status);
@@ -3530,12 +3626,7 @@ static void sendTankJson(EthernetClient &client) {
     return;
   }
 
-  String json;
-  if (serializeJson(doc, json) == 0) {
-    respondStatus(client, 500, F("Failed to encode tank data"));
-    return;
-  }
-  respondJson(client, json);
+  respondJson(client, doc);
 }
 
 // ============================================================================
@@ -3580,12 +3671,7 @@ static void sendUnloadLogJson(EthernetClient &client) {
     return;
   }
 
-  String json;
-  if (serializeJson(doc, json) == 0) {
-    respondStatus(client, 500, F("Failed to encode unload data"));
-    return;
-  }
-  respondJson(client, json);
+  respondJson(client, doc);
 }
 
 static void sendClientDataJson(EthernetClient &client) {
@@ -3723,12 +3809,7 @@ static void sendClientDataJson(EthernetClient &client) {
     return;
   }
 
-  String json;
-  if (serializeJson(doc, json) == 0) {
-    respondStatus(client, 500, F("Failed to encode client data"));
-    return;
-  }
-  respondJson(client, json);
+  respondJson(client, doc);
 }
 
 static void handleConfigPost(EthernetClient &client, const String &body) {
