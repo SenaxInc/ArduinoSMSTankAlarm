@@ -199,7 +199,7 @@
 static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(16)) + 1024;
 static const size_t CLIENT_JSON_CAPACITY = 32768;  // 32KB for full fleet data
 
-static byte gMacAddress[6] = { 0x02, 0x00, 0x01, 0x12, 0x20, 0x25 };
+static byte gMacAddress[6] = { 0 }; // Initialize to 0, will be read from hardware or set if needed
 static IPAddress gStaticIp(192, 168, 1, 200);
 static IPAddress gStaticGateway(192, 168, 1, 1);
 static IPAddress gStaticSubnet(255, 255, 255, 0);
@@ -2336,6 +2336,15 @@ static FtpResult performFtpBackupDetailed() {
     return result;
   }
 
+  // Kick watchdog before detailed operation
+  #ifdef WATCHDOG_AVAILABLE
+    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+      mbedWatchdog.kick();
+    #else
+      IWatchdog.reload();
+    #endif
+  #endif
+
   FtpSession session;
   char err[128];
   if (!ftpConnectAndLogin(session, err, sizeof(err))) {
@@ -2344,6 +2353,15 @@ static FtpResult performFtpBackupDetailed() {
   }
 
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
+    // Keep watchdog alive during file processing
+    #ifdef WATCHDOG_AVAILABLE
+      #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+        mbedWatchdog.kick();
+      #else
+        IWatchdog.reload();
+      #endif
+    #endif
+
     const BackupFileEntry &entry = kBackupFiles[i];
     char contents[2048];
     size_t len = 0;
@@ -2367,40 +2385,31 @@ static FtpResult performFtpBackupDetailed() {
 
   // Also back up per-client cached configs (manifest + per-uid JSON)
   uint8_t clientUploaded = 0;
+  // Note: ftpBackupClientConfigs should also ideally kick watchdog internally if processing many files
   if (ftpBackupClientConfigs(session, err, sizeof(err), clientUploaded)) {
     result.filesProcessed += clientUploaded;
   }
 
   ftpQuit(session);
+  
+  // Final watchdog kick after operation
+  #ifdef WATCHDOG_AVAILABLE
+    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+      mbedWatchdog.kick();
+    #else
+      IWatchdog.reload();
+    #endif
+  #endif
 
   result.success = (result.filesProcessed > 0);
-  if (!result.success) {
-    strlcpy(result.errorMessage, "No files uploaded", sizeof(result.errorMessage));
-  } else if (result.filesFailed > 0) {
-    snprintf(result.errorMessage, sizeof(result.errorMessage), 
-             "%d files uploaded, %d failed", result.filesProcessed, result.filesFailed);
-  }
-
-  return result;
-}
-
-// Legacy wrapper for backward compatibility
-static bool performFtpBackup(char *errorOut, size_t errorSize) {
-  FtpResult result = performFtpBackupDetailed();
-  if (errorOut && errorSize > 0) {
-    strlcpy(errorOut, result.errorMessage, errorSize);
-  }
-  return result.success;
-}
-
-// FTP restore with detailed result reporting
-static FtpResult performFtpRestoreDetailed() {
-  FtpResult result;
-  
-  if (!gConfig.ftpEnabled) {
-    strlcpy(result.errorMessage, "FTP disabled", sizeof(result.errorMessage));
-    return result;
-  }
+  // Kick watchdog before detailed operation
+  #ifdef WATCHDOG_AVAILABLE
+    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+      mbedWatchdog.kick();
+    #else
+      IWatchdog.reload();
+    #endif
+  #endif
 
   FtpSession session;
   char err[128];
@@ -2410,7 +2419,53 @@ static FtpResult performFtpRestoreDetailed() {
   }
 
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
+    // Keep watchdog alive during file processing
+    #ifdef WATCHDOG_AVAILABLE
+      #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+        mbedWatchdog.kick();
+      #else
+        IWatchdog.reload();
+      #endif
+    #endif
+
     const BackupFileEntry &entry = kBackupFiles[i];
+    char contents[2048];
+    size_t len = 0;
+
+    char remotePath[192];
+    buildRemotePath(remotePath, sizeof(remotePath), entry.remoteName);
+    if (!ftpRetrieveBuffer(session, remotePath, contents, sizeof(contents), len, err, sizeof(err))) {
+      result.filesFailed++;
+      result.addFailedFile(entry.remoteName);
+      continue;
+    }
+
+    if (writeBufferToFile(entry.localPath, (const uint8_t *)contents, len)) {
+      result.filesProcessed++;
+      Serial.print(F("FTP restore: "));
+      Serial.println(entry.localPath);
+    } else {
+      result.filesFailed++;
+      result.addFailedFile(entry.remoteName);
+    }
+  }
+
+  // Attempt to restore per-client cached configs (optional)
+  uint8_t clientRestored = 0;
+  if (ftpRestoreClientConfigs(session, err, sizeof(err), clientRestored)) {
+    result.filesProcessed += clientRestored;
+  }
+
+  ftpQuit(session);
+
+  // Final watchdog kick after operation
+  #ifdef WATCHDOG_AVAILABLE
+    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+      mbedWatchdog.kick();
+    #else
+      IWatchdog.reload();
+    #endif
+  #endifeEntry &entry = kBackupFiles[i];
     char contents[2048];
     size_t len = 0;
 
@@ -3097,6 +3152,17 @@ static void initializeEthernet() {
       delay(1000);
     }
   }
+
+  // Retrieve hardware MAC address if not set
+  bool usingFactoryMac = true;
+  if (gMacAddress[0] == 0 && gMacAddress[1] == 0 && gMacAddress[2] == 0 && 
+      gMacAddress[3] == 0 && gMacAddress[4] == 0 && gMacAddress[5] == 0) {
+    // Read MAC into buffer
+    Ethernet.MACAddress(gMacAddress);
+  } else {
+    // Using manually configured MAC
+    usingFactoryMac = false;
+  }
   
   int status;
   if (gConfig.useStaticIp) {
@@ -3123,6 +3189,13 @@ static void initializeEthernet() {
     Serial.println(F("Continuing, but web server will not be accessible."));
   } else {
     Serial.println(F(" ok"));
+    Serial.print(F("Using MAC: "));
+    for (int i=0; i<6; i++) {
+        if (i>0) Serial.print(":");
+        if (gMacAddress[i] < 16) Serial.print("0");
+        Serial.print(gMacAddress[i], HEX);
+    }
+    Serial.println(usingFactoryMac ? " (Hardware)" : " (Static)");
     Serial.print(F("IP Address: "));
     Serial.println(Ethernet.localIP());
     Serial.print(F("Gateway: "));

@@ -21,21 +21,29 @@ The system consists of three components:
 - **Viewer** - Read-only monitoring device (optional, for remote viewing)
 
 ```
-  ┌─────────────┐         Cellular (Blues)        ┌─────────────┐
-  │   CLIENT    │────────────────────────────────▶│   SERVER    │
-  │  (Remote)   │  ◀─── Configuration/Commands    │ (HQ/Office) │
-  │             │                                  │             │
-  │ • Monitors  │                                  │ • Dashboard │
-  │ • Sensors   │                                  │ • Alerts    │
-  │ • Alarms    │                                  │ • Config    │
-  └─────────────┘                                  └─────────────┘
-                                                          │
-                                                    Ethernet LAN
-                                                          │
-                                                   ┌─────────────┐
-                                                   │   VIEWER    │
-                                                   │ (Read-Only) │
-                                                   └─────────────┘
+       ┌─────────────┐                  ┌─────────────┐
+       │   CLIENT    │                  │   SERVER    │
+       │  (Remote)   │                  │ (HQ/Office) │
+       │ • Monitors  │                  │ • Dashboard │
+       │ • Sensors   │                  │ • Alerts    │
+       └──────▲──────┘                  └──────▲──────┘
+              │                                │
+              │ Cellular                       │ Cellular
+              ▼                                ▼
+       ┌──────────────────────────────────────────────┐
+       │            BLUES NOTEHUB (Cloud)             │
+       │     (Data Exchange & Device Management)      │
+       └──────────────────────┬───────────────────────┘
+                              │
+                              │ Cellular/WiFi
+                              ▼
+                       ┌─────────────┐
+                       │   VIEWER    │
+                       │ (Read-Only) │
+                       └──────┬──────┘
+                              │
+                         Ethernet LAN
+                        (User Display)
 ```
 
 ---
