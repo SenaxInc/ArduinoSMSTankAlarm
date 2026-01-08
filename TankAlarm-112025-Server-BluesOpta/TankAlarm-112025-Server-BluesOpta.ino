@@ -2402,6 +2402,18 @@ static FtpResult performFtpBackupDetailed() {
   #endif
 
   result.success = (result.filesProcessed > 0);
+  return result;
+}
+
+// FTP restore with detailed result reporting
+static FtpResult performFtpRestoreDetailed() {
+  FtpResult result;
+  
+  if (!gConfig.ftpEnabled) {
+    strlcpy(result.errorMessage, "FTP disabled", sizeof(result.errorMessage));
+    return result;
+  }
+
   // Kick watchdog before detailed operation
   #ifdef WATCHDOG_AVAILABLE
     #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -2465,35 +2477,7 @@ static FtpResult performFtpBackupDetailed() {
     #else
       IWatchdog.reload();
     #endif
-  #endifeEntry &entry = kBackupFiles[i];
-    char contents[2048];
-    size_t len = 0;
-
-    char remotePath[192];
-    buildRemotePath(remotePath, sizeof(remotePath), entry.remoteName);
-    if (!ftpRetrieveBuffer(session, remotePath, contents, sizeof(contents), len, err, sizeof(err))) {
-      result.filesFailed++;
-      result.addFailedFile(entry.remoteName);
-      continue;
-    }
-
-    if (writeBufferToFile(entry.localPath, (const uint8_t *)contents, len)) {
-      result.filesProcessed++;
-      Serial.print(F("FTP restore: "));
-      Serial.println(entry.localPath);
-    } else {
-      result.filesFailed++;
-      result.addFailedFile(entry.remoteName);
-    }
-  }
-
-  // Attempt to restore per-client cached configs (optional)
-  uint8_t clientRestored = 0;
-  if (ftpRestoreClientConfigs(session, err, sizeof(err), clientRestored)) {
-    result.filesProcessed += clientRestored;
-  }
-
-  ftpQuit(session);
+  #endif
 
   result.success = (result.filesProcessed > 0);
   if (!result.success) {
