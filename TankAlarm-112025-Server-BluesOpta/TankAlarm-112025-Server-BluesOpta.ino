@@ -2328,6 +2328,20 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
 }
 
 // FTP backup with detailed result reporting
+//
+// SECURITY WARNING: This function transmits sensitive configuration data (including FTP 
+// credentials, SMS numbers, and email addresses) over unencrypted FTP, which is vulnerable 
+// to interception by attackers on the same network or in a man-in-the-middle position.
+//
+// RECOMMENDED SECURITY MEASURES:
+// - Use FTP only on physically isolated/trusted networks (e.g., dedicated management VLAN)
+// - Enable firewall rules to restrict FTP access to specific hosts
+// - Consider using VPN/IPsec for network-layer encryption
+// - Rotate FTP credentials regularly and use strong passwords
+// - Monitor FTP server logs for unauthorized access attempts
+//
+// FUTURE ENHANCEMENT: Migrate to SFTP/FTPS or HTTPS-based backup (planned for v1.1+)
+// See README.md roadmap for timeline on secure transport implementation.
 static FtpResult performFtpBackupDetailed() {
   FtpResult result;
   
@@ -2406,6 +2420,20 @@ static FtpResult performFtpBackupDetailed() {
 }
 
 // FTP restore with detailed result reporting
+// 
+// SECURITY WARNING: This function transmits sensitive configuration data (including FTP 
+// credentials, SMS numbers, and email addresses) over unencrypted FTP, which is vulnerable 
+// to interception by attackers on the same network or in a man-in-the-middle position.
+//
+// RECOMMENDED SECURITY MEASURES:
+// - Use FTP only on physically isolated/trusted networks (e.g., dedicated management VLAN)
+// - Enable firewall rules to restrict FTP access to specific hosts
+// - Consider using VPN/IPsec for network-layer encryption
+// - Rotate FTP credentials regularly and use strong passwords
+// - Monitor FTP server logs for unauthorized access attempts
+//
+// FUTURE ENHANCEMENT: Migrate to SFTP/FTPS or HTTPS-based backup (planned for v1.1+)
+// See README.md roadmap for timeline on secure transport implementation.
 static FtpResult performFtpRestoreDetailed() {
   FtpResult result;
   
