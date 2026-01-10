@@ -2328,6 +2328,20 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
 }
 
 // FTP backup with detailed result reporting
+//
+// SECURITY WARNING: This function transmits sensitive configuration data (including FTP 
+// credentials, SMS numbers, and email addresses) over unencrypted FTP, which is vulnerable 
+// to interception by attackers on the same network or in a man-in-the-middle position.
+//
+// RECOMMENDED SECURITY MEASURES:
+// - Use FTP only on physically isolated/trusted networks (e.g., dedicated management VLAN)
+// - Enable firewall rules to restrict FTP access to specific hosts
+// - Consider using VPN/IPsec for network-layer encryption
+// - Rotate FTP credentials regularly and use strong passwords
+// - Monitor FTP server logs for unauthorized access attempts
+//
+// FUTURE ENHANCEMENT: Migrate to SFTP/FTPS or HTTPS-based backup (planned for v1.1+)
+// See README.md roadmap for timeline on secure transport implementation.
 static FtpResult performFtpBackupDetailed() {
   FtpResult result;
   
@@ -2402,6 +2416,41 @@ static FtpResult performFtpBackupDetailed() {
   #endif
 
   result.success = (result.filesProcessed > 0);
+  return result;
+}
+
+// Simplified wrapper for performFtpBackupDetailed()
+static bool performFtpBackup(char *errorOut, size_t errorSize) {
+  FtpResult result = performFtpBackupDetailed();
+  if (errorOut && errorSize > 0) {
+    strlcpy(errorOut, result.errorMessage, errorSize);
+  }
+  return result.success;
+}
+
+// FTP restore with detailed result reporting
+// 
+// SECURITY WARNING: This function transmits sensitive configuration data (including FTP 
+// credentials, SMS numbers, and email addresses) over unencrypted FTP, which is vulnerable 
+// to interception by attackers on the same network or in a man-in-the-middle position.
+//
+// RECOMMENDED SECURITY MEASURES:
+// - Use FTP only on physically isolated/trusted networks (e.g., dedicated management VLAN)
+// - Enable firewall rules to restrict FTP access to specific hosts
+// - Consider using VPN/IPsec for network-layer encryption
+// - Rotate FTP credentials regularly and use strong passwords
+// - Monitor FTP server logs for unauthorized access attempts
+//
+// FUTURE ENHANCEMENT: Migrate to SFTP/FTPS or HTTPS-based backup (planned for v1.1+)
+// See README.md roadmap for timeline on secure transport implementation.
+static FtpResult performFtpRestoreDetailed() {
+  FtpResult result;
+  
+  if (!gConfig.ftpEnabled) {
+    strlcpy(result.errorMessage, "FTP disabled", sizeof(result.errorMessage));
+    return result;
+  }
+
   // Kick watchdog before detailed operation
   #ifdef WATCHDOG_AVAILABLE
     #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -2465,35 +2514,7 @@ static FtpResult performFtpBackupDetailed() {
     #else
       IWatchdog.reload();
     #endif
-  #endifeEntry &entry = kBackupFiles[i];
-    char contents[2048];
-    size_t len = 0;
-
-    char remotePath[192];
-    buildRemotePath(remotePath, sizeof(remotePath), entry.remoteName);
-    if (!ftpRetrieveBuffer(session, remotePath, contents, sizeof(contents), len, err, sizeof(err))) {
-      result.filesFailed++;
-      result.addFailedFile(entry.remoteName);
-      continue;
-    }
-
-    if (writeBufferToFile(entry.localPath, (const uint8_t *)contents, len)) {
-      result.filesProcessed++;
-      Serial.print(F("FTP restore: "));
-      Serial.println(entry.localPath);
-    } else {
-      result.filesFailed++;
-      result.addFailedFile(entry.remoteName);
-    }
-  }
-
-  // Attempt to restore per-client cached configs (optional)
-  uint8_t clientRestored = 0;
-  if (ftpRestoreClientConfigs(session, err, sizeof(err), clientRestored)) {
-    result.filesProcessed += clientRestored;
-  }
-
-  ftpQuit(session);
+  #endif
 
   result.success = (result.filesProcessed > 0);
   if (!result.success) {
