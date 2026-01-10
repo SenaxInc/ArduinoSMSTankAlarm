@@ -754,12 +754,12 @@ static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html la
 .site-tanks{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1px;background:var(--card-border)}
 .site-tank{background:var(--surface);padding:12px;display:flex;flex-direction:column;gap:4px}
 .site-tank.alarm{background:rgba(220,38,38,0.05)}
-.tank-meta{font-size:0.85rem;color:var(--muted);display:flex;justify-content:space-between}
+.tank-meta{font-size:0.85rem;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
 .tank-value{font-size:1.2rem;font-weight:600;margin:4px 0}
 .tank-footer{font-size:0.75rem;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
 .tank-container{display:flex;flex-direction:column;gap:16px}
 .tank-card{background:var(--bg);border:1px solid var(--card-border);padding:16px;border-radius:4px}
-.tank-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;border-bottom:1px solid var(--card-border);padding-bottom:8px}
+.tank-header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;border-bottom:1px solid var(--card-border);padding-bottom:8px}
 .tank-header-inputs{display:flex;gap:12px;align-items:center;flex:1}
 .tank-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px}
 .alarm-section{background:var(--chip);padding:12px;border-radius:4px}
