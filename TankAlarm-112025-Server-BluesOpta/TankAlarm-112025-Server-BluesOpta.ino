@@ -2419,6 +2419,15 @@ static FtpResult performFtpBackupDetailed() {
   return result;
 }
 
+// Simplified wrapper for performFtpBackupDetailed()
+static bool performFtpBackup(char *errorOut, size_t errorSize) {
+  FtpResult result = performFtpBackupDetailed();
+  if (errorOut && errorSize > 0) {
+    strlcpy(errorOut, result.errorMessage, errorSize);
+  }
+  return result.success;
+}
+
 // FTP restore with detailed result reporting
 // 
 // SECURITY WARNING: This function transmits sensitive configuration data (including FTP 
