@@ -2419,7 +2419,7 @@ static FtpResult performFtpBackupDetailed() {
   return result;
 }
 
-// Legacy wrapper for backward compatibility
+// Simplified wrapper for performFtpBackupDetailed()
 static bool performFtpBackup(char *errorOut, size_t errorSize) {
   FtpResult result = performFtpBackupDetailed();
   if (errorOut && errorSize > 0) {
