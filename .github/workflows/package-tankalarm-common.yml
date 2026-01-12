@@ -33,14 +33,16 @@ jobs:
       - name: Commit ZIP (if changed)
         shell: bash
         run: |
-          if git diff --quiet -- TankAlarm-112025-Common.zip; then
-            echo "ZIP unchanged; nothing to commit."
-            exit 0
-          fi
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add TankAlarm-112025-Common.zip
+
+          # `git diff` does not consider untracked files; use `git status` to detect new/changed ZIP.
+          if [ -z "$(git status --porcelain -- TankAlarm-112025-Common.zip)" ]; then
+            echo "ZIP unchanged; nothing to commit."
+            exit 0
+          fi
+
           git commit -m "chore: update TankAlarm-112025-Common.zip"
           git push
