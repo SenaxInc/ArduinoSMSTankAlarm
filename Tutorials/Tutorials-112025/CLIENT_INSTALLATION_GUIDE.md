@@ -171,6 +171,7 @@ The TankAlarm Client requires these libraries:
 |---------|---------|---------|-----------------|
 | **ArduinoJson** | 7.0.0+ | Configuration & data serialization | Search "ArduinoJson" → Install |
 | **Blues Wireless Notecard** | Latest | Cellular communication | Search "Notecard" → Install |
+| **TankAlarm-112025-Common** | This repo | Shared constants/config (`TankAlarm_Common.h`) | Install from ZIP (recommended) |
 | **LittleFS** | Built-in | File system (included with Mbed core) | No install needed |
 | **Wire** | Built-in | I2C communication | No install needed |
 | **IWatchdog** | Built-in | Watchdog timer (Mbed core) | No install needed |
@@ -198,7 +199,30 @@ The TankAlarm Client requires these libraries:
 
 **Why Notecard Library?** Provides high-level API for cellular communication without AT commands.
 
-#### 3. Verify Built-In Libraries
+#### 3. Install TankAlarm-112025-Common (Custom Library)
+
+TankAlarm uses a shared custom library included in this repository. Your sketches include it with:
+
+```cpp
+#include <TankAlarm_Common.h>
+```
+
+**Recommended: Install from ZIP**
+
+1. Download `TankAlarm-112025-Common.zip` from the repository root
+2. In Arduino IDE, go to **Sketch → Include Library → Add .ZIP Library...**
+3. Select `TankAlarm-112025-Common.zip`
+4. Restart Arduino IDE (recommended)
+
+**Alternative: Install from Folder**
+
+Copy the entire `TankAlarm-112025-Common/` folder to:
+
+- Windows: `%USERPROFILE%\Documents\Arduino\libraries\`
+- macOS: `~/Documents/Arduino/libraries/`
+- Linux: `~/Arduino/libraries/`
+
+#### 4. Verify Built-In Libraries
 
 These come with the Arduino Mbed OS core:
 
@@ -214,6 +238,7 @@ No installation needed - they're already available!
 2. Confirm you see:
    - ArduinoJson
    - Notecard
+   - TankAlarm-112025-Common
 3. Go to **File → Examples**
 4. You should see example sketches for both libraries
 

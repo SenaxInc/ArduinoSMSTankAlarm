@@ -133,6 +133,24 @@ This quick start guide gets you from zero to a working tank monitoring system as
    - **Arduino_JSON**
    - **Ethernet** (by Various)
 
+#### 2.2.1 Install TankAlarm-112025-Common (Custom Library)
+
+TankAlarm uses a shared custom library in this repository: **TankAlarm-112025-Common**.
+
+**Option A (Recommended): Install from ZIP**
+
+1. Download `TankAlarm-112025-Common.zip` from the repository root
+2. In Arduino IDE, go to **Sketch → Include Library → Add .ZIP Library...**
+3. Select `TankAlarm-112025-Common.zip`
+
+**Option B (Developer Setup): Install from Folder**
+
+Copy the entire `TankAlarm-112025-Common/` folder to your Arduino libraries folder:
+
+- Windows: `%USERPROFILE%\Documents\Arduino\libraries\`
+- macOS: `~/Documents/Arduino/libraries/`
+- Linux: `~/Arduino/libraries/`
+
 #### 2.3 Download Server Firmware
 
 1. Navigate to your TankAlarm project folder
