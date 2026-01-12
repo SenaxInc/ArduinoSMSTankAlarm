@@ -719,7 +719,7 @@ static bool performFtpRestore(char *errorOut = nullptr, size_t errorSize = 0);
 
 // Require that a valid admin PIN is configured and provided; respond with 403/400 on failure.
 static bool requireValidPin(EthernetClient &client, const char *pinValue) {
-  if (gConfig.configPin[0] == '\0') {
+  if (!isValidPin(gConfig.configPin)) {
     respondStatus(client, 403, "Configure admin PIN before making changes");
     return false;
   }
@@ -3797,7 +3797,7 @@ static void sendClientDataJson(EthernetClient &client) {
   serverObj["soh"] = gConfig.smsOnHigh;
   serverObj["sol"] = gConfig.smsOnLow;
   serverObj["soc"] = gConfig.smsOnClear;
-  serverObj["pc"] = (gConfig.configPin[0] != '\0');
+  serverObj["pc"] = isValidPin(gConfig.configPin);
   serverObj["ps"] = gPaused;
 
   JsonObject ftpObj = serverObj["ftp"].to<JsonObject>();
@@ -3928,7 +3928,7 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
     return;
   }
 
-  if (gConfig.configPin[0] == '\0') {
+  if (!isValidPin(gConfig.configPin)) {
     respondStatus(client, 403, F("Configure admin PIN before making changes"));
     return;
   }
@@ -4026,7 +4026,7 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
 
 static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *message) {
   JsonDocument resp;
-  resp["pinConfigured"] = (gConfig.configPin[0] != '\0');
+  resp["pinConfigured"] = isValidPin(gConfig.configPin);
   String msg(message);
   resp["message"] = msg;
   String json;
@@ -4043,7 +4043,9 @@ static void handlePinPost(EthernetClient &client, const String &body) {
 
   const char *currentPin = doc["pin"].as<const char *>();
   const char *newPin = doc["newPin"].as<const char *>();
-  bool configured = (gConfig.configPin[0] != '\0');
+  // A PIN is only considered "configured" if it's a valid 4-digit PIN
+  // This prevents garbage data from blocking first-time PIN setup
+  bool configured = isValidPin(gConfig.configPin);
 
   if (!configured) {
     if (!isValidPin(newPin)) {
@@ -4200,7 +4202,7 @@ static void handleRelayClearPost(EthernetClient &client, const String &body) {
   }
 
   const char *pinValue = doc["pin"].as<const char *>();
-  if (gConfig.configPin[0] != '\0') {
+  if (isValidPin(gConfig.configPin)) {
     if (!requireValidPin(client, pinValue)) {
       return;
     }
@@ -4230,7 +4232,7 @@ static void handlePausePost(EthernetClient &client, const String &body) {
   }
 
   const char *pinValue = doc["pin"].as<const char *>();
-  if (gConfig.configPin[0] != '\0') {
+  if (isValidPin(gConfig.configPin)) {
     if (!requireValidPin(client, pinValue)) {
       return;
     }
