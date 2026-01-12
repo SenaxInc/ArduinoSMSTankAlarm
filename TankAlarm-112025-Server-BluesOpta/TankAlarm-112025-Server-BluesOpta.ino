@@ -706,7 +706,7 @@ static bool pinMatches(const char *pin) {
   if (!pin || gConfig.configPin[0] == '\0') {
     return false;
   }
-  return strncmp(pin, gConfig.configPin, sizeof(gConfig.configPin)) == 0;
+  return strcmp(pin, gConfig.configPin) == 0;
 }
 
 // Forward declaration for respondStatus (defined later in the web server section)
