@@ -1058,7 +1058,7 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     buffer[bytesRead] = '\0';
     fclose(file);
     
-    std::unique_ptr<JsonDocument> docPtr(new JsonDocument(4096));
+    std::unique_ptr<JsonDocument> docPtr(new JsonDocument());
     if (!docPtr) {
       free(buffer);
       return false;
@@ -1077,7 +1077,7 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
       return false;
     }
 
-    std::unique_ptr<JsonDocument> docPtr(new JsonDocument(4096));
+    std::unique_ptr<JsonDocument> docPtr(new JsonDocument());
     if (!docPtr) {
       file.close();
       return false;
@@ -1286,7 +1286,7 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     if (!mbedFS) return false;
   #endif
   
-  std::unique_ptr<JsonDocument> docPtr(new JsonDocument(4096));
+  std::unique_ptr<JsonDocument> docPtr(new JsonDocument());
   if (!docPtr) return false;
   JsonDocument &doc = *docPtr;
 
@@ -1309,9 +1309,9 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   // Save I2C address configuration
   doc["currentLoopI2cAddress"] = cfg.currentLoopI2cAddress;
 
-  JsonArray tanks = doc.createNestedArray("tanks");
+  JsonArray tanks = doc["tanks"].to<JsonArray>();
   for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
-    JsonObject t = tanks.createNestedObject();
+    JsonObject t = tanks.add<JsonObject>();
     char idBuffer[2] = {cfg.monitors[i].id, '\0'};
     t["id"] = idBuffer;
     t["name"] = cfg.monitors[i].name;
@@ -1372,7 +1372,7 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
       default: t["relayMode"] = "momentary"; break;
     }
     // Save per-relay momentary durations
-    JsonArray durations = t.createNestedArray("relayMomentaryDurations");
+    JsonArray durations = t["relayMomentaryDurations"].to<JsonArray>();
     for (uint8_t r = 0; r < 4; ++r) {
       durations.add(cfg.monitors[i].relayMomentarySeconds[r]);
     }
@@ -1812,7 +1812,7 @@ static void pollForConfigUpdates() {
   if (body) {
     char *json = JConvertToJSONString(body);
     if (json) {
-      std::unique_ptr<JsonDocument> docPtr(new JsonDocument(4096));
+      std::unique_ptr<JsonDocument> docPtr(new JsonDocument());
       if (docPtr) {
         JsonDocument &doc = *docPtr;
         DeserializationError err = deserializeJson(doc, json);
@@ -1876,49 +1876,49 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   bool telemetryPolicyChanged = false;
   float previousThreshold = gConfig.minLevelChangeInches;
   
-  if (doc.containsKey("site")) {
+  if (!doc["site"].isNull()) {
     strlcpy(gConfig.siteName, doc["site"].as<const char *>(), sizeof(gConfig.siteName));
   }
-  if (doc.containsKey("deviceLabel")) {
+  if (!doc["deviceLabel"].isNull()) {
     strlcpy(gConfig.deviceLabel, doc["deviceLabel"].as<const char *>(), sizeof(gConfig.deviceLabel));
   }
-  if (doc.containsKey("serverFleet")) {
+  if (!doc["serverFleet"].isNull()) {
     strlcpy(gConfig.serverFleet, doc["serverFleet"].as<const char *>(), sizeof(gConfig.serverFleet));
   }
-  if (doc.containsKey("sampleSeconds")) {
+  if (!doc["sampleSeconds"].isNull()) {
     gConfig.sampleSeconds = doc["sampleSeconds"].as<uint16_t>();
   }
-  if (doc.containsKey("levelChangeThreshold")) {
+  if (!doc["levelChangeThreshold"].isNull()) {
     gConfig.minLevelChangeInches = doc["levelChangeThreshold"].as<float>();
     if (gConfig.minLevelChangeInches < 0.0f) {
       gConfig.minLevelChangeInches = 0.0f;
     }
     telemetryPolicyChanged = (fabsf(previousThreshold - gConfig.minLevelChangeInches) > 0.0001f);
   }
-  if (doc.containsKey("reportHour")) {
+  if (!doc["reportHour"].isNull()) {
     gConfig.reportHour = doc["reportHour"].as<uint8_t>();
   }
-  if (doc.containsKey("reportMinute")) {
+  if (!doc["reportMinute"].isNull()) {
     gConfig.reportMinute = doc["reportMinute"].as<uint8_t>();
   }
-  if (doc.containsKey("dailyEmail")) {
+  if (!doc["dailyEmail"].isNull()) {
     strlcpy(gConfig.dailyEmail, doc["dailyEmail"].as<const char *>(), sizeof(gConfig.dailyEmail));
   }
   
   // Handle clear button configuration
-  if (doc.containsKey("clearButtonPin")) {
+  if (!doc["clearButtonPin"].isNull()) {
     int8_t newPin = doc["clearButtonPin"].as<int8_t>();
     if (newPin != gConfig.clearButtonPin) {
       gConfig.clearButtonPin = newPin;
       hardwareChanged = true;  // Need to reinitialize button pin
     }
   }
-  if (doc.containsKey("clearButtonActiveHigh")) {
+  if (!doc["clearButtonActiveHigh"].isNull()) {
     gConfig.clearButtonActiveHigh = doc["clearButtonActiveHigh"].as<bool>();
   }
   
   // Handle power saving configuration
-  if (doc.containsKey("solarPowered")) {
+  if (!doc["solarPowered"].isNull()) {
     bool newSolarPowered = doc["solarPowered"].as<bool>();
     if (newSolarPowered != gConfig.solarPowered) {
       gConfig.solarPowered = newSolarPowered;
@@ -1926,7 +1926,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     }
   }
 
-  if (doc.containsKey("tanks")) {
+  if (!doc["tanks"].isNull()) {
     hardwareChanged = true;  // Tank configuration affects hardware
     JsonArrayConst tanks = doc["tanks"].as<JsonArrayConst>();
     gConfig.monitorCount = min<uint8_t>(tanks.size(), MAX_TANKS);
@@ -1950,11 +1950,11 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       gConfig.monitors[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : gConfig.monitors[i].secondaryPin;
       gConfig.monitors[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : gConfig.monitors[i].currentLoopChannel;
       gConfig.monitors[i].pulsePin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : gConfig.monitors[i].pulsePin;
-      if (t.containsKey("pulsesPerRev")) {
+      if (!t["pulsesPerRev"].isNull()) {
         gConfig.monitors[i].pulsesPerUnit = max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>());
       }
       // Update hall effect sensor type if provided
-      if (t.containsKey("hallEffectType")) {
+      if (!t["hallEffectType"].isNull()) {
         const char *hallType = t["hallEffectType"].as<const char *>();
         if (hallType && strcmp(hallType, "bipolar") == 0) {
           gConfig.monitors[i].hallEffectType = HALL_EFFECT_BIPOLAR;
@@ -1967,7 +1967,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         }
       }
       // Update hall effect detection method if provided
-      if (t.containsKey("hallEffectDetection")) {
+      if (!t["hallEffectDetection"].isNull()) {
         const char *hallDetect = t["hallEffectDetection"].as<const char *>();
         if (hallDetect && strcmp(hallDetect, "time") == 0) {
           gConfig.monitors[i].hallEffectDetection = HALL_DETECT_TIME_BASED;
@@ -1976,10 +1976,10 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         }
       }
       // Update RPM sampling configuration if provided
-      if (t.containsKey("pulseSampleDurationMs")) {
+      if (!t["pulseSampleDurationMs"].isNull()) {
         gConfig.monitors[i].pulseSampleDurationMs = t["pulseSampleDurationMs"].as<uint32_t>();
       }
-      if (t.containsKey("pulseAccumulatedMode")) {
+      if (!t["pulseAccumulatedMode"].isNull()) {
         gConfig.monitors[i].pulseAccumulatedMode = t["pulseAccumulatedMode"].as<bool>();
         // Reset accumulated state when mode changes (use atomic access)
         atomicResetPulses(i);
@@ -1987,31 +1987,31 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         gRpmAccumulatedInitialized[i] = false;
       }
       // Expected pulse rate for baseline (by object type: RPM for engines, GPM for flow, etc.)
-      if (t.containsKey("expectedPulseRate")) {
+      if (!t["expectedPulseRate"].isNull()) {
         gConfig.monitors[i].expectedPulseRate = t["expectedPulseRate"].as<float>();
       }
       gConfig.monitors[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : gConfig.monitors[i].highAlarmThreshold;
       gConfig.monitors[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : gConfig.monitors[i].lowAlarmThreshold;
       gConfig.monitors[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : gConfig.monitors[i].hysteresisValue;
-      if (t.containsKey("daily")) {
+      if (!t["daily"].isNull()) {
         gConfig.monitors[i].enableDailyReport = t["daily"].as<bool>();
       }
-      if (t.containsKey("alarmSms")) {
+      if (!t["alarmSms"].isNull()) {
         gConfig.monitors[i].enableAlarmSms = t["alarmSms"].as<bool>();
       }
-      if (t.containsKey("upload")) {
+      if (!t["upload"].isNull()) {
         gConfig.monitors[i].enableServerUpload = t["upload"].as<bool>();
       }
-      if (t.containsKey("relayTargetClient")) {
+      if (!t["relayTargetClient"].isNull()) {
         const char *relayTargetStr = t["relayTargetClient"].as<const char *>();
         strlcpy(gConfig.monitors[i].relayTargetClient, 
                 relayTargetStr ? relayTargetStr : "", 
                 sizeof(gConfig.monitors[i].relayTargetClient));
       }
-      if (t.containsKey("relayMask")) {
+      if (!t["relayMask"].isNull()) {
         gConfig.monitors[i].relayMask = t["relayMask"].as<uint8_t>();
       }
-      if (t.containsKey("relayTrigger")) {
+      if (!t["relayTrigger"].isNull()) {
         const char *triggerStr = t["relayTrigger"].as<const char *>();
         if (triggerStr && strcmp(triggerStr, "high") == 0) {
           gConfig.monitors[i].relayTrigger = RELAY_TRIGGER_HIGH;
@@ -2021,7 +2021,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
           gConfig.monitors[i].relayTrigger = RELAY_TRIGGER_ANY;
         }
       }
-      if (t.containsKey("relayMode")) {
+      if (!t["relayMode"].isNull()) {
         const char *modeStr = t["relayMode"].as<const char *>();
         if (modeStr && strcmp(modeStr, "until_clear") == 0) {
           gConfig.monitors[i].relayMode = RELAY_MODE_UNTIL_CLEAR;
@@ -2032,7 +2032,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         }
       }
       // Handle per-relay momentary durations (in seconds)
-      if (t.containsKey("relayMomentaryDurations")) {
+      if (!t["relayMomentaryDurations"].isNull()) {
         JsonArrayConst durations = t["relayMomentaryDurations"].as<JsonArrayConst>();
         for (size_t r = 0; r < 4 && r < durations.size(); r++) {
           uint16_t dur = durations[r].as<uint16_t>();
@@ -2041,14 +2041,14 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         }
       }
       // Handle digital sensor trigger state (for float switches)
-      if (t.containsKey("digitalTrigger")) {
+      if (!t["digitalTrigger"].isNull()) {
         const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
         strlcpy(gConfig.monitors[i].digitalTrigger,
                 digitalTriggerStr ? digitalTriggerStr : "",
                 sizeof(gConfig.monitors[i].digitalTrigger));
       }
       // Handle digital switch mode (NO/NC) for float switches
-      if (t.containsKey("digitalSwitchMode")) {
+      if (!t["digitalSwitchMode"].isNull()) {
         const char *digitalSwitchModeStr = t["digitalSwitchMode"].as<const char *>();
         if (digitalSwitchModeStr && strcmp(digitalSwitchModeStr, "NC") == 0) {
           strlcpy(gConfig.monitors[i].digitalSwitchMode, "NC", sizeof(gConfig.monitors[i].digitalSwitchMode));
@@ -2057,7 +2057,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         }
       }
       // Handle 4-20mA current loop sensor type (pressure or ultrasonic)
-      if (t.containsKey("currentLoopType")) {
+      if (!t["currentLoopType"].isNull()) {
         const char *currentLoopTypeStr = t["currentLoopType"].as<const char *>();
         if (currentLoopTypeStr && strcmp(currentLoopTypeStr, "ultrasonic") == 0) {
           gConfig.monitors[i].currentLoopType = CURRENT_LOOP_ULTRASONIC;
@@ -2066,29 +2066,29 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         }
       }
       // Handle sensor mount height (for calibration) - validate non-negative
-      if (t.containsKey("sensorMountHeight")) {
+      if (!t["sensorMountHeight"].isNull()) {
         gConfig.monitors[i].sensorMountHeight = fmaxf(0.0f, t["sensorMountHeight"].as<float>());
       }
       // Handle sensor native range settings
-      if (t.containsKey("sensorRangeMin")) {
+      if (!t["sensorRangeMin"].isNull()) {
         gConfig.monitors[i].sensorRangeMin = t["sensorRangeMin"].as<float>();
       }
-      if (t.containsKey("sensorRangeMax")) {
+      if (!t["sensorRangeMax"].isNull()) {
         gConfig.monitors[i].sensorRangeMax = t["sensorRangeMax"].as<float>();
       }
-      if (t.containsKey("sensorRangeUnit")) {
+      if (!t["sensorRangeUnit"].isNull()) {
         const char *unitStr = t["sensorRangeUnit"].as<const char *>();
         strlcpy(gConfig.monitors[i].sensorRangeUnit, unitStr ? unitStr : "PSI", sizeof(gConfig.monitors[i].sensorRangeUnit));
       }
       // Handle analog voltage range settings
-      if (t.containsKey("analogVoltageMin")) {
+      if (!t["analogVoltageMin"].isNull()) {
         gConfig.monitors[i].analogVoltageMin = t["analogVoltageMin"].as<float>();
       }
-      if (t.containsKey("analogVoltageMax")) {
+      if (!t["analogVoltageMax"].isNull()) {
         gConfig.monitors[i].analogVoltageMax = t["analogVoltageMax"].as<float>();
       }
       // Handle tank unload tracking settings
-      if (t.containsKey("trackUnloads")) {
+      if (!t["trackUnloads"].isNull()) {
         gConfig.monitors[i].trackUnloads = t["trackUnloads"].as<bool>();
         // Reset unload tracking state when config changes
         if (gConfig.monitors[i].trackUnloads) {
@@ -2097,20 +2097,20 @@ static void applyConfigUpdate(const JsonDocument &doc) {
           gMonitorState[i].unloadPeakEpoch = 0.0;
         }
       }
-      if (t.containsKey("unloadEmptyHeight")) {
+      if (!t["unloadEmptyHeight"].isNull()) {
         gConfig.monitors[i].unloadEmptyHeight = fmaxf(0.0f, t["unloadEmptyHeight"].as<float>());
       }
-      if (t.containsKey("unloadDropThreshold")) {
+      if (!t["unloadDropThreshold"].isNull()) {
         gConfig.monitors[i].unloadDropThreshold = fmaxf(0.0f, t["unloadDropThreshold"].as<float>());
       }
-      if (t.containsKey("unloadDropPercent")) {
+      if (!t["unloadDropPercent"].isNull()) {
         float pct = t["unloadDropPercent"].as<float>();
         gConfig.monitors[i].unloadDropPercent = constrain(pct, 10.0f, 95.0f);  // Clamp to 10-95%
       }
-      if (t.containsKey("unloadAlarmSms")) {
+      if (!t["unloadAlarmSms"].isNull()) {
         gConfig.monitors[i].unloadAlarmSms = t["unloadAlarmSms"].as<bool>();
       }
-      if (t.containsKey("unloadAlarmEmail")) {
+      if (!t["unloadAlarmEmail"].isNull()) {
         gConfig.monitors[i].unloadAlarmEmail = t["unloadAlarmEmail"].as<bool>();
       }
     }
@@ -3392,7 +3392,7 @@ static void sendDailyReport() {
       doc["v"] = vinVoltage;
     }
 
-    JsonArray tanks = doc.createNestedArray("tanks");
+    JsonArray tanks = doc["tanks"].to<JsonArray>();
     bool addedTank = false;
 
     while (tankCursor < eligibleCount) {
@@ -3439,7 +3439,7 @@ static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankInd
   const MonitorConfig &cfg = gConfig.monitors[tankIndex];
   MonitorRuntime &state = gMonitorState[tankIndex];
 
-  JsonObject t = array.createNestedObject();
+  JsonObject t = array.add<JsonObject>();
   t["n"] = cfg.name;                              // label/name
   t["k"] = cfg.monitorNumber;                     // monitor number
   
@@ -3962,7 +3962,7 @@ static void processRelayCommand(const JsonDocument &doc) {
   // Handle tank relay reset command from server first
   // Command format: { "relay_reset_tank": 0-7 }
   // This is a standalone command that doesn't require relay/state fields
-  if (doc.containsKey("relay_reset_tank")) {
+  if (!doc["relay_reset_tank"].isNull()) {
     uint8_t tankIdx = doc["relay_reset_tank"].as<uint8_t>();
     if (tankIdx < MAX_TANKS) {
       resetRelayForTank(tankIdx);
@@ -3978,7 +3978,7 @@ static void processRelayCommand(const JsonDocument &doc) {
   //   "source": "server"      // Optional: source of command (server, client, alarm)
   // }
 
-  if (!doc.containsKey("relay") || !doc.containsKey("state")) {
+  if (doc["relay"].isNull() || doc["state"].isNull()) {
     Serial.println(F("Invalid relay command: missing relay or state"));
     return;
   }
@@ -4011,7 +4011,7 @@ static void processRelayCommand(const JsonDocument &doc) {
   //   - RELAY_MODE_UNTIL_CLEAR: Stays on until alarm clears
   //   - RELAY_MODE_MANUAL_RESET: Stays on until server reset
   // The duration parameter in relay commands is reserved for future use.
-  if (doc.containsKey("duration") && state) {
+  if (!doc["duration"].isNull() && state) {
     uint16_t duration = doc["duration"].as<uint16_t>();
     if (duration > 0) {
       Serial.print(F("Note: Custom duration ("));
@@ -4398,3 +4398,5 @@ static float readNotecardVinVoltage() {
 
   return (float)voltage;
 }
+
+

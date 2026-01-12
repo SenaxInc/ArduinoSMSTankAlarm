@@ -193,9 +193,7 @@
 #define MAX_CALIBRATION_TANKS 20  // Max tanks to track calibration for
 #endif
 
-// Tank JSON: each tank object has up to 13 fields (c,s,n,k,l,ma,st,d,pe,a,at,u + nested)
-// Formula: array overhead + (count * object_size) + string buffer
-static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(16)) + 1024;
+// ArduinoJson v7: JsonDocument auto-sizes, capacity constants not needed
 static const size_t CLIENT_JSON_CAPACITY = 32768;  // 32KB for full fleet data
 
 static byte gMacAddress[6] = { 0 }; // Initialize to 0, will be read from hardware or set if needed
@@ -871,7 +869,7 @@ static void handleRefreshPost(EthernetClient &client, const String &body) {
   char clientUid[64] = {0};
   const char *pinValue = nullptr;
   if (body.length() > 0) {
-    JsonDocument doc(192);
+    JsonDocument doc;
     if (deserializeJson(doc, body) == DeserializationError::Ok) {
       const char *uid = doc["client"] | "";
       if (uid && *uid) {
@@ -920,9 +918,9 @@ static void handleSerialLogsGet(EthernetClient &client, const String &queryStrin
     sinceEpoch = sinceParam.toDouble();
   }
 
-  JsonDocument doc(8192);
-  JsonArray logsArray = doc.createNestedArray("logs");
-  JsonObject meta = doc.createNestedObject("meta");
+  JsonDocument doc;
+  JsonArray logsArray = doc["logs"].to<JsonArray>();
+  JsonObject meta = doc["meta"].to<JsonObject>();
   meta["source"] = source;
   meta["requestedClient"] = clientUid;
   meta["staleSeconds"] = SERIAL_STALE_SECONDS;
@@ -942,7 +940,7 @@ static void handleSerialLogsGet(EthernetClient &client, const String &queryStrin
       if (sinceEpoch > 0.0 && entry.timestamp <= sinceEpoch) {
         continue;
       }
-      JsonObject row = logsArray.createNestedObject();
+      JsonObject row = logsArray.add<JsonObject>();
       row["timestamp"] = entry.timestamp;
       row["message"] = entry.message;
       row["level"] = entry.level;
@@ -979,7 +977,7 @@ static void handleSerialLogsGet(EthernetClient &client, const String &queryStrin
         if (sinceEpoch > 0.0 && entry.timestamp <= sinceEpoch) {
           continue;
         }
-        JsonObject row = logsArray.createNestedObject();
+        JsonObject row = logsArray.add<JsonObject>();
         row["timestamp"] = entry.timestamp;
         row["message"] = entry.message;
         row["level"] = entry.level;
@@ -1082,7 +1080,7 @@ static void handleSerialLogsDownload(EthernetClient &client, const String &query
 }
 
 static void handleSerialRequestPost(EthernetClient &client, const String &body) {
-  JsonDocument doc(256);
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, "Invalid JSON");
     return;
@@ -1190,14 +1188,14 @@ static void handleSerialLog(JsonDocument &doc, double epoch) {
   const char *defaultSource = doc["source"] | clientUid;
 
   // Handle single log entry or array of entries
-  if (doc.containsKey("message")) {
+  if (doc[""message")) {
     const char *message = doc["message"] | "";
     if (strlen(message) > 0) {
       const char *level = doc["level"] | defaultLevel;
       const char *source = doc["source"] | defaultSource;
       addClientSerialLog(clientUid, message, epoch, level, source);
     }
-  } else if (doc.containsKey("logs")) {
+  } else if (doc[""logs")) {
     JsonArray logs = doc["logs"].as<JsonArray>();
     for (JsonVariant v : logs) {
       JsonObject logObj = v.as<JsonObject>();
@@ -1604,7 +1602,7 @@ static bool loadConfig(ServerConfig &cfg) {
     buffer[bytesRead] = '\0';
     fclose(file);
     
-    JsonDocument doc(2048);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, buffer);
     free(buffer);
   #else
@@ -1617,7 +1615,7 @@ static bool loadConfig(ServerConfig &cfg) {
       return false;
     }
 
-    JsonDocument doc(2048);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, file);
     file.close();
   #endif
@@ -1657,50 +1655,50 @@ static bool loadConfig(ServerConfig &cfg) {
   cfg.ftpBackupOnChange = ftpObj ? (ftpObj["backupOnChange"].is<bool>() ? ftpObj["backupOnChange"].as<bool>() : false) : (doc["ftpBackupOnChange"].is<bool>() ? doc["ftpBackupOnChange"].as<bool>() : false);
   cfg.ftpRestoreOnBoot = ftpObj ? (ftpObj["restoreOnBoot"].is<bool>() ? ftpObj["restoreOnBoot"].as<bool>() : false) : (doc["ftpRestoreOnBoot"].is<bool>() ? doc["ftpRestoreOnBoot"].as<bool>() : false);
   cfg.ftpPort = ftpObj ? (ftpObj["port"].is<uint16_t>() ? ftpObj["port"].as<uint16_t>() : FTP_PORT_DEFAULT) : (doc["ftpPort"].is<uint16_t>() ? doc["ftpPort"].as<uint16_t>() : FTP_PORT_DEFAULT);
-  if (ftpObj && ftpObj.containsKey("host")) {
+  if (ftpObj && ftpObj[""host")) {
     strlcpy(cfg.ftpHost, ftpObj["host"], sizeof(cfg.ftpHost));
   }
-  if (ftpObj && ftpObj.containsKey("user")) {
+  if (ftpObj && ftpObj[""user")) {
     strlcpy(cfg.ftpUser, ftpObj["user"], sizeof(cfg.ftpUser));
   }
-  if (ftpObj && ftpObj.containsKey("pass")) {
+  if (ftpObj && ftpObj[""pass")) {
     strlcpy(cfg.ftpPass, ftpObj["pass"], sizeof(cfg.ftpPass));
   }
-  if (ftpObj && ftpObj.containsKey("path")) {
+  if (ftpObj && ftpObj[""path")) {
     strlcpy(cfg.ftpPath, ftpObj["path"], sizeof(cfg.ftpPath));
   }
-  if ((!ftpObj || !ftpObj.containsKey("host")) && doc["ftpHost"].as<const char *>()) {
+  if ((!ftpObj || !ftpObj[""host")) && doc["ftpHost"].as<const char *>()) {
     strlcpy(cfg.ftpHost, doc["ftpHost"], sizeof(cfg.ftpHost));
   }
-  if ((!ftpObj || !ftpObj.containsKey("user")) && doc["ftpUser"].as<const char *>()) {
+  if ((!ftpObj || !ftpObj[""user")) && doc["ftpUser"].as<const char *>()) {
     strlcpy(cfg.ftpUser, doc["ftpUser"], sizeof(cfg.ftpUser));
   }
-  if ((!ftpObj || !ftpObj.containsKey("pass")) && doc["ftpPass"].as<const char *>()) {
+  if ((!ftpObj || !ftpObj[""pass")) && doc["ftpPass"].as<const char *>()) {
     strlcpy(cfg.ftpPass, doc["ftpPass"], sizeof(cfg.ftpPass));
   }
-  if ((!ftpObj || !ftpObj.containsKey("path")) && doc["ftpPath"].as<const char *>()) {
+  if ((!ftpObj || !ftpObj[""path")) && doc["ftpPath"].as<const char *>()) {
     strlcpy(cfg.ftpPath, doc["ftpPath"], sizeof(cfg.ftpPath));
   }
 
-  if (doc.containsKey("staticIp")) {
+  if (doc[""staticIp")) {
     JsonArrayConst ip = doc["staticIp"].as<JsonArrayConst>();
     if (ip.size() == 4) {
       gStaticIp = IPAddress(ip[0], ip[1], ip[2], ip[3]);
     }
   }
-  if (doc.containsKey("gateway")) {
+  if (doc[""gateway")) {
     JsonArrayConst gw = doc["gateway"].as<JsonArrayConst>();
     if (gw.size() == 4) {
       gStaticGateway = IPAddress(gw[0], gw[1], gw[2], gw[3]);
     }
   }
-  if (doc.containsKey("subnet")) {
+  if (doc[""subnet")) {
     JsonArrayConst sn = doc["subnet"].as<JsonArrayConst>();
     if (sn.size() == 4) {
       gStaticSubnet = IPAddress(sn[0], sn[1], sn[2], sn[3]);
     }
   }
-  if (doc.containsKey("dns")) {
+  if (doc[""dns")) {
     JsonArrayConst dns = doc["dns"].as<JsonArrayConst>();
     if (dns.size() == 4) {
       gStaticDns = IPAddress(dns[0], dns[1], dns[2], dns[3]);
@@ -1719,7 +1717,7 @@ static bool saveConfig(const ServerConfig &cfg) {
     if (!mbedFS) return false;
   #endif
   
-  JsonDocument doc(2048);
+  JsonDocument doc;
   doc["serverName"] = cfg.serverName;
   doc["clientFleet"] = cfg.clientFleet;
   doc["smsPrimary"] = cfg.smsPrimary;
@@ -1734,7 +1732,7 @@ static bool saveConfig(const ServerConfig &cfg) {
   doc["smsOnLow"] = cfg.smsOnLow;
   doc["smsOnClear"] = cfg.smsOnClear;
 
-  JsonObject ftp = doc.createNestedObject("ftp");
+  JsonObject ftp = doc["ftp"].to<JsonObject>();
   ftp["enabled"] = cfg.ftpEnabled;
   ftp["passive"] = cfg.ftpPassive;
   ftp["backupOnChange"] = cfg.ftpBackupOnChange;
@@ -1745,25 +1743,25 @@ static bool saveConfig(const ServerConfig &cfg) {
   ftp["pass"] = cfg.ftpPass;
   ftp["path"] = cfg.ftpPath;
 
-  JsonArray ip = doc.createNestedArray("staticIp");
+  JsonArray ip = doc["staticIp"].to<JsonArray>();
   ip.add(gStaticIp[0]);
   ip.add(gStaticIp[1]);
   ip.add(gStaticIp[2]);
   ip.add(gStaticIp[3]);
 
-  JsonArray gw = doc.createNestedArray("gateway");
+  JsonArray gw = doc["gateway"].to<JsonArray>();
   gw.add(gStaticGateway[0]);
   gw.add(gStaticGateway[1]);
   gw.add(gStaticGateway[2]);
   gw.add(gStaticGateway[3]);
 
-  JsonArray sn = doc.createNestedArray("subnet");
+  JsonArray sn = doc["subnet"].to<JsonArray>();
   sn.add(gStaticSubnet[0]);
   sn.add(gStaticSubnet[1]);
   sn.add(gStaticSubnet[2]);
   sn.add(gStaticSubnet[3]);
 
-  JsonArray dns = doc.createNestedArray("dns");
+  JsonArray dns = doc["dns"].to<JsonArray>();
   dns.add(gStaticDns[0]);
   dns.add(gStaticDns[1]);
   dns.add(gStaticDns[2]);
@@ -2711,20 +2709,20 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
   }
   
   // Build JSON document with monthly summary
-  JsonDocument doc(16384);
+  JsonDocument doc;
   doc["year"] = year;
   doc["month"] = month;
   doc["tanks"] = gTankHistoryCount;
   doc["generated"] = gLastSyncedEpoch > 0.0 ? gLastSyncedEpoch : 0.0;
   
-  JsonArray tanksArray = doc.createNestedArray("tankSummaries");
+  JsonArray tanksArray = doc["tankSummaries"].to<JsonArray>();
   
   // For each tank, compute monthly summary from hourly data
   for (uint8_t i = 0; i < gTankHistoryCount; i++) {
     TankHourlyHistory &hist = gTankHistory[i];
     if (hist.snapshotCount == 0) continue;
     
-    JsonObject tankObj = tanksArray.createNestedObject();
+    JsonObject tankObj = tanksArray.add<JsonObject>();
     tankObj["clientUid"] = hist.clientUid;
     tankObj["site"] = hist.siteName;
     tankObj["tank"] = hist.tankNumber;
@@ -2761,10 +2759,10 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
   }
   
   // Add alarm summary
-  JsonArray alarmsArray = doc.createNestedArray("alarms");
+  JsonArray alarmsArray = doc["alarms"].to<JsonArray>();
   for (uint8_t i = 0; i < alarmLogCount; i++) {
     int idx = (alarmLogWriteIndex - alarmLogCount + i + MAX_ALARM_LOG_ENTRIES) % MAX_ALARM_LOG_ENTRIES;
-    JsonObject alarmObj = alarmsArray.createNestedObject();
+    JsonObject alarmObj = alarmsArray.add<JsonObject>();
     alarmObj["timestamp"] = alarmLog[idx].timestamp;
     alarmObj["site"] = alarmLog[idx].siteName;
     alarmObj["clientUid"] = alarmLog[idx].clientUid;
@@ -2862,7 +2860,7 @@ static void saveHistorySettings() {
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     if (!mbedFS) return;
     
-    JsonDocument doc(512);
+    JsonDocument doc;
     populateHistorySettingsJson(doc);
     
     String output;
@@ -2882,7 +2880,7 @@ static void saveHistorySettings() {
     File f = LittleFS.open("/history_settings.json", "w");
     if (!f) return;
     
-    JsonDocument doc(512);
+    JsonDocument doc;
     populateHistorySettingsJson(doc);
     
     serializeJson(doc, f);
@@ -2936,7 +2934,7 @@ static void loadHistorySettings() {
     }
     buffer[bytesRead] = '\0';
     
-    JsonDocument doc(512);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, buffer);
     free(buffer);
     
@@ -2947,7 +2945,7 @@ static void loadHistorySettings() {
     File f = LittleFS.open("/history_settings.json", "r");
     if (!f) return;
     
-    JsonDocument doc(512);
+    JsonDocument doc;
     if (deserializeJson(doc, f) == DeserializationError::Ok) {
       applyHistorySettingsFromJson(doc);
     }
@@ -3695,10 +3693,10 @@ static void respondStatus(EthernetClient &client, int status, const String &mess
 
 
 static void sendTankJson(EthernetClient &client) {
-  JsonDocument doc(TANK_JSON_CAPACITY);
-  JsonArray arr = doc.createNestedArray("tanks");
+  JsonDocument doc;
+  JsonArray arr = doc["tanks"].to<JsonArray>();
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    JsonObject obj = arr.createNestedObject();
+    JsonObject obj = arr.add<JsonObject>();
     obj["c"] = gTankRecords[i].clientUid;
     obj["s"] = gTankRecords[i].site;
     obj["n"] = gTankRecords[i].label;
@@ -3740,12 +3738,10 @@ static void sendTankJson(EthernetClient &client) {
 // Unload Log JSON API
 // ============================================================================
 static void sendUnloadLogJson(EthernetClient &client) {
-  // Estimate JSON size: ~200 bytes per entry
-  size_t capacity = JSON_ARRAY_SIZE(MAX_UNLOAD_LOG_ENTRIES) + 
-                    (MAX_UNLOAD_LOG_ENTRIES * JSON_OBJECT_SIZE(12)) + 2048;
-  JsonDocument doc(capacity);
+  // ArduinoJson v7: JsonDocument auto-sizes
+  JsonDocument doc;
   doc["count"] = gUnloadLogCount;
-  JsonArray arr = doc.createNestedArray("unloads");
+  JsonArray arr = doc["unloads"].to<JsonArray>();
   
   // Return entries in reverse chronological order (newest first)
   for (uint8_t i = 0; i < gUnloadLogCount; ++i) {
@@ -3753,7 +3749,7 @@ static void sendUnloadLogJson(EthernetClient &client) {
     uint8_t idx = (gUnloadLogWriteIndex + MAX_UNLOAD_LOG_ENTRIES - 1 - i) % MAX_UNLOAD_LOG_ENTRIES;
     const UnloadLogEntry &entry = gUnloadLog[idx];
     
-    JsonObject obj = arr.createNestedObject();
+    JsonObject obj = arr.add<JsonObject>();
     obj["t"] = entry.eventTimestamp;        // Event timestamp
     obj["pt"] = entry.peakTimestamp;         // Peak timestamp
     obj["s"] = entry.siteName;               // Site name
@@ -3783,13 +3779,13 @@ static void sendUnloadLogJson(EthernetClient &client) {
 
 static void sendClientDataJson(EthernetClient &client) {
   // Large JSON document; ArduinoJson allocates the backing store on the heap.
-  JsonDocument doc(CLIENT_JSON_CAPACITY);
-  if (doc.capacity() == 0) {
+  JsonDocument doc;
+  if (doc.isNull()) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
 
-  JsonObject serverObj = doc.createNestedObject("srv");
+  JsonObject serverObj = doc["srv"].to<JsonObject>();
   serverObj["n"] = gConfig.serverName;
   serverObj["cf"] = gConfig.clientFleet;
   serverObj["sp"] = gConfig.smsPrimary;
@@ -3804,7 +3800,7 @@ static void sendClientDataJson(EthernetClient &client) {
   serverObj["pc"] = (gConfig.configPin[0] != '\0');
   serverObj["ps"] = gPaused;
 
-  JsonObject ftpObj = serverObj.createNestedObject("ftp");
+  JsonObject ftpObj = serverObj["ftp"].to<JsonObject>();
   ftpObj["en"] = gConfig.ftpEnabled;
   ftpObj["pas"] = gConfig.ftpPassive;
   ftpObj["boc"] = gConfig.ftpBackupOnChange;
@@ -3819,7 +3815,7 @@ static void sendClientDataJson(EthernetClient &client) {
   doc["nde"] = gNextDailyEmailEpoch;
   doc["lse"] = gLastSyncedEpoch;
 
-  JsonArray clientsArr = doc.createNestedArray("cs");
+  JsonArray clientsArr = doc["cs"].to<JsonArray>();
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
     const TankRecord &rec = gTankRecords[i];
 
@@ -3833,7 +3829,7 @@ static void sendClientDataJson(EthernetClient &client) {
     }
 
     if (!clientObj) {
-      clientObj = clientsArr.createNestedObject();
+      clientObj = clientsArr.add<JsonObject>();
       clientObj["c"] = rec.clientUid;
       clientObj["s"] = rec.site;
       clientObj["a"] = false;
@@ -3847,7 +3843,7 @@ static void sendClientDataJson(EthernetClient &client) {
       }
     }
 
-    const char *existingSite = clientObj.containsKey("s") ? clientObj["s"].as<const char *>() : nullptr;
+    const char *existingSite = clientObj[""s") ? clientObj["s"].as<const char *>() : nullptr;
     if (!existingSite || strlen(existingSite) == 0) {
       clientObj["s"] = rec.site;
     }
@@ -3871,12 +3867,12 @@ static void sendClientDataJson(EthernetClient &client) {
     }
 
     JsonArray tankList;
-    if (!clientObj.containsKey("ts")) {
-      tankList = clientObj.createNestedArray("ts");
+    if (!clientObj[""ts")) {
+      tankList = clientObj["ts"].to<JsonArray>();
     } else {
       tankList = clientObj["ts"].as<JsonArray>();
     }
-    JsonObject tankObj = tankList.createNestedObject();
+    JsonObject tankObj = tankList.add<JsonObject>();
     tankObj["n"] = rec.label;
     tankObj["k"] = rec.tankNumber;
     tankObj["l"] = rec.levelInches;
@@ -3899,10 +3895,10 @@ static void sendClientDataJson(EthernetClient &client) {
     clientObj["tc"] = tankList.size();
   }
 
-  JsonArray configsArr = doc.createNestedArray("cfgs");
+  JsonArray configsArr = doc["cfgs"].to<JsonArray>();
   for (uint8_t i = 0; i < gClientConfigCount; ++i) {
     ClientConfigSnapshot &snap = gClientConfigs[i];
-    JsonObject cfgEntry = configsArr.createNestedObject();
+    JsonObject cfgEntry = configsArr.add<JsonObject>();
     cfgEntry["c"] = snap.uid;
     cfgEntry["s"] = snap.site;
     cfgEntry["cj"] = snap.payload;
@@ -3920,8 +3916,8 @@ static void sendClientDataJson(EthernetClient &client) {
 
 static void handleConfigPost(EthernetClient &client, const String &body) {
   // Use larger buffer to match MAX_HTTP_BODY_BYTES (16KB) for complex configs
-  JsonDocument doc(MAX_HTTP_BODY_BYTES);
-  if (doc.capacity() == 0) {
+  JsonDocument doc;
+  if (doc.isNull()) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
@@ -3943,66 +3939,66 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
     return;
   }
 
-  if (doc.containsKey("server")) {
+  if (doc[""server")) {
     JsonObject serverObj = doc["server"].as<JsonObject>();
-    if (serverObj.containsKey("smsPrimary")) {
+    if (serverObj[""smsPrimary")) {
       strlcpy(gConfig.smsPrimary, serverObj["smsPrimary"], sizeof(gConfig.smsPrimary));
     }
-    if (serverObj.containsKey("smsSecondary")) {
+    if (serverObj[""smsSecondary")) {
       strlcpy(gConfig.smsSecondary, serverObj["smsSecondary"], sizeof(gConfig.smsSecondary));
     }
-    if (serverObj.containsKey("dailyEmail")) {
+    if (serverObj[""dailyEmail")) {
       strlcpy(gConfig.dailyEmail, serverObj["dailyEmail"], sizeof(gConfig.dailyEmail));
     }
-    if (serverObj.containsKey("dailyHour")) {
+    if (serverObj[""dailyHour")) {
       gConfig.dailyHour = serverObj["dailyHour"].as<uint8_t>();
     }
-    if (serverObj.containsKey("dailyMinute")) {
+    if (serverObj[""dailyMinute")) {
       gConfig.dailyMinute = serverObj["dailyMinute"].as<uint8_t>();
     }
-    if (serverObj.containsKey("webRefreshSeconds")) {
+    if (serverObj[""webRefreshSeconds")) {
       gConfig.webRefreshSeconds = serverObj["webRefreshSeconds"].as<uint16_t>();
     }
-    if (serverObj.containsKey("smsOnHigh")) {
+    if (serverObj[""smsOnHigh")) {
       gConfig.smsOnHigh = serverObj["smsOnHigh"].as<bool>();
     }
-    if (serverObj.containsKey("smsOnLow")) {
+    if (serverObj[""smsOnLow")) {
       gConfig.smsOnLow = serverObj["smsOnLow"].as<bool>();
     }
-    if (serverObj.containsKey("smsOnClear")) {
+    if (serverObj[""smsOnClear")) {
       gConfig.smsOnClear = serverObj["smsOnClear"].as<bool>();
     }
 
-    if (serverObj.containsKey("ftp")) {
+    if (serverObj[""ftp")) {
       JsonObject ftpObj = serverObj["ftp"].as<JsonObject>();
-      if (ftpObj.containsKey("enabled")) {
+      if (ftpObj[""enabled")) {
         gConfig.ftpEnabled = ftpObj["enabled"].as<bool>();
       }
-      if (ftpObj.containsKey("passive")) {
+      if (ftpObj[""passive")) {
         gConfig.ftpPassive = ftpObj["passive"].as<bool>();
       }
-      if (ftpObj.containsKey("backupOnChange")) {
+      if (ftpObj[""backupOnChange")) {
         gConfig.ftpBackupOnChange = ftpObj["backupOnChange"].as<bool>();
       }
-      if (ftpObj.containsKey("restoreOnBoot")) {
+      if (ftpObj[""restoreOnBoot")) {
         gConfig.ftpRestoreOnBoot = ftpObj["restoreOnBoot"].as<bool>();
       }
-      if (ftpObj.containsKey("port")) {
+      if (ftpObj[""port")) {
         gConfig.ftpPort = ftpObj["port"].as<uint16_t>();
       }
-      if (ftpObj.containsKey("host")) {
+      if (ftpObj[""host")) {
         strlcpy(gConfig.ftpHost, ftpObj["host"], sizeof(gConfig.ftpHost));
       }
-      if (ftpObj.containsKey("user")) {
+      if (ftpObj[""user")) {
         strlcpy(gConfig.ftpUser, ftpObj["user"], sizeof(gConfig.ftpUser));
       }
-      if (ftpObj.containsKey("pass")) {
+      if (ftpObj[""pass")) {
         const char *passVal = ftpObj["pass"].as<const char *>();
         if (passVal && strlen(passVal) > 0) {
           strlcpy(gConfig.ftpPass, passVal, sizeof(gConfig.ftpPass));
         }
       }
-      if (ftpObj.containsKey("path")) {
+      if (ftpObj[""path")) {
         strlcpy(gConfig.ftpPath, ftpObj["path"], sizeof(gConfig.ftpPath));
       }
     }
@@ -4010,7 +4006,7 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
     scheduleNextDailyEmail();
   }
 
-  if (doc.containsKey("client") && doc.containsKey("config")) {
+  if (doc[""client") && doc[""config")) {
     const char *clientUid = doc["client"].as<const char *>();
     if (clientUid && strlen(clientUid) > 0) {
       ConfigDispatchStatus status = dispatchClientConfig(clientUid, doc["config"]);
@@ -4029,7 +4025,7 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
 }
 
 static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *message) {
-  JsonDocument resp(128);
+  JsonDocument resp;
   resp["pinConfigured"] = (gConfig.configPin[0] != '\0');
   String msg(message);
   resp["message"] = msg;
@@ -4039,7 +4035,7 @@ static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *m
 }
 
 static void handlePinPost(EthernetClient &client, const String &body) {
-  JsonDocument doc(256);
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4079,7 +4075,7 @@ static void handlePinPost(EthernetClient &client, const String &body) {
 }
 
 static void handleRelayPost(EthernetClient &client, const String &body) {
-  JsonDocument doc(640);
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4197,7 +4193,7 @@ static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
 }
 
 static void handleRelayClearPost(EthernetClient &client, const String &body) {
-  JsonDocument doc(256);
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4227,7 +4223,7 @@ static void handleRelayClearPost(EthernetClient &client, const String &body) {
 }
 
 static void handlePausePost(EthernetClient &client, const String &body) {
-  JsonDocument doc(256);
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4243,7 +4239,7 @@ static void handlePausePost(EthernetClient &client, const String &body) {
   bool paused = doc["paused"].is<bool>() ? doc["paused"].as<bool>() : true;
   gPaused = paused;
 
-  JsonDocument resp(128);
+  JsonDocument resp;
   resp["paused"] = gPaused;
   String json;
   serializeJson(resp, json);
@@ -4254,7 +4250,7 @@ static void handlePausePost(EthernetClient &client, const String &body) {
 }
 
 static void handleFtpBackupPost(EthernetClient &client, const String &body) {
-  JsonDocument doc(256);
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4268,7 +4264,7 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
   // Use detailed result for comprehensive error reporting
   FtpResult result = performFtpBackupDetailed();
 
-  JsonDocument resp(512);
+  JsonDocument resp;
   resp["ok"] = result.success;
   resp["filesUploaded"] = result.filesProcessed;
   resp["filesFailed"] = result.filesFailed;
@@ -4293,7 +4289,7 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
 }
 
 static void handleFtpRestorePost(EthernetClient &client, const String &body) {
-  JsonDocument doc(256);
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4316,7 +4312,7 @@ static void handleFtpRestorePost(EthernetClient &client, const String &body) {
     scheduleNextViewerSummary();
   }
 
-  JsonDocument resp(512);
+  JsonDocument resp;
   resp["ok"] = result.success;
   resp["filesRestored"] = result.filesProcessed;
   resp["filesFailed"] = result.filesFailed;
@@ -4411,7 +4407,7 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
     char *json = JConvertToJSONString(body);
     double epoch = JGetNumber(rsp, "time");
     if (json) {
-      JsonDocument doc(4096);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, json);
       NoteFree(json);
       if (!err) {
@@ -4482,16 +4478,16 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   float voltage = 0.0f;
   
   // Raw mA for current-loop sensors
-  if (doc.containsKey("ma")) {
+  if (doc[""ma")) {
     mA = doc["ma"].as<float>();
     rec->sensorMa = (mA >= 4.0f) ? mA : 0.0f;
-  } else if (doc.containsKey("sensorMa")) {
+  } else if (doc[""sensorMa")) {
     mA = doc["sensorMa"].as<float>();
     rec->sensorMa = (mA >= 4.0f) ? mA : 0.0f;
   }
   
   // Raw voltage for analog sensors
-  if (doc.containsKey("vt")) {
+  if (doc[""vt")) {
     voltage = doc["vt"].as<float>();
     rec->sensorVoltage = (voltage > 0.0f) ? voltage : 0.0f;
   }
@@ -4509,10 +4505,10 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   } else if (isAnalog && voltage > 0.0f) {
     // Analog voltage sensor: convert raw voltage to level using config
     newLevel = convertVoltageToLevel(clientUid, tankNumber, voltage);
-  } else if (isDigital && doc.containsKey("fl")) {
+  } else if (isDigital && doc[""fl")) {
     // Digital float switch: use fl field
     newLevel = doc["fl"].as<float>();
-  } else if (isPulse && doc.containsKey("rm")) {
+  } else if (isPulse && doc[""rm")) {
     // Pulse/RPM sensor: use rm field
     newLevel = doc["rm"].as<float>();
   }
@@ -4575,11 +4571,11 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   float mA = 0.0f;
   float voltage = 0.0f;
   
-  if (doc.containsKey("ma")) {
+  if (doc[""ma")) {
     mA = doc["ma"].as<float>();
     rec->sensorMa = (mA >= 4.0f) ? mA : 0.0f;
   }
-  if (doc.containsKey("vt")) {
+  if (doc[""vt")) {
     voltage = doc["vt"].as<float>();
     rec->sensorVoltage = (voltage > 0.0f) ? voltage : 0.0f;
   }
@@ -4595,9 +4591,9 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
     level = convertMaToLevel(clientUid, tankNumber, mA);
   } else if (isAnalog && voltage > 0.0f) {
     level = convertVoltageToLevel(clientUid, tankNumber, voltage);
-  } else if (isDigital && doc.containsKey("fl")) {
+  } else if (isDigital && doc[""fl")) {
     level = doc["fl"].as<float>();
-  } else if (isPulse && doc.containsKey("rm")) {
+  } else if (isPulse && doc[""rm")) {
     level = doc["rm"].as<float>();
   }
   
@@ -4630,9 +4626,9 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
 
   // Check rate limit before sending SMS
   bool smsEnabled = true;
-  if (doc.containsKey("se")) {
+  if (doc[""se")) {
     smsEnabled = doc["se"].as<bool>();
-  } else if (doc.containsKey("smsEnabled")) {
+  } else if (doc[""smsEnabled")) {
     smsEnabled = doc["smsEnabled"].as<bool>();
   }
   bool smsAllowedByServer = true;
@@ -4786,14 +4782,14 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     float mA = 0.0f;
     float voltage = 0.0f;
     
-    if (t.containsKey("ma")) {
+    if (t[""ma")) {
       mA = t["ma"].as<float>();
       rec->sensorMa = (mA >= 4.0f) ? mA : 0.0f;
-    } else if (t.containsKey("sensorMa")) {
+    } else if (t[""sensorMa")) {
       mA = t["sensorMa"].as<float>();
       rec->sensorMa = (mA >= 4.0f) ? mA : 0.0f;
     }
-    if (t.containsKey("vt")) {
+    if (t[""vt")) {
       voltage = t["vt"].as<float>();
       rec->sensorVoltage = (voltage > 0.0f) ? voltage : 0.0f;
     }
@@ -4809,9 +4805,9 @@ static void handleDaily(JsonDocument &doc, double epoch) {
       newLevel = convertMaToLevel(clientUid, tankNumber, mA);
     } else if (isAnalog && voltage > 0.0f) {
       newLevel = convertVoltageToLevel(clientUid, tankNumber, voltage);
-    } else if (isDigital && t.containsKey("fl")) {
+    } else if (isDigital && t[""fl")) {
       newLevel = t["fl"].as<float>();
-    } else if (isPulse && t.containsKey("rm")) {
+    } else if (isPulse && t[""rm")) {
       newLevel = t["rm"].as<float>();
     }
     
@@ -5036,9 +5032,9 @@ static void sendSmsAlert(const char *message) {
     return;
   }
 
-  JsonDocument doc(512);
+  JsonDocument doc;
   doc["message"] = message;
-  JsonArray numbers = doc.createNestedArray("numbers");
+  JsonArray numbers = doc["numbers"].to<JsonArray>();
   if (strlen(gConfig.smsPrimary) > 0) {
     numbers.add(gConfig.smsPrimary);
   }
@@ -5085,16 +5081,13 @@ static void sendDailyEmail() {
     return;
   }
 
-  // Size JSON document to accommodate all tanks (~230 bytes per tank worst-case)
-  // JSON_ARRAY_SIZE + per-object overhead + string storage
-  static const size_t EMAIL_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + 
-    (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(8)) + (MAX_TANK_RECORDS * 160) + 256;
-  JsonDocument doc(EMAIL_JSON_CAPACITY);
+  // ArduinoJson v7: JsonDocument auto-sizes
+  JsonDocument doc;
   doc["to"] = gConfig.dailyEmail;
   doc["subject"] = "Daily Tank Summary";
-  JsonArray tanks = doc.createNestedArray("tanks");
+  JsonArray tanks = doc["tanks"].to<JsonArray>();
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    JsonObject obj = tanks.createNestedObject();
+    JsonObject obj = tanks.add<JsonObject>();
     obj["client"] = gTankRecords[i].clientUid;
     obj["site"] = gTankRecords[i].site;
     obj["label"] = gTankRecords[i].label;
@@ -5139,16 +5132,16 @@ static void sendDailyEmail() {
 }
 
 static void publishViewerSummary() {
-  JsonDocument doc(TANK_JSON_CAPACITY + 1024);
+  JsonDocument doc;
   doc["sn"] = gConfig.serverName;
   doc["si"] = gServerUid;
   double now = currentEpoch();
   doc["ge"] = now;
   doc["rs"] = VIEWER_SUMMARY_INTERVAL_SECONDS;
   doc["bh"] = VIEWER_SUMMARY_BASE_HOUR;
-  JsonArray arr = doc.createNestedArray("tanks");
+  JsonArray arr = doc["tanks"].to<JsonArray>();
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    JsonObject obj = arr.createNestedObject();
+    JsonObject obj = arr.add<JsonObject>();
     obj["c"] = gTankRecords[i].clientUid;
     obj["s"] = gTankRecords[i].site;
     obj["n"] = gTankRecords[i].label;
@@ -5243,7 +5236,7 @@ static float convertMaToLevel(const char *clientUid, uint8_t tankNumber, float m
   }
   
   // Parse the config snapshot to find the tank settings
-  JsonDocument doc(1536);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, snap->payload);
   if (err) {
     return ((mA - 4.0f) / 16.0f) * 100.0f;  // Fallback
@@ -5306,7 +5299,7 @@ static float convertVoltageToLevel(const char *clientUid, uint8_t tankNumber, fl
   }
   
   // Parse the config snapshot to find the tank settings
-  JsonDocument doc(1536);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, snap->payload);
   if (err) {
     return (voltage / 10.0f) * 100.0f;  // Fallback
@@ -5401,7 +5394,7 @@ static void loadClientConfigSnapshots() {
       memcpy(snap.payload, json.c_str(), len);
       snap.payload[len] = '\0';
 
-      JsonDocument doc(512);
+      JsonDocument doc;
       if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
         const char *site = doc["site"] | "";
         strlcpy(snap.site, site, sizeof(snap.site));
@@ -5446,7 +5439,7 @@ static void loadClientConfigSnapshots() {
       memcpy(snap.payload, json.c_str(), len);
       snap.payload[len] = '\0';
 
-      JsonDocument doc(512);
+      JsonDocument doc;
       if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
         const char *site = doc["site"] | "";
         strlcpy(snap.site, site, sizeof(snap.site));
@@ -5511,7 +5504,7 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
     return;
   }
 
-  JsonDocument doc(1024);
+  JsonDocument doc;
   if (deserializeJson(doc, buffer) != DeserializationError::Ok) {
     return;
   }
@@ -5549,15 +5542,15 @@ static void sendHistoryJson(EthernetClient &client) {
   // Build JSON response with historical tank data for charting
   // Structure: { tanks: [...], alarms: [...], voltage: [], settings: {}, comparison: null }
   static const size_t HISTORY_JSON_CAPACITY = 65536;  // 64KB for historical data
-  JsonDocument doc(HISTORY_JSON_CAPACITY);
-  if (doc.capacity() == 0) {
+  JsonDocument doc;
+  if (doc.isNull()) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
   
-  JsonArray tanksArray = doc.createNestedArray("tanks");
-  JsonArray alarmsArray = doc.createNestedArray("alarms");
-  JsonArray voltageArray = doc.createNestedArray("voltage");
+  JsonArray tanksArray = doc["tanks"].to<JsonArray>();
+  JsonArray alarmsArray = doc["alarms"].to<JsonArray>();
+  JsonArray voltageArray = doc["voltage"].to<JsonArray>();
   
   // Get current epoch
   double nowEpoch = 0.0;
@@ -5570,7 +5563,7 @@ static void sendHistoryJson(EthernetClient &client) {
     TankHourlyHistory &hist = gTankHistory[h];
     if (hist.snapshotCount == 0) continue;
     
-    JsonObject tankObj = tanksArray.createNestedObject();
+    JsonObject tankObj = tanksArray.add<JsonObject>();
     tankObj["client"] = hist.clientUid;
     tankObj["site"] = strlen(hist.siteName) > 0 ? (const char*)hist.siteName : "Unknown Site";
     tankObj["tank"] = hist.tankNumber;
@@ -5582,12 +5575,12 @@ static void sendHistoryJson(EthernetClient &client) {
     tankObj["currentLevel"] = hist.snapshots[latestIdx].level;
     
     // Include all stored readings for charting
-    JsonArray readings = tankObj.createNestedArray("readings");
+    JsonArray readings = tankObj["readings"].to<JsonArray>();
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
       uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
       TelemetrySnapshot &snap = hist.snapshots[idx];
       
-      JsonObject reading = readings.createNestedObject();
+      JsonObject reading = readings.add<JsonObject>();
       reading["timestamp"] = snap.timestamp;
       reading["level"] = snap.level;
     }
@@ -5612,7 +5605,7 @@ static void sendHistoryJson(EthernetClient &client) {
       uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
       TelemetrySnapshot &snap = hist.snapshots[idx];
       if (snap.voltage > 0) {
-        JsonObject voltObj = voltageArray.createNestedObject();
+        JsonObject voltObj = voltageArray.add<JsonObject>();
         voltObj["timestamp"] = snap.timestamp;
         voltObj["voltage"] = snap.voltage;
         voltObj["client"] = hist.clientUid;
@@ -5625,7 +5618,7 @@ static void sendHistoryJson(EthernetClient &client) {
     int idx = (alarmLogWriteIndex - alarmLogCount + i + MAX_ALARM_LOG_ENTRIES) % MAX_ALARM_LOG_ENTRIES;
     AlarmLogEntry &entry = alarmLog[idx];
     
-    JsonObject alarmObj = alarmsArray.createNestedObject();
+    JsonObject alarmObj = alarmsArray.add<JsonObject>();
     alarmObj["timestamp"] = entry.timestamp;
     alarmObj["site"] = strlen(entry.siteName) > 0 ? (const char*)entry.siteName : "Unknown";
     alarmObj["clientUid"] = entry.clientUid;
@@ -5639,7 +5632,7 @@ static void sendHistoryJson(EthernetClient &client) {
   }
   
   // Add history settings info
-  JsonObject settings = doc.createNestedObject("settings");
+  JsonObject settings = doc["settings"].to<JsonObject>();
   settings["hotTierDays"] = gHistorySettings.hotTierRetentionDays;
   settings["warmTierMonths"] = gHistorySettings.warmTierRetentionMonths;
   settings["ftpArchiveEnabled"] = gHistorySettings.ftpArchiveEnabled && gConfig.ftpEnabled;
@@ -5686,8 +5679,8 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   
   // Build comparison JSON
   static const size_t COMPARE_JSON_CAPACITY = 32768;
-  JsonDocument doc(COMPARE_JSON_CAPACITY);
-  if (doc.capacity() == 0) {
+  JsonDocument doc;
+  if (doc.isNull()) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
@@ -5697,7 +5690,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   doc["previous"]["year"] = prevYear;
   doc["previous"]["month"] = prevMonth;
   
-  JsonArray comparisons = doc.createNestedArray("tanks");
+  JsonArray comparisons = doc["tanks"].to<JsonArray>();
   
   // Check if requested months are in hot tier (current month) or need FTP retrieval
   double nowEpoch = 0.0;
@@ -5715,7 +5708,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     TankHourlyHistory &hist = gTankHistory[h];
     if (hist.snapshotCount == 0) continue;
     
-    JsonObject tankComp = comparisons.createNestedObject();
+    JsonObject tankComp = comparisons.add<JsonObject>();
     tankComp["client"] = hist.clientUid;
     tankComp["site"] = hist.siteName;
     tankComp["tank"] = hist.tankNumber;
@@ -5736,7 +5729,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
       }
     }
     
-    JsonObject currStats = tankComp.createNestedObject("currentStats");
+    JsonObject currStats = tankComp["currentStats"].to<JsonObject>();
     if (currCount > 0) {
       currStats["min"] = roundTo(currMin, 1);
       currStats["max"] = roundTo(currMax, 1);
@@ -5749,7 +5742,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     
     // Previous period would need FTP retrieval
     // For now, indicate if data needs to be fetched from archive
-    JsonObject prevStats = tankComp.createNestedObject("previousStats");
+    JsonObject prevStats = tankComp["previousStats"].to<JsonObject>();
     prevStats["available"] = false;
     prevStats["message"] = "Previous month requires FTP archive retrieval";
     prevStats["archivePath"] = String("/history/") + prevYear + "/" + 
@@ -5763,7 +5756,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   }
   
   // Include archive availability info
-  JsonObject archiveInfo = doc.createNestedObject("archiveInfo");
+  JsonObject archiveInfo = doc["archiveInfo"].to<JsonObject>();
   archiveInfo["ftpEnabled"] = gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled;
   archiveInfo["lastSync"] = gHistorySettings.lastFtpSyncEpoch;
   
@@ -5800,8 +5793,8 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   
   // Build YoY comparison JSON
   static const size_t YOY_JSON_CAPACITY = 24576;
-  JsonDocument doc(YOY_JSON_CAPACITY);
-  if (doc.capacity() == 0) {
+  JsonDocument doc;
+  if (doc.isNull()) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
@@ -5822,13 +5815,13 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   
   if (tankParam.length() == 0) {
     // Return summary for all tanks
-    JsonArray tankSummaries = doc.createNestedArray("tanks");
+    JsonArray tankSummaries = doc["tanks"].to<JsonArray>();
     
     for (uint8_t h = 0; h < gTankHistoryCount; h++) {
       TankHourlyHistory &hist = gTankHistory[h];
       if (hist.snapshotCount == 0) continue;
       
-      JsonObject tankSum = tankSummaries.createNestedObject();
+      JsonObject tankSum = tankSummaries.add<JsonObject>();
       tankSum["client"] = hist.clientUid;
       tankSum["site"] = hist.siteName;
       tankSum["tank"] = hist.tankNumber;
@@ -5847,7 +5840,7 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
         yearCount++;
       }
       
-      JsonObject currentYearStats = tankSum.createNestedObject("currentYear");
+      JsonObject currentYearStats = tankSum["currentYear"].to<JsonObject>();
       if (yearCount > 0) {
         currentYearStats["min"] = roundTo(yearMin, 1);
         currentYearStats["max"] = roundTo(yearMax, 1);
@@ -5856,10 +5849,10 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       }
       
       // Previous years would need FTP retrieval
-      JsonArray prevYears = tankSum.createNestedArray("previousYears");
+      JsonArray prevYears = tankSum["previousYears"].to<JsonArray>();
       for (int y = 1; y <= yearsToCompare; y++) {
         int targetYear = currentYear - y;
-        JsonObject yearInfo = prevYears.createNestedObject();
+        JsonObject yearInfo = prevYears.add<JsonObject>();
         yearInfo["year"] = targetYear;
         yearInfo["available"] = false;
         yearInfo["archivePath"] = String("/history/") + targetYear + "/annual_summary.json";
@@ -5885,10 +5878,10 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       doc["tank"]["found"] = true;
       
       // Monthly breakdown for current year from hot tier
-      JsonArray monthlyData = doc["tank"].createNestedArray("monthlyData");
+      JsonArray monthlyData = doc["tank"]["monthlyData"].to<JsonArray>();
       
       // Aggregate by month (simplified - in reality would track per-month)
-      JsonObject currMonthObj = monthlyData.createNestedObject();
+      JsonObject currMonthObj = monthlyData.add<JsonObject>();
       currMonthObj["year"] = currentYear;
       currMonthObj["month"] = currentMonth;
       
@@ -5918,7 +5911,7 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   }
   
   // Include archive availability info
-  JsonObject archiveInfo = doc.createNestedObject("archiveInfo");
+  JsonObject archiveInfo = doc["archiveInfo"].to<JsonObject>();
   archiveInfo["ftpEnabled"] = gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled;
   archiveInfo["note"] = "Previous year data requires FTP archive retrieval";
   
@@ -5940,15 +5933,15 @@ static void handleContactsGet(EthernetClient &client) {
   // Size: contacts(100 max × ~200) + sites(32 × 32) + alarms(32 × 160) + overhead
   // Worst case: 20000 + 1024 + 5120 + 512 = ~27KB, use heap allocation
   static const size_t CONTACTS_JSON_CAPACITY = 32768;  // 32KB
-  JsonDocument doc(CONTACTS_JSON_CAPACITY);
-  if (doc.capacity() == 0) {
+  JsonDocument doc;
+  if (doc.isNull()) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
   
   // Load contacts from config file if it exists
-  JsonArray contactsArray = doc.createNestedArray("contacts");
-  JsonArray dailyReportArray = doc.createNestedArray("dailyReportRecipients");
+  JsonArray contactsArray = doc["contacts"].to<JsonArray>();
+  JsonArray dailyReportArray = doc["dailyReportRecipients"].to<JsonArray>();
   
   // For now, return empty arrays - this will be populated from stored config
   /*
@@ -5997,7 +5990,7 @@ static void handleContactsGet(EthernetClient &client) {
   
   // Build list of unique sites from tank records
   // Use simple linear scan - with typical fleet sizes (< 100 tanks), performance is adequate
-  JsonArray sitesArray = doc.createNestedArray("sites");
+  JsonArray sitesArray = doc["sites"].to<JsonArray>();
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
     if (strlen(gTankRecords[i].site) == 0) continue;
     
@@ -6014,11 +6007,11 @@ static void handleContactsGet(EthernetClient &client) {
   }
   
   // Build list of alarms (tanks with alarm configurations)
-  JsonArray alarmsArray = doc.createNestedArray("alarms");
+  JsonArray alarmsArray = doc["alarms"].to<JsonArray>();
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
     TankRecord &tank = gTankRecords[i];
     if (strlen(tank.alarmType) > 0) {
-      JsonObject alarmObj = alarmsArray.createNestedObject();
+      JsonObject alarmObj = alarmsArray.add<JsonObject>();
       char alarmId[64];
       snprintf(alarmId, sizeof(alarmId), "%s_%d", tank.clientUid, tank.tankNumber);
       alarmObj["id"] = alarmId;
@@ -6036,14 +6029,14 @@ static void handleContactsGet(EthernetClient &client) {
 
 static void handleContactsPost(EthernetClient &client, const String &body) {
   // Use larger buffer to match MAX_HTTP_BODY_BYTES (16KB) for large contact lists
-  JsonDocument doc(MAX_HTTP_BODY_BYTES);
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
   }
   
   // Validate contacts structure even though not persisted yet
-  if (doc.containsKey("contacts") && doc["contacts"].is<JsonArray>()) {
+  if (doc[""contacts") && doc["contacts"].is<JsonArray>()) {
     JsonArray contactsArray = doc["contacts"].as<JsonArray>();
     
     // Limit number of contacts to prevent memory issues
@@ -6057,21 +6050,21 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
       JsonObject contact = contactVar.as<JsonObject>();
       
       // Validate required fields
-      if (!contact.containsKey("name") || !contact["name"].is<const char*>()) {
+      if (!contact[""name") || !contact["name"].is<const char*>()) {
         respondStatus(client, 400, F("Contact missing required 'name' field"));
         return;
       }
       
       // Validate that at least phone or email is present
-      bool hasPhone = contact.containsKey("phone") && contact["phone"].is<const char*>() && strlen(contact["phone"]) > 0;
-      bool hasEmail = contact.containsKey("email") && contact["email"].is<const char*>() && strlen(contact["email"]) > 0;
+      bool hasPhone = contact[""phone") && contact["phone"].is<const char*>() && strlen(contact["phone"]) > 0;
+      bool hasEmail = contact[""email") && contact["email"].is<const char*>() && strlen(contact["email"]) > 0;
       if (!hasPhone && !hasEmail) {
         respondStatus(client, 400, F("Contact must have phone or email"));
         return;
       }
       
       // Validate alarm associations array if present
-      if (contact.containsKey("alarmAssociations") && !contact["alarmAssociations"].is<JsonArray>()) {
+      if (contact[""alarmAssociations") && !contact["alarmAssociations"].is<JsonArray>()) {
         respondStatus(client, 400, F("alarmAssociations must be an array"));
         return;
       }
@@ -6086,7 +6079,7 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
   // 4. Replace hardcoded phone/email fields in ServerConfig
   // For now, return success but data is not persisted across reboots
   
-  JsonDocument response(256);
+  JsonDocument response;
   response["success"] = true;
   response["message"] = "Contacts validated successfully (note: persistence not yet implemented)";
   
@@ -6096,7 +6089,7 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
 }
 
 static void handleServerSettingsPost(EthernetClient &client, const String &body) {
-  StaticJsonDocument<2048> doc;
+  JsonDocument doc;
   DeserializationError error = deserializeJson(doc, body);
 
   if (error) {
@@ -6111,29 +6104,29 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
   }
 
   // Extract server settings from JSON
-  if (doc.containsKey("server")) {
+  if (doc[""server")) {
     JsonObject serverObj = doc["server"];
     
     // Update SMS settings
-    if (serverObj.containsKey("smsPrimary")) {
+    if (serverObj[""smsPrimary")) {
       strlcpy(gConfig.smsPrimary, serverObj["smsPrimary"] | "", sizeof(gConfig.smsPrimary));
     }
-    if (serverObj.containsKey("smsSecondary")) {
+    if (serverObj[""smsSecondary")) {
       strlcpy(gConfig.smsSecondary, serverObj["smsSecondary"] | "", sizeof(gConfig.smsSecondary));
     }
-    if (serverObj.containsKey("smsOnHigh")) {
+    if (serverObj[""smsOnHigh")) {
       gConfig.smsOnHigh = serverObj["smsOnHigh"] | false;
     }
-    if (serverObj.containsKey("smsOnLow")) {
+    if (serverObj[""smsOnLow")) {
       gConfig.smsOnLow = serverObj["smsOnLow"] | false;
     }
-    if (serverObj.containsKey("smsOnClear")) {
+    if (serverObj[""smsOnClear")) {
       gConfig.smsOnClear = serverObj["smsOnClear"] | false;
     }
 
     // Update daily email settings with validation and schedule tracking
     bool dailyScheduleChanged = false;
-    if (serverObj.containsKey("dailyHour")) {
+    if (serverObj[""dailyHour")) {
       int hour = serverObj["dailyHour"] | 5;
       // Validate hour range (0-23)
       if (hour < 0) {
@@ -6146,7 +6139,7 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
       }
       gConfig.dailyHour = hour;
     }
-    if (serverObj.containsKey("dailyMinute")) {
+    if (serverObj[""dailyMinute")) {
       int minute = serverObj["dailyMinute"] | 0;
       // Validate minute range (0-59)
       if (minute < 0) {
@@ -6159,29 +6152,29 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
       }
       gConfig.dailyMinute = minute;
     }
-    if (serverObj.containsKey("dailyEmail")) {
+    if (serverObj[""dailyEmail")) {
       strlcpy(gConfig.dailyEmail, serverObj["dailyEmail"] | "", sizeof(gConfig.dailyEmail));
     }
 
     // Update FTP settings
-    if (serverObj.containsKey("ftp")) {
+    if (serverObj[""ftp")) {
       JsonObject ftpObj = serverObj["ftp"];
-      if (ftpObj.containsKey("enabled")) {
+      if (ftpObj[""enabled")) {
         gConfig.ftpEnabled = ftpObj["enabled"] | false;
       }
-      if (ftpObj.containsKey("passive")) {
+      if (ftpObj[""passive")) {
         gConfig.ftpPassive = ftpObj["passive"] | true;
       }
-      if (ftpObj.containsKey("backupOnChange")) {
+      if (ftpObj[""backupOnChange")) {
         gConfig.ftpBackupOnChange = ftpObj["backupOnChange"] | false;
       }
-      if (ftpObj.containsKey("restoreOnBoot")) {
+      if (ftpObj[""restoreOnBoot")) {
         gConfig.ftpRestoreOnBoot = ftpObj["restoreOnBoot"] | false;
       }
-      if (ftpObj.containsKey("host")) {
+      if (ftpObj[""host")) {
         strlcpy(gConfig.ftpHost, ftpObj["host"] | "", sizeof(gConfig.ftpHost));
       }
-      if (ftpObj.containsKey("port")) {
+      if (ftpObj[""port")) {
         uint32_t port = ftpObj["port"] | 21;
         // Validate port range (1-65535)
         if (port > 0 && port <= 65535UL) {
@@ -6190,13 +6183,13 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
           gConfig.ftpPort = 21;
         }
       }
-      if (ftpObj.containsKey("user")) {
+      if (ftpObj[""user")) {
         strlcpy(gConfig.ftpUser, ftpObj["user"] | "", sizeof(gConfig.ftpUser));
       }
-      if (ftpObj.containsKey("pass")) {
+      if (ftpObj[""pass")) {
         strlcpy(gConfig.ftpPass, ftpObj["pass"] | "", sizeof(gConfig.ftpPass));
       }
-      if (ftpObj.containsKey("path")) {
+      if (ftpObj[""path")) {
         strlcpy(gConfig.ftpPath, ftpObj["path"] | "/tankalarm/server", sizeof(gConfig.ftpPath));
       }
     }
@@ -6622,13 +6615,13 @@ static void handleCalibrationGet(EthernetClient &client) {
   // Size: calibrations(20 × ~200 bytes) + logs(50 × ~180 bytes) + overhead
   // ~4000 + ~9000 + 512 = ~14KB, using 24KB for generous margin
   static const size_t CALIBRATION_JSON_CAPACITY = 24576;  // 24KB
-  JsonDocument doc(CALIBRATION_JSON_CAPACITY);
+  JsonDocument doc;
   
   // Add calibration status for each tank
-  JsonArray calibrationsArr = doc.createNestedArray("calibrations");
+  JsonArray calibrationsArr = doc["calibrations"].to<JsonArray>();
   for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
     TankCalibration &cal = gTankCalibrations[i];
-    JsonObject obj = calibrationsArr.createNestedObject();
+    JsonObject obj = calibrationsArr.add<JsonObject>();
     obj["clientUid"] = cal.clientUid;
     obj["tankNumber"] = cal.tankNumber;
     obj["learnedSlope"] = cal.learnedSlope;
@@ -6642,7 +6635,7 @@ static void handleCalibrationGet(EthernetClient &client) {
   }
   
   // Add recent calibration log entries
-  JsonArray logsArr = doc.createNestedArray("logs");
+  JsonArray logsArr = doc["logs"].to<JsonArray>();
   
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -6682,7 +6675,7 @@ static void handleCalibrationGet(EthernetClient &client) {
           notes = line.substring(pos5 + 1);
         }
         
-        JsonObject logObj = logsArr.createNestedObject();
+        JsonObject logObj = logsArr.add<JsonObject>();
         logObj["clientUid"] = uid;
         logObj["tankNumber"] = tankNum;
         logObj["timestamp"] = timestamp;
@@ -6730,7 +6723,7 @@ static void handleCalibrationGet(EthernetClient &client) {
             notes = line.substring(pos5 + 1);
           }
           
-          JsonObject logObj = logsArr.createNestedObject();
+          JsonObject logObj = logsArr.add<JsonObject>();
           logObj["clientUid"] = uid;
           logObj["tankNumber"] = tankNum;
           logObj["timestamp"] = timestamp;
@@ -6754,7 +6747,7 @@ static void handleCalibrationGet(EthernetClient &client) {
 }
 
 static void handleCalibrationPost(EthernetClient &client, const String &body) {
-  JsonDocument doc(512);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
     respondStatus(client, 400, F("Invalid JSON"));
@@ -6767,13 +6760,13 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
     return;
   }
   
-  if (!doc.containsKey("tankNumber")) {
+  if (!doc[""tankNumber")) {
     respondStatus(client, 400, F("Missing tankNumber"));
     return;
   }
   uint8_t tankNumber = doc["tankNumber"].as<uint8_t>();
   
-  if (!doc.containsKey("verifiedLevelInches")) {
+  if (!doc[""verifiedLevelInches")) {
     respondStatus(client, 400, F("Missing verifiedLevelInches"));
     return;
   }
@@ -6781,7 +6774,7 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   
   // Optional fields
   float sensorReading = doc["sensorReading"].as<float>();
-  if (!doc.containsKey("sensorReading") || sensorReading < 4.0f || sensorReading > 20.0f) {
+  if (!doc[""sensorReading") || sensorReading < 4.0f || sensorReading > 20.0f) {
     // Try to get raw sensorMa from tank record (sent directly from client)
     sensorReading = 0.0f;
     
@@ -6848,7 +6841,7 @@ static void handleDfuStatusGet(EthernetClient &client) {
 }
 
 static void handleDfuEnablePost(EthernetClient &client, const String &body) {
-  StaticJsonDocument<256> doc;
+  JsonDocument doc;
   DeserializationError error = deserializeJson(doc, body);
 
   if (error) {
@@ -6869,4 +6862,9 @@ static void handleDfuEnablePost(EthernetClient &client, const String &body) {
   String responseStr = "{\"success\":true,\"message\":\"DFU mode enabled - device will update and restart\"}";
   respondJson(client, responseStr);
 }
+
+
+
+
+
 
