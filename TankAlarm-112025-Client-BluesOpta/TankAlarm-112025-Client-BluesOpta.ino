@@ -620,7 +620,7 @@ static void pruneNoteBufferIfNeeded();
 static void ensureTimeSync();
 static void updateDailyScheduleIfNeeded();
 static bool checkNotecardHealth();
-static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit);
+static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit);
 static void pollForRelayCommands();
 static void processRelayCommand(const JsonDocument &doc);
 static void setRelayState(uint8_t relayNum, bool state);
@@ -1058,12 +1058,12 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     buffer[bytesRead] = '\0';
     fclose(file);
     
-    std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(4096));
+    std::unique_ptr<JsonDocument> docPtr(new JsonDocument(4096));
     if (!docPtr) {
       free(buffer);
       return false;
     }
-    DynamicJsonDocument &doc = *docPtr;
+    JsonDocument &doc = *docPtr;
     DeserializationError err = deserializeJson(doc, buffer);
     free(buffer);
   #else
@@ -1077,12 +1077,12 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
       return false;
     }
 
-    std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(4096));
+    std::unique_ptr<JsonDocument> docPtr(new JsonDocument(4096));
     if (!docPtr) {
       file.close();
       return false;
     }
-    DynamicJsonDocument &doc = *docPtr;
+    JsonDocument &doc = *docPtr;
     DeserializationError err = deserializeJson(doc, file);
     file.close();
   #endif
@@ -1286,9 +1286,9 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     if (!mbedFS) return false;
   #endif
   
-  std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(4096));
+  std::unique_ptr<JsonDocument> docPtr(new JsonDocument(4096));
   if (!docPtr) return false;
-  DynamicJsonDocument &doc = *docPtr;
+  JsonDocument &doc = *docPtr;
 
   doc["site"] = cfg.siteName;
   doc["deviceLabel"] = cfg.deviceLabel;
@@ -1812,9 +1812,9 @@ static void pollForConfigUpdates() {
   if (body) {
     char *json = JConvertToJSONString(body);
     if (json) {
-      std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(4096));
+      std::unique_ptr<JsonDocument> docPtr(new JsonDocument(4096));
       if (docPtr) {
-        DynamicJsonDocument &doc = *docPtr;
+        JsonDocument &doc = *docPtr;
         DeserializationError err = deserializeJson(doc, json);
         NoteFree(json);
         if (!err) {
@@ -2231,7 +2231,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
         Serial.println(cfg.name);
         // Send sensor failure alert with rate limiting
         if (checkAlarmRateLimit(idx, "sensor-fault")) {
-          DynamicJsonDocument doc(512);
+          JsonDocument doc(512);
           doc["client"] = gDeviceUID;
           doc["site"] = gConfig.siteName;
           doc["label"] = cfg.name;
@@ -2256,7 +2256,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
         Serial.println(cfg.name);
         // Send stuck sensor alert with rate limiting
         if (checkAlarmRateLimit(idx, "sensor-stuck")) {
-          DynamicJsonDocument doc(512);
+          JsonDocument doc(512);
           doc["client"] = gDeviceUID;
           doc["site"] = gConfig.siteName;
           doc["label"] = cfg.name;
@@ -2280,7 +2280,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
     Serial.print(F("Sensor recovered for tank "));
     Serial.println(cfg.name);
     // Send recovery notification (no rate limit on recovery)
-    DynamicJsonDocument doc(512);
+    JsonDocument doc(512);
     doc["client"] = gDeviceUID;
     doc["site"] = gConfig.siteName;
     doc["label"] = cfg.name;
@@ -2908,7 +2908,7 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   const MonitorConfig &cfg = gConfig.monitors[idx];
   MonitorRuntime &state = gMonitorState[idx];
 
-  DynamicJsonDocument doc(768);
+  JsonDocument doc(768);
   doc["c"] = gDeviceUID;
   doc["s"] = gConfig.siteName;
   doc["k"] = cfg.monitorNumber;
@@ -3084,7 +3084,7 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
 
   // Try to send via network if available
   if (gNotecardAvailable) {
-    DynamicJsonDocument doc(768);
+    JsonDocument doc(768);
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
     doc["k"] = cfg.monitorNumber;
@@ -3325,7 +3325,7 @@ static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, 
 
   // Send unload event via Notecard if network available
   if (gNotecardAvailable) {
-    DynamicJsonDocument doc(768);
+    JsonDocument doc(768);
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
     doc["k"] = cfg.monitorNumber;
@@ -3381,7 +3381,7 @@ static void sendDailyReport() {
   float vinVoltage = readNotecardVinVoltage();
 
   while (tankCursor < eligibleCount) {
-    DynamicJsonDocument doc(1024);
+    JsonDocument doc(1024);
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
     doc["t"] = reportEpoch;
@@ -3431,7 +3431,7 @@ static void sendDailyReport() {
   }
 }
 
-static bool appendDailyTank(DynamicJsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit) {
+static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit) {
   if (tankIndex >= gConfig.monitorCount) {
     return false;
   }
@@ -3944,7 +3944,7 @@ static void pollForRelayCommands() {
   if (body) {
     char *json = JConvertToJSONString(body);
     if (json) {
-      DynamicJsonDocument doc(1024);
+      JsonDocument doc(1024);
       DeserializationError err = deserializeJson(doc, json);
       NoteFree(json);
       if (!err) {

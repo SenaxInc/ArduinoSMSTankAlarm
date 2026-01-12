@@ -461,9 +461,9 @@ static void recordTelemetrySnapshot(const char *clientUid, const char *siteName,
 static TankHourlyHistory *findOrCreateTankHistory(const char *clientUid, uint8_t tankNumber);
 static void pruneHotTierIfNeeded();
 static bool archiveMonthToFtp(uint16_t year, uint8_t month);
-static bool loadArchivedMonth(uint16_t year, uint8_t month, DynamicJsonDocument &doc);
-static void populateHistorySettingsJson(DynamicJsonDocument &doc);
-static void applyHistorySettingsFromJson(const DynamicJsonDocument &doc);
+static bool loadArchivedMonth(uint16_t year, uint8_t month, JsonDocument &doc);
+static void populateHistorySettingsJson(JsonDocument &doc);
+static void applyHistorySettingsFromJson(const JsonDocument &doc);
 static void saveHistorySettings();
 static void loadHistorySettings();
 
@@ -871,7 +871,7 @@ static void handleRefreshPost(EthernetClient &client, const String &body) {
   char clientUid[64] = {0};
   const char *pinValue = nullptr;
   if (body.length() > 0) {
-    DynamicJsonDocument doc(192);
+    JsonDocument doc(192);
     if (deserializeJson(doc, body) == DeserializationError::Ok) {
       const char *uid = doc["client"] | "";
       if (uid && *uid) {
@@ -920,7 +920,7 @@ static void handleSerialLogsGet(EthernetClient &client, const String &queryStrin
     sinceEpoch = sinceParam.toDouble();
   }
 
-  DynamicJsonDocument doc(8192);
+  JsonDocument doc(8192);
   JsonArray logsArray = doc.createNestedArray("logs");
   JsonObject meta = doc.createNestedObject("meta");
   meta["source"] = source;
@@ -1082,7 +1082,7 @@ static void handleSerialLogsDownload(EthernetClient &client, const String &query
 }
 
 static void handleSerialRequestPost(EthernetClient &client, const String &body) {
-  DynamicJsonDocument doc(256);
+  JsonDocument doc(256);
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, "Invalid JSON");
     return;
@@ -1604,7 +1604,7 @@ static bool loadConfig(ServerConfig &cfg) {
     buffer[bytesRead] = '\0';
     fclose(file);
     
-    DynamicJsonDocument doc(2048);
+    JsonDocument doc(2048);
     DeserializationError err = deserializeJson(doc, buffer);
     free(buffer);
   #else
@@ -1617,7 +1617,7 @@ static bool loadConfig(ServerConfig &cfg) {
       return false;
     }
 
-    DynamicJsonDocument doc(2048);
+    JsonDocument doc(2048);
     DeserializationError err = deserializeJson(doc, file);
     file.close();
   #endif
@@ -1719,7 +1719,7 @@ static bool saveConfig(const ServerConfig &cfg) {
     if (!mbedFS) return false;
   #endif
   
-  DynamicJsonDocument doc(2048);
+  JsonDocument doc(2048);
   doc["serverName"] = cfg.serverName;
   doc["clientFleet"] = cfg.clientFleet;
   doc["smsPrimary"] = cfg.smsPrimary;
@@ -2711,7 +2711,7 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
   }
   
   // Build JSON document with monthly summary
-  DynamicJsonDocument doc(16384);
+  JsonDocument doc(16384);
   doc["year"] = year;
   doc["month"] = month;
   doc["tanks"] = gTankHistoryCount;
@@ -2813,7 +2813,7 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
 }
 
 // Load archived month from FTP for comparison
-static bool loadArchivedMonth(uint16_t year, uint8_t month, DynamicJsonDocument &doc) {
+static bool loadArchivedMonth(uint16_t year, uint8_t month, JsonDocument &doc) {
   if (!gConfig.ftpEnabled) {
     return false;
   }
@@ -2846,7 +2846,7 @@ static bool loadArchivedMonth(uint16_t year, uint8_t month, DynamicJsonDocument 
 }
 
 // Helper to populate history settings JSON document
-static void populateHistorySettingsJson(DynamicJsonDocument &doc) {
+static void populateHistorySettingsJson(JsonDocument &doc) {
   doc["hotDays"] = gHistorySettings.hotTierRetentionDays;
   doc["warmMonths"] = gHistorySettings.warmTierRetentionMonths;
   doc["ftpArchive"] = gHistorySettings.ftpArchiveEnabled;
@@ -2862,7 +2862,7 @@ static void saveHistorySettings() {
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     if (!mbedFS) return;
     
-    DynamicJsonDocument doc(512);
+    JsonDocument doc(512);
     populateHistorySettingsJson(doc);
     
     String output;
@@ -2882,7 +2882,7 @@ static void saveHistorySettings() {
     File f = LittleFS.open("/history_settings.json", "w");
     if (!f) return;
     
-    DynamicJsonDocument doc(512);
+    JsonDocument doc(512);
     populateHistorySettingsJson(doc);
     
     serializeJson(doc, f);
@@ -2892,7 +2892,7 @@ static void saveHistorySettings() {
 }
 
 // Helper to apply history settings from JSON document
-static void applyHistorySettingsFromJson(const DynamicJsonDocument &doc) {
+static void applyHistorySettingsFromJson(const JsonDocument &doc) {
   gHistorySettings.hotTierRetentionDays = doc["hotDays"] | 7;
   gHistorySettings.warmTierRetentionMonths = doc["warmMonths"] | 24;
   gHistorySettings.ftpArchiveEnabled = doc["ftpArchive"] | false;
@@ -2936,7 +2936,7 @@ static void loadHistorySettings() {
     }
     buffer[bytesRead] = '\0';
     
-    DynamicJsonDocument doc(512);
+    JsonDocument doc(512);
     DeserializationError err = deserializeJson(doc, buffer);
     free(buffer);
     
@@ -2947,7 +2947,7 @@ static void loadHistorySettings() {
     File f = LittleFS.open("/history_settings.json", "r");
     if (!f) return;
     
-    DynamicJsonDocument doc(512);
+    JsonDocument doc(512);
     if (deserializeJson(doc, f) == DeserializationError::Ok) {
       applyHistorySettingsFromJson(doc);
     }
@@ -3695,7 +3695,7 @@ static void respondStatus(EthernetClient &client, int status, const String &mess
 
 
 static void sendTankJson(EthernetClient &client) {
-  DynamicJsonDocument doc(TANK_JSON_CAPACITY);
+  JsonDocument doc(TANK_JSON_CAPACITY);
   JsonArray arr = doc.createNestedArray("tanks");
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
     JsonObject obj = arr.createNestedObject();
@@ -3743,7 +3743,7 @@ static void sendUnloadLogJson(EthernetClient &client) {
   // Estimate JSON size: ~200 bytes per entry
   size_t capacity = JSON_ARRAY_SIZE(MAX_UNLOAD_LOG_ENTRIES) + 
                     (MAX_UNLOAD_LOG_ENTRIES * JSON_OBJECT_SIZE(12)) + 2048;
-  DynamicJsonDocument doc(capacity);
+  JsonDocument doc(capacity);
   doc["count"] = gUnloadLogCount;
   JsonArray arr = doc.createNestedArray("unloads");
   
@@ -3783,7 +3783,7 @@ static void sendUnloadLogJson(EthernetClient &client) {
 
 static void sendClientDataJson(EthernetClient &client) {
   // Large JSON document; ArduinoJson allocates the backing store on the heap.
-  DynamicJsonDocument doc(CLIENT_JSON_CAPACITY);
+  JsonDocument doc(CLIENT_JSON_CAPACITY);
   if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
@@ -3920,7 +3920,7 @@ static void sendClientDataJson(EthernetClient &client) {
 
 static void handleConfigPost(EthernetClient &client, const String &body) {
   // Use larger buffer to match MAX_HTTP_BODY_BYTES (16KB) for complex configs
-  DynamicJsonDocument doc(MAX_HTTP_BODY_BYTES);
+  JsonDocument doc(MAX_HTTP_BODY_BYTES);
   if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
@@ -4029,7 +4029,7 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
 }
 
 static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *message) {
-  DynamicJsonDocument resp(128);
+  JsonDocument resp(128);
   resp["pinConfigured"] = (gConfig.configPin[0] != '\0');
   String msg(message);
   resp["message"] = msg;
@@ -4039,7 +4039,7 @@ static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *m
 }
 
 static void handlePinPost(EthernetClient &client, const String &body) {
-  DynamicJsonDocument doc(256);
+  JsonDocument doc(256);
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4079,7 +4079,7 @@ static void handlePinPost(EthernetClient &client, const String &body) {
 }
 
 static void handleRelayPost(EthernetClient &client, const String &body) {
-  DynamicJsonDocument doc(640);
+  JsonDocument doc(640);
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4197,7 +4197,7 @@ static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
 }
 
 static void handleRelayClearPost(EthernetClient &client, const String &body) {
-  DynamicJsonDocument doc(256);
+  JsonDocument doc(256);
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4227,7 +4227,7 @@ static void handleRelayClearPost(EthernetClient &client, const String &body) {
 }
 
 static void handlePausePost(EthernetClient &client, const String &body) {
-  DynamicJsonDocument doc(256);
+  JsonDocument doc(256);
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4243,7 +4243,7 @@ static void handlePausePost(EthernetClient &client, const String &body) {
   bool paused = doc["paused"].is<bool>() ? doc["paused"].as<bool>() : true;
   gPaused = paused;
 
-  DynamicJsonDocument resp(128);
+  JsonDocument resp(128);
   resp["paused"] = gPaused;
   String json;
   serializeJson(resp, json);
@@ -4254,7 +4254,7 @@ static void handlePausePost(EthernetClient &client, const String &body) {
 }
 
 static void handleFtpBackupPost(EthernetClient &client, const String &body) {
-  DynamicJsonDocument doc(256);
+  JsonDocument doc(256);
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4268,7 +4268,7 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
   // Use detailed result for comprehensive error reporting
   FtpResult result = performFtpBackupDetailed();
 
-  DynamicJsonDocument resp(512);
+  JsonDocument resp(512);
   resp["ok"] = result.success;
   resp["filesUploaded"] = result.filesProcessed;
   resp["filesFailed"] = result.filesFailed;
@@ -4293,7 +4293,7 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
 }
 
 static void handleFtpRestorePost(EthernetClient &client, const String &body) {
-  DynamicJsonDocument doc(256);
+  JsonDocument doc(256);
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4316,7 +4316,7 @@ static void handleFtpRestorePost(EthernetClient &client, const String &body) {
     scheduleNextViewerSummary();
   }
 
-  DynamicJsonDocument resp(512);
+  JsonDocument resp(512);
   resp["ok"] = result.success;
   resp["filesRestored"] = result.filesProcessed;
   resp["filesFailed"] = result.filesFailed;
@@ -4411,7 +4411,7 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
     char *json = JConvertToJSONString(body);
     double epoch = JGetNumber(rsp, "time");
     if (json) {
-      DynamicJsonDocument doc(4096);
+      JsonDocument doc(4096);
       DeserializationError err = deserializeJson(doc, json);
       NoteFree(json);
       if (!err) {
@@ -5036,7 +5036,7 @@ static void sendSmsAlert(const char *message) {
     return;
   }
 
-  DynamicJsonDocument doc(512);
+  JsonDocument doc(512);
   doc["message"] = message;
   JsonArray numbers = doc.createNestedArray("numbers");
   if (strlen(gConfig.smsPrimary) > 0) {
@@ -5089,7 +5089,7 @@ static void sendDailyEmail() {
   // JSON_ARRAY_SIZE + per-object overhead + string storage
   static const size_t EMAIL_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + 
     (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(8)) + (MAX_TANK_RECORDS * 160) + 256;
-  DynamicJsonDocument doc(EMAIL_JSON_CAPACITY);
+  JsonDocument doc(EMAIL_JSON_CAPACITY);
   doc["to"] = gConfig.dailyEmail;
   doc["subject"] = "Daily Tank Summary";
   JsonArray tanks = doc.createNestedArray("tanks");
@@ -5139,7 +5139,7 @@ static void sendDailyEmail() {
 }
 
 static void publishViewerSummary() {
-  DynamicJsonDocument doc(TANK_JSON_CAPACITY + 1024);
+  JsonDocument doc(TANK_JSON_CAPACITY + 1024);
   doc["sn"] = gConfig.serverName;
   doc["si"] = gServerUid;
   double now = currentEpoch();
@@ -5243,7 +5243,7 @@ static float convertMaToLevel(const char *clientUid, uint8_t tankNumber, float m
   }
   
   // Parse the config snapshot to find the tank settings
-  DynamicJsonDocument doc(1536);
+  JsonDocument doc(1536);
   DeserializationError err = deserializeJson(doc, snap->payload);
   if (err) {
     return ((mA - 4.0f) / 16.0f) * 100.0f;  // Fallback
@@ -5306,7 +5306,7 @@ static float convertVoltageToLevel(const char *clientUid, uint8_t tankNumber, fl
   }
   
   // Parse the config snapshot to find the tank settings
-  DynamicJsonDocument doc(1536);
+  JsonDocument doc(1536);
   DeserializationError err = deserializeJson(doc, snap->payload);
   if (err) {
     return (voltage / 10.0f) * 100.0f;  // Fallback
@@ -5401,7 +5401,7 @@ static void loadClientConfigSnapshots() {
       memcpy(snap.payload, json.c_str(), len);
       snap.payload[len] = '\0';
 
-      DynamicJsonDocument doc(512);
+      JsonDocument doc(512);
       if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
         const char *site = doc["site"] | "";
         strlcpy(snap.site, site, sizeof(snap.site));
@@ -5446,7 +5446,7 @@ static void loadClientConfigSnapshots() {
       memcpy(snap.payload, json.c_str(), len);
       snap.payload[len] = '\0';
 
-      DynamicJsonDocument doc(512);
+      JsonDocument doc(512);
       if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
         const char *site = doc["site"] | "";
         strlcpy(snap.site, site, sizeof(snap.site));
@@ -5511,7 +5511,7 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
     return;
   }
 
-  DynamicJsonDocument doc(1024);
+  JsonDocument doc(1024);
   if (deserializeJson(doc, buffer) != DeserializationError::Ok) {
     return;
   }
@@ -5549,7 +5549,7 @@ static void sendHistoryJson(EthernetClient &client) {
   // Build JSON response with historical tank data for charting
   // Structure: { tanks: [...], alarms: [...], voltage: [], settings: {}, comparison: null }
   static const size_t HISTORY_JSON_CAPACITY = 65536;  // 64KB for historical data
-  DynamicJsonDocument doc(HISTORY_JSON_CAPACITY);
+  JsonDocument doc(HISTORY_JSON_CAPACITY);
   if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
@@ -5686,7 +5686,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   
   // Build comparison JSON
   static const size_t COMPARE_JSON_CAPACITY = 32768;
-  DynamicJsonDocument doc(COMPARE_JSON_CAPACITY);
+  JsonDocument doc(COMPARE_JSON_CAPACITY);
   if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
@@ -5800,7 +5800,7 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   
   // Build YoY comparison JSON
   static const size_t YOY_JSON_CAPACITY = 24576;
-  DynamicJsonDocument doc(YOY_JSON_CAPACITY);
+  JsonDocument doc(YOY_JSON_CAPACITY);
   if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
@@ -5940,7 +5940,7 @@ static void handleContactsGet(EthernetClient &client) {
   // Size: contacts(100 max × ~200) + sites(32 × 32) + alarms(32 × 160) + overhead
   // Worst case: 20000 + 1024 + 5120 + 512 = ~27KB, use heap allocation
   static const size_t CONTACTS_JSON_CAPACITY = 32768;  // 32KB
-  DynamicJsonDocument doc(CONTACTS_JSON_CAPACITY);
+  JsonDocument doc(CONTACTS_JSON_CAPACITY);
   if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
@@ -6036,7 +6036,7 @@ static void handleContactsGet(EthernetClient &client) {
 
 static void handleContactsPost(EthernetClient &client, const String &body) {
   // Use larger buffer to match MAX_HTTP_BODY_BYTES (16KB) for large contact lists
-  DynamicJsonDocument doc(MAX_HTTP_BODY_BYTES);
+  JsonDocument doc(MAX_HTTP_BODY_BYTES);
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -6086,7 +6086,7 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
   // 4. Replace hardcoded phone/email fields in ServerConfig
   // For now, return success but data is not persisted across reboots
   
-  DynamicJsonDocument response(256);
+  JsonDocument response(256);
   response["success"] = true;
   response["message"] = "Contacts validated successfully (note: persistence not yet implemented)";
   
@@ -6622,7 +6622,7 @@ static void handleCalibrationGet(EthernetClient &client) {
   // Size: calibrations(20 × ~200 bytes) + logs(50 × ~180 bytes) + overhead
   // ~4000 + ~9000 + 512 = ~14KB, using 24KB for generous margin
   static const size_t CALIBRATION_JSON_CAPACITY = 24576;  // 24KB
-  DynamicJsonDocument doc(CALIBRATION_JSON_CAPACITY);
+  JsonDocument doc(CALIBRATION_JSON_CAPACITY);
   
   // Add calibration status for each tank
   JsonArray calibrationsArr = doc.createNestedArray("calibrations");
@@ -6754,7 +6754,7 @@ static void handleCalibrationGet(EthernetClient &client) {
 }
 
 static void handleCalibrationPost(EthernetClient &client, const String &body) {
-  DynamicJsonDocument doc(512);
+  JsonDocument doc(512);
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
     respondStatus(client, 400, F("Invalid JSON"));
