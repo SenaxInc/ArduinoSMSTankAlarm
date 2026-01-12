@@ -1188,14 +1188,14 @@ static void handleSerialLog(JsonDocument &doc, double epoch) {
   const char *defaultSource = doc["source"] | clientUid;
 
   // Handle single log entry or array of entries
-  if (doc[""message")) {
+  if (doc["message"]) {
     const char *message = doc["message"] | "";
     if (strlen(message) > 0) {
       const char *level = doc["level"] | defaultLevel;
       const char *source = doc["source"] | defaultSource;
       addClientSerialLog(clientUid, message, epoch, level, source);
     }
-  } else if (doc[""logs")) {
+  } else if (doc["logs"]) {
     JsonArray logs = doc["logs"].as<JsonArray>();
     for (JsonVariant v : logs) {
       JsonObject logObj = v.as<JsonObject>();
@@ -1655,50 +1655,50 @@ static bool loadConfig(ServerConfig &cfg) {
   cfg.ftpBackupOnChange = ftpObj ? (ftpObj["backupOnChange"].is<bool>() ? ftpObj["backupOnChange"].as<bool>() : false) : (doc["ftpBackupOnChange"].is<bool>() ? doc["ftpBackupOnChange"].as<bool>() : false);
   cfg.ftpRestoreOnBoot = ftpObj ? (ftpObj["restoreOnBoot"].is<bool>() ? ftpObj["restoreOnBoot"].as<bool>() : false) : (doc["ftpRestoreOnBoot"].is<bool>() ? doc["ftpRestoreOnBoot"].as<bool>() : false);
   cfg.ftpPort = ftpObj ? (ftpObj["port"].is<uint16_t>() ? ftpObj["port"].as<uint16_t>() : FTP_PORT_DEFAULT) : (doc["ftpPort"].is<uint16_t>() ? doc["ftpPort"].as<uint16_t>() : FTP_PORT_DEFAULT);
-  if (ftpObj && ftpObj[""host")) {
+  if (ftpObj && ftpObj["host"]) {
     strlcpy(cfg.ftpHost, ftpObj["host"], sizeof(cfg.ftpHost));
   }
-  if (ftpObj && ftpObj[""user")) {
+  if (ftpObj && ftpObj["user"]) {
     strlcpy(cfg.ftpUser, ftpObj["user"], sizeof(cfg.ftpUser));
   }
-  if (ftpObj && ftpObj[""pass")) {
+  if (ftpObj && ftpObj["pass"]) {
     strlcpy(cfg.ftpPass, ftpObj["pass"], sizeof(cfg.ftpPass));
   }
-  if (ftpObj && ftpObj[""path")) {
+  if (ftpObj && ftpObj["path"]) {
     strlcpy(cfg.ftpPath, ftpObj["path"], sizeof(cfg.ftpPath));
   }
-  if ((!ftpObj || !ftpObj[""host")) && doc["ftpHost"].as<const char *>()) {
+  if ((!ftpObj || !ftpObj["host"]) && doc["ftpHost"].as<const char *>()) {
     strlcpy(cfg.ftpHost, doc["ftpHost"], sizeof(cfg.ftpHost));
   }
-  if ((!ftpObj || !ftpObj[""user")) && doc["ftpUser"].as<const char *>()) {
+  if ((!ftpObj || !ftpObj["user"]) && doc["ftpUser"].as<const char *>()) {
     strlcpy(cfg.ftpUser, doc["ftpUser"], sizeof(cfg.ftpUser));
   }
-  if ((!ftpObj || !ftpObj[""pass")) && doc["ftpPass"].as<const char *>()) {
+  if ((!ftpObj || !ftpObj["pass"]) && doc["ftpPass"].as<const char *>()) {
     strlcpy(cfg.ftpPass, doc["ftpPass"], sizeof(cfg.ftpPass));
   }
-  if ((!ftpObj || !ftpObj[""path")) && doc["ftpPath"].as<const char *>()) {
+  if ((!ftpObj || !ftpObj["path"]) && doc["ftpPath"].as<const char *>()) {
     strlcpy(cfg.ftpPath, doc["ftpPath"], sizeof(cfg.ftpPath));
   }
 
-  if (doc[""staticIp")) {
+  if (doc["staticIp"]) {
     JsonArrayConst ip = doc["staticIp"].as<JsonArrayConst>();
     if (ip.size() == 4) {
       gStaticIp = IPAddress(ip[0], ip[1], ip[2], ip[3]);
     }
   }
-  if (doc[""gateway")) {
+  if (doc["gateway"]) {
     JsonArrayConst gw = doc["gateway"].as<JsonArrayConst>();
     if (gw.size() == 4) {
       gStaticGateway = IPAddress(gw[0], gw[1], gw[2], gw[3]);
     }
   }
-  if (doc[""subnet")) {
+  if (doc["subnet"]) {
     JsonArrayConst sn = doc["subnet"].as<JsonArrayConst>();
     if (sn.size() == 4) {
       gStaticSubnet = IPAddress(sn[0], sn[1], sn[2], sn[3]);
     }
   }
-  if (doc[""dns")) {
+  if (doc["dns"]) {
     JsonArrayConst dns = doc["dns"].as<JsonArrayConst>();
     if (dns.size() == 4) {
       gStaticDns = IPAddress(dns[0], dns[1], dns[2], dns[3]);
@@ -3843,7 +3843,7 @@ static void sendClientDataJson(EthernetClient &client) {
       }
     }
 
-    const char *existingSite = clientObj[""s") ? clientObj["s"].as<const char *>() : nullptr;
+    const char *existingSite = clientObj["s"] ? clientObj["s"].as<const char *>() : nullptr;
     if (!existingSite || strlen(existingSite) == 0) {
       clientObj["s"] = rec.site;
     }
@@ -3867,7 +3867,7 @@ static void sendClientDataJson(EthernetClient &client) {
     }
 
     JsonArray tankList;
-    if (!clientObj[""ts")) {
+    if (!clientObj["ts"]) {
       tankList = clientObj["ts"].to<JsonArray>();
     } else {
       tankList = clientObj["ts"].as<JsonArray>();
@@ -3939,66 +3939,66 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
     return;
   }
 
-  if (doc[""server")) {
+  if (doc["server"]) {
     JsonObject serverObj = doc["server"].as<JsonObject>();
-    if (serverObj[""smsPrimary")) {
+    if (serverObj["smsPrimary"]) {
       strlcpy(gConfig.smsPrimary, serverObj["smsPrimary"], sizeof(gConfig.smsPrimary));
     }
-    if (serverObj[""smsSecondary")) {
+    if (serverObj["smsSecondary"]) {
       strlcpy(gConfig.smsSecondary, serverObj["smsSecondary"], sizeof(gConfig.smsSecondary));
     }
-    if (serverObj[""dailyEmail")) {
+    if (serverObj["dailyEmail"]) {
       strlcpy(gConfig.dailyEmail, serverObj["dailyEmail"], sizeof(gConfig.dailyEmail));
     }
-    if (serverObj[""dailyHour")) {
+    if (serverObj["dailyHour"]) {
       gConfig.dailyHour = serverObj["dailyHour"].as<uint8_t>();
     }
-    if (serverObj[""dailyMinute")) {
+    if (serverObj["dailyMinute"]) {
       gConfig.dailyMinute = serverObj["dailyMinute"].as<uint8_t>();
     }
-    if (serverObj[""webRefreshSeconds")) {
+    if (serverObj["webRefreshSeconds"]) {
       gConfig.webRefreshSeconds = serverObj["webRefreshSeconds"].as<uint16_t>();
     }
-    if (serverObj[""smsOnHigh")) {
+    if (serverObj["smsOnHigh"]) {
       gConfig.smsOnHigh = serverObj["smsOnHigh"].as<bool>();
     }
-    if (serverObj[""smsOnLow")) {
+    if (serverObj["smsOnLow"]) {
       gConfig.smsOnLow = serverObj["smsOnLow"].as<bool>();
     }
-    if (serverObj[""smsOnClear")) {
+    if (serverObj["smsOnClear"]) {
       gConfig.smsOnClear = serverObj["smsOnClear"].as<bool>();
     }
 
-    if (serverObj[""ftp")) {
+    if (serverObj["ftp"]) {
       JsonObject ftpObj = serverObj["ftp"].as<JsonObject>();
-      if (ftpObj[""enabled")) {
+      if (ftpObj["enabled"]) {
         gConfig.ftpEnabled = ftpObj["enabled"].as<bool>();
       }
-      if (ftpObj[""passive")) {
+      if (ftpObj["passive"]) {
         gConfig.ftpPassive = ftpObj["passive"].as<bool>();
       }
-      if (ftpObj[""backupOnChange")) {
+      if (ftpObj["backupOnChange"]) {
         gConfig.ftpBackupOnChange = ftpObj["backupOnChange"].as<bool>();
       }
-      if (ftpObj[""restoreOnBoot")) {
+      if (ftpObj["restoreOnBoot"]) {
         gConfig.ftpRestoreOnBoot = ftpObj["restoreOnBoot"].as<bool>();
       }
-      if (ftpObj[""port")) {
+      if (ftpObj["port"]) {
         gConfig.ftpPort = ftpObj["port"].as<uint16_t>();
       }
-      if (ftpObj[""host")) {
+      if (ftpObj["host"]) {
         strlcpy(gConfig.ftpHost, ftpObj["host"], sizeof(gConfig.ftpHost));
       }
-      if (ftpObj[""user")) {
+      if (ftpObj["user"]) {
         strlcpy(gConfig.ftpUser, ftpObj["user"], sizeof(gConfig.ftpUser));
       }
-      if (ftpObj[""pass")) {
+      if (ftpObj["pass"]) {
         const char *passVal = ftpObj["pass"].as<const char *>();
         if (passVal && strlen(passVal) > 0) {
           strlcpy(gConfig.ftpPass, passVal, sizeof(gConfig.ftpPass));
         }
       }
-      if (ftpObj[""path")) {
+      if (ftpObj["path"]) {
         strlcpy(gConfig.ftpPath, ftpObj["path"], sizeof(gConfig.ftpPath));
       }
     }
@@ -4006,7 +4006,7 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
     scheduleNextDailyEmail();
   }
 
-  if (doc[""client") && doc[""config")) {
+  if (doc["client"] && doc["config"]) {
     const char *clientUid = doc["client"].as<const char *>();
     if (clientUid && strlen(clientUid) > 0) {
       ConfigDispatchStatus status = dispatchClientConfig(clientUid, doc["config"]);
@@ -4478,16 +4478,16 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   float voltage = 0.0f;
   
   // Raw mA for current-loop sensors
-  if (doc[""ma")) {
+  if (doc["ma"]) {
     mA = doc["ma"].as<float>();
     rec->sensorMa = (mA >= 4.0f) ? mA : 0.0f;
-  } else if (doc[""sensorMa")) {
+  } else if (doc["sensorMa"]) {
     mA = doc["sensorMa"].as<float>();
     rec->sensorMa = (mA >= 4.0f) ? mA : 0.0f;
   }
   
   // Raw voltage for analog sensors
-  if (doc[""vt")) {
+  if (doc["vt"]) {
     voltage = doc["vt"].as<float>();
     rec->sensorVoltage = (voltage > 0.0f) ? voltage : 0.0f;
   }
@@ -4505,10 +4505,10 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   } else if (isAnalog && voltage > 0.0f) {
     // Analog voltage sensor: convert raw voltage to level using config
     newLevel = convertVoltageToLevel(clientUid, tankNumber, voltage);
-  } else if (isDigital && doc[""fl")) {
+  } else if (isDigital && doc["fl"]) {
     // Digital float switch: use fl field
     newLevel = doc["fl"].as<float>();
-  } else if (isPulse && doc[""rm")) {
+  } else if (isPulse && doc["rm"]) {
     // Pulse/RPM sensor: use rm field
     newLevel = doc["rm"].as<float>();
   }
@@ -4571,11 +4571,11 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   float mA = 0.0f;
   float voltage = 0.0f;
   
-  if (doc[""ma")) {
+  if (doc["ma"]) {
     mA = doc["ma"].as<float>();
     rec->sensorMa = (mA >= 4.0f) ? mA : 0.0f;
   }
-  if (doc[""vt")) {
+  if (doc["vt"]) {
     voltage = doc["vt"].as<float>();
     rec->sensorVoltage = (voltage > 0.0f) ? voltage : 0.0f;
   }
@@ -4591,9 +4591,9 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
     level = convertMaToLevel(clientUid, tankNumber, mA);
   } else if (isAnalog && voltage > 0.0f) {
     level = convertVoltageToLevel(clientUid, tankNumber, voltage);
-  } else if (isDigital && doc[""fl")) {
+  } else if (isDigital && doc["fl"]) {
     level = doc["fl"].as<float>();
-  } else if (isPulse && doc[""rm")) {
+  } else if (isPulse && doc["rm"]) {
     level = doc["rm"].as<float>();
   }
   
@@ -4626,9 +4626,9 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
 
   // Check rate limit before sending SMS
   bool smsEnabled = true;
-  if (doc[""se")) {
+  if (doc["se"]) {
     smsEnabled = doc["se"].as<bool>();
-  } else if (doc[""smsEnabled")) {
+  } else if (doc["smsEnabled"]) {
     smsEnabled = doc["smsEnabled"].as<bool>();
   }
   bool smsAllowedByServer = true;
@@ -4782,14 +4782,14 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     float mA = 0.0f;
     float voltage = 0.0f;
     
-    if (t[""ma")) {
+    if (t["ma"]) {
       mA = t["ma"].as<float>();
       rec->sensorMa = (mA >= 4.0f) ? mA : 0.0f;
-    } else if (t[""sensorMa")) {
+    } else if (t["sensorMa"]) {
       mA = t["sensorMa"].as<float>();
       rec->sensorMa = (mA >= 4.0f) ? mA : 0.0f;
     }
-    if (t[""vt")) {
+    if (t["vt"]) {
       voltage = t["vt"].as<float>();
       rec->sensorVoltage = (voltage > 0.0f) ? voltage : 0.0f;
     }
@@ -4805,9 +4805,9 @@ static void handleDaily(JsonDocument &doc, double epoch) {
       newLevel = convertMaToLevel(clientUid, tankNumber, mA);
     } else if (isAnalog && voltage > 0.0f) {
       newLevel = convertVoltageToLevel(clientUid, tankNumber, voltage);
-    } else if (isDigital && t[""fl")) {
+    } else if (isDigital && t["fl"]) {
       newLevel = t["fl"].as<float>();
-    } else if (isPulse && t[""rm")) {
+    } else if (isPulse && t["rm"]) {
       newLevel = t["rm"].as<float>();
     }
     
@@ -6036,7 +6036,7 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
   }
   
   // Validate contacts structure even though not persisted yet
-  if (doc[""contacts") && doc["contacts"].is<JsonArray>()) {
+  if (doc["contacts"] && doc["contacts"].is<JsonArray>()) {
     JsonArray contactsArray = doc["contacts"].as<JsonArray>();
     
     // Limit number of contacts to prevent memory issues
@@ -6050,21 +6050,21 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
       JsonObject contact = contactVar.as<JsonObject>();
       
       // Validate required fields
-      if (!contact[""name") || !contact["name"].is<const char*>()) {
+      if (!contact["name"] || !contact["name"].is<const char*>()) {
         respondStatus(client, 400, F("Contact missing required 'name' field"));
         return;
       }
       
       // Validate that at least phone or email is present
-      bool hasPhone = contact[""phone") && contact["phone"].is<const char*>() && strlen(contact["phone"]) > 0;
-      bool hasEmail = contact[""email") && contact["email"].is<const char*>() && strlen(contact["email"]) > 0;
+      bool hasPhone = contact["phone"] && contact["phone"].is<const char*>() && strlen(contact["phone"]) > 0;
+      bool hasEmail = contact["email"] && contact["email"].is<const char*>() && strlen(contact["email"]) > 0;
       if (!hasPhone && !hasEmail) {
         respondStatus(client, 400, F("Contact must have phone or email"));
         return;
       }
       
       // Validate alarm associations array if present
-      if (contact[""alarmAssociations") && !contact["alarmAssociations"].is<JsonArray>()) {
+      if (contact["alarmAssociations"] && !contact["alarmAssociations"].is<JsonArray>()) {
         respondStatus(client, 400, F("alarmAssociations must be an array"));
         return;
       }
@@ -6104,29 +6104,29 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
   }
 
   // Extract server settings from JSON
-  if (doc[""server")) {
+  if (doc["server"]) {
     JsonObject serverObj = doc["server"];
     
     // Update SMS settings
-    if (serverObj[""smsPrimary")) {
+    if (serverObj["smsPrimary"]) {
       strlcpy(gConfig.smsPrimary, serverObj["smsPrimary"] | "", sizeof(gConfig.smsPrimary));
     }
-    if (serverObj[""smsSecondary")) {
+    if (serverObj["smsSecondary"]) {
       strlcpy(gConfig.smsSecondary, serverObj["smsSecondary"] | "", sizeof(gConfig.smsSecondary));
     }
-    if (serverObj[""smsOnHigh")) {
+    if (serverObj["smsOnHigh"]) {
       gConfig.smsOnHigh = serverObj["smsOnHigh"] | false;
     }
-    if (serverObj[""smsOnLow")) {
+    if (serverObj["smsOnLow"]) {
       gConfig.smsOnLow = serverObj["smsOnLow"] | false;
     }
-    if (serverObj[""smsOnClear")) {
+    if (serverObj["smsOnClear"]) {
       gConfig.smsOnClear = serverObj["smsOnClear"] | false;
     }
 
     // Update daily email settings with validation and schedule tracking
     bool dailyScheduleChanged = false;
-    if (serverObj[""dailyHour")) {
+    if (serverObj["dailyHour"]) {
       int hour = serverObj["dailyHour"] | 5;
       // Validate hour range (0-23)
       if (hour < 0) {
@@ -6139,7 +6139,7 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
       }
       gConfig.dailyHour = hour;
     }
-    if (serverObj[""dailyMinute")) {
+    if (serverObj["dailyMinute"]) {
       int minute = serverObj["dailyMinute"] | 0;
       // Validate minute range (0-59)
       if (minute < 0) {
@@ -6152,29 +6152,29 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
       }
       gConfig.dailyMinute = minute;
     }
-    if (serverObj[""dailyEmail")) {
+    if (serverObj["dailyEmail"]) {
       strlcpy(gConfig.dailyEmail, serverObj["dailyEmail"] | "", sizeof(gConfig.dailyEmail));
     }
 
     // Update FTP settings
-    if (serverObj[""ftp")) {
+    if (serverObj["ftp"]) {
       JsonObject ftpObj = serverObj["ftp"];
-      if (ftpObj[""enabled")) {
+      if (ftpObj["enabled"]) {
         gConfig.ftpEnabled = ftpObj["enabled"] | false;
       }
-      if (ftpObj[""passive")) {
+      if (ftpObj["passive"]) {
         gConfig.ftpPassive = ftpObj["passive"] | true;
       }
-      if (ftpObj[""backupOnChange")) {
+      if (ftpObj["backupOnChange"]) {
         gConfig.ftpBackupOnChange = ftpObj["backupOnChange"] | false;
       }
-      if (ftpObj[""restoreOnBoot")) {
+      if (ftpObj["restoreOnBoot"]) {
         gConfig.ftpRestoreOnBoot = ftpObj["restoreOnBoot"] | false;
       }
-      if (ftpObj[""host")) {
+      if (ftpObj["host"]) {
         strlcpy(gConfig.ftpHost, ftpObj["host"] | "", sizeof(gConfig.ftpHost));
       }
-      if (ftpObj[""port")) {
+      if (ftpObj["port"]) {
         uint32_t port = ftpObj["port"] | 21;
         // Validate port range (1-65535)
         if (port > 0 && port <= 65535UL) {
@@ -6183,13 +6183,13 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
           gConfig.ftpPort = 21;
         }
       }
-      if (ftpObj[""user")) {
+      if (ftpObj["user"]) {
         strlcpy(gConfig.ftpUser, ftpObj["user"] | "", sizeof(gConfig.ftpUser));
       }
-      if (ftpObj[""pass")) {
+      if (ftpObj["pass"]) {
         strlcpy(gConfig.ftpPass, ftpObj["pass"] | "", sizeof(gConfig.ftpPass));
       }
-      if (ftpObj[""path")) {
+      if (ftpObj["path"]) {
         strlcpy(gConfig.ftpPath, ftpObj["path"] | "/tankalarm/server", sizeof(gConfig.ftpPath));
       }
     }
@@ -6760,13 +6760,13 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
     return;
   }
   
-  if (!doc[""tankNumber")) {
+  if (!doc["tankNumber"]) {
     respondStatus(client, 400, F("Missing tankNumber"));
     return;
   }
   uint8_t tankNumber = doc["tankNumber"].as<uint8_t>();
   
-  if (!doc[""verifiedLevelInches")) {
+  if (!doc["verifiedLevelInches"]) {
     respondStatus(client, 400, F("Missing verifiedLevelInches"));
     return;
   }
@@ -6774,7 +6774,7 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   
   // Optional fields
   float sensorReading = doc["sensorReading"].as<float>();
-  if (!doc[""sensorReading") || sensorReading < 4.0f || sensorReading > 20.0f) {
+  if (!doc["sensorReading"] || sensorReading < 4.0f || sensorReading > 20.0f) {
     // Try to get raw sensorMa from tank record (sent directly from client)
     sensorReading = 0.0f;
     

@@ -2231,7 +2231,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
         Serial.println(cfg.name);
         // Send sensor failure alert with rate limiting
         if (checkAlarmRateLimit(idx, "sensor-fault")) {
-          JsonDocument doc(512);
+          JsonDocument doc;
           doc["client"] = gDeviceUID;
           doc["site"] = gConfig.siteName;
           doc["label"] = cfg.name;
@@ -2256,7 +2256,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
         Serial.println(cfg.name);
         // Send stuck sensor alert with rate limiting
         if (checkAlarmRateLimit(idx, "sensor-stuck")) {
-          JsonDocument doc(512);
+          JsonDocument doc;
           doc["client"] = gDeviceUID;
           doc["site"] = gConfig.siteName;
           doc["label"] = cfg.name;
@@ -2280,7 +2280,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
     Serial.print(F("Sensor recovered for tank "));
     Serial.println(cfg.name);
     // Send recovery notification (no rate limit on recovery)
-    JsonDocument doc(512);
+    JsonDocument doc;
     doc["client"] = gDeviceUID;
     doc["site"] = gConfig.siteName;
     doc["label"] = cfg.name;
@@ -2908,7 +2908,7 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   const MonitorConfig &cfg = gConfig.monitors[idx];
   MonitorRuntime &state = gMonitorState[idx];
 
-  JsonDocument doc(768);
+  JsonDocument doc;
   doc["c"] = gDeviceUID;
   doc["s"] = gConfig.siteName;
   doc["k"] = cfg.monitorNumber;
@@ -3084,7 +3084,7 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
 
   // Try to send via network if available
   if (gNotecardAvailable) {
-    JsonDocument doc(768);
+    JsonDocument doc;
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
     doc["k"] = cfg.monitorNumber;
@@ -3325,7 +3325,7 @@ static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, 
 
   // Send unload event via Notecard if network available
   if (gNotecardAvailable) {
-    JsonDocument doc(768);
+    JsonDocument doc;
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
     doc["k"] = cfg.monitorNumber;
@@ -3381,7 +3381,7 @@ static void sendDailyReport() {
   float vinVoltage = readNotecardVinVoltage();
 
   while (tankCursor < eligibleCount) {
-    JsonDocument doc(1024);
+    JsonDocument doc;
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
     doc["t"] = reportEpoch;
@@ -3944,7 +3944,7 @@ static void pollForRelayCommands() {
   if (body) {
     char *json = JConvertToJSONString(body);
     if (json) {
-      JsonDocument doc(1024);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, json);
       NoteFree(json);
       if (!err) {
