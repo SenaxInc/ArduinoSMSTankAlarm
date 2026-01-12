@@ -24,7 +24,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
-#include <memory>
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_PORTENTA_H7_M7) || defined(ARDUINO_PORTENTA_H7_M4)
   #include <PortentaEthernet.h>
   #include <Ethernet.h>
@@ -3783,13 +3782,12 @@ static void sendUnloadLogJson(EthernetClient &client) {
 }
 
 static void sendClientDataJson(EthernetClient &client) {
-  // Allocate large JSON document on heap instead of stack to prevent overflow
-  std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(CLIENT_JSON_CAPACITY));
-  if (!docPtr) {
+  // Large JSON document; ArduinoJson allocates the backing store on the heap.
+  DynamicJsonDocument doc(CLIENT_JSON_CAPACITY);
+  if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
-  DynamicJsonDocument &doc = *docPtr;
 
   JsonObject serverObj = doc.createNestedObject("srv");
   serverObj["n"] = gConfig.serverName;
@@ -3922,12 +3920,11 @@ static void sendClientDataJson(EthernetClient &client) {
 
 static void handleConfigPost(EthernetClient &client, const String &body) {
   // Use larger buffer to match MAX_HTTP_BODY_BYTES (16KB) for complex configs
-  std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(MAX_HTTP_BODY_BYTES));
-  if (!docPtr) {
+  DynamicJsonDocument doc(MAX_HTTP_BODY_BYTES);
+  if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
-  DynamicJsonDocument &doc = *docPtr;
 
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
@@ -5552,12 +5549,11 @@ static void sendHistoryJson(EthernetClient &client) {
   // Build JSON response with historical tank data for charting
   // Structure: { tanks: [...], alarms: [...], voltage: [], settings: {}, comparison: null }
   static const size_t HISTORY_JSON_CAPACITY = 65536;  // 64KB for historical data
-  std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(HISTORY_JSON_CAPACITY));
-  if (!docPtr) {
+  DynamicJsonDocument doc(HISTORY_JSON_CAPACITY);
+  if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
-  DynamicJsonDocument &doc = *docPtr;
   
   JsonArray tanksArray = doc.createNestedArray("tanks");
   JsonArray alarmsArray = doc.createNestedArray("alarms");
@@ -5690,12 +5686,11 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   
   // Build comparison JSON
   static const size_t COMPARE_JSON_CAPACITY = 32768;
-  std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(COMPARE_JSON_CAPACITY));
-  if (!docPtr) {
+  DynamicJsonDocument doc(COMPARE_JSON_CAPACITY);
+  if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
-  DynamicJsonDocument &doc = *docPtr;
   
   doc["current"]["year"] = currYear;
   doc["current"]["month"] = currMonth;
@@ -5805,12 +5800,11 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   
   // Build YoY comparison JSON
   static const size_t YOY_JSON_CAPACITY = 24576;
-  std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(YOY_JSON_CAPACITY));
-  if (!docPtr) {
+  DynamicJsonDocument doc(YOY_JSON_CAPACITY);
+  if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
-  DynamicJsonDocument &doc = *docPtr;
   
   // Get current year/month
   double nowEpoch = 0.0;
@@ -5946,12 +5940,11 @@ static void handleContactsGet(EthernetClient &client) {
   // Size: contacts(100 max × ~200) + sites(32 × 32) + alarms(32 × 160) + overhead
   // Worst case: 20000 + 1024 + 5120 + 512 = ~27KB, use heap allocation
   static const size_t CONTACTS_JSON_CAPACITY = 32768;  // 32KB
-  std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(CONTACTS_JSON_CAPACITY));
-  if (!docPtr) {
+  DynamicJsonDocument doc(CONTACTS_JSON_CAPACITY);
+  if (doc.capacity() == 0) {
     respondStatus(client, 500, F("Server Out of Memory"));
     return;
   }
-  DynamicJsonDocument &doc = *docPtr;
   
   // Load contacts from config file if it exists
   JsonArray contactsArray = doc.createNestedArray("contacts");
