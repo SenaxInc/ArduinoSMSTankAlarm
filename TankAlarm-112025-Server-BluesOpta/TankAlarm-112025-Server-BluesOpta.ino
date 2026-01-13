@@ -869,7 +869,7 @@ static void handleRefreshPost(EthernetClient &client, const String &body) {
   char clientUid[64] = {0};
   const char *pinValue = nullptr;
   if (body.length() > 0) {
-    JsonDocument doc;
+    StaticJsonDocument<256> doc;
     if (deserializeJson(doc, body) == DeserializationError::Ok) {
       const char *uid = doc["client"] | "";
       if (uid && *uid) {
@@ -1080,7 +1080,7 @@ static void handleSerialLogsDownload(EthernetClient &client, const String &query
 }
 
 static void handleSerialRequestPost(EthernetClient &client, const String &body) {
-  JsonDocument doc;
+  StaticJsonDocument<256> doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, "Invalid JSON");
     return;
@@ -1602,7 +1602,7 @@ static bool loadConfig(ServerConfig &cfg) {
     buffer[bytesRead] = '\0';
     fclose(file);
     
-    JsonDocument doc;
+    DynamicJsonDocument doc(fileSize + 256);
     DeserializationError err = deserializeJson(doc, buffer);
     free(buffer);
   #else
@@ -1615,7 +1615,7 @@ static bool loadConfig(ServerConfig &cfg) {
       return false;
     }
 
-    JsonDocument doc;
+    DynamicJsonDocument doc(file.size() + 256);
     DeserializationError err = deserializeJson(doc, file);
     file.close();
   #endif
@@ -2936,7 +2936,7 @@ static void loadHistorySettings() {
     }
     buffer[bytesRead] = '\0';
     
-    JsonDocument doc;
+    DynamicJsonDocument doc(fileSize + 128);
     DeserializationError err = deserializeJson(doc, buffer);
     free(buffer);
     
@@ -2947,7 +2947,7 @@ static void loadHistorySettings() {
     File f = LittleFS.open("/history_settings.json", "r");
     if (!f) return;
     
-    JsonDocument doc;
+    DynamicJsonDocument doc(f.size() + 128);
     if (deserializeJson(doc, f) == DeserializationError::Ok) {
       applyHistorySettingsFromJson(doc);
     }
@@ -3921,11 +3921,11 @@ static void sendClientDataJson(EthernetClient &client) {
 
 static void handleConfigPost(EthernetClient &client, const String &body) {
   // Use larger buffer to match MAX_HTTP_BODY_BYTES (16KB) for complex configs
-  JsonDocument doc;
-  if (doc.isNull()) {
-    respondStatus(client, 500, F("Server Out of Memory"));
-    return;
+  size_t capacity = body.length() + 1024;  // headroom for parsed structures
+  if (capacity < 2048) {
+    capacity = 2048;
   }
+  DynamicJsonDocument doc(capacity);
 
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
@@ -4030,7 +4030,7 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
 }
 
 static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *message) {
-  JsonDocument resp;
+  StaticJsonDocument<128> resp;
   resp["pinConfigured"] = isValidPin(gConfig.configPin);
   String msg(message);
   resp["message"] = msg;
@@ -4040,8 +4040,10 @@ static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *m
 }
 
 static void handlePinPost(EthernetClient &client, const String &body) {
-  JsonDocument doc;
-  if (deserializeJson(doc, body)) {
+  // Body is capped at 256 bytes upstream; a small static buffer is sufficient here
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
   }
@@ -4082,7 +4084,7 @@ static void handlePinPost(EthernetClient &client, const String &body) {
 }
 
 static void handleRelayPost(EthernetClient &client, const String &body) {
-  JsonDocument doc;
+  StaticJsonDocument<256> doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4200,7 +4202,7 @@ static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
 }
 
 static void handleRelayClearPost(EthernetClient &client, const String &body) {
-  JsonDocument doc;
+  StaticJsonDocument<256> doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4230,7 +4232,7 @@ static void handleRelayClearPost(EthernetClient &client, const String &body) {
 }
 
 static void handlePausePost(EthernetClient &client, const String &body) {
-  JsonDocument doc;
+  StaticJsonDocument<192> doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4257,7 +4259,7 @@ static void handlePausePost(EthernetClient &client, const String &body) {
 }
 
 static void handleFtpBackupPost(EthernetClient &client, const String &body) {
-  JsonDocument doc;
+  StaticJsonDocument<128> doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4296,7 +4298,7 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
 }
 
 static void handleFtpRestorePost(EthernetClient &client, const String &body) {
-  JsonDocument doc;
+  StaticJsonDocument<128> doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -4414,7 +4416,8 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
     char *json = JConvertToJSONString(body);
     double epoch = JGetNumber(rsp, "time");
     if (json) {
-      JsonDocument doc;
+      size_t jsonLen = strlen(json);
+      DynamicJsonDocument doc(jsonLen + 256);
       DeserializationError err = deserializeJson(doc, json);
       NoteFree(json);
       if (!err) {
@@ -5243,7 +5246,7 @@ static float convertMaToLevel(const char *clientUid, uint8_t tankNumber, float m
   }
   
   // Parse the config snapshot to find the tank settings
-  JsonDocument doc;
+  DynamicJsonDocument doc(strlen(snap->payload) + 256);
   DeserializationError err = deserializeJson(doc, snap->payload);
   if (err) {
     return ((mA - 4.0f) / 16.0f) * 100.0f;  // Fallback
@@ -5306,7 +5309,7 @@ static float convertVoltageToLevel(const char *clientUid, uint8_t tankNumber, fl
   }
   
   // Parse the config snapshot to find the tank settings
-  JsonDocument doc;
+  DynamicJsonDocument doc(strlen(snap->payload) + 256);
   DeserializationError err = deserializeJson(doc, snap->payload);
   if (err) {
     return (voltage / 10.0f) * 100.0f;  // Fallback
@@ -5401,7 +5404,7 @@ static void loadClientConfigSnapshots() {
       memcpy(snap.payload, json.c_str(), len);
       snap.payload[len] = '\0';
 
-      JsonDocument doc;
+      DynamicJsonDocument doc(strlen(snap.payload) + 256);
       if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
         const char *site = doc["site"] | "";
         strlcpy(snap.site, site, sizeof(snap.site));
@@ -5446,7 +5449,7 @@ static void loadClientConfigSnapshots() {
       memcpy(snap.payload, json.c_str(), len);
       snap.payload[len] = '\0';
 
-      JsonDocument doc;
+      DynamicJsonDocument doc(strlen(snap.payload) + 256);
       if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
         const char *site = doc["site"] | "";
         strlcpy(snap.site, site, sizeof(snap.site));
@@ -5511,7 +5514,7 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
     return;
   }
 
-  JsonDocument doc;
+  DynamicJsonDocument doc(bufferLen + 256);
   if (deserializeJson(doc, buffer) != DeserializationError::Ok) {
     return;
   }
@@ -6036,7 +6039,14 @@ static void handleContactsGet(EthernetClient &client) {
 
 static void handleContactsPost(EthernetClient &client, const String &body) {
   // Use larger buffer to match MAX_HTTP_BODY_BYTES (16KB) for large contact lists
-  JsonDocument doc;
+  size_t capacity = body.length() + 1024;  // allow some headroom for parsing
+  if (capacity < 2048) {
+    capacity = 2048;
+  }
+  if (capacity > 32768) {
+    capacity = 32768;  // hard ceiling to avoid runaway allocation
+  }
+  DynamicJsonDocument doc(capacity);
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -6770,7 +6780,11 @@ static void handleCalibrationGet(EthernetClient &client) {
 }
 
 static void handleCalibrationPost(EthernetClient &client, const String &body) {
-  JsonDocument doc;
+  size_t capacity = body.length() + 512;
+  if (capacity < 2048) {
+    capacity = 2048;
+  }
+  DynamicJsonDocument doc(capacity);
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
     respondStatus(client, 400, F("Invalid JSON"));
