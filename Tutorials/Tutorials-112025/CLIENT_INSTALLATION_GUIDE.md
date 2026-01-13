@@ -320,7 +320,9 @@ Before compiling, update the Product UID to match your Notehub project:
    ```
 4. Save the file (Ctrl+S)
 
-**Critical**: Product UID must match exactly or Notecard won't connect!
+> ⚠️ **Critical**: The Product UID must be **exactly the same** on the client and server devices. If they don't match, the client will not be able to send telemetry to the server, and the server won't be able to push configuration updates to the client.
+>
+> **Tip**: You can verify the server's Product UID in the web dashboard under **Server Settings** → **Blues Notehub**. When using the **Config Generator** page on the server, the Product UID is automatically filled in from the server settings to ensure consistency.
 
 ### Select Board and Port
 

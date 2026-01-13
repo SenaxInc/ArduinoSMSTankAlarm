@@ -231,11 +231,14 @@ notecard.sendRequest(req);
 #### 3. Configure Server
 
 1. Access server dashboard: `http://<server-ip>/`
-2. Navigate to Server Configuration
-3. Set **Client Fleet** to: `tankalarm-clients`
-4. Configure SMS/email contacts
-5. Set daily report time
-6. Save configuration
+2. Navigate to **Server Settings** page
+3. Under **Blues Notehub**, verify or set the **Product UID**
+4. Set **Client Fleet** to: `tankalarm-clients`
+5. Configure SMS/email contacts
+6. Set daily report time
+7. Save configuration
+
+> ⚠️ **Important**: The Product UID must be **identical** on the server and all client devices. When deploying clients, ensure you use the same Product UID. The **Config Generator** page automatically fills in the Product UID from the server settings to help ensure consistency.
 
 ### Phase 3: Client Deployment
 

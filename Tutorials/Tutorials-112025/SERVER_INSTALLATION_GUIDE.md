@@ -628,10 +628,35 @@ The TankAlarm dashboard provides:
 
 ## Step 10: Configure Server Settings
 
-### Access Configuration
+### Access Server Settings Page
 
-1. On dashboard, scroll to **"Server Configuration"** section
-2. Current settings displayed in form
+1. Navigate to the **Server Settings** page from the dashboard header
+2. Or go directly to: `http://<server-ip>/server-settings`
+3. Current settings are displayed in editable form fields
+
+### Blues Notehub Configuration
+
+The most critical setting is the **Product UID** - this connects your server to the correct Blues Notehub project.
+
+| Setting | Purpose | Example |
+|---------|---------|---------|
+| **Product UID** | Blues Notehub project identifier | "com.company.tankalarm:production" |
+
+> ⚠️ **CRITICAL**: The Product UID must be **identical** on both the server and all client devices. If they don't match, clients will not be able to send telemetry to the server, and the server won't be able to push configuration updates to clients.
+
+**Important Notes:**
+- The Product UID must match exactly with your Blues Notehub project
+- Both server and client devices must use the same Product UID
+- You can find your Product UID in the Notehub dashboard under **Settings → Product UID**
+- After changing the Product UID, the Notecard will reconnect to the new project
+- A full device restart may be needed for all changes to take effect reliably
+- The Config Generator page auto-fills the Product UID from the server settings to ensure consistency
+
+**When to Change Product UID:**
+- Initial setup (if not configured in firmware)
+- Moving device to a different Notehub project
+- Migrating from development to production project
+- Troubleshooting connection issues
 
 ### Update Server Settings
 
@@ -660,12 +685,23 @@ The TankAlarm dashboard provides:
 The server sends alarm requests to Blues Notehub, which delivers SMS via Twilio integration.
 
 **Setup Requirements:**
-1. Configure Twilio account in Notehub
-2. Add route: Notecard → Twilio
-3. Map alarm notes to SMS delivery
-4. Test with sample alarm
+1. Ensure Product UID is correctly configured in Server Settings
+2. Configure Twilio account in Notehub
+3. Add route: Notecard → Twilio
+4. Map alarm notes to SMS delivery
+5. Test with sample alarm
 
 See [Blues SMS Guide](https://dev.blues.io/guides-and-tutorials/twilio-sms-guide/) for detailed Twilio setup.
+
+### Troubleshooting Connection Issues
+
+If the server is not connecting to Blues Notehub:
+
+1. **Verify Product UID**: Go to Server Settings and confirm the Product UID matches your Notehub project exactly
+2. **Check Notecard**: Ensure the Blues Notecard is properly seated in the carrier
+3. **Cellular Signal**: Verify cellular coverage at the installation location
+4. **Notehub Dashboard**: Check if the device appears in your Notehub project's Devices list
+5. **Force Sync**: After changing Product UID, power cycle the device for a clean reconnection
 
 ---
 

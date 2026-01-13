@@ -172,6 +172,10 @@ const char* SERVER_PRODUCT_UID = "com.company.tankalarm:quickstart";  // ← YOU
 
 **That's it!** Everything else uses safe defaults.
 
+> 💡 **Tip**: You can also configure or change the Product UID later through the web dashboard at **Server Settings** → **Blues Notehub** → **Product UID**. This is useful if you need to move the device to a different Notehub project without reflashing.
+
+> ⚠️ **Important**: The Product UID must be **identical** on both the server and all client devices. When using the Config Generator to create client configurations, the Product UID is automatically filled in from the server settings to ensure they match.
+
 #### 2.5 Upload Server Firmware
 
 1. Connect server Opta via USB-C
@@ -228,16 +232,9 @@ Edit `config_template.h` (or create `config.h` from template):
 
 // === REQUIRED: Server Fleet ===
 #define SERVER_FLEET "tankalarm-server"  // ← Must match Notehub fleet name
-
-// === OPTIONAL: Site Info ===
-// Can be configured later via server dashboard
-#define SITE_NAME "QuickStart Site"
-#define DEVICE_LABEL "Tank-01"
-
-// === OPTIONAL: Sample Settings ===
-// Default: sample every 30 minutes
-#define DEFAULT_SAMPLE_SECONDS 1800
 ```
+
+> ⚠️ **Critical**: The `PRODUCT_UID` must be **exactly the same** as the server's Product UID. If they don't match, the client and server will not be able to communicate. You can verify the server's Product UID in the web dashboard under **Server Settings** → **Blues Notehub**.
 
 **Note**: Tank configurations will be done via the server dashboard later.
 
@@ -449,12 +446,15 @@ Next sample: 1800 seconds
 1. Notecard fully inserted in Notecarrier?
 2. Antenna connected (for cellular)?
 3. Serial monitor shows errors?
+4. Product UID correctly configured?
 
 **Solutions:**
 - Reseat Notecard
-- Check Product UID is correct
+- Check Product UID is correct (must match Notehub project exactly)
+- Go to **Server Settings** → **Blues Notehub** to verify/update Product UID
 - Try `hub.sync` command in serial monitor
 - Verify cellular coverage (for cellular Notecard)
+- Power cycle the device after changing Product UID
 
 ### Client Issues
 
@@ -535,6 +535,13 @@ You now have a working tank monitoring system. Here's what to do next:
 - Adjust based on operational needs
 - Set appropriate high/low levels
 - Configure SMS contacts
+
+**Server Settings:**
+- Navigate to **Server Settings** from the dashboard
+- Configure Blues Notehub Product UID if needed
+- Set up SMS contacts for alarm notifications
+- Configure daily email reports
+- Set up FTP backup if desired
 
 **Sample Intervals:**
 - Faster for critical tanks (e.g., 15 min)
