@@ -581,6 +581,13 @@ struct ClientConfigSnapshot {
   char payload[1536];
 };
 
+// Enum for client config dispatch status
+enum class ConfigDispatchStatus {
+  Ok,
+  PayloadTooLarge,
+  NotecardFailure
+};
+
 // FTP session and result structures for backup/restore operations
 struct FtpSession {
   EthernetClient ctrl;
