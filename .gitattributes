@@ -1,0 +1,5 @@
+# Enforce text normalization and line endings
+* text=auto
+
+# Arduino sources should be UTF-8 (no BOM) with LF line endings
+*.ino text eol=lf
