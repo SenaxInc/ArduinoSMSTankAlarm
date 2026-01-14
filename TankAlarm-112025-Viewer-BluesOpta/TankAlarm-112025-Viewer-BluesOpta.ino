@@ -492,9 +492,19 @@ static void sendDashboard(EthernetClient &client) {
   client.println(htmlLen);
   client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
   client.println();
-  for (size_t i = 0; i < htmlLen; ++i) {
-    char c = pgm_read_byte_near(VIEWER_DASHBOARD_HTML + i);
-    client.write(c);
+
+  const size_t bufSize = 128;
+  uint8_t buffer[bufSize];
+  size_t remaining = htmlLen;
+  const char* ptr = VIEWER_DASHBOARD_HTML;
+
+  while (remaining > 0) {
+    size_t chunk = (remaining < bufSize) ? remaining : bufSize;
+    for (size_t i = 0; i < chunk; i++) {
+        buffer[i] = pgm_read_byte_near(ptr++);
+    }
+    client.write(buffer, chunk);
+    remaining -= chunk;
   }
 }
 
