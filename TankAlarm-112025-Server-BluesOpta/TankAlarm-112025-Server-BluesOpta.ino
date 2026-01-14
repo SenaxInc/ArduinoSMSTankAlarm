@@ -1,6 +1,6 @@
-/*
+﻿/*
   Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
-  Version: 1.0.0
+  Version: 1.0.1
 
   Hardware:
   - Arduino Opta Lite (built-in Ethernet)

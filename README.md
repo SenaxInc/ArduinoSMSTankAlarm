@@ -1,7 +1,7 @@
-# TankAlarm v1.0 - Industrial Tank Monitoring System
+# TankAlarm v1.0.1 - Industrial Tank Monitoring System
 
-**Release Date:** December 11, 2025  
-**Version:** 1.0.0  
+**Release Date:** January 13, 2026  
+**Version:** 1.0.1  
 **Platform:** Arduino Opta + Blues Wireless Notecard
 
 A production-ready industrial monitoring system for remote tank level monitoring, alarm management, and fleet coordination using cellular IoT connectivity.
@@ -406,4 +406,4 @@ ArduinoSMSTankAlarm/
 
 **Built with ❤️ for industrial IoT applications**
 
-*Last Updated: January 7, 2026*
+*Last Updated: January 13, 2026*
