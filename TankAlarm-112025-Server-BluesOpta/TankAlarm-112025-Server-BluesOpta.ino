@@ -1,22 +1,20 @@
-/*
-  Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
-  Version: 1.0.1
-
-  Hardware:
-  - Arduino Opta Lite (built-in Ethernet)
-  - Blues Wireless Notecard for Opta adapter
-
-  Features:
-  - Aggregates telemetry from client nodes via Blues Notecard
-  - Dispatches SMS alerts for alarm events
-  - Sends daily email summary of tank levels
-  - Hosts lightweight intranet dashboard and REST API
-  - Persists configuration to internal flash (LittleFS)
-  - Allows remote client configuration updates via web UI
-
-  Created: November 2025
-  Using GitHub Copilot for code generation
-*/
+﻿// Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
+// Version: 1.0.1
+//
+// Hardware:
+// - Arduino Opta Lite (built-in Ethernet)
+// - Blues Wireless Notecard for Opta adapter
+//
+// Features:
+// - Aggregates telemetry from client nodes via Blues Notecard
+// - Dispatches SMS alerts for alarm events
+// - Sends daily email summary of tank levels
+// - Hosts lightweight intranet dashboard and REST API
+// - Persists configuration to internal flash (LittleFS)
+// - Allows remote client configuration updates via web UI
+//
+// Created: November 2025
+// Using GitHub Copilot for code generation
 
 // Shared library - common constants and utilities
 #include <TankAlarm_Common.h>
