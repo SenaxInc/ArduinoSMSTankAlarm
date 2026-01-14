@@ -33,6 +33,12 @@ jobs:
       - name: Commit ZIP (if changed)
         shell: bash
         run: |
+          # Skip commit/push for tag pushes (tags are immutable)
+          if [[ "${{ github.ref }}" == "refs/tags/"* ]]; then
+            echo "Skipping commit for tag push (tags are immutable)"
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
