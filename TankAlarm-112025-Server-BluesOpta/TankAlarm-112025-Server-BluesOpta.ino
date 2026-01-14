@@ -74,6 +74,7 @@
 
 #ifndef SERVER_CONFIG_PATH
 #define SERVER_CONFIG_PATH "/server_config.json"
+#define CONTACTS_CONFIG_PATH "/contacts_config.json"
 #endif
 
 #ifndef SERVER_HEARTBEAT_PATH
@@ -1020,6 +1021,8 @@ static void ensureConfigLoaded();
 static void createDefaultConfig(ServerConfig &cfg);
 static bool loadConfig(ServerConfig &cfg);
 static bool saveConfig(const ServerConfig &cfg);
+static bool loadContactsConfig(JsonDocument &doc);
+static bool saveContactsConfig(const JsonDocument &doc);
 static double loadServerHeartbeatEpoch();
 static bool saveServerHeartbeatEpoch(double epoch);
 static void printHardwareRequirements();
@@ -6427,66 +6430,105 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   client.print(jsonOut);
 }
 
+static bool loadContactsConfig(JsonDocument &doc) {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return false;
+    FILE *file = fopen("/fs/contacts_config.json", "r");
+    if (!file) {
+      return false;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    if (fileSize <= 0 || fileSize > 32768) {
+      fclose(file);
+      return false;
+    }
+
+    char *buffer = (char *)malloc(fileSize + 1);
+    if (!buffer) {
+      fclose(file);
+      return false;
+    }
+
+    size_t bytesRead = fread(buffer, 1, fileSize, file);
+    buffer[bytesRead] = '\0';
+    fclose(file);
+
+    DeserializationError err = deserializeJson(doc, buffer);
+    free(buffer);
+  #else
+    if (!LittleFS.exists(CONTACTS_CONFIG_PATH)) {
+      return false;
+    }
+
+    File file = LittleFS.open(CONTACTS_CONFIG_PATH, "r");
+    if (!file) {
+      return false;
+    }
+
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+  #endif
+
+  if (err) {
+    return false;
+  }
+
+  return true;
+#else
+  return false;
+#endif
+}
+
+static bool saveContactsConfig(const JsonDocument &doc) {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return false;
+    FILE *file = fopen("/fs/contacts_config.json", "w");
+    if (!file) {
+      return false;
+    }
+    String output;
+    serializeJson(doc, output);
+    size_t written = fwrite(output.c_str(), 1, output.length(), file);
+    fclose(file);
+    return written == output.length();
+  #else
+    File file = LittleFS.open(CONTACTS_CONFIG_PATH, "w");
+    if (!file) {
+      return false;
+    }
+    if (serializeJson(doc, file) == 0) {
+      file.close();
+      return false;
+    }
+    file.close();
+    return true;
+  #endif
+#else
+  return false;
+#endif
+}
+
 static void handleContactsGet(EthernetClient &client) {
-  // Build JSON response with contacts data, sites, and alarms
-  // Size: contacts(100 max x ~200) + sites(32 x 32) + alarms(32 x 160) + overhead
-  // Worst case: 20000 + 1024 + 5120 + 512 = ~27KB, use heap allocation
-  static const size_t CONTACTS_JSON_CAPACITY = 32768;  // 32KB
-  JsonDocument doc;
-  // doc.isNull() removed; in ArduinoJson 7 it returns true for new/empty docs
-  
-  // Load contacts from config file if it exists
+  static const size_t CONTACTS_JSON_CAPACITY = 32768;
+  DynamicJsonDocument doc(CONTACTS_JSON_CAPACITY);
+  bool loaded = loadContactsConfig(doc);
   JsonArray contactsArray = doc["contacts"].to<JsonArray>();
   JsonArray dailyReportArray = doc["dailyReportRecipients"].to<JsonArray>();
-  
-  // For now, return empty arrays - this will be populated from stored config
-  /*
-    Contacts will be stored in a separate config file.
-
-    Planned implementation details:
-
-    - File path: "/contacts_config.json" (stored in LittleFS)
-    - Format: JSON object with contacts array and dailyReportRecipients array
-    - JSON schema for each contact:
-        {
-          "id": string,            // Unique identifier (e.g., "contact_1234567890_abc123")
-          "name": string,          // Full name of the contact
-          "phone": string,         // Phone number in E.164 format (for SMS)
-          "email": string,         // Email address (for daily reports)
-          "alarmAssociations": [string]  // Array of alarm IDs (format: "clientUid_tankNumber")
-        }
-
-    - Example contacts_config.json:
-      {
-        "contacts": [
-          {
-            "id": "contact_1234567890_abc123",
-            "name": "Alice Smith",
-            "phone": "+15551234567",
-            "email": "alice@example.com",
-            "alarmAssociations": ["dev:123456_1", "dev:789012_2"]
-          }
-        ],
-        "dailyReportRecipients": ["contact_1234567890_abc123"]
-      }
-
-    - Integration with ServerConfig:
-        The contacts config will be loaded at startup and whenever updated via web UI.
-        When building alarm/email notifications, the server will:
-        1. Look up contact by alarm ID in alarmAssociations
-        2. Send SMS to contact.phone if present
-        3. Send email to contact.email if present
-        4. For daily reports, iterate dailyReportRecipients and send to each contact.email
-
-    - Migration path:
-        Existing hardcoded smsPrimary/smsSecondary/dailyEmail in ServerConfig will be
-        migrated to contacts on first boot after upgrade. Migration creates contacts
-        from legacy fields if contacts_config.json doesn't exist.
-  */
+  if (!loaded) {
+    contactsArray.clear();
+    dailyReportArray.clear();
+  }
   
   // Build list of unique sites from tank records
   // Use simple linear scan - with typical fleet sizes (< 100 tanks), performance is adequate
   JsonArray sitesArray = doc["sites"].to<JsonArray>();
+  sitesArray.clear();
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
     if (strlen(gTankRecords[i].site) == 0) continue;
     
@@ -6504,6 +6546,7 @@ static void handleContactsGet(EthernetClient &client) {
   
   // Build list of alarms (tanks with alarm configurations)
   JsonArray alarmsArray = doc["alarms"].to<JsonArray>();
+  alarmsArray.clear();
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
     TankRecord &tank = gTankRecords[i];
     if (strlen(tank.alarmType) > 0) {
@@ -6574,17 +6617,34 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
     }
   }
   
-  // NOTE: Contact persistence not yet implemented
-  // Future implementation will:
-  // 1. Store validated contacts in "/contacts_config.json"
-  // 2. Load contacts during server initialization
-  // 3. Integrate with existing SMS/email notification system
-  // 4. Replace hardcoded phone/email fields in ServerConfig
-  // For now, return success but data is not persisted across reboots
-  
+  // Validate daily report recipients array if present
+  if (doc["dailyReportRecipients"] && !doc["dailyReportRecipients"].is<JsonArray>()) {
+    respondStatus(client, 400, F("dailyReportRecipients must be an array"));
+    return;
+  }
+
+  DynamicJsonDocument saveDoc(capacity + 512);
+  JsonArray contactsOut = saveDoc.createNestedArray("contacts");
+  if (doc["contacts"].is<JsonArray>()) {
+    for (JsonVariant contactVar : doc["contacts"].as<JsonArray>()) {
+      contactsOut.add(contactVar);
+    }
+  }
+  JsonArray dailyOut = saveDoc.createNestedArray("dailyReportRecipients");
+  if (doc["dailyReportRecipients"].is<JsonArray>()) {
+    for (JsonVariant recipientVar : doc["dailyReportRecipients"].as<JsonArray>()) {
+      dailyOut.add(recipientVar);
+    }
+  }
+
+  if (!saveContactsConfig(saveDoc)) {
+    respondStatus(client, 500, F("Failed to save contacts"));
+    return;
+  }
+
   JsonDocument response;
   response["success"] = true;
-  response["message"] = "Contacts validated successfully (note: persistence not yet implemented)";
+  response["message"] = "Contacts saved successfully";
   
   String responseStr;
   serializeJson(response, responseStr);
