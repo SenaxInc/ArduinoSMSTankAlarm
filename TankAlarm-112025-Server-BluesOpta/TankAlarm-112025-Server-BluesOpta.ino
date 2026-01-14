@@ -1,4 +1,4 @@
-﻿// Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
+// Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
 // Version: 1.0.2
 // NOTE: Save this file as UTF-8 without BOM to avoid stray character compile errors.
 //
@@ -3989,18 +3989,30 @@ static String getQueryParam(const String &query, const char *key) {
 static void respondHtml(EthernetClient &client, const String &body) {
   String output = body;
   if (output.indexOf("loading-overlay") < 0) {
-    int bodyStart = output.indexOf("<body");
-    if (bodyStart >= 0) {
-      int bodyEnd = output.indexOf('>', bodyStart);
-      if (bodyEnd >= 0) {
-        output.insert(bodyEnd + 1, "<div id=\"loading-overlay\"><div class=\"spinner\"></div></div>");
-      }
-    }
-
+    const char *overlayMarkup = "<div id=\"loading-overlay\"><div class=\"spinner\"></div></div>";
     const char *hideScript = "<script>window.addEventListener('load',()=>{const ov=document.getElementById('loading-overlay');if(ov)ov.classList.add('hidden');});</script>";
+
+    int bodyStart = output.indexOf("<body");
+    int bodyEnd = (bodyStart >= 0) ? output.indexOf('>', bodyStart) : -1;
     int bodyClose = output.lastIndexOf("</body>");
-    if (bodyClose >= 0) {
-      output.insert(bodyClose, hideScript);
+
+    if (bodyEnd >= 0 && bodyClose > bodyEnd) {
+      String rebuilt;
+      rebuilt.reserve(output.length() + strlen(overlayMarkup) + strlen(hideScript) + 8);
+      rebuilt += output.substring(0, bodyEnd + 1);
+      rebuilt += overlayMarkup;
+      rebuilt += output.substring(bodyEnd + 1, bodyClose);
+      rebuilt += hideScript;
+      rebuilt += output.substring(bodyClose);
+      output = rebuilt;
+    } else if (bodyEnd >= 0) {
+      String rebuilt;
+      rebuilt.reserve(output.length() + strlen(overlayMarkup) + strlen(hideScript) + 8);
+      rebuilt += output.substring(0, bodyEnd + 1);
+      rebuilt += overlayMarkup;
+      rebuilt += output.substring(bodyEnd + 1);
+      rebuilt += hideScript;
+      output = rebuilt;
     } else {
       output += hideScript;
     }
