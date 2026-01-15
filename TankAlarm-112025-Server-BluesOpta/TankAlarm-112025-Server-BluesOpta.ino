@@ -6858,6 +6858,7 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
 // ============================================================================
 
 #define EMAIL_FORMAT_PATH "/email_format.json"
+#define MAX_EMAIL_FORMAT_SIZE 4096
 
 static bool loadEmailFormat(JsonDocument &doc) {
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -6872,7 +6873,7 @@ static bool loadEmailFormat(JsonDocument &doc) {
   long fileSize = ftell(file);
   fseek(file, 0, SEEK_SET);
   
-  if (fileSize <= 0 || fileSize > 4096) {
+  if (fileSize <= 0 || fileSize > MAX_EMAIL_FORMAT_SIZE) {
     fclose(file);
     return false;
   }
@@ -6889,7 +6890,7 @@ static bool loadEmailFormat(JsonDocument &doc) {
   
   DeserializationError error = deserializeJson(doc, buffer);
   free(buffer);
-  return !error;
+  return error == DeserializationError::Ok;
 #else
   if (!LittleFS.exists(EMAIL_FORMAT_PATH)) {
     return false;
@@ -6901,7 +6902,7 @@ static bool loadEmailFormat(JsonDocument &doc) {
   }
   DeserializationError error = deserializeJson(doc, file);
   file.close();
-  return !error;
+  return error == DeserializationError::Ok;
 #endif
 }
 
