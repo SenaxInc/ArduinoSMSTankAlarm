@@ -6858,7 +6858,8 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
 // ============================================================================
 
 #define EMAIL_FORMAT_PATH "/email_format.json"
-#define MAX_EMAIL_FORMAT_SIZE 4096
+// Allow up to 32KB for email format JSON (matches contacts config and JSON capacity)
+#define MAX_EMAIL_FORMAT_SIZE 32768
 
 static bool loadEmailFormat(JsonDocument &doc) {
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -6886,6 +6887,12 @@ static bool loadEmailFormat(JsonDocument &doc) {
   
   size_t bytesRead = fread(buffer, 1, fileSize, file);
   fclose(file);
+  
+  // Check if we read the expected amount
+  if (bytesRead != (size_t)fileSize) {
+    free(buffer);
+    return false;
+  }
   buffer[bytesRead] = '\0';
   
   DeserializationError error = deserializeJson(doc, buffer);
