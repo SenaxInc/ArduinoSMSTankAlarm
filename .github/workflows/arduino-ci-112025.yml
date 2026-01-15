@@ -43,6 +43,8 @@ jobs:
           arduino-cli lib install "Ethernet"
           arduino-cli lib install "ArduinoJson"
           arduino-cli lib install "Blues Wireless Notecard"
+          arduino-cli lib install "ArduinoRS485"
+          arduino-cli lib install "ArduinoModbus"
 
       - name: Compile TankAlarm-112025-Client-BluesOpta
         id: compile-112025-client
