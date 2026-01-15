@@ -433,6 +433,12 @@ struct ClientConfig {
   bool solarPowered;            // true = solar powered (use power saving features), false = grid-tied
   // I2C sensor configuration  
   uint8_t currentLoopI2cAddress; // I2C address for 4-20mA current loop sensor (default 0x64)
+  // Solar/Battery charger monitoring configuration (SunSaver MPPT via RS-485)
+  // Requires: Arduino Opta with RS485 + Morningstar MRC-1 adapter
+  SolarConfig solarCharger;     // Solar charger monitoring configuration
+  // Battery voltage monitoring via Notecard (when wired directly to battery)
+  // Provides low voltage alerts and trend analysis
+  BatteryConfig batteryMonitor; // Notecard battery voltage monitoring
 };
 
 struct MonitorRuntime {
@@ -471,6 +477,19 @@ struct MonitorRuntime {
 
 static ClientConfig gConfig;
 static MonitorRuntime gMonitorState[MAX_TANKS];
+
+// Solar/Battery charger monitoring (SunSaver MPPT via RS-485)
+static SolarManager gSolarManager;
+static unsigned long gLastSolarAlarmMillis = 0;
+static SolarAlertType gLastSolarAlert = SOLAR_ALERT_NONE;
+#define SOLAR_ALARM_MIN_INTERVAL_MS 3600000UL  // Min 1 hour between same solar alarm
+
+// Battery voltage monitoring via Notecard (when wired directly to battery)
+static BatteryData gBatteryData;
+static unsigned long gLastBatteryPollMillis = 0;
+static unsigned long gLastBatteryAlarmMillis = 0;
+static BatteryAlertType gLastBatteryAlert = BATTERY_ALERT_NONE;
+static float gLastBatteryAlertVoltage = 0.0f;
 
 static Notecard notecard;
 static char gDeviceUID[48] = {0};
@@ -638,6 +657,14 @@ static void pollForSerialRequests();
 static void sendSerialLogs();
 static void evaluateUnload(uint8_t idx);
 static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, double peakEpoch);
+static void sendSolarAlarm(SolarAlertType alertType);
+static bool appendSolarDataToDaily(JsonDocument &doc);
+// Battery voltage monitoring via Notecard (when wired directly to battery)
+static bool pollBatteryVoltage(BatteryData &data, const BatteryConfig &cfg);
+static void checkBatteryAlerts(const BatteryData &data, const BatteryConfig &cfg);
+static void sendBatteryAlarm(BatteryAlertType alertType, float voltage);
+static bool appendBatteryDataToDaily(JsonDocument &doc);
+static void configureBatteryMonitoring(const BatteryConfig &cfg);
 
 void setup() {
   Serial.begin(115200);
@@ -742,6 +769,28 @@ void setup() {
 
   initializeRelays();
   initializeClearButton();
+  
+  // Initialize solar/battery charger monitoring (SunSaver MPPT via RS-485)
+  if (gConfig.solarCharger.enabled) {
+    if (gSolarManager.begin(gConfig.solarCharger)) {
+      Serial.println(F("Solar charger monitoring enabled"));
+      addSerialLog("Solar charger monitoring initialized");
+    } else {
+      Serial.println(F("Warning: Solar charger initialization failed"));
+      addSerialLog("Solar charger init failed");
+    }
+  }
+
+  // Initialize battery voltage monitoring (Notecard direct to battery)
+  if (gConfig.batteryMonitor.enabled) {
+    configureBatteryMonitoring(gConfig.batteryMonitor);
+    Serial.println(F("Battery voltage monitoring enabled"));
+    addSerialLog("Battery voltage monitoring initialized");
+    // Initialize battery data structure
+    memset(&gBatteryData, 0, sizeof(BatteryData));
+    // Do initial poll
+    pollBatteryVoltage(gBatteryData, gConfig.batteryMonitor);
+  }
 
   Serial.println(F("Client setup complete"));
   addSerialLog("Client started successfully");
@@ -798,6 +847,36 @@ void loop() {
   
   // Check for physical clear button press
   checkClearButton(now);
+  
+  // Poll solar charger for battery health data (SunSaver MPPT via RS-485)
+  if (gSolarManager.isEnabled()) {
+    if (gSolarManager.poll(now)) {
+      // New data available - check for alerts
+      SolarAlertType alert = gSolarManager.checkAlerts();
+      if (alert != SOLAR_ALERT_NONE && gNotecardAvailable) {
+        // Only send alert if different from last, or enough time has passed
+        if (alert != gLastSolarAlert || 
+            (now - gLastSolarAlarmMillis >= SOLAR_ALARM_MIN_INTERVAL_MS)) {
+          sendSolarAlarm(alert);
+          gLastSolarAlert = alert;
+          gLastSolarAlarmMillis = now;
+        }
+      } else if (alert == SOLAR_ALERT_NONE) {
+        gLastSolarAlert = SOLAR_ALERT_NONE;  // Clear last alert state
+      }
+    }
+  }
+  
+  // Poll battery voltage via Notecard (when wired directly to battery)
+  if (gConfig.batteryMonitor.enabled && gNotecardAvailable) {
+    unsigned long batteryPollInterval = (unsigned long)gConfig.batteryMonitor.pollIntervalSec * 1000UL;
+    if (now - gLastBatteryPollMillis >= batteryPollInterval) {
+      gLastBatteryPollMillis = now;
+      if (pollBatteryVoltage(gBatteryData, gConfig.batteryMonitor)) {
+        checkBatteryAlerts(gBatteryData, gConfig.batteryMonitor);
+      }
+    }
+  }
   
   // Periodic firmware update check via Notecard DFU
   if (now - gLastDfuCheckMillis > DFU_CHECK_INTERVAL_MS) {
@@ -1025,6 +1104,26 @@ static void createDefaultConfig(ClientConfig &cfg) {
   
   // I2C address defaults
   cfg.currentLoopI2cAddress = CURRENT_LOOP_I2C_ADDRESS; // Default 0x64
+  
+  // Solar/Battery charger monitoring defaults (disabled)
+  // Requires: Arduino Opta RS485 + Morningstar MRC-1 adapter + SunSaver MPPT
+  cfg.solarCharger.enabled = false;                          // Disabled by default
+  cfg.solarCharger.modbusSlaveId = SOLAR_DEFAULT_SLAVE_ID;   // Default: 1
+  cfg.solarCharger.modbusBaudRate = SOLAR_DEFAULT_BAUD_RATE; // Default: 9600
+  cfg.solarCharger.modbusTimeoutMs = SOLAR_DEFAULT_TIMEOUT_MS; // Default: 200ms
+  cfg.solarCharger.pollIntervalSec = SOLAR_DEFAULT_POLL_INTERVAL_SEC; // Default: 60s
+  cfg.solarCharger.batteryLowVoltage = BATTERY_VOLTAGE_LOW;  // Default: 11.8V
+  cfg.solarCharger.batteryCriticalVoltage = BATTERY_VOLTAGE_CRITICAL; // Default: 11.5V
+  cfg.solarCharger.batteryHighVoltage = BATTERY_VOLTAGE_HIGH; // Default: 14.8V
+  cfg.solarCharger.alertOnLowBattery = true;                 // Send alerts for low battery
+  cfg.solarCharger.alertOnFault = true;                      // Send alerts for charger faults
+  cfg.solarCharger.alertOnCommFailure = false;               // Don't alert on comm failures (too noisy)
+  cfg.solarCharger.includeInDailyReport = true;              // Include in daily report
+  
+  // Battery voltage monitoring defaults (Notecard direct to battery)
+  // Requires: Notecard VIN wired directly to 12V battery (not through 5V regulator)
+  initBatteryConfig(&cfg.batteryMonitor, BATTERY_TYPE_LEAD_ACID_12V);
+  cfg.batteryMonitor.enabled = false;                        // Disabled by default
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -1118,6 +1217,61 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   cfg.currentLoopI2cAddress = doc["currentLoopI2cAddress"].is<int>() 
     ? (uint8_t)doc["currentLoopI2cAddress"].as<int>() 
     : CURRENT_LOOP_I2C_ADDRESS;
+
+  // Load solar charger configuration (SunSaver MPPT via RS-485)
+  JsonObject solarCfg = doc["solarCharger"].as<JsonObject>();
+  if (solarCfg) {
+    cfg.solarCharger.enabled = solarCfg["enabled"].is<bool>() ? solarCfg["enabled"].as<bool>() : false;
+    cfg.solarCharger.modbusSlaveId = solarCfg["slaveId"].is<int>() ? (uint8_t)solarCfg["slaveId"].as<int>() : SOLAR_DEFAULT_SLAVE_ID;
+    cfg.solarCharger.modbusBaudRate = solarCfg["baudRate"].is<int>() ? (uint16_t)solarCfg["baudRate"].as<int>() : SOLAR_DEFAULT_BAUD_RATE;
+    cfg.solarCharger.modbusTimeoutMs = solarCfg["timeoutMs"].is<int>() ? (uint16_t)solarCfg["timeoutMs"].as<int>() : SOLAR_DEFAULT_TIMEOUT_MS;
+    cfg.solarCharger.pollIntervalSec = solarCfg["pollIntervalSec"].is<int>() ? (uint16_t)solarCfg["pollIntervalSec"].as<int>() : SOLAR_DEFAULT_POLL_INTERVAL_SEC;
+    cfg.solarCharger.batteryLowVoltage = solarCfg["batteryLowV"].is<float>() ? solarCfg["batteryLowV"].as<float>() : BATTERY_VOLTAGE_LOW;
+    cfg.solarCharger.batteryCriticalVoltage = solarCfg["batteryCriticalV"].is<float>() ? solarCfg["batteryCriticalV"].as<float>() : BATTERY_VOLTAGE_CRITICAL;
+    cfg.solarCharger.batteryHighVoltage = solarCfg["batteryHighV"].is<float>() ? solarCfg["batteryHighV"].as<float>() : BATTERY_VOLTAGE_HIGH;
+    cfg.solarCharger.alertOnLowBattery = solarCfg["alertOnLow"].is<bool>() ? solarCfg["alertOnLow"].as<bool>() : true;
+    cfg.solarCharger.alertOnFault = solarCfg["alertOnFault"].is<bool>() ? solarCfg["alertOnFault"].as<bool>() : true;
+    cfg.solarCharger.alertOnCommFailure = solarCfg["alertOnCommFail"].is<bool>() ? solarCfg["alertOnCommFail"].as<bool>() : false;
+    cfg.solarCharger.includeInDailyReport = solarCfg["includeInDaily"].is<bool>() ? solarCfg["includeInDaily"].as<bool>() : true;
+  } else {
+    // Default values if solarCharger object not present
+    cfg.solarCharger.enabled = false;
+    cfg.solarCharger.modbusSlaveId = SOLAR_DEFAULT_SLAVE_ID;
+    cfg.solarCharger.modbusBaudRate = SOLAR_DEFAULT_BAUD_RATE;
+    cfg.solarCharger.modbusTimeoutMs = SOLAR_DEFAULT_TIMEOUT_MS;
+    cfg.solarCharger.pollIntervalSec = SOLAR_DEFAULT_POLL_INTERVAL_SEC;
+    cfg.solarCharger.batteryLowVoltage = BATTERY_VOLTAGE_LOW;
+    cfg.solarCharger.batteryCriticalVoltage = BATTERY_VOLTAGE_CRITICAL;
+    cfg.solarCharger.batteryHighVoltage = BATTERY_VOLTAGE_HIGH;
+    cfg.solarCharger.alertOnLowBattery = true;
+    cfg.solarCharger.alertOnFault = true;
+    cfg.solarCharger.alertOnCommFailure = false;
+    cfg.solarCharger.includeInDailyReport = true;
+  }
+
+  // Load battery voltage monitoring configuration (Notecard direct to battery)
+  JsonObject batCfg = doc["batteryMonitor"].as<JsonObject>();
+  if (batCfg) {
+    cfg.batteryMonitor.enabled = batCfg["enabled"].is<bool>() ? batCfg["enabled"].as<bool>() : false;
+    cfg.batteryMonitor.batteryType = batCfg["type"].is<int>() ? (BatteryType)batCfg["type"].as<int>() : BATTERY_TYPE_LEAD_ACID_12V;
+    cfg.batteryMonitor.highVoltage = batCfg["highV"].is<float>() ? batCfg["highV"].as<float>() : 14.8f;
+    cfg.batteryMonitor.normalVoltage = batCfg["normalV"].is<float>() ? batCfg["normalV"].as<float>() : LEAD_ACID_12V_NORMAL;
+    cfg.batteryMonitor.lowVoltage = batCfg["lowV"].is<float>() ? batCfg["lowV"].as<float>() : LEAD_ACID_12V_LOW;
+    cfg.batteryMonitor.criticalVoltage = batCfg["criticalV"].is<float>() ? batCfg["criticalV"].as<float>() : LEAD_ACID_12V_CRITICAL;
+    cfg.batteryMonitor.calibrationOffset = batCfg["calibration"].is<float>() ? batCfg["calibration"].as<float>() : BATTERY_DEFAULT_CALIBRATION;
+    cfg.batteryMonitor.pollIntervalSec = batCfg["pollIntervalSec"].is<int>() ? (uint16_t)batCfg["pollIntervalSec"].as<int>() : BATTERY_DEFAULT_POLL_INTERVAL_SEC;
+    cfg.batteryMonitor.trendAnalysisHours = batCfg["trendHours"].is<int>() ? (uint16_t)batCfg["trendHours"].as<int>() : BATTERY_DEFAULT_TREND_HOURS;
+    cfg.batteryMonitor.alertOnLow = batCfg["alertOnLow"].is<bool>() ? batCfg["alertOnLow"].as<bool>() : true;
+    cfg.batteryMonitor.alertOnCritical = batCfg["alertOnCritical"].is<bool>() ? batCfg["alertOnCritical"].as<bool>() : true;
+    cfg.batteryMonitor.alertOnDeclining = batCfg["alertOnDecline"].is<bool>() ? batCfg["alertOnDecline"].as<bool>() : true;
+    cfg.batteryMonitor.alertOnRecovery = batCfg["alertOnRecovery"].is<bool>() ? batCfg["alertOnRecovery"].as<bool>() : false;
+    cfg.batteryMonitor.declineAlertThreshold = batCfg["declineThreshold"].is<float>() ? batCfg["declineThreshold"].as<float>() : BATTERY_DEFAULT_DECLINE_THRESHOLD;
+    cfg.batteryMonitor.includeInDailyReport = batCfg["includeInDaily"].is<bool>() ? batCfg["includeInDaily"].as<bool>() : true;
+  } else {
+    // Default values if batteryMonitor object not present
+    initBatteryConfig(&cfg.batteryMonitor, BATTERY_TYPE_LEAD_ACID_12V);
+    cfg.batteryMonitor.enabled = false;
+  }
 
   // Support both old "tanks" and new "monitors" array names
   JsonArray monitorsArray = doc["monitors"].as<JsonArray>();
@@ -1308,6 +1462,39 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   
   // Save I2C address configuration
   doc["currentLoopI2cAddress"] = cfg.currentLoopI2cAddress;
+
+  // Save solar charger configuration (SunSaver MPPT via RS-485)
+  JsonObject solarCfg = doc["solarCharger"].to<JsonObject>();
+  solarCfg["enabled"] = cfg.solarCharger.enabled;
+  solarCfg["slaveId"] = cfg.solarCharger.modbusSlaveId;
+  solarCfg["baudRate"] = cfg.solarCharger.modbusBaudRate;
+  solarCfg["timeoutMs"] = cfg.solarCharger.modbusTimeoutMs;
+  solarCfg["pollIntervalSec"] = cfg.solarCharger.pollIntervalSec;
+  solarCfg["batteryLowV"] = cfg.solarCharger.batteryLowVoltage;
+  solarCfg["batteryCriticalV"] = cfg.solarCharger.batteryCriticalVoltage;
+  solarCfg["batteryHighV"] = cfg.solarCharger.batteryHighVoltage;
+  solarCfg["alertOnLow"] = cfg.solarCharger.alertOnLowBattery;
+  solarCfg["alertOnFault"] = cfg.solarCharger.alertOnFault;
+  solarCfg["alertOnCommFail"] = cfg.solarCharger.alertOnCommFailure;
+  solarCfg["includeInDaily"] = cfg.solarCharger.includeInDailyReport;
+
+  // Save battery voltage monitoring configuration (Notecard direct to battery)
+  JsonObject batCfg = doc["batteryMonitor"].to<JsonObject>();
+  batCfg["enabled"] = cfg.batteryMonitor.enabled;
+  batCfg["type"] = (int)cfg.batteryMonitor.batteryType;
+  batCfg["highV"] = cfg.batteryMonitor.highVoltage;
+  batCfg["normalV"] = cfg.batteryMonitor.normalVoltage;
+  batCfg["lowV"] = cfg.batteryMonitor.lowVoltage;
+  batCfg["criticalV"] = cfg.batteryMonitor.criticalVoltage;
+  batCfg["calibration"] = cfg.batteryMonitor.calibrationOffset;
+  batCfg["pollIntervalSec"] = cfg.batteryMonitor.pollIntervalSec;
+  batCfg["trendHours"] = cfg.batteryMonitor.trendAnalysisHours;
+  batCfg["alertOnLow"] = cfg.batteryMonitor.alertOnLow;
+  batCfg["alertOnCritical"] = cfg.batteryMonitor.alertOnCritical;
+  batCfg["alertOnDecline"] = cfg.batteryMonitor.alertOnDeclining;
+  batCfg["alertOnRecovery"] = cfg.batteryMonitor.alertOnRecovery;
+  batCfg["declineThreshold"] = cfg.batteryMonitor.declineAlertThreshold;
+  batCfg["includeInDaily"] = cfg.batteryMonitor.includeInDailyReport;
 
   JsonArray tanks = doc["tanks"].to<JsonArray>();
   for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
@@ -1503,6 +1690,35 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   }
   if (needsRelayOutput) {
     Serial.println(F("Relay outputs wired for audible/visual alarm"));
+  }
+  if (cfg.solarCharger.enabled) {
+    Serial.println(F("Solar Charger Monitoring (SunSaver MPPT):"));
+    Serial.println(F("  - Arduino Opta with RS485 (WiFi/RS485 model or RS485 shield)"));
+    Serial.println(F("  - Morningstar MRC-1 (MeterBus to EIA-485 Adapter)"));
+    Serial.println(F("    Powered by SunSaver via RJ-11, no external power needed"));
+    Serial.println(F("  - RS485 Wiring: Opta A(-) to MRC-1 B(-), Opta B(+) to MRC-1 A(+)"));
+    Serial.print(F("  - Modbus: Slave ID "));
+    Serial.print(cfg.solarCharger.modbusSlaveId);
+    Serial.print(F(", "));
+    Serial.print(cfg.solarCharger.modbusBaudRate);
+    Serial.println(F(" baud"));
+  }
+  if (cfg.batteryMonitor.enabled) {
+    Serial.println(F("Battery Voltage Monitoring (Notecard direct):"));
+    Serial.println(F("  - Notecard VIN wired directly to 12V battery"));
+    Serial.println(F("  - Optional: Schottky diode for reverse polarity protection"));
+    Serial.print(F("  - Battery type: "));
+    switch (cfg.batteryMonitor.batteryType) {
+      case BATTERY_TYPE_LEAD_ACID_12V: Serial.println(F("12V Lead-Acid (AGM/Flooded/Gel)")); break;
+      case BATTERY_TYPE_LIFEPO4_12V:   Serial.println(F("12V LiFePO4 (4S)")); break;
+      case BATTERY_TYPE_LIPO:          Serial.println(F("LiPo")); break;
+      default:                         Serial.println(F("Custom")); break;
+    }
+    Serial.print(F("  - Thresholds: Low="));
+    Serial.print(cfg.batteryMonitor.lowVoltage, 1);
+    Serial.print(F("V, Critical="));
+    Serial.print(cfg.batteryMonitor.criticalVoltage, 1);
+    Serial.println(F("V"));
   }
   Serial.println(F("-----------------------------"));
 }
@@ -3359,6 +3575,426 @@ static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, 
   }
 }
 
+// ============================================================================
+// Solar/Battery Charger Alarm Functions (SunSaver MPPT via RS-485)
+// ============================================================================
+
+static void sendSolarAlarm(SolarAlertType alertType) {
+  if (!gSolarManager.isEnabled() || alertType == SOLAR_ALERT_NONE) {
+    return;
+  }
+  
+  const SolarData &data = gSolarManager.getData();
+  const char *alertDesc = gSolarManager.getAlertDescription(alertType);
+  
+  Serial.print(F("Solar alert: "));
+  Serial.println(alertDesc);
+  
+  char logMsg[128];
+  snprintf(logMsg, sizeof(logMsg), "Solar: %s (%.2fV)", alertDesc, data.batteryVoltage);
+  addSerialLog(logMsg);
+  
+  if (!gNotecardAvailable) {
+    Serial.println(F("Network offline - solar alarm not sent"));
+    return;
+  }
+  
+  JsonDocument doc;
+  doc["c"] = gDeviceUID;
+  doc["s"] = gConfig.siteName;
+  doc["type"] = "solar";
+  doc["t"] = currentEpoch();
+  
+  // Alert type and description
+  switch (alertType) {
+    case SOLAR_ALERT_BATTERY_LOW:     doc["alert"] = "battery_low"; break;
+    case SOLAR_ALERT_BATTERY_CRITICAL: doc["alert"] = "battery_critical"; break;
+    case SOLAR_ALERT_BATTERY_HIGH:    doc["alert"] = "battery_high"; break;
+    case SOLAR_ALERT_FAULT:           doc["alert"] = "fault"; break;
+    case SOLAR_ALERT_ALARM:           doc["alert"] = "alarm"; break;
+    case SOLAR_ALERT_COMM_FAILURE:    doc["alert"] = "comm_fail"; break;
+    case SOLAR_ALERT_HEATSINK_TEMP:   doc["alert"] = "heatsink_temp"; break;
+    case SOLAR_ALERT_NO_CHARGE:       doc["alert"] = "no_charge"; break;
+    default:                          doc["alert"] = "unknown"; break;
+  }
+  doc["desc"] = alertDesc;
+  
+  // Battery and solar data
+  doc["bv"] = roundTo(data.batteryVoltage, 2);       // Battery voltage
+  doc["av"] = roundTo(data.arrayVoltage, 2);         // Array (solar) voltage
+  doc["ic"] = roundTo(data.chargeCurrent, 2);        // Charge current
+  doc["cs"] = gSolarManager.getChargeStateDescription();  // Charge state
+  
+  // Include faults/alarms if present
+  if (data.hasFault) {
+    doc["faults"] = gSolarManager.getFaultDescription();
+  }
+  if (data.hasAlarm) {
+    doc["alarms"] = gSolarManager.getAlarmDescription();
+  }
+  
+  // Daily stats
+  doc["bvMin"] = roundTo(data.batteryVoltageMinDaily, 2);  // Daily min voltage
+  doc["bvMax"] = roundTo(data.batteryVoltageMaxDaily, 2);  // Daily max voltage
+  
+  // Send as alarm with SMS escalation if critical
+  bool critical = (alertType == SOLAR_ALERT_BATTERY_CRITICAL || 
+                   alertType == SOLAR_ALERT_FAULT);
+  doc["se"] = critical && gConfig.solarCharger.alertOnLowBattery;  // SMS escalation
+  
+  publishNote(ALARM_FILE, doc, true);
+  Serial.println(F("Solar alarm sent to server"));
+}
+
+// Append solar charger data to daily report (called from sendDailyReport)
+static bool appendSolarDataToDaily(JsonDocument &doc) {
+  if (!gSolarManager.isEnabled() || !gConfig.solarCharger.includeInDailyReport) {
+    return false;
+  }
+  
+  const SolarData &data = gSolarManager.getData();
+  
+  // Only include if we have valid communication
+  if (!data.communicationOk && data.lastReadMillis == 0) {
+    return false;
+  }
+  
+  JsonObject solar = doc["solar"].to<JsonObject>();
+  
+  // Current readings
+  solar["bv"] = roundTo(data.batteryVoltage, 2);       // Battery voltage
+  solar["av"] = roundTo(data.arrayVoltage, 2);         // Array voltage
+  solar["ic"] = roundTo(data.chargeCurrent, 2);        // Charge current
+  solar["cs"] = gSolarManager.getChargeStateDescription();  // Charge state
+  
+  // Daily statistics
+  solar["bvMin"] = roundTo(data.batteryVoltageMinDaily, 2);
+  solar["bvMax"] = roundTo(data.batteryVoltageMaxDaily, 2);
+  solar["ah"] = roundTo(data.ampHoursDaily, 1);        // Amp-hours today
+  
+  // Health status
+  solar["healthy"] = data.solarHealthy;
+  solar["battOk"] = data.batteryHealthy;
+  solar["commOk"] = data.communicationOk;
+  
+  // Include any active faults/alarms
+  if (data.hasFault) {
+    solar["faults"] = gSolarManager.getFaultDescription();
+  }
+  if (data.hasAlarm) {
+    solar["alarms"] = gSolarManager.getAlarmDescription();
+  }
+  
+  // Temperature
+  solar["ht"] = data.heatsinkTemp;  // Heatsink temp °C
+  
+  return true;
+}
+
+// ============================================================================
+// Battery Voltage Monitoring Functions (Notecard direct to battery)
+// ============================================================================
+
+/**
+ * Configure Notecard card.voltage with appropriate battery thresholds.
+ * Must be called once during setup when battery monitoring is enabled.
+ */
+static void configureBatteryMonitoring(const BatteryConfig &cfg) {
+  // Set calibration offset (diode voltage drop compensation)
+  J *req = notecard.newRequest("card.voltage");
+  if (!req) return;
+  
+  JAddBoolToObject(req, "set", true);
+  JAddNumberToObject(req, "calibration", cfg.calibrationOffset);
+  
+  // Create custom mode string for voltage thresholds
+  char modeStr[80];
+  snprintf(modeStr, sizeof(modeStr), 
+           "usb:%.1f;high:%.1f;normal:%.1f;low:%.1f;dead:0",
+           cfg.highVoltage + 0.5f,
+           cfg.highVoltage,
+           cfg.normalVoltage,
+           cfg.criticalVoltage);
+  JAddStringToObject(req, "mode", modeStr);
+  
+  // Enable voltage trend tracking
+  JAddBoolToObject(req, "on", true);
+  
+  J *rsp = notecard.requestAndResponse(req);
+  if (rsp) {
+    const char *err = JGetString(rsp, "err");
+    if (err && strlen(err) > 0) {
+      Serial.print(F("Battery config error: "));
+      Serial.println(err);
+    } else {
+      Serial.print(F("Battery thresholds configured: "));
+      Serial.println(modeStr);
+    }
+    notecard.deleteResponse(rsp);
+  }
+}
+
+/**
+ * Poll battery voltage and trend data from Notecard.
+ * Returns true if data was successfully retrieved.
+ */
+static bool pollBatteryVoltage(BatteryData &data, const BatteryConfig &cfg) {
+  J *req = notecard.newRequest("card.voltage");
+  if (!req) {
+    data.valid = false;
+    return false;
+  }
+  
+  // Request trend analysis data
+  JAddNumberToObject(req, "hours", cfg.trendAnalysisHours);
+  
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    data.valid = false;
+    Serial.println(F("No response from card.voltage"));
+    return false;
+  }
+  
+  const char *err = JGetString(rsp, "err");
+  if (err && strlen(err) > 0) {
+    Serial.print(F("card.voltage error: "));
+    Serial.println(err);
+    notecard.deleteResponse(rsp);
+    data.valid = false;
+    return false;
+  }
+  
+  // Parse response
+  data.voltage = (float)JGetNumber(rsp, "value");
+  data.mode = JGetString(rsp, "mode");
+  data.usbPowered = JGetBool(rsp, "usb");
+  data.uptimeMinutes = (uint32_t)JGetNumber(rsp, "minutes");
+  
+  // Trend analysis data
+  data.voltageMin = (float)JGetNumber(rsp, "vmin");
+  data.voltageMax = (float)JGetNumber(rsp, "vmax");
+  data.voltageAvg = (float)JGetNumber(rsp, "vavg");
+  data.analysisHours = (uint16_t)JGetNumber(rsp, "hours");
+  data.dailyChange = (float)JGetNumber(rsp, "daily");
+  data.weeklyChange = (float)JGetNumber(rsp, "weekly");
+  data.monthlyChange = (float)JGetNumber(rsp, "monthly");
+  
+  notecard.deleteResponse(rsp);
+  
+  // Derive status flags
+  data.isHealthy = (data.voltage >= cfg.normalVoltage && data.voltage <= cfg.highVoltage);
+  data.isCharging = (data.dailyChange > 0.0f);
+  data.isDeclining = (data.weeklyChange < -cfg.declineAlertThreshold);
+  
+  data.valid = true;
+  data.lastReadMillis = millis();
+  
+  // Log voltage reading
+  Serial.print(F("Battery: "));
+  Serial.print(data.voltage, 2);
+  Serial.print(F("V ("));
+  Serial.print(getBatteryStateDescription(data.voltage, &cfg));
+  Serial.print(F(")"));
+  if (data.weeklyChange != 0.0f) {
+    Serial.print(F(" 7d: "));
+    Serial.print(data.weeklyChange > 0 ? "+" : "");
+    Serial.print(data.weeklyChange, 2);
+    Serial.print(F("V"));
+  }
+  Serial.println();
+  
+  return true;
+}
+
+/**
+ * Check battery data against thresholds and trigger alerts if needed.
+ */
+static void checkBatteryAlerts(const BatteryData &data, const BatteryConfig &cfg) {
+  if (!data.valid) return;
+  
+  unsigned long now = millis();
+  BatteryAlertType alert = BATTERY_ALERT_NONE;
+  
+  // Check voltage thresholds (most critical first)
+  if (data.voltage <= cfg.criticalVoltage) {
+    if (cfg.alertOnCritical) {
+      alert = BATTERY_ALERT_CRITICAL;
+    }
+  } else if (data.voltage <= cfg.lowVoltage) {
+    if (cfg.alertOnLow) {
+      alert = BATTERY_ALERT_LOW;
+    }
+  } else if (data.voltage >= cfg.highVoltage) {
+    // High voltage (overcharge) alert
+    alert = BATTERY_ALERT_HIGH;
+  } else if (data.isDeclining && cfg.alertOnDeclining) {
+    // Significant declining trend
+    alert = BATTERY_ALERT_DECLINING;
+  } else if (data.voltage >= cfg.normalVoltage && gLastBatteryAlert != BATTERY_ALERT_NONE) {
+    // Battery recovered to normal
+    if (cfg.alertOnRecovery && gLastBatteryAlert == BATTERY_ALERT_LOW) {
+      alert = BATTERY_ALERT_RECOVERED;
+    }
+  }
+  
+  // Send alert if needed (with rate limiting)
+  if (alert != BATTERY_ALERT_NONE) {
+    bool shouldSend = false;
+    
+    // Always send critical alerts immediately
+    if (alert == BATTERY_ALERT_CRITICAL) {
+      shouldSend = true;
+    }
+    // For other alerts, check rate limiting
+    else if (alert != gLastBatteryAlert || 
+             now - gLastBatteryAlarmMillis >= BATTERY_ALARM_MIN_INTERVAL_MS) {
+      shouldSend = true;
+    }
+    
+    if (shouldSend && gNotecardAvailable) {
+      sendBatteryAlarm(alert, data.voltage);
+      gLastBatteryAlert = alert;
+      gLastBatteryAlarmMillis = now;
+      gLastBatteryAlertVoltage = data.voltage;
+    }
+  } else if (gLastBatteryAlert != BATTERY_ALERT_NONE && data.voltage >= cfg.normalVoltage) {
+    // Clear alert state when voltage returns to normal
+    gLastBatteryAlert = BATTERY_ALERT_NONE;
+  }
+}
+
+/**
+ * Send battery voltage alert to server.
+ */
+static void sendBatteryAlarm(BatteryAlertType alertType, float voltage) {
+  const char *alertDesc;
+  switch (alertType) {
+    case BATTERY_ALERT_LOW:       alertDesc = "Battery voltage low"; break;
+    case BATTERY_ALERT_CRITICAL:  alertDesc = "Battery voltage CRITICAL"; break;
+    case BATTERY_ALERT_HIGH:      alertDesc = "Battery overvoltage"; break;
+    case BATTERY_ALERT_DECLINING: alertDesc = "Battery voltage declining"; break;
+    case BATTERY_ALERT_RECOVERED: alertDesc = "Battery voltage recovered"; break;
+    default:                      alertDesc = "Battery alert"; break;
+  }
+  
+  Serial.print(F("Battery alert: "));
+  Serial.print(alertDesc);
+  Serial.print(F(" ("));
+  Serial.print(voltage, 2);
+  Serial.println(F("V)"));
+  
+  char logMsg[128];
+  snprintf(logMsg, sizeof(logMsg), "Battery: %s (%.2fV)", alertDesc, voltage);
+  addSerialLog(logMsg);
+  
+  if (!gNotecardAvailable) {
+    Serial.println(F("Network offline - battery alarm not sent"));
+    return;
+  }
+  
+  JsonDocument doc;
+  doc["c"] = gDeviceUID;
+  doc["s"] = gConfig.siteName;
+  doc["type"] = "battery";
+  doc["t"] = currentEpoch();
+  
+  // Alert type and description
+  switch (alertType) {
+    case BATTERY_ALERT_LOW:       doc["alert"] = "low"; break;
+    case BATTERY_ALERT_CRITICAL:  doc["alert"] = "critical"; break;
+    case BATTERY_ALERT_HIGH:      doc["alert"] = "high"; break;
+    case BATTERY_ALERT_DECLINING: doc["alert"] = "declining"; break;
+    case BATTERY_ALERT_RECOVERED: doc["alert"] = "recovered"; break;
+    default:                      doc["alert"] = "unknown"; break;
+  }
+  doc["desc"] = alertDesc;
+  
+  // Current voltage data
+  doc["v"] = roundTo(voltage, 2);
+  doc["state"] = getBatteryStateDescription(voltage, &gConfig.batteryMonitor);
+  
+  // Include trend data if available
+  if (gBatteryData.valid) {
+    if (gBatteryData.weeklyChange != 0.0f) {
+      doc["weekly"] = roundTo(gBatteryData.weeklyChange, 2);
+    }
+    if (gBatteryData.voltageMin > 0.0f) {
+      doc["vMin"] = roundTo(gBatteryData.voltageMin, 2);
+      doc["vMax"] = roundTo(gBatteryData.voltageMax, 2);
+    }
+    // Estimate state of charge for 12V lead-acid
+    if (gConfig.batteryMonitor.batteryType == BATTERY_TYPE_LEAD_ACID_12V) {
+      doc["soc"] = estimateLeadAcidSOC(voltage);
+    } else if (gConfig.batteryMonitor.batteryType == BATTERY_TYPE_LIFEPO4_12V) {
+      doc["soc"] = estimateLiFePO4SOC(voltage);
+    }
+  }
+  
+  // SMS escalation for critical alerts
+  bool critical = (alertType == BATTERY_ALERT_CRITICAL);
+  doc["se"] = critical;  // SMS escalation
+  
+  publishNote(ALARM_FILE, doc, true);
+  Serial.println(F("Battery alarm sent to server"));
+}
+
+/**
+ * Append battery voltage data to daily report.
+ */
+static bool appendBatteryDataToDaily(JsonDocument &doc) {
+  if (!gConfig.batteryMonitor.enabled || !gConfig.batteryMonitor.includeInDailyReport) {
+    return false;
+  }
+  
+  if (!gBatteryData.valid) {
+    // Try to get fresh data
+    pollBatteryVoltage(gBatteryData, gConfig.batteryMonitor);
+  }
+  
+  if (!gBatteryData.valid) {
+    return false;
+  }
+  
+  JsonObject battery = doc["battery"].to<JsonObject>();
+  
+  // Current voltage
+  battery["v"] = roundTo(gBatteryData.voltage, 2);
+  battery["state"] = getBatteryStateDescription(gBatteryData.voltage, &gConfig.batteryMonitor);
+  battery["healthy"] = gBatteryData.isHealthy;
+  
+  // Stats over analysis period
+  if (gBatteryData.voltageMin > 0.0f) {
+    battery["vMin"] = roundTo(gBatteryData.voltageMin, 2);
+    battery["vMax"] = roundTo(gBatteryData.voltageMax, 2);
+    battery["vAvg"] = roundTo(gBatteryData.voltageAvg, 2);
+  }
+  
+  // Trend data
+  if (gBatteryData.dailyChange != 0.0f) {
+    battery["daily"] = roundTo(gBatteryData.dailyChange, 2);
+  }
+  if (gBatteryData.weeklyChange != 0.0f) {
+    battery["weekly"] = roundTo(gBatteryData.weeklyChange, 2);
+  }
+  if (gBatteryData.monthlyChange != 0.0f) {
+    battery["monthly"] = roundTo(gBatteryData.monthlyChange, 2);
+  }
+  
+  // Estimated SOC
+  if (gConfig.batteryMonitor.batteryType == BATTERY_TYPE_LEAD_ACID_12V) {
+    battery["soc"] = estimateLeadAcidSOC(gBatteryData.voltage);
+  } else if (gConfig.batteryMonitor.batteryType == BATTERY_TYPE_LIFEPO4_12V) {
+    battery["soc"] = estimateLiFePO4SOC(gBatteryData.voltage);
+  }
+  
+  // Uptime
+  if (gBatteryData.uptimeMinutes > 0) {
+    battery["uptime"] = gBatteryData.uptimeMinutes;  // Minutes
+  }
+  
+  return true;
+}
+
 static void sendDailyReport() {
   uint8_t eligibleIndices[MAX_TANKS];
   uint8_t eligibleCount = 0;
@@ -3390,6 +4026,12 @@ static void sendDailyReport() {
     // Include VIN voltage in the first part of the daily report
     if (part == 0 && vinVoltage > 0.0f) {
       doc["v"] = vinVoltage;
+    }
+    
+    // Include solar charger data in the first part of the daily report
+    if (part == 0) {
+      appendSolarDataToDaily(doc);
+      appendBatteryDataToDaily(doc);  // Notecard battery voltage monitoring
     }
 
     JsonArray tanks = doc["tanks"].to<JsonArray>();

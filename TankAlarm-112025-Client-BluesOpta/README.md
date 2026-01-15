@@ -348,6 +348,250 @@ Note: With accumulated mode enabled and 30-minute sample intervals, this can det
 - For omnipolar sensors, each magnet passing creates 2 pulses (both N and S poles trigger)
 - Monitor both high and low thresholds to detect over-speed and stall conditions
 
+### Solar Charger Monitoring (SunSaver MPPT)
+
+The system supports optional monitoring of Morningstar SunSaver MPPT solar battery chargers via Modbus RTU over RS-485. This enables:
+
+- **Battery voltage monitoring** - Track charge state and detect low battery conditions
+- **Solar panel voltage monitoring** - Verify solar input is functioning
+- **Charge current monitoring** - See how much power is being harvested
+- **Fault detection** - Immediate alerts for overcurrent, overvoltage, or hardware faults
+- **Daily statistics** - Min/max voltage, amp-hours charged, included in daily reports
+- **Battery health alerts** - SMS/email warnings when battery voltage drops below thresholds
+
+**Required Hardware:**
+
+1. **Arduino Opta with RS485** - Use the Opta WiFi/RS485 variant (AFX00005) which has built-in RS485, or add an RS485 expansion to the Opta Lite
+
+2. **Morningstar MRC-1 Adapter** (MeterBus to EIA-485)
+   - Converts SunSaver's proprietary RJ-11 MeterBus to industry-standard RS-485
+   - Powered by the SunSaver via RJ-11 cable - no external power needed
+   - Simply connect to SunSaver RJ-11 port and wire RS-485 terminals to Opta
+   - Purchase from Morningstar or authorized distributors
+
+3. **SunSaver MPPT Solar Charge Controller** - Any model in the SunSaver MPPT family
+
+**RS-485 Wiring (Using MRC-1):**
+
+| Arduino Opta RS485 | MRC-1 Terminal | Function |
+|--------------------|----------------|----------|
+| **A (-)** | **Terminal B (-)** | Data Negative |
+| **B (+)** | **Terminal A (+)** | Data Positive |
+| **GND** | **Terminal G** | Signal Ground |
+
+> **Note:** A/B labeling varies between manufacturers. If communication fails, try swapping the A and B wires at the Opta end.
+
+**Configuration Parameters:**
+
+```json
+{
+  "solarCharger": {
+    "enabled": true,
+    "slaveId": 1,
+    "baudRate": 9600,
+    "timeoutMs": 200,
+    "pollIntervalSec": 60,
+    "batteryLowV": 11.8,
+    "batteryCriticalV": 11.5,
+    "batteryHighV": 14.8,
+    "alertOnLow": true,
+    "alertOnFault": true,
+    "alertOnCommFail": false,
+    "includeInDaily": true
+  }
+}
+```
+
+**Configuration Fields:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable solar charger monitoring |
+| `slaveId` | `1` | Modbus slave ID of SunSaver (usually 1) |
+| `baudRate` | `9600` | Serial baud rate (typically 9600) |
+| `timeoutMs` | `200` | Modbus read timeout in milliseconds |
+| `pollIntervalSec` | `60` | How often to poll charger (seconds) |
+| `batteryLowV` | `11.8` | Low voltage warning threshold (12V AGM) |
+| `batteryCriticalV` | `11.5` | Critical voltage alarm threshold |
+| `batteryHighV` | `14.8` | High voltage (overcharge) threshold |
+| `alertOnLow` | `true` | Send alerts for low battery |
+| `alertOnFault` | `true` | Send alerts for charger faults |
+| `alertOnCommFail` | `false` | Alert on RS-485 communication failure |
+| `includeInDaily` | `true` | Include solar data in daily report |
+
+**Battery Voltage Thresholds (12V AGM):**
+
+| Voltage | State | Description |
+|---------|-------|-------------|
+| < 11.5V | Critical | Battery damage imminent, immediate alarm |
+| 11.5-11.8V | Low | Battery should be charged soon, warning |
+| 12.0-13.4V | Normal | Healthy operating range |
+| 13.4-14.4V | Charging | Bulk or absorption charging |
+| 14.4-14.8V | Float | Fully charged, maintenance mode |
+| > 14.8V | High | Overcharge condition, investigate |
+
+**Charge States:**
+
+| State | Description |
+|-------|-------------|
+| Night | Solar offline, battery supplying loads |
+| Bulk | Rapid charging (battery < 80%) |
+| Absorption | Finishing charge (battery 80-100%) |
+| Float | Fully charged, maintenance mode |
+| Equalize | Optional equalization charge |
+| Fault | Hardware fault detected |
+
+**Data Included in Daily Report:**
+
+When `includeInDaily` is enabled, the daily report includes:
+- Current battery voltage
+- Current array (solar) voltage  
+- Current charge current
+- Charge state
+- Daily min/max battery voltage
+- Amp-hours charged today
+- Health status (battery OK, communication OK)
+- Any active faults or alarms
+
+**Example Alert Message:**
+
+```
+Solar: Battery voltage CRITICAL (11.3V)
+Site: North Tank Farm
+Charge State: Night
+Faults: None
+Action: Check solar panel connections and battery
+```
+
+**Troubleshooting:**
+
+| Issue | Solution |
+|-------|----------|
+| No communication | Check RS-485 wiring, swap A/B if needed |
+| Slave not found | Verify Modbus slave ID (check SunSaver DIP switches) |
+| Intermittent reads | Increase `timeoutMs` to 500, check cable length |
+| No data in daily | Verify `includeInDaily` is true |
+| No alerts | Check `alertOnLow` and `alertOnFault` settings |
+
+### Battery Voltage Monitoring (Notecard Direct)
+
+The system supports battery voltage monitoring using the Notecard's built-in voltage measurement when wired directly to a 12V battery. This is the **simplest option** as it requires no additional hardware beyond what's already installed. It provides:
+
+- **Real-time voltage monitoring** - Track battery state throughout the day
+- **Trend analysis** - Daily, weekly, and monthly voltage trends to detect declining batteries
+- **Low voltage alerts** - SMS/email warnings when voltage drops below thresholds
+- **State of charge estimation** - Approximate SOC percentage from voltage curves
+- **USB power detection** - Alert if system falls back to USB power
+
+**Hardware Required:**
+
+Wire the Notecard's VIN/GND directly to your 12V battery (3.8V-17V VIN range is supported). No additional sensors or adapters needed.
+
+> **Note:** If you also have a SunSaver MPPT solar charger, you can enable both systems. The MPPT provides more detailed charging data while the Notecard voltage monitoring is always available as a backup.
+
+**Configuration Parameters:**
+
+```json
+{
+  "batteryMonitor": {
+    "enabled": true,
+    "batteryType": "leadAcid12V",
+    "pollIntervalSec": 900,
+    "alertOnLow": true,
+    "voltageHighV": 14.4,
+    "voltageLowV": 12.0,
+    "voltageCriticalV": 11.8,
+    "trendAnalysisHours": 168,
+    "includeInDaily": true,
+    "alertIntervalMinutes": 60
+  }
+}
+```
+
+**Configuration Fields:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable Notecard battery monitoring |
+| `batteryType` | `"leadAcid12V"` | Battery type: "leadAcid12V", "lifepo4_12V", "lipo", or "custom" |
+| `pollIntervalSec` | `900` | How often to poll voltage (seconds, min 60) |
+| `alertOnLow` | `true` | Send alerts for low/critical voltage |
+| `voltageHighV` | `14.4` | High voltage threshold (for overcharge detection) |
+| `voltageLowV` | `12.0` | Low voltage warning threshold |
+| `voltageCriticalV` | `11.8` | Critical voltage (alarm immediately) |
+| `trendAnalysisHours` | `168` | Hours of data for trend analysis (7 days default) |
+| `includeInDaily` | `true` | Include battery data in daily report |
+| `alertIntervalMinutes` | `60` | Minimum minutes between repeated alerts |
+
+**Battery Type Defaults:**
+
+| Battery Type | Low V | Critical V | High V | Notes |
+|--------------|-------|------------|--------|-------|
+| Lead-Acid 12V | 12.0 | 11.8 | 14.4 | AGM, flooded, gel batteries |
+| LiFePO4 12V | 12.8 | 12.0 | 14.6 | 4S LiFePO4 pack |
+| LiPo | 3.5 | 3.2 | 4.2 | Single cell or pack average |
+| Custom | User | User | User | Set all thresholds manually |
+
+**State of Charge Estimation:**
+
+The system estimates state of charge (SOC) from voltage using lookup tables. Note that voltage-based SOC is approximate and varies with load, temperature, and battery age.
+
+| Lead-Acid 12V | LiFePO4 12V |
+|---------------|-------------|
+| 12.7V+ = 100% | 13.3V+ = 100% |
+| 12.5V = 75% | 13.2V = 75% |
+| 12.3V = 50% | 13.1V = 50% |
+| 12.1V = 25% | 13.0V = 25% |
+| 11.9V = 0% | 12.8V = 0% |
+
+**Trend Analysis:**
+
+The Notecard provides trend data showing voltage changes over time:
+- **Daily trend** - Voltage change in last 24 hours
+- **Weekly trend** - Voltage change in last 7 days
+- **Monthly trend** - Voltage change in last 30 days
+
+A negative weekly trend with declining voltage can indicate:
+- Battery aging and capacity loss
+- Insufficient solar charging
+- Increased load on the system
+
+**Data Included in Daily Report:**
+
+When `includeInDaily` is enabled:
+- Current battery voltage
+- Voltage mode (USB, high, normal, low, critical)
+- Min/max/average voltage over analysis period
+- Daily/weekly voltage trends
+- Estimated state of charge
+- Battery health status
+
+**Example Alert Message:**
+
+```
+Battery: Voltage LOW (11.95V)
+Site: North Tank Farm
+SOC: ~20%
+Weekly Trend: -0.35V
+Action: Check charging system and loads
+```
+
+**Choosing Between Solar Monitoring and Notecard Battery Monitoring:**
+
+| Feature | Notecard Battery | SunSaver MPPT |
+|---------|------------------|---------------|
+| Hardware needed | None extra | MRC-1 + RS485 |
+| Battery voltage | ✓ | ✓ |
+| Solar voltage | ✗ | ✓ |
+| Charge current | ✗ | ✓ |
+| Charge state | Via voltage only | Direct reading |
+| Trend analysis | ✓ (7-day) | ✓ (daily min/max) |
+| Fault detection | ✗ | ✓ |
+| Amp-hours | ✗ | ✓ |
+| Best for | Simple monitoring | Full solar diagnostics |
+
+**Both can be enabled simultaneously** - the MPPT provides detailed charging data while Notecard monitoring provides backup voltage tracking.
+
 ## Operation
 
 ### Normal Operation

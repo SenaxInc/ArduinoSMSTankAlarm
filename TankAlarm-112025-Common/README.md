@@ -83,6 +83,43 @@ Notecard helper functions:
 - `tankalarm_configureHub()` - Configure hub.set
 - `tankalarm_getNotecardStatus()` - Get connectivity status
 
+### TankAlarm_Solar.h
+SunSaver MPPT solar charger monitoring via Modbus RTU over RS-485:
+- `SolarConfig` - Configuration structure (slave ID, baud rate, thresholds)
+- `SolarData` - Data structure with all readings and status
+- `SolarManager` - Main class for polling and health assessment
+- Modbus register definitions for SunSaver MPPT
+- Battery voltage thresholds for 12V AGM systems
+- Fault and alarm bitfield parsing
+- Charge state descriptions (Night, Bulk, Absorption, Float, etc.)
+
+**Hardware Required:**
+- Arduino Opta with RS485 (WiFi/RS485 model or RS485 shield)
+- Morningstar MRC-1 (MeterBus to EIA-485 Adapter)
+- SunSaver MPPT solar charge controller
+
+### TankAlarm_Battery.h
+Battery voltage monitoring via Notecard card.voltage API (no additional hardware):
+- `BatteryType` - Enum (LEAD_ACID_12V, LIFEPO4_12V, LIPO, CUSTOM)
+- `BatteryAlertType` - Alert levels (NONE, LOW, CRITICAL, HIGH, DECLINING, USB_LOST, RECOVERED)
+- `BatteryData` - Voltage, trends (daily/weekly/monthly), mode, SOC, health status
+- `BatteryConfig` - Thresholds, poll interval, alert enable, analysis window
+- `initBatteryConfig()` - Initialize config with defaults for battery type
+- `getBatteryVoltageMode()` - Convert Notecard mode to string
+- `getBatteryStateDescription()` - User-friendly battery state description
+- `estimateLeadAcidSOC()` / `estimateLiFePO4SOC()` - State of charge from voltage
+
+**Features:**
+- Trend analysis with configurable window (default 7 days)
+- Declining battery detection via weekly trends
+- Low/critical voltage alerts with SMS escalation
+- State of charge estimation from voltage curves
+- USB power fallback detection
+
+**Hardware Required:**
+- Notecard wired directly to 12V battery (3.8V-17V VIN range)
+- No additional hardware needed - uses Notecard's built-in voltage monitoring
+
 ## Example
 
 ```cpp
@@ -142,7 +179,9 @@ void loop() {
 ## Dependencies
 
 - [Blues Wireless Notecard](https://github.com/blues/note-arduino) - Notecard Arduino library
+- [ArduinoRS485](https://github.com/arduino-libraries/ArduinoRS485) - RS-485 hardware interface (for solar monitoring)
+- [ArduinoModbus](https://github.com/arduino-libraries/ArduinoModbus) - Modbus protocol (for solar monitoring)
 
 ## License
 
-Copyright (c) 2025 Senax Inc. All rights reserved.
+Copyright (c) 2025-2026 Senax Inc. All rights reserved.

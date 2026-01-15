@@ -97,5 +97,7 @@
 #include "TankAlarm_Platform.h"
 #include "TankAlarm_Utils.h"
 #include "TankAlarm_Notecard.h"
+#include "TankAlarm_Solar.h"
+#include "TankAlarm_Battery.h"
 
 #endif // TANKALARM_COMMON_H
