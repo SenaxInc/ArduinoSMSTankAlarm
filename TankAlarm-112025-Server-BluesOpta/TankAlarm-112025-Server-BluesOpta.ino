@@ -799,6 +799,9 @@ button.remove-btn:hover{background:#fee2e2;border-color:#f5b5b5}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:150}
 .modal.hidden{display:none}
 .modal-card{background:var(--card);padding:2rem;border-radius:var(--radius);width:100%;max-width:400px;box-shadow:none;border:1px solid var(--border)}
+.modal-content{background:var(--card);padding:2rem;border-radius:var(--radius);width:100%;max-width:480px;box-shadow:none;border:1px solid var(--border)}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3)}
+.modal-close{background:transparent;border:none;font-size:1.25rem;line-height:1;color:var(--muted);cursor:pointer;padding:0}
 .hidden{display:none!important}
 .pin-chip{display:inline-flex;align-items:center;padding:2px 8px;border-radius:var(--radius);font-size:0.75rem;font-weight:600;background:#fee2e2;color:#ef4444}
 .pin-chip.ok{background:#d1fae5;color:#059669}
@@ -6623,21 +6626,14 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
     return;
   }
 
-  DynamicJsonDocument saveDoc(capacity + 512);
-  JsonArray contactsOut = saveDoc.createNestedArray("contacts");
-  if (doc["contacts"].is<JsonArray>()) {
-    for (JsonVariant contactVar : doc["contacts"].as<JsonArray>()) {
-      contactsOut.add(contactVar);
-    }
+  if (!doc["contacts"].is<JsonArray>()) {
+    doc["contacts"].to<JsonArray>();
   }
-  JsonArray dailyOut = saveDoc.createNestedArray("dailyReportRecipients");
-  if (doc["dailyReportRecipients"].is<JsonArray>()) {
-    for (JsonVariant recipientVar : doc["dailyReportRecipients"].as<JsonArray>()) {
-      dailyOut.add(recipientVar);
-    }
+  if (!doc["dailyReportRecipients"].is<JsonArray>()) {
+    doc["dailyReportRecipients"].to<JsonArray>();
   }
 
-  if (!saveContactsConfig(saveDoc)) {
+  if (!saveContactsConfig(doc)) {
     respondStatus(client, 500, F("Failed to save contacts"));
     return;
   }
