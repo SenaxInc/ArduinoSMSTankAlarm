@@ -173,18 +173,20 @@ The workflow runs on:
    - Captures screenshots of all web pages at high resolution (1920x1080)
    - Handles different viewport sizes for different pages
    
-   **Server pages captured:**
-   - Dashboard (/)
-   - Client Console (/client-console)
-   - Config Generator (/config-generator)
-   - Serial Monitor (/serial-monitor)
-   - Calibration (/calibration)
-   - Contacts Manager (/contacts)
-   - Server Settings (/server-settings)
-   - Historical Data (/historical)
+   **Server pages captured (original HTTP routes in parentheses):**
+   - Dashboard (route `/`)
+   - Client Console (route `/client-console`)
+   - Config Generator (route `/config-generator`)
+   - Serial Monitor (route `/serial-monitor`)
+   - Calibration (route `/calibration`)
+   - Contacts Manager (route `/contacts`)
+   - Server Settings (route `/server-settings`)
+   - Historical Data (route `/historical`)
    
-   **Viewer pages captured:**
-   - Dashboard (/)
+   These routes refer to the original server endpoints in the Arduino web UI. During this workflow, no HTTP server is started: Playwright loads the extracted HTML files directly from the filesystem using `file://` URLs. CSS is inlined into each HTML file to ensure proper styling.
+   
+   **Viewer pages captured (original HTTP routes in parentheses):**
+   - Dashboard (route `/`)
 
 3. **Updates documentation**
    - Updates `WEBSITE_PREVIEW.md` files with current timestamp
@@ -216,14 +218,14 @@ The workflow uses a three-stage process:
 To add or modify screenshots:
 
 1. **Add a new page:**
-   - Edit `/tmp/take-screenshots.js` in the workflow to add a new entry to the `screenshots` array
+   - In `.github/workflows/update-screenshots.yml`, edit the heredoc JavaScript in the **"Create screenshot script"** step (which writes `/tmp/take-screenshots.js` during the workflow run) to add a new entry to the `screenshots` array
    - Specify the HTML file, output path, and viewport size
 
 2. **Change viewport sizes:**
-   - Modify the `viewport` property for each screenshot entry
+   - Modify the `viewport` property for each screenshot entry in the workflow YAML file
 
 3. **Add page interactions:**
-   - Add a `setup` function to interact with the page before taking the screenshot (e.g., clicking buttons, filling forms)
+   - If needed in the future, add custom logic before taking screenshots (e.g., clicking buttons, filling forms)
 
 ### Troubleshooting
 

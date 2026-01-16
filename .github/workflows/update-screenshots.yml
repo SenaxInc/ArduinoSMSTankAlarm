@@ -20,7 +20,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: update-screenshots-${{ github.ref }}
+  group: update-screenshots
   cancel-in-progress: true
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
       
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -59,9 +59,6 @@ jobs:
               with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                   content = f.read()
               
-              # Maximum characters to search for additional HTML parts
-              MAX_ADDITIONAL_SEARCH = 50000
-              
               # Find the variable declaration with R"HTML(...) )HTML" pattern
               pattern = rf'static\s+const\s+char\s+{var_name}\[\]\s+PROGMEM\s*=\s*R"HTML\((.*?)\)HTML"'
               match = re.search(pattern, content, re.DOTALL)
@@ -69,22 +66,47 @@ jobs:
               if match:
                   html_content = match.group(1)
                   # Handle multi-part HTML (R"HTML(...)HTML" R"HTML(...)HTML")
-                  additional_parts = re.findall(r'R"HTML\((.*?)\)HTML"', 
-                                                content[match.end():match.end()+MAX_ADDITIONAL_SEARCH], 
-                                                re.DOTALL)
-                  for part in additional_parts:
-                      html_content += part
+                  # Only search for immediately following parts (before next variable declaration)
+                  remaining = content[match.end():]
+                  # Stop at next 'static const char' or end of remaining content
+                  next_var = re.search(r'static\s+const\s+char\s+', remaining)
+                  search_limit = next_var.start() if next_var else len(remaining)
+                  
+                  additional_parts = re.findall(
+                      r'R"HTML\((.*?)\)HTML"',
+                      remaining[:search_limit],
+                      re.DOTALL,
+                  )
+                  if additional_parts:
+                      print(f"Found {len(additional_parts)} additional HTML part(s) for {var_name}.")
+                      for part in additional_parts:
+                          html_content += part
                   return html_content
+              # Log a clear message when extraction fails to help troubleshooting
+              print(f"Warning: Failed to extract HTML content for variable '{var_name}' in file '{file_path}'")
               return None
           
-          def save_html_file(html_content, filename):
-              """Save HTML content to a file"""
+          def save_html_file(html_content, filename, css_content=None):
+              """Save HTML content to a file, optionally inlining CSS"""
               if html_content:
                   output_path = os.path.join('/tmp/html-files', filename)
+                  
+                  # Inline CSS if provided and HTML references /style.css
+                  if css_content and '/style.css' in html_content:
+                      # Replace <link rel="stylesheet" href="/style.css"> with inline <style>
+                      css_tag = f'<style>{css_content}</style>'
+                      # Use string replace instead of regex to avoid escaping issues
+                      html_content = html_content.replace(
+                          '<link rel="stylesheet" href="/style.css">',
+                          css_tag
+                      )
+                  
                   with open(output_path, 'w', encoding='utf-8') as f:
                       f.write(html_content)
                   print(f"Extracted {filename}")
                   return True
+              else:
+                  print(f"Warning: Failed to extract HTML content for {filename}")
               return False
           
           server_file = 'TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino'
@@ -95,8 +117,10 @@ jobs:
               with open('/tmp/html-files/style.css', 'w', encoding='utf-8') as f:
                   f.write(css)
               print("Extracted style.css")
+          else:
+              print("Warning: Failed to extract STYLE_CSS")
           
-          # Extract HTML pages (only those we screenshot)
+          # Extract HTML pages (only those we screenshot) and inline CSS
           html_vars = {
               'DASHBOARD_HTML': 'dashboard.html',
               'CLIENT_CONSOLE_HTML': 'client-console.html',
@@ -110,7 +134,7 @@ jobs:
           
           for var_name, filename in html_vars.items():
               html = extract_html_content(server_file, var_name)
-              save_html_file(html, filename)
+              save_html_file(html, filename, css)
           
           # For Viewer - extract dashboard
           viewer_file = 'TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino'
@@ -129,19 +153,24 @@ jobs:
           const path = require('path');
           
           (async () => {
-            const browser = await chromium.launch();
-            const context = await browser.newContext({
-              viewport: { width: 1920, height: 1080 }
-            });
-            const page = await context.newPage();
-            
-            // Mock localStorage for auth token
-            await page.addInitScript(() => {
-              localStorage.setItem('tankalarm_token', '1234');
-            });
-            
-            const htmlDir = '/tmp/html-files';
-            const screenshots = [
+            try {
+              const browser = await chromium.launch();
+              const context = await browser.newContext({
+                viewport: { width: 1920, height: 1080 }
+              });
+              const page = await context.newPage();
+              
+              // Mock localStorage for auth token.
+              // NOTE: This uses a non-sensitive, dummy value ("1234") only to satisfy
+              // client-side logic in static HTML pages when generating screenshots.
+              // No real authentication or secrets are involved, and this token is not
+              // used against any live backend service.
+              await page.addInitScript(() => {
+                localStorage.setItem('tankalarm_token', '1234');
+              });
+              
+              const htmlDir = '/tmp/html-files';
+              const screenshots = [
               {
                 html: path.join(htmlDir, 'dashboard.html'),
                 output: 'TankAlarm-112025-Server-BluesOpta/screenshots/dashboard.png',
@@ -200,14 +229,8 @@ jobs:
               await page.setViewportSize(screenshot.viewport);
               await page.goto(`file://${screenshot.html}`);
               
-              // Wait for page to load
-              await page.waitForTimeout(2000);
-              
-              // Run setup function if provided
-              if (screenshot.setup) {
-                await screenshot.setup(page);
-                await page.waitForTimeout(1000);
-              }
+              // Wait for page to fully load
+              await page.waitForLoadState('networkidle');
               
               // Ensure output directory exists
               const outputDir = path.dirname(screenshot.output);
@@ -225,6 +248,10 @@ jobs:
             
             await browser.close();
             console.log('All screenshots completed!');
+          } catch (error) {
+            console.error('Screenshot generation failed:', error);
+            process.exit(1);
+          }
           })();
           EOF
       
@@ -238,13 +265,13 @@ jobs:
           
           # Update Server WEBSITE_PREVIEW.md
           if [ -f "TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md" ]; then
-            sed -i "s/\*Last updated:.*/*Last updated: ${timestamp}*/" \
+            sed -i "s/\*Last updated: [^*]*\*/\*Last updated: ${timestamp}\*/" \
               TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md
           fi
           
           # Update Viewer WEBSITE_PREVIEW.md
           if [ -f "TankAlarm-112025-Viewer-BluesOpta/WEBSITE_PREVIEW.md" ]; then
-            sed -i "s/\*Last updated:.*/*Last updated: ${timestamp}*/" \
+            sed -i "s/\*Last updated: [^*]*\*/\*Last updated: ${timestamp}\*/" \
               TankAlarm-112025-Viewer-BluesOpta/WEBSITE_PREVIEW.md
           fi
       
@@ -260,11 +287,50 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Add screenshot directories and WEBSITE_PREVIEW.md files
-          git add TankAlarm-112025-Server-BluesOpta/screenshots/*.png || true
-          git add TankAlarm-112025-Viewer-BluesOpta/screenshots/*.png || true
-          git add TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md || true
-          git add TankAlarm-112025-Viewer-BluesOpta/WEBSITE_PREVIEW.md || true
+          # Add server screenshots if any PNGs exist
+          if [ -d "TankAlarm-112025-Server-BluesOpta/screenshots" ]; then
+            shopt -s nullglob
+            server_pngs=(TankAlarm-112025-Server-BluesOpta/screenshots/*.png)
+            shopt -u nullglob
+            if [ ${#server_pngs[@]} -gt 0 ]; then
+              git add "${server_pngs[@]}"
+              echo "Added ${#server_pngs[@]} server screenshot(s)"
+            else
+              echo "No server screenshots to add"
+            fi
+          else
+            echo "Server screenshots directory does not exist, skipping"
+          fi
+          
+          # Add viewer screenshots if any PNGs exist
+          if [ -d "TankAlarm-112025-Viewer-BluesOpta/screenshots" ]; then
+            shopt -s nullglob
+            viewer_pngs=(TankAlarm-112025-Viewer-BluesOpta/screenshots/*.png)
+            shopt -u nullglob
+            if [ ${#viewer_pngs[@]} -gt 0 ]; then
+              git add "${viewer_pngs[@]}"
+              echo "Added ${#viewer_pngs[@]} viewer screenshot(s)"
+            else
+              echo "No viewer screenshots to add"
+            fi
+          else
+            echo "Viewer screenshots directory does not exist, skipping"
+          fi
+          
+          # Add WEBSITE_PREVIEW.md files if they exist
+          if [ -f "TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md" ]; then
+            git add TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md
+            echo "Added server WEBSITE_PREVIEW.md"
+          else
+            echo "Server WEBSITE_PREVIEW.md not found, skipping"
+          fi
+          
+          if [ -f "TankAlarm-112025-Viewer-BluesOpta/WEBSITE_PREVIEW.md" ]; then
+            git add TankAlarm-112025-Viewer-BluesOpta/WEBSITE_PREVIEW.md
+            echo "Added viewer WEBSITE_PREVIEW.md"
+          else
+            echo "Viewer WEBSITE_PREVIEW.md not found, skipping"
+          fi
           
           # Check if there are changes to commit
           if [ -z "$(git status --porcelain)" ]; then
