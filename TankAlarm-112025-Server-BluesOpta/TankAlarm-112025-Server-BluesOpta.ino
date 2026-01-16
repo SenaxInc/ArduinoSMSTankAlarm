@@ -7779,7 +7779,8 @@ static void handleDfuStatusGet(EthernetClient &client) {
   responseStr += "\"availableVersion\":\"" + String(gDfuUpdateAvailable ? gDfuVersion : "") + "\",";
   responseStr += "\"dfuInProgress\":" + String(gDfuInProgress ? "true" : "false") + ",";
   responseStr += "\"voltage\":" + String(gServerVoltage, 2) + ",";
-  responseStr += "\"voltageEpoch\":" + String(gServerVoltageEpoch, 0);
+  responseStr += "\"voltageEpoch\":" + String(gServerVoltageEpoch, 0) + ",";
+  responseStr += "\"serverTime\":" + String(currentEpoch(), 0);
   responseStr += "}";
   respondJson(client, responseStr);
 }
