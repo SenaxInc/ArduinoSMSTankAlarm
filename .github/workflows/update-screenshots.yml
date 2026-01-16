@@ -98,10 +98,11 @@ jobs:
               'CONFIG_GENERATOR_HTML': 'config-generator.html',
               'SERIAL_MONITOR_HTML': 'serial-monitor.html',
               'CALIBRATION_HTML': 'calibration.html',
-              'CONTACTS_HTML': 'contacts.html',
+              'CONTACTS_MANAGER_HTML': 'contacts.html',
               'SERVER_SETTINGS_HTML': 'server-settings.html',
               'EMAIL_FORMAT_HTML': 'email-format.html',
-              'HISTORICAL_HTML': 'historical.html',
+              'HISTORICAL_DATA_HTML': 'historical.html',
+              'LOGIN_HTML': 'login.html',
           }
           
           for var_name, filename in html_vars.items():
@@ -111,7 +112,7 @@ jobs:
           # For Viewer - extract dashboard
           viewer_file = 'TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino'
           if os.path.exists(viewer_file):
-              viewer_dashboard = extract_html_content(viewer_file, 'DASHBOARD_HTML')
+              viewer_dashboard = extract_html_content(viewer_file, 'VIEWER_DASHBOARD_HTML')
               save_html_file(viewer_dashboard, 'viewer-dashboard.html')
           
           PYTHON_SCRIPT
