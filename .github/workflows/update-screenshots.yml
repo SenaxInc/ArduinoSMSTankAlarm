@@ -59,6 +59,9 @@ jobs:
               with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                   content = f.read()
               
+              # Maximum characters to search for additional HTML parts
+              MAX_ADDITIONAL_SEARCH = 50000
+              
               # Find the variable declaration with R"HTML(...) )HTML" pattern
               pattern = rf'static\s+const\s+char\s+{var_name}\[\]\s+PROGMEM\s*=\s*R"HTML\((.*?)\)HTML"'
               match = re.search(pattern, content, re.DOTALL)
@@ -66,7 +69,9 @@ jobs:
               if match:
                   html_content = match.group(1)
                   # Handle multi-part HTML (R"HTML(...)HTML" R"HTML(...)HTML")
-                  additional_parts = re.findall(r'R"HTML\((.*?)\)HTML"', content[match.end():match.end()+50000], re.DOTALL)
+                  additional_parts = re.findall(r'R"HTML\((.*?)\)HTML"', 
+                                                content[match.end():match.end()+MAX_ADDITIONAL_SEARCH], 
+                                                re.DOTALL)
                   for part in additional_parts:
                       html_content += part
                   return html_content
@@ -91,7 +96,7 @@ jobs:
                   f.write(css)
               print("Extracted style.css")
           
-          # Extract HTML pages
+          # Extract HTML pages (only those we screenshot)
           html_vars = {
               'DASHBOARD_HTML': 'dashboard.html',
               'CLIENT_CONSOLE_HTML': 'client-console.html',
@@ -100,9 +105,7 @@ jobs:
               'CALIBRATION_HTML': 'calibration.html',
               'CONTACTS_MANAGER_HTML': 'contacts.html',
               'SERVER_SETTINGS_HTML': 'server-settings.html',
-              'EMAIL_FORMAT_HTML': 'email-format.html',
               'HISTORICAL_DATA_HTML': 'historical.html',
-              'LOGIN_HTML': 'login.html',
           }
           
           for var_name, filename in html_vars.items():
@@ -148,16 +151,6 @@ jobs:
                 html: path.join(htmlDir, 'client-console.html'),
                 output: 'TankAlarm-112025-Server-BluesOpta/screenshots/client-console.png',
                 viewport: { width: 1920, height: 1200 }
-              },
-              {
-                html: path.join(htmlDir, 'client-console.html'),
-                output: 'TankAlarm-112025-Server-BluesOpta/screenshots/client-console-pin-setup.png',
-                viewport: { width: 1920, height: 1080 },
-                setup: async (page) => {
-                  // Click to show PIN setup modal
-                  await page.waitForTimeout(1000);
-                  // This would need actual interaction based on the page structure
-                }
               },
               {
                 html: path.join(htmlDir, 'config-generator.html'),
