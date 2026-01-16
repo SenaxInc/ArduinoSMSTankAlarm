@@ -1,0 +1,282 @@
+name: Update Website Screenshots
+
+on:
+  # Run on schedule (weekly on Mondays at 2 AM UTC)
+  schedule:
+    - cron: '0 2 * * 1'
+  
+  # Allow manual trigger
+  workflow_dispatch:
+  
+  # Run when relevant files change
+  push:
+    branches: [main, master]
+    paths:
+      - 'TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino'
+      - 'TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino'
+      - '.github/workflows/update-screenshots.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update-screenshots:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install Playwright
+        run: |
+          npm install -D @playwright/test
+          npx playwright install --with-deps chromium
+      
+      - name: Extract HTML from Arduino files
+        shell: bash
+        run: |
+          # Create a directory for extracted HTML files
+          mkdir -p /tmp/html-files
+          
+          # Extract HTML from Server Arduino file
+          python3 << 'PYTHON_SCRIPT'
+          import re
+          import os
+          
+          def extract_html_content(file_path, var_name):
+              """Extract HTML content from C++ string literal"""
+              with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                  content = f.read()
+              
+              # Find the variable declaration with R"HTML(...) )HTML" pattern
+              pattern = rf'static\s+const\s+char\s+{var_name}\[\]\s+PROGMEM\s*=\s*R"HTML\((.*?)\)HTML"'
+              match = re.search(pattern, content, re.DOTALL)
+              
+              if match:
+                  html_content = match.group(1)
+                  # Handle multi-part HTML (R"HTML(...)HTML" R"HTML(...)HTML")
+                  additional_parts = re.findall(r'R"HTML\((.*?)\)HTML"', content[match.end():match.end()+50000], re.DOTALL)
+                  for part in additional_parts:
+                      html_content += part
+                  return html_content
+              return None
+          
+          def save_html_file(html_content, filename):
+              """Save HTML content to a file"""
+              if html_content:
+                  output_path = os.path.join('/tmp/html-files', filename)
+                  with open(output_path, 'w', encoding='utf-8') as f:
+                      f.write(html_content)
+                  print(f"Extracted {filename}")
+                  return True
+              return False
+          
+          server_file = 'TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino'
+          
+          # Extract CSS
+          css = extract_html_content(server_file, 'STYLE_CSS')
+          if css:
+              with open('/tmp/html-files/style.css', 'w', encoding='utf-8') as f:
+                  f.write(css)
+              print("Extracted style.css")
+          
+          # Extract HTML pages
+          html_vars = {
+              'DASHBOARD_HTML': 'dashboard.html',
+              'CLIENT_CONSOLE_HTML': 'client-console.html',
+              'CONFIG_GENERATOR_HTML': 'config-generator.html',
+              'SERIAL_MONITOR_HTML': 'serial-monitor.html',
+              'CALIBRATION_HTML': 'calibration.html',
+              'CONTACTS_HTML': 'contacts.html',
+              'SERVER_SETTINGS_HTML': 'server-settings.html',
+              'EMAIL_FORMAT_HTML': 'email-format.html',
+              'HISTORICAL_HTML': 'historical.html',
+          }
+          
+          for var_name, filename in html_vars.items():
+              html = extract_html_content(server_file, var_name)
+              save_html_file(html, filename)
+          
+          # For Viewer - extract dashboard
+          viewer_file = 'TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino'
+          if os.path.exists(viewer_file):
+              viewer_dashboard = extract_html_content(viewer_file, 'DASHBOARD_HTML')
+              save_html_file(viewer_dashboard, 'viewer-dashboard.html')
+          
+          PYTHON_SCRIPT
+      
+      - name: Create screenshot script
+        shell: bash
+        run: |
+          cat > /tmp/take-screenshots.js << 'EOF'
+          const { chromium } = require('@playwright/test');
+          const fs = require('fs');
+          const path = require('path');
+          
+          (async () => {
+            const browser = await chromium.launch();
+            const context = await browser.newContext({
+              viewport: { width: 1920, height: 1080 }
+            });
+            const page = await context.newPage();
+            
+            // Mock localStorage for auth token
+            await page.addInitScript(() => {
+              localStorage.setItem('tankalarm_token', '1234');
+            });
+            
+            const htmlDir = '/tmp/html-files';
+            const screenshots = [
+              {
+                html: path.join(htmlDir, 'dashboard.html'),
+                output: 'TankAlarm-112025-Server-BluesOpta/screenshots/dashboard.png',
+                viewport: { width: 1920, height: 1080 }
+              },
+              {
+                html: path.join(htmlDir, 'client-console.html'),
+                output: 'TankAlarm-112025-Server-BluesOpta/screenshots/client-console.png',
+                viewport: { width: 1920, height: 1200 }
+              },
+              {
+                html: path.join(htmlDir, 'client-console.html'),
+                output: 'TankAlarm-112025-Server-BluesOpta/screenshots/client-console-pin-setup.png',
+                viewport: { width: 1920, height: 1080 },
+                setup: async (page) => {
+                  // Click to show PIN setup modal
+                  await page.waitForTimeout(1000);
+                  // This would need actual interaction based on the page structure
+                }
+              },
+              {
+                html: path.join(htmlDir, 'config-generator.html'),
+                output: 'TankAlarm-112025-Server-BluesOpta/screenshots/config-generator.png',
+                viewport: { width: 1920, height: 1400 }
+              },
+              {
+                html: path.join(htmlDir, 'serial-monitor.html'),
+                output: 'TankAlarm-112025-Server-BluesOpta/screenshots/serial-monitor.png',
+                viewport: { width: 1920, height: 1080 }
+              },
+              {
+                html: path.join(htmlDir, 'calibration.html'),
+                output: 'TankAlarm-112025-Server-BluesOpta/screenshots/calibration.png',
+                viewport: { width: 1920, height: 1200 }
+              },
+              {
+                html: path.join(htmlDir, 'contacts.html'),
+                output: 'TankAlarm-112025-Server-BluesOpta/screenshots/contacts.png',
+                viewport: { width: 1920, height: 1080 }
+              },
+              {
+                html: path.join(htmlDir, 'server-settings.html'),
+                output: 'TankAlarm-112025-Server-BluesOpta/screenshots/server-settings.png',
+                viewport: { width: 1920, height: 1600 }
+              },
+              {
+                html: path.join(htmlDir, 'historical.html'),
+                output: 'TankAlarm-112025-Server-BluesOpta/screenshots/historical.png',
+                viewport: { width: 1920, height: 1200 }
+              },
+              {
+                html: path.join(htmlDir, 'viewer-dashboard.html'),
+                output: 'TankAlarm-112025-Viewer-BluesOpta/screenshots/dashboard.png',
+                viewport: { width: 1920, height: 1080 }
+              }
+            ];
+            
+            for (const screenshot of screenshots) {
+              if (!fs.existsSync(screenshot.html)) {
+                console.log(`Skipping ${screenshot.output} - HTML file not found`);
+                continue;
+              }
+              
+              console.log(`Taking screenshot: ${screenshot.output}`);
+              
+              await page.setViewportSize(screenshot.viewport);
+              await page.goto(`file://${screenshot.html}`);
+              
+              // Wait for page to load
+              await page.waitForTimeout(2000);
+              
+              // Run setup function if provided
+              if (screenshot.setup) {
+                await screenshot.setup(page);
+                await page.waitForTimeout(1000);
+              }
+              
+              // Ensure output directory exists
+              const outputDir = path.dirname(screenshot.output);
+              if (!fs.existsSync(outputDir)) {
+                fs.mkdirSync(outputDir, { recursive: true });
+              }
+              
+              await page.screenshot({
+                path: screenshot.output,
+                fullPage: true
+              });
+              
+              console.log(`✓ Saved ${screenshot.output}`);
+            }
+            
+            await browser.close();
+            console.log('All screenshots completed!');
+          })();
+          EOF
+      
+      - name: Take screenshots
+        run: node /tmp/take-screenshots.js
+      
+      - name: Update WEBSITE_PREVIEW.md timestamps
+        shell: bash
+        run: |
+          timestamp=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          # Update Server WEBSITE_PREVIEW.md
+          if [ -f "TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md" ]; then
+            sed -i "s/\*Last updated:.*/*Last updated: ${timestamp}*/" \
+              TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md
+          fi
+          
+          # Update Viewer WEBSITE_PREVIEW.md
+          if [ -f "TankAlarm-112025-Viewer-BluesOpta/WEBSITE_PREVIEW.md" ]; then
+            sed -i "s/\*Last updated:.*/*Last updated: ${timestamp}*/" \
+              TankAlarm-112025-Viewer-BluesOpta/WEBSITE_PREVIEW.md
+          fi
+      
+      - name: Commit and push screenshots
+        shell: bash
+        run: |
+          # Skip commit/push for tag pushes (tags are immutable)
+          if [[ "${{ github.ref }}" == "refs/tags/"* ]]; then
+            echo "Skipping commit for tag push (tags are immutable)"
+            exit 0
+          fi
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Add screenshot directories and WEBSITE_PREVIEW.md files
+          git add TankAlarm-112025-Server-BluesOpta/screenshots/*.png || true
+          git add TankAlarm-112025-Viewer-BluesOpta/screenshots/*.png || true
+          git add TankAlarm-112025-Server-BluesOpta/WEBSITE_PREVIEW.md || true
+          git add TankAlarm-112025-Viewer-BluesOpta/WEBSITE_PREVIEW.md || true
+          
+          # Check if there are changes to commit
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No screenshot changes to commit"
+            exit 0
+          fi
+          
+          git commit -m "chore: update website screenshots [skip ci]"
+          git push
