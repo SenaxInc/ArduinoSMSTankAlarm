@@ -144,3 +144,108 @@ To modify the workflow:
 1. Edit `.github/workflows/arduino-ci.yml`
 2. Test changes in a branch before merging
 3. Monitor the Actions tab after deployment
+
+## Website Screenshots Workflow
+
+**File:** `update-screenshots.yml`
+
+### Purpose
+Automatically generates and updates screenshots of the web interfaces served by TankAlarm-112025-Server-BluesOpta and TankAlarm-112025-Viewer-BluesOpta.
+
+### Triggers
+The workflow runs on:
+- **Scheduled** - Weekly on Mondays at 2 AM UTC
+- **Push events** to `main` or `master` branches when changes are made to:
+  - `TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino`
+  - `TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino`
+  - The workflow file itself
+- **Manual trigger** via workflow_dispatch
+
+### What It Does
+
+1. **Extracts HTML from Arduino code**
+   - Parses the .ino files to extract embedded HTML content
+   - Extracts CSS styles and HTML pages using Python regex
+   - Supports multi-part HTML string literals
+
+2. **Takes screenshots using Playwright**
+   - Sets up headless Chromium browser
+   - Captures screenshots of all web pages at high resolution (1920x1080)
+   - Handles different viewport sizes for different pages
+   
+   **Server pages captured (original HTTP routes in parentheses):**
+   - Dashboard (route `/`)
+   - Client Console (route `/client-console`)
+   - Config Generator (route `/config-generator`)
+   - Serial Monitor (route `/serial-monitor`)
+   - Calibration (route `/calibration`)
+   - Contacts Manager (route `/contacts`)
+   - Server Settings (route `/server-settings`)
+   - Historical Data (route `/historical`)
+   
+   These routes refer to the original server endpoints in the Arduino web UI. During this workflow, no HTTP server is started: Playwright loads the extracted HTML files directly from the filesystem using `file://` URLs. CSS is inlined into each HTML file to ensure proper styling.
+   
+   **Viewer pages captured (original HTTP routes in parentheses):**
+   - Dashboard (route `/`)
+
+3. **Updates documentation**
+   - Updates `WEBSITE_PREVIEW.md` files with current timestamp
+   - Commits and pushes screenshot files automatically
+
+4. **Saves screenshots**
+   - Server screenshots: `TankAlarm-112025-Server-BluesOpta/screenshots/*.png`
+   - Viewer screenshots: `TankAlarm-112025-Viewer-BluesOpta/screenshots/*.png`
+
+### Viewing Results
+
+After the workflow runs:
+1. Check the **Actions** tab for workflow execution status
+2. View updated screenshots in the screenshots folders
+3. Check `WEBSITE_PREVIEW.md` files for the latest timestamp
+
+### How Screenshots Are Generated
+
+The workflow uses a three-stage process:
+
+1. **HTML Extraction** - Python script parses Arduino .ino files and extracts HTML content from C++ string literals (R"HTML(...)HTML" format)
+
+2. **Browser Automation** - Playwright launches headless Chromium and loads the extracted HTML files as local files
+
+3. **Screenshot Capture** - Full-page screenshots are taken at appropriate viewport sizes and saved to the screenshots directories
+
+### Customizing Screenshots
+
+To add or modify screenshots:
+
+1. **Add a new page:**
+   - In `.github/workflows/update-screenshots.yml`, edit the heredoc JavaScript in the **"Create screenshot script"** step (which writes `/tmp/take-screenshots.js` during the workflow run) to add a new entry to the `screenshots` array
+   - Specify the HTML file, output path, and viewport size
+
+2. **Change viewport sizes:**
+   - Modify the `viewport` property for each screenshot entry in the workflow YAML file
+
+3. **Add page interactions:**
+   - If needed in the future, add custom logic before taking screenshots (e.g., clicking buttons, filling forms)
+
+### Troubleshooting
+
+**Screenshots look broken or incomplete:**
+- Check that the HTML extraction step completed successfully
+- Verify that the HTML files were created in `/tmp/html-files`
+- Ensure the page has time to load (the script uses `page.waitForLoadState('load')`; you can change to 'networkidle' or add additional waits if needed)
+
+**Workflow fails to commit:**
+- Check that the `GITHUB_TOKEN` has write permissions
+- Verify that the screenshots actually changed
+
+**Missing screenshots:**
+- Check the workflow logs for HTML extraction errors
+- Verify that the HTML variable names match those in the Arduino code
+
+### Maintenance
+
+To modify the workflow:
+1. Edit `.github/workflows/update-screenshots.yml`
+2. Test changes in a branch before merging
+3. Monitor the Actions tab after deployment
+4. Use workflow_dispatch to trigger manual runs for testing
