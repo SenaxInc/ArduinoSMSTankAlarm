@@ -140,6 +140,7 @@ jobs:
           viewer_file = 'TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino'
           if os.path.exists(viewer_file):
               viewer_dashboard = extract_html_content(viewer_file, 'VIEWER_DASHBOARD_HTML')
+              # Note: Viewer dashboard HTML uses inline styles, so we intentionally do not pass css_content here.
               save_html_file(viewer_dashboard, 'viewer-dashboard.html')
           
           PYTHON_SCRIPT
@@ -154,6 +155,8 @@ jobs:
           
           (async () => {
             try {
+              const MOCK_TOKEN = '1234'; // Non-sensitive test value for client-side auth logic
+              
               const browser = await chromium.launch();
               const context = await browser.newContext({
                 viewport: { width: 1920, height: 1080 }
@@ -161,15 +164,19 @@ jobs:
               const page = await context.newPage();
               
               // Mock localStorage for auth token.
-              // NOTE: This uses a non-sensitive, dummy value ("1234") only to satisfy
+              // NOTE: This uses a non-sensitive, dummy value (MOCK_TOKEN) only to satisfy
               // client-side logic in static HTML pages when generating screenshots.
               // No real authentication or secrets are involved, and this token is not
               // used against any live backend service.
-              await page.addInitScript(() => {
-                localStorage.setItem('tankalarm_token', '1234');
-              });
+              await page.addInitScript((token) => {
+                localStorage.setItem('tankalarm_token', token);
+              }, MOCK_TOKEN);
               
               const htmlDir = '/tmp/html-files';
+              
+              // IMPORTANT: This screenshots array must be kept in sync with the HTML variables
+              // extracted in the Python script above. If you add a new page to the .ino files,
+              // you must also add it to both the html_vars dictionary in Python and this array.
               const screenshots = [
               {
                 html: path.join(htmlDir, 'dashboard.html'),
@@ -230,7 +237,9 @@ jobs:
               await page.goto(`file://${screenshot.html}`);
               
               // Wait for page to fully load
-              await page.waitForLoadState('networkidle');
+              // Using 'load' instead of 'networkidle' for static HTML files to avoid
+              // unnecessary delays from polling or active scripts
+              await page.waitForLoadState('load');
               
               // Ensure output directory exists
               const outputDir = path.dirname(screenshot.output);
