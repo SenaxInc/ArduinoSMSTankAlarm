@@ -7,11 +7,6 @@ Main fleet telemetry dashboard showing server metadata, statistics, and fleet te
 
 ![Dashboard](screenshots/dashboard.png)
 
-## Client Console - PIN Setup
-PIN setup modal shown on first access to secure the configuration interface.
-
-![Client Console - PIN Setup](screenshots/client-console-pin-setup.png)
-
 ## Client Console
 Configuration management interface for remote clients with PIN-protected controls (unlocked view).
 

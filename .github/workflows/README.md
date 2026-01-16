@@ -232,7 +232,7 @@ To add or modify screenshots:
 **Screenshots look broken or incomplete:**
 - Check that the HTML extraction step completed successfully
 - Verify that the HTML files were created in `/tmp/html-files`
-- Ensure the page has time to load (increase `waitForTimeout` if needed)
+- Ensure the page has time to load (the script uses `page.waitForLoadState('networkidle')`; adjust this or add additional waits if needed)
 
 **Workflow fails to commit:**
 - Check that the `GITHUB_TOKEN` has write permissions
