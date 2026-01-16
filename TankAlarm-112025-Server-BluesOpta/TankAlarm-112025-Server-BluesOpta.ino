@@ -1062,6 +1062,7 @@ static double currentEpoch();
 static void scheduleNextDailyEmail();
 static void scheduleNextViewerSummary();
 static void initializeEthernet();
+static void checkServerVoltage();
 static void checkForFirmwareUpdate();
 static void enableDfuMode();
 static void handleWebRequests();
@@ -6857,30 +6858,85 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
 // ============================================================================
 
 #define EMAIL_FORMAT_PATH "/email_format.json"
+// Allow up to 32KB for email format JSON (matches contacts config and JSON capacity)
+#define MAX_EMAIL_FORMAT_SIZE 32768
 
 static bool loadEmailFormat(JsonDocument &doc) {
-  String fullPath = String(LITTLEFS_MOUNT_POINT) + EMAIL_FORMAT_PATH;
-  if (!LittleFS.exists(fullPath.c_str())) {
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  if (!mbedFS) return false;
+  
+  FILE *file = fopen("/fs/email_format.json", "r");
+  if (!file) {
     return false;
   }
-  File file = LittleFS.open(fullPath.c_str(), "r");
+  
+  fseek(file, 0, SEEK_END);
+  long fileSize = ftell(file);
+  fseek(file, 0, SEEK_SET);
+  
+  if (fileSize <= 0 || fileSize > MAX_EMAIL_FORMAT_SIZE) {
+    fclose(file);
+    return false;
+  }
+  
+  char *buffer = (char *)malloc(fileSize + 1);
+  if (!buffer) {
+    fclose(file);
+    return false;
+  }
+  
+  size_t bytesRead = fread(buffer, 1, fileSize, file);
+  fclose(file);
+  
+  // Check if we read the expected amount
+  if (bytesRead != (size_t)fileSize) {
+    free(buffer);
+    return false;
+  }
+  buffer[bytesRead] = '\0';
+  
+  DeserializationError error = deserializeJson(doc, buffer);
+  free(buffer);
+  return error == DeserializationError::Ok;
+#else
+  if (!LittleFS.exists(EMAIL_FORMAT_PATH)) {
+    return false;
+  }
+  
+  File file = LittleFS.open(EMAIL_FORMAT_PATH, "r");
   if (!file) {
     return false;
   }
   DeserializationError error = deserializeJson(doc, file);
   file.close();
-  return !error;
+  return error == DeserializationError::Ok;
+#endif
 }
 
 static bool saveEmailFormat(const JsonDocument &doc) {
-  String fullPath = String(LITTLEFS_MOUNT_POINT) + EMAIL_FORMAT_PATH;
-  File file = LittleFS.open(fullPath.c_str(), "w");
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  if (!mbedFS) return false;
+  
+  String output;
+  serializeJson(doc, output);
+  
+  FILE *file = fopen("/fs/email_format.json", "w");
+  if (!file) {
+    return false;
+  }
+  size_t expected = output.length();
+  size_t written = fwrite(output.c_str(), 1, expected, file);
+  fclose(file);
+  return written == expected;
+#else
+  File file = LittleFS.open(EMAIL_FORMAT_PATH, "w");
   if (!file) {
     return false;
   }
   serializeJson(doc, file);
   file.close();
   return true;
+#endif
 }
 
 static void handleEmailFormatGet(EthernetClient &client) {
