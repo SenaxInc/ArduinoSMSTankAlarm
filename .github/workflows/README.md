@@ -176,7 +176,6 @@ The workflow runs on:
    **Server pages captured:**
    - Dashboard (/)
    - Client Console (/client-console)
-   - Client Console - PIN Setup (modal view)
    - Config Generator (/config-generator)
    - Serial Monitor (/serial-monitor)
    - Calibration (/calibration)
