@@ -176,6 +176,14 @@
 #define SERIAL_ACK_FILE "serial_ack.qi"  // Client acknowledgments for log requests
 #endif
 
+#ifndef LOCATION_REQUEST_FILE
+#define LOCATION_REQUEST_FILE "location_request.qi"  // Server requests for client GPS location
+#endif
+
+#ifndef LOCATION_RESPONSE_FILE
+#define LOCATION_RESPONSE_FILE "location.qo"  // Client GPS location responses
+#endif
+
 #ifndef SERIAL_DEFAULT_MAX_ENTRIES
 #define SERIAL_DEFAULT_MAX_ENTRIES 50
 #endif
@@ -204,6 +212,31 @@
 #ifndef MAX_CALIBRATION_TANKS
 #define MAX_CALIBRATION_TANKS 20  // Max tanks to track calibration for
 #endif
+
+// National Weather Service API constants (for weather data during calibration)
+#ifndef NWS_API_HOST
+#define NWS_API_HOST "api.weather.gov"
+#endif
+
+#ifndef NWS_API_PORT
+#define NWS_API_PORT 80  // Use HTTP for Arduino compatibility (HTTPS not easily supported)
+#endif
+
+#ifndef NWS_API_TIMEOUT_MS
+#define NWS_API_TIMEOUT_MS 10000UL  // 10 second timeout for NWS API calls
+#endif
+
+#ifndef NWS_AVG_HOURS
+#define NWS_AVG_HOURS 6  // Average temperature over this many hours for calibration
+#endif
+
+// Temperature cache TTL for real-time compensation (30 minutes)
+#ifndef TEMP_CACHE_TTL_SECONDS
+#define TEMP_CACHE_TTL_SECONDS 1800
+#endif
+
+// Temperature sentinel value (indicates no weather data available)
+#define TEMPERATURE_UNAVAILABLE -999.0f
 
 // ArduinoJson v7: JsonDocument auto-sizes, capacity constants not needed
 static const size_t CLIENT_JSON_CAPACITY = 32768;  // 32KB for full fleet data
@@ -276,6 +309,18 @@ struct ClientMetadata {
   char clientUid[48];
   float vinVoltage;          // Blues Notecard VIN voltage from daily report
   double vinVoltageEpoch;    // When the VIN voltage was last updated
+  // GPS location from Blues Notecard (for NWS weather lookup)
+  float latitude;            // Latitude in decimal degrees (e.g., 38.8894)
+  float longitude;           // Longitude in decimal degrees (e.g., -77.0352)
+  double locationEpoch;      // When the location was last updated
+  // NWS API grid point cache (to avoid repeated lookups)
+  char nwsGridOffice[4];     // NWS office ID (e.g., "LWX")
+  uint16_t nwsGridX;         // Grid X coordinate
+  uint16_t nwsGridY;         // Grid Y coordinate
+  bool nwsGridValid;         // True if grid data is cached
+  // Current temperature cache for real-time compensation
+  float cachedTemperatureF;  // Cached current temperature in °F
+  double tempCacheEpoch;     // When temperature was last fetched
 };
 
 struct SerialLogEntry {
@@ -316,6 +361,7 @@ struct CalibrationEntry {
   double timestamp;           // Epoch time of the reading
   float sensorReading;        // Raw sensor value (mA for 4-20mA sensors)
   float verifiedLevelInches;  // Manually verified tank level in inches
+  float temperatureF;         // NWS temperature (6-hour avg) at calibration time, -999 if unavailable
   char notes[64];             // Optional notes about the reading
 };
 
@@ -323,18 +369,34 @@ struct CalibrationEntry {
 struct TankCalibration {
   char clientUid[48];
   uint8_t tankNumber;
-  // Learned linear regression parameters: level = slope * sensorReading + offset
+  // Learned multiple linear regression parameters: 
+  // level = slope * sensorReading + tempCoef * (temperature - refTemp) + offset
+  // Temperature is normalized around a reference temperature (70°F) for numerical stability
   float learnedSlope;         // Learned inches per mA (replaces maxValue calculation)
   float learnedOffset;        // Learned offset in inches
+  float learnedTempCoef;      // Temperature coefficient (inches per °F deviation from refTemp)
   bool hasLearnedCalibration; // True if we have enough data points for calibration
-  uint8_t entryCount;         // Number of calibration entries
+  bool hasTempCompensation;   // True if enough temp data points for reliable temp coefficient
+  uint8_t entryCount;         // Number of calibration entries (total)
+  uint8_t tempEntryCount;     // Number of entries with valid temperature data
   float rSquared;             // Goodness of fit (0-1, higher is better)
   double lastCalibrationEpoch; // When calibration was last updated
   // Original sensor configuration for reference
   float originalMaxValue;     // Original maxValue from config
   char sensorType[16];        // "pressure" or "ultrasonic"
   float sensorMountHeight;    // Sensor mount height in inches
+  // Quality metrics for calibration warnings
+  float minSensorMa;          // Minimum sensor reading in calibration data
+  float maxSensorMa;          // Maximum sensor reading in calibration data
+  float minLevelInches;       // Minimum level in calibration data
+  float maxLevelInches;       // Maximum level in calibration data
 };
+
+// Reference temperature for temperature compensation (°F)
+// Using 70°F as a reasonable "room temperature" baseline
+static const float TEMP_REFERENCE_F = 70.0f;
+// Minimum entries with temperature data to enable temperature compensation
+static const uint8_t MIN_TEMP_ENTRIES_FOR_COMPENSATION = 5;
 
 static TankCalibration gTankCalibrations[MAX_CALIBRATION_TANKS];
 static uint8_t gTankCalibrationCount = 0;
@@ -865,6 +927,11 @@ tbody tr:nth-child(even){background:#fafafa}
 .drift-indicator.low{background:#d1fae5;color:#065f46;border-color:#a7f3d0}
 .drift-indicator.medium{background:#fef3c7;color:#92400e;border-color:#fde68a}
 .drift-indicator.high{background:#fee2e2;color:#991b1b;border-color:#fecaca}
+.btn-reset{padding:4px 8px;font-size:0.75rem;background:#fee2e2;color:#991b1b;border:1px solid #fecaca;cursor:pointer;border-radius:4px}
+.btn-reset:hover{background:#fecaca}
+.quality-warning{cursor:help;margin-left:4px}
+.tank-link{color:var(--accent);text-decoration:none;cursor:pointer}
+.tank-link:hover{text-decoration:underline}
 .chart-container{border:1px solid var(--border);padding:var(--space-2);height:320px;background:#ffffff}
 @media (max-width: 900px){
   .bar{flex-direction:column;align-items:flex-start;gap:var(--space-2)}
@@ -950,7 +1017,7 @@ async funct)HTML" R"HTML(ion requestClientLogs(clientUid,panelState){if(!clientU
 async funct)HTML" R"HTML(ion loadClients(){try{const res = await fetch('/api/clients?summary=1');if(!res.ok)throw new Error('Failed to fetch clients');const data = await res.json();const rawClients = data.clients || [];const unique = new Map();rawClients.forEach(c =>{if(c.client){unique.set(c.client,{uid:c.client,site:c.site || 'Unassigned',label:c.label || c.client});}});setClients(Array.from(unique.values()));renderSiteOptions();renderClientOptions();clientPanels.forEach((_,uid)=> updatePanelHeader(uid));}catch(err){console.error('Failed to load clients:',err);}}if(els.refreshServerBtn)els.refreshServerBtn.addEventListener('click',refreshServerLogs);if(els.clearServerBtn)els.clearServerBtn.addEventListener('click',()=>{els.serverLogs.innerHTML = '<div class="empty-state">Logs cleared</div>';});if(els.siteSelect)els.siteSelect.addEventListener('change',()=>{state.siteFilter = els.siteSelect.value;renderClientOptions();updateSiteButtons();});if(els.clientSelect)els.clientSelect.addEventListener('change',()=>{els.pinClientBtn.disabled = !els.clientSelect.value;});if(els.pinClientBtn)els.pinClientBtn.addEventListener('click',()=> pinClient(els.clientSelect.value));if(els.pinSiteBtn)els.pinSiteBtn.addEventListener('click',pinSiteClients);if(els.refreshAllBtn)els.refreshAllBtn.addEventListener('click',refreshAllClients);if(els.clearClientBtn)els.clearClientBtn.addEventListener('click',clearClientPanels);serverRefreshTimer = setInterval(refreshServerLogs,5000);refreshServerLogs();ensureClientPanelPlaceholder();loadClients();})();})();
 </script></body></html>)HTML";
 
-static const char CALIBRATION_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Calibration Learning - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a></div></div></header><main><div class="card"><h2>Add Calibration Reading</h2><p style="color: var(--muted); margin-bottom: 16px;"> Enter a manually verified tank level reading. For best results, take readings at different fill levels (e.g., 25%, 50%, 75%, full). </p><form id="calibrationForm"><div class="form-grid"><label class="field"><span>Select Tank</span><select id="tankSelect" required><option value="">-- Select a tank --</option></select></label><label class="field"><span>Verified Level</span><div class="level-input-group"><input type="number" id="levelFeet" min="0" max="100" placeholder="Feet" required><span>'</span><input type="number" id="levelInches" min="0" max="11.9" step="0.1" placeholder="Inches" required><span>"</span></div></label><labe)HTML" R"HTML(l class="field"><span>Reading Timestamp</span><input type="datetime-local" id="readingTimestamp"></label></div><label class="field" style="margin-top: 12px;"><span>Notes (optional)</span><textarea id="notes" rows="2" placeholder="e.g., Measured with stick gauge at front of tank"></textarea></label><div style="margin-top: 16px;"><button type="submit">Submit Calibration Reading</button><button type="button" class="secondary" onclick="document.getElementById('calibrationForm').reset();">Clear Form</button></div></form><div class="info-box"><strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the raw 4-20mA sensor reading from telemetry. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation. </div></div><div class="card"><h2>Calibration Status</h2><div id="calibrationStats" class="stats-row"><div class="stat-item"><span>Total Tanks</span><strong id="statTotalTanks">0</strong></div><div class="stat-item"><span>Calibrated</span><strong id="statCalibrated">0</strong></div><div class="stat-item"><span>Learning (1 point)</span><strong id="statLearning">0</strong></div><div class="stat-item"><span>Uncalibrated</span><strong id="statUncalibrated">0</strong></div></div><table><thead><tr><th>Tank</th><th>Site</th><th>Status</th><th>Data Points</th><th>R2 Fit</th><th>Learned Slope</th><th>Drift from Original</th><th>Last Calibration</th></tr></thead><tbody id="calibrationTableBody"></tbody></table></div><div class="card"><h2>Calibration Log</h2><div class="form-grid" style="margin-bottom: 12px;"><label class="field"><span>Filter by Tank</span><select id="logTankFilter"><option value="">All Tanks</option></select></label></div><table><thead><tr><th>Timestamp</th><th>Tank</th><th>Sensor (mA)</th><th)HTML" R"HTML(>Verified Level</th><th>Notes</th></tr></thead><tbody id="logTableBody"></tbody></table></div><div class="card"><h2>Drift Analysis</h2><p style="color: var(--muted); margin-bottom: 16px;"> Shows how sensor accuracy has changed over time. High drift may indicate sensor degradation, tank modifications, or environmental factors. </p><div id="driftAnalysis"><p style="color: var(--muted);">Select a tank with calibration data to view drift analysis.</p></div></div></main><div id="toast"></div><script>(() => {const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
+static const char CALIBRATION_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Calibration Learning - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a></div></div></header><main><div class="card"><h2>Add Calibration Reading</h2><p style="color: var(--muted); margin-bottom: 16px;"> Enter a manually verified tank level reading. For best results, take readings at different fill levels (e.g., 25%, 50%, 75%, full). </p><form id="calibrationForm"><div class="form-grid"><label class="field"><span>Select Tank</span><select id="tankSelect" required><option value="">-- Select a tank --</option></select></label><label class="field"><span>Verified Level</span><div class="level-input-group"><input type="number" id="levelFeet" min="0" max="100" placeholder="Feet" required><span>'</span><input type="number" id="levelInches" min="0" max="11.9" step="0.1" placeholder="Inches" required><span>"</span></div></label><labe)HTML" R"HTML(l class="field"><span>Reading Timestamp</span><input type="datetime-local" id="readingTimestamp"></label></div><label class="field" style="margin-top: 12px;"><span>Notes (optional)</span><textarea id="notes" rows="2" placeholder="e.g., Measured with stick gauge at front of tank"></textarea></label><div style="margin-top: 16px;"><button type="submit">Submit Calibration Reading</button><button type="button" class="secondary" onclick="document.getElementById('calibrationForm').reset();">Clear Form</button></div></form><div class="info-box"><strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the raw 4-20mA sensor reading from telemetry. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation. <br><br><strong>Temperature Compensation:</strong> When 5+ calibration readings with temperature data are collected across a 10°F+ temperature range, the system automatically learns a temperature coefficient. This allows predictions to account for thermal expansion/contraction effects on tank level readings. The status will show "Calibrated+Temp" when temperature compensation is active. </div></div><div class="card"><h2>Calibration Status</h2><div id="calibrationStats" class="stats-row"><div class="stat-item"><span>Total Tanks</span><strong id="statTotalTanks">0</strong></div><div class="stat-item"><span>Calibrated</span><strong id="statCalibrated">0</strong></div><div class="stat-item"><span>Learning (1 point)</span><strong id="statLearning">0</strong></div><div class="stat-item"><span>Uncalibrated</span><strong id="statUncalibrated">0</strong></div></div><table><thead><tr><th>Tank</th><th>Site</th><th>Status</th><th>Data Points</th><th>R2 Fit</th><th>Learned Slope</th><th>Temp Coef</th><th>Drift from Original</th><th>Last Calibration</th><th>Actions</th></tr></thead><tbody id="calibrationTableBody"></tbody></table></div><div class="card"><h2>Calibration Log</h2><div class="form-grid" style="margin-bottom: 12px;"><label class="field"><span>Filter by Tank</span><select id="logTankFilter"><option value="">All Tanks</option></select></label></div><table><thead><tr><th>Timestamp</th><th>Tank</th><th>Sensor (mA)</th><th)HTML" R"HTML(>Verified Level</th><th>Temp °F</th><th>Notes</th></tr></thead><tbody id="logTableBody"></tbody></table></div><div class="card"><h2>Drift Analysis</h2><p style="color: var(--muted); margin-bottom: 16px;"> Shows how sensor accuracy has changed over time. High drift may indicate sensor degradation, tank modifications, or environmental factors. </p><div id="driftAnalysis"><p style="color: var(--muted);">Select a tank with calibration data to view drift analysis.</p></div></div></main><div id="toast"></div><script>(() => {const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
 const pause_state={paused:false,pin:token||null,pinConfigured:false};if(pause_els.btn)pause_els.btn.addEventListener('click',togglePauseFlow);if(pause_els.btn)pause_els.btn.addEventListener('mouseenter',()=>{if(pause_state.paused)pause_els.btn.textContent='Resume';});if(pause_els.btn)pause_els.btn.addEventListener('mouseleave',()=>{renderPauseBtn();});fetch('/api/clients?summary=1').then(r=>r.json()).then(d=>{if(d&&d.srv){pause_state.paused=!!d.srv.ps;pause_state.pinConfigured=!!d.srv.pc;renderPauseBtn();}}).catch(e=>console.error('Failed to load pause state',e));
 funct)HTML" R"HTML(ion showPauseToast(message,isError){if(!pause_els.toast)return;const t=pause_els.toast;t.textContent=message;t.style.background=isError?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion renderPauseBtn(){const btn=pause_els.btn;if(!btn)return;if(pause_state.paused){btn.classList.add('paused');btn.style.display='';btn.textContent='Unpause';btn.title='Resume data flow';}else{btn.classList.remove('paused');btn.style.display='none';}}
@@ -961,8 +1028,8 @@ funct)HTML" R"HTML(ion formatLevel(inches){if(typeof inches !== 'number' || !isF
 funct)HTML" R"HTML(ion populateTankDropdowns(){const tankSelect = document.getElementById('tankSelect');const logTankFilter = document.getElementById('logTankFilter');tankSelect.innerHTML = '<option value="">-- Select a tank --</option>';logTankFilter.innerHTML = '<option value="">All Tanks</option>';const uniqueTanks = new Map();tanks.forEach(t =>{const key = `${t.client}:${t.tank}`;if(!uniqueTanks.has(key)){uniqueTanks.set(key,{client:t.client,tank:t.tank,site:t.site,label:t.label || `Tank ${t.tank}`,heightInches:t.heightInches || 0,levelInches:t.levelInches || 0,sensorMa:t.sensorMa || 0,lastUpdate:t.lastUpdate || 0});}});uniqueTanks.forEach((tank,key)=>{const option = document.createElement('option');option.value = key;option.textContent = `${tank.site}- ${tank.label}(#${tank.tank})`;tankSelect.appendChild(option.cloneNode(true));logTankFilter.appendChild(option);});}
 async funct)HTML" R"HTML(ion loadCalibrationData(){try{const response = await fetch('/api/calibration');if(!response.ok)throw new Error('Failed to load calibration data');const data = await response.json();calibrations = data.calibrations || [];calibrationLogs = data.logs || [];updateCalibrationStats();updateCalibrationTable();updateCalibrationLog();}catch(err){console.error('Error loading calibration data:',err);}}
 funct)HTML" R"HTML(ion updateCalibrationStats(){const total = tanks.length > 0 ? new Set(tanks.map(t => `${t.client}:${t.tank}`)).size:0;const calibrated = calibrations.filter(c => c.hasLearnedCalibration).length;const learning = calibrations.filter(c => !c.hasLearnedCalibration && c.entryCount > 0).length;const uncalibrated = total - calibrated - learning;document.getElementById('statTotalTanks').textContent = total;document.getElementById('statCalibrated').textContent = calibrated;document.getElementById('statLearning').textContent = learning;document.getElementById('statUncalibrated').textContent = Math.max(0,uncalibrated);}
-funct)HTML" R"HTML(ion updateCalibrationTable(){const tbody = document.getElementById('calibrationTableBody');tbody.innerHTML = '';if(calibrations.length === 0){tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);">No calibration data yet. Add readings to start learning.</td></tr>';return;}calibrations.forEach(cal =>{const tr = document.createElement('tr');const tankInfo = tanks.find(t => t.client === cal.clientUid && t.tank === cal.tankNumber);const tankName = tankInfo ? `${tankInfo.label || 'Tank ' + cal.tankNumber}`:`Tank ${cal.tankNumber}`;const site = tankInfo ? tankInfo.site:'--';let statusClass = 'uncalibrated';let statusText = 'Uncalibrated';if(cal.hasLearnedCalibration){statusClass = 'calibrated';statusText = 'Calibrated';}else if(cal.entryCount > 0){statusClass = 'learning';statusText = 'Learning';}let driftText = '--';let driftClass = 'low';if(cal.hasLearnedCalibration && cal.originalMaxValue > 0){const originalSlope = cal.originalMaxValue / 16.0;const drift = Math.abs((cal.learnedSlope - originalSlope)/ originalSlope * 100);driftText = drift.toFixed(1)+ '%';if(drift > 10)driftClass = 'high';else if(drift > 5)driftClass = 'medium';}tr.innerHTML = ` <td>${escapeHtml(tankName)}</td><td>${escapeHtml(site)}</td><td><span class="calibration-status ${statusClass}">${statusText}</span></td><td>${cal.entryCount}</td><td>${cal.hasLearnedCalibration ?(cal.rSquared * 100).toFixed(1)+ '%':'--'}</td><td>${cal.hasLearnedCalibration ? cal.learnedSlope.toFixed(3)+ ' in/mA':'--'}</td><td><span class="drift-indicator ${driftClass}">${driftText}</span></td><td>${formatEpoch(cal.lastCalibrationEpoch)}</td> `;tbody.appendChild(tr);});}
-funct)HTML" R"HTML(ion updateCalibrationLog(){const tbody = document.getElementById('logTableBody');const filter = document.getElementById('logTankFilter').value;tbody.innerHTML = '';let filtered = calibrationLogs;if(filter){const [clientUid,tankNum] = filter.split(':');filtered = calibrationLogs.filter(log => log.clientUid === clientUid && log.tankNumber === parseInt(tankNum));}if(filtered.length === 0){tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted);">No calibration entries found.</td></tr>';return;}filtered.sort((a,b)=> b.timestamp - a.timestamp);filtered.forEach(log =>{const tr = document.createElement('tr');const tankInfo = tanks.find(t => t.client === log.clientUid && t.tank === log.tankNumber);const tankName = tankInfo ? `${tankInfo.site}- ${tankInfo.label || 'Tank ' + log.tankNumber}`:`Tank ${log.tankNumber}`;const isValidReading = log.sensorReading >= 4 && log.sensorReading <= 20;const sensorDisplay = isValidReading ? log.sensorReading.toFixed(2)+ ' mA':(log.sensorReading ? `${log.sensorReading.toFixed(2)} mA (out of range)`:'-- (out of range)');tr.innerHTML = ` <td>${formatEpoch(log.timestamp)}</td><td>${escapeHtml(tankName)}</td><td title="${isValidReading ? '':'Not used for calibration(outside 4-20mA range)'}">${sensorDisplay}</td><td>${formatLevel(log.verifiedLevelInches)}</td><td>${escapeHtml(log.notes || '--')}</td> `;if(!isValidReading){tr.style.opacity = '0.6';}tbody.appendChild(tr);});}document.getElementById('calibrationForm').addEventListener('submit',async(e)=>{e.preventDefault();const tankKey = document.getElementById('tankSelect').value;if(!tankKey){showToast('Please select a tank',true);return;}const [clientUid,tankNumber] = tankKey.split(':');const levelFeet = parseInt(document.getElementById('levelFeet').value)|| 0;const levelInches = parseFloat(document.getElementById('levelInches').value)|| 0;const totalInches = levelFeet * 12 + levelInches;const timestampInput = document.getElementById('readingTimestamp').value;const note)HTML" R"HTML(s = document.getElementById('notes').value.trim();if(totalInches < 0){showToast('Invalid level value',true);return;}const tank = tanks.find(t => `${t.client}:${t.tank}` === tankKey);const payload ={clientUid:clientUid,tankNumber:parseInt(tankNumber),verifiedLevelInches:totalInches,notes:notes};if(tank && tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20){payload.sensorReading = tank.sensorMa;}if(timestampInput){payload.timestamp = Math.floor(new Date(timestampInput).getTime()/ 1000);}try{const response = await fetch('/api/calibration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to submit calibration');}showToast('Calibration reading submitted successfully');document.getElementById('calibrationForm').reset();loadCalibrationData();}catch(err){console.error('Error submitting calibration:',err);showToast(err.message || 'Failed to submit calibration',true);}});document.getElementById('logTankFilter').addEventListener('change',updateCalibrationLog);const now = new Date();now.setMinutes(now.getMinutes()- now.getTimezoneOffset());document.getElementById('readingTimestamp').value = now.toISOString().slice(0,16);loadTanks();loadCalibrationData();setInterval(loadCalibrationData,30000);})();})();
+funct)HTML" R"HTML(ion updateCalibrationTable(){const tbody = document.getElementById('calibrationTableBody');tbody.innerHTML = '';if(calibrations.length === 0){tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);">No calibration data yet. Add readings to start learning.</td></tr>';return;}calibrations.forEach(cal =>{const tr = document.createElement('tr');const tankInfo = tanks.find(t => t.client === cal.clientUid && t.tank === cal.tankNumber);const tankName = tankInfo ? `${tankInfo.label || 'Tank ' + cal.tankNumber}`:`Tank ${cal.tankNumber}`;const site = tankInfo ? tankInfo.site:'--';let statusClass = 'uncalibrated';let statusText = 'Uncalibrated';let warnings = [];if(cal.hasLearnedCalibration){statusClass = 'calibrated';statusText = cal.hasTempCompensation ? 'Calibrated+Temp' : 'Calibrated';if(cal.rSquared < 0.95){warnings.push('Low R² fit (<95%)');}if(cal.entryCount === 2){warnings.push('Only 2 data points');}}else if(cal.entryCount > 0){statusClass = 'learning';statusText = 'Learning';if(cal.entryCount === 1){warnings.push('Need 1 more point');}}const sensorRange = cal.maxSensorMa - cal.minSensorMa;const levelRange = cal.maxLevelInches - cal.minLevelInches;if(cal.hasLearnedCalibration && sensorRange < 4){warnings.push('Narrow sensor range (<4mA)');}let driftText = '--';let driftClass = 'low';if(cal.hasLearnedCalibration && cal.originalMaxValue > 0){const originalSlope = cal.originalMaxValue / 16.0;const drift = Math.abs((cal.learnedSlope - originalSlope)/ originalSlope * 100);driftText = drift.toFixed(1)+ '%';if(drift > 10)driftClass = 'high';else if(drift > 5)driftClass = 'medium';}let tempCoefText = '--';if(cal.hasTempCompensation && cal.learnedTempCoef !== undefined){tempCoefText = cal.learnedTempCoef.toFixed(4) + ' in/°F';}else if(cal.tempEntryCount > 0){tempCoefText = `(${cal.tempEntryCount} pts)`;}let rangeText = '--';if(cal.entryCount >= 1){rangeText = `${cal.minSensorMa.toFixed(1)}-${cal.maxSensorMa.toFixed(1)} mA`;}let warningHtml = '';if(warnings.length > 0){warningHtml = `<span class="quality-warning" title="${warnings.join(', ')}">⚠️</span>`;}const tankKey = `${cal.clientUid}:${cal.tankNumber}`;tr.innerHTML = ` <td><a href="#" class="tank-link" onclick="viewTankPoints('${tankKey}');return false;" title="Click to view data points">${escapeHtml(tankName)}</a>${warningHtml}</td><td>${escapeHtml(site)}</td><td><span class="calibration-status ${statusClass}">${statusText}</span></td><td title="Sensor range: ${rangeText}">${cal.entryCount}</td><td>${cal.hasLearnedCalibration ?(cal.rSquared * 100).toFixed(1)+ '%':'--'}</td><td>${cal.hasLearnedCalibration ? cal.learnedSlope.toFixed(3)+ ' in/mA':'--'}</td><td title="Temperature coefficient (inches per °F deviation from 70°F)">${tempCoefText}</td><td><span class="drift-indicator ${driftClass}">${driftText}</span></td><td>${formatEpoch(cal.lastCalibrationEpoch)}</td><td><button class="btn-reset" onclick="resetCalibration('${cal.clientUid}',${cal.tankNumber})" title="Reset calibration for this tank">Reset</button></td> `;tbody.appendChild(tr);});}
+funct)HTML" R"HTML(ion updateCalibrationLog(){const tbody = document.getElementById('logTableBody');const filter = document.getElementById('logTankFilter').value;tbody.innerHTML = '';let filtered = calibrationLogs;if(filter){const [clientUid,tankNum] = filter.split(':');filtered = calibrationLogs.filter(log => log.clientUid === clientUid && log.tankNumber === parseInt(tankNum));}if(filtered.length === 0){tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);">No calibration entries found.</td></tr>';return;}filtered.sort((a,b)=> b.timestamp - a.timestamp);filtered.forEach(log =>{const tr = document.createElement('tr');const tankInfo = tanks.find(t => t.client === log.clientUid && t.tank === log.tankNumber);const tankName = tankInfo ? `${tankInfo.site}- ${tankInfo.label || 'Tank ' + log.tankNumber}`:`Tank ${log.tankNumber}`;const isValidReading = log.sensorReading >= 4 && log.sensorReading <= 20;const sensorDisplay = isValidReading ? log.sensorReading.toFixed(2)+ ' mA':(log.sensorReading ? `${log.sensorReading.toFixed(2)} mA (out of range)`:'-- (out of range)');const tempDisplay = log.temperatureF !== undefined && log.temperatureF !== null ? log.temperatureF.toFixed(1)+ '°F':'--';tr.innerHTML = ` <td>${formatEpoch(log.timestamp)}</td><td>${escapeHtml(tankName)}</td><td title="${isValidReading ? '':'Not used for calibration(outside 4-20mA range)'}">${sensorDisplay}</td><td>${formatLevel(log.verifiedLevelInches)}</td><td>${tempDisplay}</td><td>${escapeHtml(log.notes || '--')}</td> `;if(!isValidReading){tr.style.opacity = '0.6';}tbody.appendChild(tr);});}document.getElementById('calibrationForm').addEventListener('submit',async(e)=>{e.preventDefault();const tankKey = document.getElementById('tankSelect').value;if(!tankKey){showToast('Please select a tank',true);return;}const [clientUid,tankNumber] = tankKey.split(':');const levelFeet = parseInt(document.getElementById('levelFeet').value)|| 0;const levelInches = parseFloat(document.getElementById('levelInches').value)|| 0;const totalInches = levelFeet * 12 + levelInches;const timestampInput = document.getElementById('readingTimestamp').value;const note)HTML" R"HTML(s = document.getElementById('notes').value.trim();if(totalInches < 0){showToast('Invalid level value',true);return;}const tank = tanks.find(t => `${t.client}:${t.tank}` === tankKey);const payload ={clientUid:clientUid,tankNumber:parseInt(tankNumber),verifiedLevelInches:totalInches,notes:notes};if(tank && tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20){payload.sensorReading = tank.sensorMa;}if(timestampInput){payload.timestamp = Math.floor(new Date(timestampInput).getTime()/ 1000);}try{const response = await fetch('/api/calibration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to submit calibration');}showToast('Calibration reading submitted successfully');document.getElementById('calibrationForm').reset();loadCalibrationData();}catch(err){console.error('Error submitting calibration:',err);showToast(err.message || 'Failed to submit calibration',true);}});document.getElementById('logTankFilter').addEventListener('change',updateCalibrationLog);const now = new Date();now.setMinutes(now.getMinutes()- now.getTimezoneOffset());document.getElementById('readingTimestamp').value = now.toISOString().slice(0,16);loadTanks();loadCalibrationData();setInterval(loadCalibrationData,30000);funct)HTML" R"HTML(ion viewTankPoints(tankKey){document.getElementById('logTankFilter').value = tankKey;updateCalibrationLog();document.getElementById('logTableBody').closest('.card').scrollIntoView({behavior:'smooth',block:'start'});showToast('Showing data points for selected tank');}async funct)HTML" R"HTML(ion resetCalibration(clientUid,tankNumber){if(!confirm(`Reset calibration for tank ${tankNumber}? This will delete all calibration data for this tank.`)){return;}try{const response = await fetch('/api/calibration',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid,tankNumber:tankNumber})});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to reset calibration');}showToast('Calibration reset successfully');loadCalibrationData();}catch(err){console.error('Error resetting calibration:',err);showToast(err.message || 'Failed to reset calibration',true);}}})();})();
 </script></body></html>)HTML";
 
 static const char HISTORICAL_DATA_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Historical Data - Tank Alarm Server</title><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a></div></div></header><main><div class="card"><h2>Fleet Summary</h2><div class="stats-grid"><div class="stat-box"><div class="stat-value" id="statTotalTanks">0</div><div class="stat-label">Total Tanks</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsToday">0</div><div class="stat-label">Alarms Today</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsWeek">0</div><div class="stat-label">Alarms This Week</div></div><div class="stat-box"><div class="stat-value" id="statAvgLevel">--</div><div class="stat-label">Avg Level %</div></div></div></div><div class="card"><h2>Level Trends</h2><div class="controls"><select id="siteFilter"><option value="all")HTML" R"HTML(>All Sites</option></select><select id="tankFilter"><option value="all">All Tanks</option></select><select id="rangeSelect"><option value="24h">Last 24 Hours</option><option value="7d" selected>Last 7 Days</option><option value="30d">Last 30 Days</option><option value="90d">Last 90 Days</option></select><button onclick="refreshData()">Refresh</button><button class="secondary" onclick="exportData()">Export CSV</button></div><div class="chart-container"><canvas id="levelChart"></canvas></div></div><div class="card"><h2>Alarm Frequency</h2><div class="chart-container"><canvas id="alarmChart"></canvas></div></div><div class="card"><h2>Sites &amp; Tanks</h2><p style="color:var(--muted);margin-bottom:16px;">Click on a site to expand and view individual tank details with mini sparklines.</p><div id="sitesContainer"></div></div><div class="card"><h2>VIN Voltage History</h2><p style="color:var(--muted);margin-bottom:16px;">Track power supply voltage trends to detect battery degradation or power issues early.</p><div class="chart-container"><canvas id="voltageChart"></canvas></div></div></main><div id="toast"></div><script>(() => {const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
@@ -1006,12 +1073,12 @@ funct)HTML" R"HTML(ion hideLoading(){const ov=document.getElementById('loading-o
 funct)HTML" R"HTML(ion showToast(message, isError) {if(els.toast)els.toast.textContent= message;if(els.toast)els.toast.style.background = isError ? '#dc2626' :'#0284c7';if(els.toast)els.toast.classList.add('show');setTimeout(() => {if(els.toast)els.toast.classList.remove('show')}, 2500);} funct)HTML" R"HTML(ion formatNumber(value) {return (typeof value === 'number' && isFinite(value)) ? value.toFixed(1) :'--';} funct)HTML" R"HTML(ion formatLevel(inches) {if (typeof inches !== 'number' || !isFinite(inches) || inches <= 0) {return '';} const feet = Math.floor(inches / 12);const remainingInches = inches % 12;if (feet === 0) {return `${remainingInches.toFixed(1)}"`;} return `${feet}' ${remainingInches.toFixed(1)}"`;} funct)HTML" R"HTML(ion formatEpoch(epoch) {if (!epoch) return '--';const date = new Date(epoch * 1000);if (isNaN(date.getTime())) return '--';return date.toLocaleString(undefined, {year:'numeric', month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit', hour12:true});} funct)HTML" R"HTML(ion renderPauseButton() {const btn = els.pauseBtn;if (!btn) return;if (state.paused) {btn.classList.add('paused');btn.style.display = '';btn.textContent = 'Unpause';btn.title = 'Resume data flow';} else {btn.classList.remove('paused');btn.style.display = 'none';}} funct)HTML" R"HTML(ion describeCadence(seconds) {if (!seconds) return '6 h';if (seconds < 3600) {return `${Math.round(seconds / 60)} m`;} const hours = (seconds / 3600).toFixed(1).replace(/\.0$/, '');return `${hours} h`;} funct)HTML" R"HTML(ion flattenTanks(clients) {const rows = [];clients.forEach(client => {const tanks = Array.isArray(client.ts) ? client.ts :[];if (!tanks.length) {rows.push({client:client.c, site:client.s, label:client.n || 'Tank', tank:client.k || '--', tankIdx:0, levelInches:client.l, alarm:client.a, alarmType:client.at, lastUpdate:client.u, vinVoltage:client.v});return;} tanks.forEach((tank, idx) => {rows.push({client:client.c, site:client.s, label:tank.n || client.n || 'Tank', tank:tank.k || '--', tankIdx:idx, levelInches:tank.l, alarm:tank.a, alarmType:tank.)HTML" R"HTML(at || client.at, lastUpdate:tank.u, vinVoltage:idx === 0 ? client.v :null});});});return rows;} funct)HTML" R"HTML(ion formatVoltage(voltage) {if (typeof voltage !== 'number' || !isFinite(voltage) || voltage <= 0) {return '--';} return voltage.toFixed(2) + ' V';} funct)HTML" R"HTML(ion renderTankRows() {const tbody = els.tankBody;if(!tbody)return;tbody.innerHTML = '';const rows = state.tanks;if (!rows.length) {const tr = document.createElement('tr');tr.innerHTML = '<td colspan="9">No telemetry available</td>';tbody.appendChild(tr);return;} rows.forEach(row => {const tr = document.createElement('tr');if (row.alarm) tr.classList.add('alarm');tr.innerHTML = ` <td><code>${row.client || '--'}</code></td><td>${row.site || '--'}</td><td>${row.label || 'Tank'} #${row.tank || '?'}</td><td>${formatLevel(row.levelInches)}</td><td>${formatVoltage(row.vinVoltage)}</td><td>${statusBadge(row)}</td><td>${formatEpoch(row.lastUpdate)}</td><td>${relayButtons(row)}</td><td>${refreshButton(row)}</td>`;tbody.appendChild(tr);});} funct)HTML" R"HTML(ion statusBadge(row) {if (!row.alarm) {return '<span class="status-pill ok">Normal</span>';} return '<span class="status-pill alarm">ALARM</span>';} funct)HTML" R"HTML(ion relayButtons(row) {if (!row.client || row.client === '--') return '--';const escapedClient = escapeHtml(row.client);const tankIdx = row.tankIdx !== undefined ? row.tankIdx :0;const disabled = state.refreshing ? 'disabled' :'';const btnStyle = 'padding:4px 8px;font-size:0.75rem;border:1px solid var(--card-border);background:var(--card-bg);cursor:pointer;margin:2px;';return `<button style="${btnStyle}" onclick="clearRelays('${escapedClient}', ${tankIdx})" title="Clear all relays for this tank" ${disabled}>Clear</button>`;} funct)HTML" R"HTML(ion refreshButton(row) {if (!row.client || row.client === '--') return '--';const escapedClient = escapeHtml(row.client);const disabled = state.refreshing ? 'disabled' :'';const opacity = state.refreshing ? 'opacity:0.4;' :'';const btnStyle = 'padding:4px 8px;font-size:0.75rem;border:1px solid var(--card-border);background:var(--card-bg);cursor:pointer;margin:2px;';return `<button class="icon-button refresh-btn" onclick="refreshTank('${e)HTML" R"HTML(scapedClient}')" title="Refresh Tank" style="${btnStyle}${opacity}" ${disabled}>Refresh</button>`;} funct)HTML" R"HTML(ion escapeHtml(unsafe) {if (!unsafe) return '';return String(unsafe) .replace(/&/g, '&amp;') .replace(/</g, '&lt;') .replace(/>/g, '&gt;') .replace(/"/g, '&quot;') .replace(/'/g, '&#039;');} async funct)HTML" R"HTML(ion refreshTank(clientUid) {if (state.refreshing) return;state.refreshing = true;renderTankRows();try {const res = await fetch('/api/refresh', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({client:clientUid})});if (!res.ok) {const text = await res.text();throw new Error(text || 'Refresh failed');} const data = await res.json();applyServerData(data);showToast('Tank refreshed');} catch (err) {showToast(err.message || 'Refresh failed', true);} finally {state.refreshing = false;renderTankRows();}} window.refreshTank = refreshTank;window.logout=funct)HTML" R"HTML(ion(){localStorage.removeItem('tankalarm_token');window.location.href='/login';};async funct)HTML" R"HTML(ion clearRelays(clientUid, tankIdx) {if (state.refreshing) return;if (state.pinConfigured && !state.pin) {const pinInput = prompt('Enter admin PIN to control relays');if (!pinInput) return;state.pin = pinInput.trim();} state.refreshing = true;renderTankRows();try {const res = await fetch('/api/relay/clear', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({clientUid:clientUid, tankIdx:tankIdx, pin:state.pin || ''})});if (!res.ok) {if (res.status === 403) {state.pin = token; state.pinConfigured = true;throw new Error('PIN required or invalid');} const text = await res.text();throw new Error(text || 'Clear relay failed');} showToast('Relay clear command sent');setTimeout(() => refreshData(), 1000);} catch (err) {showToast(err.message || 'Clear relay failed', true);} finally {state.refreshing = false;renderTankRows();}} window.clearRelays = clearRelays;funct)HTML" R"HTML(ion updateStats() {const clientIds = new Set();state.tanks.forEach(t => {if (t.client))HTML" R"HTML( {clientIds.add(t.client);}});if(els.statClients)els.statClients.textContent= clientIds.size;if(els.statTanks)els.statTanks.textContent= state.tanks.length;if(els.statAlarms)els.statAlarms.textContent= state.tanks.filter(t => t.alarm).length;const cutoff = Date.now() - STALE_MINUTES * 60 * 1000;const stale = state.tanks.filter(t => !t.lastUpdate || (t.lastUpdate * 1000) < cutoff).length;if(els.statStale)els.statStale.textContent= stale;} funct)HTML" R"HTML(ion scheduleUiRefresh() {if (state.timer) {clearInterval(state.timer);} state.timer = setInterval(() => {refreshData();}, state.uiRefreshSeconds * 1000);} async funct)HTML" R"HTML(ion togglePause() {if (!state.pinConfigured) {} else if (!state.pin) {const pinInput = prompt('Enter admin PIN to toggle pause');if (!pinInput) {return;} state.pin = pinInput.trim();} const targetPaused = !state.paused;try {const res = await fetch('/api/pause', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({paused:targetPaused, pin:state.pin || ''})});if (!res.ok) {if (res.status === 403) {state.pin = token; state.pinConfigured = true;throw new Error('PIN required or invalid');} const text = await res.text();throw new Error(text || 'Pause toggle failed');} const data = await res.json();state.paused = !!data.paused;renderPauseButton();showToast(state.paused ? 'Paused for maintenance' :'Resumed');} catch (err) {showToast(err.message || 'Pause toggle failed', true);}} funct)HTML" R"HTML(ion applyServerData(data) {state.clients = data.cs || [];state.tanks = flattenTanks(state.clients);const serverInfo = data.srv || {};if(els.serverName)els.serverName.textContent= serverInfo.n || 'Tank Alarm Server';if(els.serverUid)els.serverUid.textContent= data.si || '--';if(els.fleetName)els.fleetName.textContent= serverInfo.cf || 'tankalarm-clients';if(els.nextEmail)els.nextEmail.textContent= formatEpoch(data.nde);if(els.lastSync)els.lastSync.textContent= formatEpoch(data.lse);if(els.lastRefresh)els.lastRefresh.textContent= new Date().toLocaleString(undefined, )HTML" R"HTML({year:'numeric', month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit', hour12:true});state.paused = !!serverInfo.ps;state.pinConfigured = !!serverInfo.pc;state.uiRefreshSeconds = DEFAULT_REFRESH_SECONDS;renderTankRows();renderPauseButton();updateStats();scheduleUiRefresh();} async funct)HTML" R"HTML(ion refreshData() {try {const res = await fetch('/api/clients?summary=1');if (!res.ok) {throw new Error('Failed to fetch fleet data');} const data = await res.json();applyServerData(data);hideLoading();} catch (err) {showToast(err.message || 'Fleet refresh failed', true);}} refreshData();})();
 </script></body></html>)HTML";
 
-static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tank Alarm Client Console</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a></div></div></header><main><section class="card"><h2 style="margin-top:0;">Remote Configuration</h2><p style="color:var(--muted);margin-bottom:12px;">Access remote update tools and generate new client configurations.</p><div class="actions"><a class="pill" href="#client-config">Remotely Update Config</a><a class="pill secondary" href="/config-generator">New Config Generator</a></div></section><section class="card"><h2 style="margin-top:0;">Calibration & Help</h2><p style="color:var(--muted);margin-bottom:12px;">Manage calibration entries and view setup guidance.</p><div class="actions"><a class="pill" href="/calibration">Open Calibration</a><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/CLIENT_INSTALLATION_GUIDE.md" target="_blank" title="View Client Installation Guide">Help</a></div></section><div class="console-layout"><section class="card"><label class="field"><span>Select Client</span><select id="clientSelect"></select></label><div id="clientDetails" class="details">Select a client to review configuration.</div><div class="refresh-actions"><button type="button" id="refreshSelectedBtn">Refresh Selected Site</button><button type="button" class="secondary" id="refreshAllBtn">Refresh All Sites</button></div></section><section class="card"><h2 style="margin-top:0;">Active Sites</h2><div id="telemetryContainer" class="site-list"></div></section></div><section class="card" id="client-config"><h2 style="margin-top:0;">Client Configuration</h2><form id="configForm"><div class="form-grid"><label class="field"><span>Site Name</span><input id="siteInpu)HTML" R"HTML(t" type="text" placeholder="Site name"></label><label class="field"><span>Device Label</span><input id="deviceLabelInput" type="text" placeholder="Device label"></label><label class="field"><span>Server Fleet</span><input id="routeInput" type="text" placeholder="tankalarm-server"></label><label class="field"><span>Sample Seconds</span><input id="sampleSecondsInput" type="number" min="30" step="30"></label><label class="field"><span>Level Change Threshold (in)</span><input id="levelChangeThresholdInput" type="number" min="0" step="0.1" placeholder="0 = disabled"></label><label class="field"><span>Report Hour (0-23)</span><input id="reportHourInput" type="number" min="0" max="23"></label><label class="field"><span>Report Minute (0-59)</span><input id="reportMinuteInput" type="number" min="0" max="59"></label><label class="field"><span>SMS Primary</span><input id="smsPrimaryInput" type="text" placeholder="+1234567890"></label><label class="field"><span>SMS Secondary</span><input id="smsSecondaryInput" type="text" placeholder="+1234567890"></label><label class="field"><span>Daily Report Email</span><input id="dailyEmailInput" type="email" placeholder="reports@example.com"></label></div><h3 style="margin-top:24px;">Clear Button (Physical Button to Clear Relays)</h3><div class="form-grid"><label class="field"><span>Clear Button Pin (-1 = disabled)<span class="tooltip-icon" tabindex="0" data-tooltip="Hardware Setting: Defined in firmware/config file">?</span></span><input id="clearButtonPinInput" type="number" min="-1" max="99" value="-1" disabled style="cursor:not-allowed;opacity:0.7;background:var(--chip);"></label><label class="field"><span>Button Active State</span><select id="clearButtonActiveHighInput" disabled style="cursor:not-allowed;opacity:0.7;background:var(--chip);"><option value="false">Active LOW (pullup, button to GND)</option><option value="true">Active HIGH (external pull-down)</option></select></label></div><h3>Tanks</h3><div id="tankContainer" class="ta)HTML" R"HTML(nk-container"></div><div class="actions"><button type="button" class="secondary" id="addTank">Add Tank</button><button type="submit">Send Configuration</button></div></form></section></main><div id="toast"></div><div id="pinModal" class="modal hidden"><div class="modal-card"><div class="modal-badge" id="pinSessionBadge">Locked</div><h2 id="pinModalTitle">Enter Admin PIN</h2><p id="pinModalDescription">Enter the admin PIN to unlock configuration controls.</p><form id="pinForm"><label class="field"><span>PIN</span><input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits" aria-describedby="pinHint" title="Enter exactly four digits (0-9)"><small class="pin-hint" id="pinHint">Enter your 4-digit PIN to unlock. PIN is set in Server Settings.</small></label><div class="actions"><button type="submit" id="pinSubmit">Unlock</button><button type="button" class="secondary" id="pinCancel">Cancel</button></div></form></div></div><script>(funct)HTML" R"HTML(ion(){const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}
+static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tank Alarm Client Console</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a></div></div></header><main><section class="card"><h2 style="margin-top:0;">Remote Configuration</h2><p style="color:var(--muted);margin-bottom:12px;">Access remote update tools and generate new client configurations.</p><div class="actions"><a class="pill" href="#client-config">Remotely Update Config</a><a class="pill secondary" href="/config-generator">New Config Generator</a></div></section><section class="card"><h2 style="margin-top:0;">Calibration & Help</h2><p style="color:var(--muted);margin-bottom:12px;">Manage calibration entries and view setup guidance.</p><div class="actions"><a class="pill" href="/calibration">Open Calibration</a><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/CLIENT_INSTALLATION_GUIDE.md" target="_blank" title="View Client Installation Guide">Help</a></div></section><div class="console-layout"><section class="card"><label class="field"><span>Select Client</span><select id="clientSelect"></select></label><div id="clientDetails" class="details">Select a client to review configuration.</div><div class="refresh-actions"><button type="button" id="refreshSelectedBtn">Refresh Selected Site</button><button type="button" class="secondary" id="refreshAllBtn">Refresh All Sites</button><button type="button" class="secondary" id="requestLocationBtn">Request GPS Location</button></div><div id="locationInfo" class="details" style="margin-top:8px;display:none;"></div></section><section class="card"><h2 style="margin-top:0;">Active Sites</h2><div id="telemetryContainer" class="site-list"></div></section></div><section class="card" id="client-config"><h2 style="margin-top:0;">Client Configuration</h2><form id="configForm"><div class="form-grid"><label class="field"><span>Site Name</span><input id="siteInpu)HTML" R"HTML(t" type="text" placeholder="Site name"></label><label class="field"><span>Device Label</span><input id="deviceLabelInput" type="text" placeholder="Device label"></label><label class="field"><span>Server Fleet</span><input id="routeInput" type="text" placeholder="tankalarm-server"></label><label class="field"><span>Sample Seconds</span><input id="sampleSecondsInput" type="number" min="30" step="30"></label><label class="field"><span>Level Change Threshold (in)</span><input id="levelChangeThresholdInput" type="number" min="0" step="0.1" placeholder="0 = disabled"></label><label class="field"><span>Report Hour (0-23)</span><input id="reportHourInput" type="number" min="0" max="23"></label><label class="field"><span>Report Minute (0-59)</span><input id="reportMinuteInput" type="number" min="0" max="59"></label><label class="field"><span>SMS Primary</span><input id="smsPrimaryInput" type="text" placeholder="+1234567890"></label><label class="field"><span>SMS Secondary</span><input id="smsSecondaryInput" type="text" placeholder="+1234567890"></label><label class="field"><span>Daily Report Email</span><input id="dailyEmailInput" type="email" placeholder="reports@example.com"></label></div><h3 style="margin-top:24px;">Clear Button (Physical Button to Clear Relays)</h3><div class="form-grid"><label class="field"><span>Clear Button Pin (-1 = disabled)<span class="tooltip-icon" tabindex="0" data-tooltip="Hardware Setting: Defined in firmware/config file">?</span></span><input id="clearButtonPinInput" type="number" min="-1" max="99" value="-1" disabled style="cursor:not-allowed;opacity:0.7;background:var(--chip);"></label><label class="field"><span>Button Active State</span><select id="clearButtonActiveHighInput" disabled style="cursor:not-allowed;opacity:0.7;background:var(--chip);"><option value="false">Active LOW (pullup, button to GND)</option><option value="true">Active HIGH (external pull-down)</option></select></label></div><h3>Tanks</h3><div id="tankContainer" class="ta)HTML" R"HTML(nk-container"></div><div class="actions"><button type="button" class="secondary" id="addTank">Add Tank</button><button type="submit">Send Configuration</button></div></form></section></main><div id="toast"></div><div id="pinModal" class="modal hidden"><div class="modal-card"><div class="modal-badge" id="pinSessionBadge">Locked</div><h2 id="pinModalTitle">Enter Admin PIN</h2><p id="pinModalDescription">Enter the admin PIN to unlock configuration controls.</p><form id="pinForm"><label class="field"><span>PIN</span><input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits" aria-describedby="pinHint" title="Enter exactly four digits (0-9)"><small class="pin-hint" id="pinHint">Enter your 4-digit PIN to unlock. PIN is set in Server Settings.</small></label><div class="actions"><button type="submit" id="pinSubmit">Unlock</button><button type="button" class="secondary" id="pinCancel">Cancel</button></div></form></div></div><script>(funct)HTML" R"HTML(ion(){const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}
 funct)HTML" R"HTML(ion escapeHtml(str){if(!str)return'';const div=document.createElement('div');div.textContent=str;return div.innerHTML;}const PIN_STORAGE_KEY = 'tankalarmPin';const PIN_SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;funct)HTML" R"HTML(ion loadStoredPin(){try{const raw = localStorage.getItem(PIN_STORAGE_KEY);if(!raw)return null;const parsed = JSON.parse(raw);if(!parsed || !parsed.pin || !parsed.expiresAt){localStorage.removeItem(PIN_STORAGE_KEY);return null;}if(Date.now()> parsed.expiresAt){localStorage.removeItem(PIN_STORAGE_KEY);return null;}return parsed.pin;}catch(err){localStorage.removeItem(PIN_STORAGE_KEY);return null;}}
 funct)HTML" R"HTML(ion storePin(pin){const payload ={pin,expiresAt:Date.now()+ PIN_SESSION_TTL_MS};localStorage.setItem(PIN_STORAGE_KEY,JSON.stringify(payload));}
 funct)HTML" R"HTML(ion clearStoredPin(){localStorage.removeItem(PIN_STORAGE_KEY);}const state ={data:null,selected:null};
 const pinState ={value:token||null,configured:false,mode:'unlock'};
-const els ={serverName:document.getElementById('serverName'),serverUid:document.getElementById('serverUid'),nextEmail:document.getElementById('nextEmail'),telemetryContainer:document.getElementById('telemetryContainer'),clientSelect:document.getElementById('clientSelect'),clientDetails:document.getElementById('clientDetails'),site:document.getElementById('siteInput'),deviceLabel:document.getElementById('deviceLabelInput'),route:document.getElementById('routeInput'),sampleSeconds:document.getElementById('sampleSecondsInput'),levelChangeThreshold:document.getElementById('levelChangeThresholdInput'),reportHour:document.getElementById('reportHourInput'),reportMinute:document.getElementById('reportMinuteInput'),smsPrimary:document.getElementById('smsPrimaryInput'),smsSecondary:document.getElementById('smsSecondaryInput'),dailyEmail:document.getElementById('dailyEmailInput'),clearButtonPin:document.getElementById('clearButtonPinInput'),clearButtonActiveHigh:document.getElementById('clearButtonActiveHighInput'),tankContainer:document.getElementById('tankContainer'),toast:document.getElementById('toast'),addTank:document.getElementById('addTank'),form:document.getElementById('configForm'),refreshSelectedBtn:document.getElementById('refreshSelectedBtn'),refreshAllBtn:document.getElementById('refreshAllBtn')};
+const els ={serverName:document.getElementById('serverName'),serverUid:document.getElementById('serverUid'),nextEmail:document.getElementById('nextEmail'),telemetryContainer:document.getElementById('telemetryContainer'),clientSelect:document.getElementById('clientSelect'),clientDetails:document.getElementById('clientDetails'),site:document.getElementById('siteInput'),deviceLabel:document.getElementById('deviceLabelInput'),route:document.getElementById('routeInput'),sampleSeconds:document.getElementById('sampleSecondsInput'),levelChangeThreshold:document.getElementById('levelChangeThresholdInput'),reportHour:document.getElementById('reportHourInput'),reportMinute:document.getElementById('reportMinuteInput'),smsPrimary:document.getElementById('smsPrimaryInput'),smsSecondary:document.getElementById('smsSecondaryInput'),dailyEmail:document.getElementById('dailyEmailInput'),clearButtonPin:document.getElementById('clearButtonPinInput'),clearButtonActiveHigh:document.getElementById('clearButtonActiveHighInput'),tankContainer:document.getElementById('tankContainer'),toast:document.getElementById('toast'),addTank:document.getElementById('addTank'),form:document.getElementById('configForm'),refreshSelectedBtn:document.getElementById('refreshSelectedBtn'),refreshAllBtn:document.getElementById('refreshAllBtn'),requestLocationBtn:document.getElementById('requestLocationBtn'),locationInfo:document.getElementById('locationInfo')};
 const pinEls ={modal:document.getElementById('pinModal'),title:document.getElementById('pinModalTitle'),description:document.getElementById('pinModalDescription'),pin:document.getElementById('pinInput'),form:document.getElementById('pinForm'),submit:document.getElementById('pinSubmit'),cancel:document.getElementById('pinCancel')};funct)HTML" R"HTML(ion setFormDisabled(disabled){const controls = els.form.querySelectorAll('input,select,button');controls.forEach(control =>{if(control.dataset && control.dataset.pinControl === 'true'){return;}control.disabled = disabled;});els.addTank.disabled = disabled;}
 funct)HTML" R"HTML(ion invalidatePin(){pinState.value = null;clearStoredPin();setFormDisabled(true);}
 funct)HTML" R"HTML(ion isPinModalVisible(){return !pinEls.modal.classList.contains('hidden');}
@@ -1043,7 +1110,10 @@ funct)HTML" R"HTML(ion collectServerSettings(){return{smsPrimary:els.smsPrimary.
 async funct)HTML" R"HTML(ion submitConfig(event){event.preventDefault();const uid = state.selected;if(!uid){showToast('Select a client first.',true);return;}let config;try{config = collectConfig();}catch(err){showToast(err.message,true);return;}if(pinState.configured && !pinState.value){showPinModal();showToast('Enter the admin PIN to send configurations.',true);return;}const payload ={client:uid,config,server:collectServerSettings()};if(pinState.value){payload.pin = pinState.value;}try{const res = await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){if(res.status === 403){invalidatePin();showPinModal();throw new Error('PIN required or invalid.');}const text = await res.text();throw new Error(text || 'Server rejected configuration');}showToast('Configuration queued for delivery');await refreshData(state.selected);}catch(err){showToast(err.message || 'Failed to send config',true);}}
 funct)HTML" R"HTML(ion applyServerData(data,preferredUid){state.data = data;const serverInfo =(state.data && state.data.server)? state.data.server:{};if(els.serverName)els.serverName.textContent= serverInfo.name || 'Tank Alarm Server';syncServerSettings(serverInfo);if(els.serverUid)els.serverUid.textContent= state.data.serverUid || '--';if(els.nextEmail)els.nextEmail.textContent= formatEpoch(state.data.nextDailyEmailEpoch);if(preferredUid){state.selected = preferredUid;}renderTelemetry();populateClientSelect();if(state.selected){loadConfigIntoForm(state.selected);}else if(els.clientSelect.options.length){loadConfigIntoForm(els.clientSelect.value);}updatePinLock();}
 async funct)HTML" R"HTML(ion refreshData(preferredUid){try{const query = preferredUid ? `?client=${encodeURIComponent(preferredUid)}`:'';const res = await fetch(`/api/clients?summary=1${query}`);if(!res.ok){throw new Error('Failed to fetch server data');}const data = await res.json();applyServerData(data,preferredUid || state.selected);}catch(err){showToast(err.message || 'Initialization failed',true);}}
-async funct)HTML" R"HTML(ion triggerManualRefresh(targetUid){const payload = targetUid ?{client:targetUid}:{};try{const res = await fetch('/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text = await res.text();throw new Error(text || 'Refresh failed');}const data = await res.json();applyServerData(data,targetUid || state.selected);showToast(targetUid ? 'Selected site updated':'All sites updated');}catch(err){showToast(err.message || 'Refresh failed',true);}}pinEls.form.addEventListener('submit',handlePinSubmit);pinEls.cancel.addEventListener('click',()=>{hidePinModal();});if(els.addTank)els.addTank.addEventListener('click',()=> addTankCard());if(els.clientSelect)els.clientSelect.addEventListener('change',event =>{loadConfigIntoForm(event.target.value);});if(els.form)els.form.addEventListener('submit',submitConfig);if(els.refreshSelectedBtn)els.refreshSelectedBtn.addEventListener('click',()=>{const target = state.selected ||(els.clientSelect.value || '');if(!target){showToast('Select a client first.',true);return;}triggerManualRefresh(target);});if(els.refreshAllBtn)els.refreshAllBtn.addEventListener('click',()=>{triggerManualRefresh(null);});refreshData();})();
+async funct)HTML" R"HTML(ion triggerManualRefresh(targetUid){const payload = targetUid ?{client:targetUid}:{};try{const res = await fetch('/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text = await res.text();throw new Error(text || 'Refresh failed');}const data = await res.json();applyServerData(data,targetUid || state.selected);showToast(targetUid ? 'Selected site updated':'All sites updated');}catch(err){showToast(err.message || 'Refresh failed',true);}}
+async funct)HTML" R"HTML(ion requestLocation(clientUid){if(!clientUid){showToast('Select a client first.',true);return;}try{const res = await fetch('/api/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid})});if(!res.ok){const text = await res.text();throw new Error(text || 'Location request failed');}showToast('Location request sent - check back in a few minutes');await fetchLocationInfo(clientUid);}catch(err){showToast(err.message || 'Location request failed',true);}}
+async funct)HTML" R"HTML(ion fetchLocationInfo(clientUid){if(!clientUid || !els.locationInfo)return;try{const res = await fetch(`/api/location?client=${encodeURIComponent(clientUid)}`);if(!res.ok)return;const data = await res.json();if(data.hasLocation){const date = data.locationEpoch ? new Date(data.locationEpoch * 1000).toLocaleString():'Unknown';els.locationInfo.innerHTML = `<strong>📍 Cached Location:</strong> ${data.latitude.toFixed(4)}, ${data.longitude.toFixed(4)} <span style="color:var(--muted)">(as of ${date})</span>`;els.locationInfo.style.display = 'block';}else{els.locationInfo.innerHTML = '<strong>📍 Location:</strong> <span style="color:var(--muted)">Not yet received. Click "Request GPS Location" to fetch.</span>';els.locationInfo.style.display = 'block';}}catch(err){els.locationInfo.style.display = 'none';}}
+pinEls.form.addEventListener('submit',handlePinSubmit);pinEls.cancel.addEventListener('click',()=>{hidePinModal();});if(els.addTank)els.addTank.addEventListener('click',()=> addTankCard());if(els.clientSelect)els.clientSelect.addEventListener('change',event =>{loadConfigIntoForm(event.target.value);fetchLocationInfo(event.target.value);});if(els.form)els.form.addEventListener('submit',submitConfig);if(els.refreshSelectedBtn)els.refreshSelectedBtn.addEventListener('click',()=>{const target = state.selected ||(els.clientSelect.value || '');if(!target){showToast('Select a client first.',true);return;}triggerManualRefresh(target);});if(els.refreshAllBtn)els.refreshAllBtn.addEventListener('click',()=>{triggerManualRefresh(null);});if(els.requestLocationBtn)els.requestLocationBtn.addEventListener('click',()=>{const target = state.selected ||(els.clientSelect.value || '');requestLocation(target);});refreshData().then(()=>{if(state.selected)fetchLocationInfo(state.selected);});})();
 </script></body></html>)HTML";
 
 static void initializeStorage();
@@ -1104,6 +1174,7 @@ static void handleSerialLogsDownload(EthernetClient &client, const String &query
 static void handleSerialRequestPost(EthernetClient &client, const String &body);
 static void handleCalibrationGet(EthernetClient &client);
 static void handleCalibrationPost(EthernetClient &client, const String &body);
+static void handleCalibrationDelete(EthernetClient &client, const String &body);
 static void sendHistoryJson(EthernetClient &client);
 static void handleHistoryCompare(EthernetClient &client, const String &query);
 static void handleHistoryYearOverYear(EthernetClient &client, const String &query);
@@ -1114,11 +1185,14 @@ static void handleEmailFormatGet(EthernetClient &client);
 static void handleEmailFormatPost(EthernetClient &client, const String &body);
 static void handleDfuStatusGet(EthernetClient &client);
 static void handleDfuEnablePost(EthernetClient &client, const String &body);
+static void handleLocationRequestPost(EthernetClient &client, const String &body);
+static void handleLocationGet(EthernetClient &client, const String &path);
+static TankCalibration *findTankCalibration(const char *clientUid, uint8_t tankNumber);
 static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8_t tankNumber);
 static void recalculateCalibration(TankCalibration *cal);
 static void loadCalibrationData();
 static void saveCalibrationData();
-static void saveCalibrationEntry(const char *clientUid, uint8_t tankNumber, double timestamp, float sensorReading, float verifiedLevelInches, const char *notes);
+static void saveCalibrationEntry(const char *clientUid, uint8_t tankNumber, double timestamp, float sensorReading, float verifiedLevelInches, float temperatureF, const char *notes);
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj);
 static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state, const char *source);
 static void pollNotecard();
@@ -1128,6 +1202,8 @@ static void handleAlarm(JsonDocument &doc, double epoch);
 static void handleDaily(JsonDocument &doc, double epoch);
 static void handleSerialLog(JsonDocument &doc, double epoch);
 static void handleSerialAck(JsonDocument &doc, double epoch);
+static void handleLocationResponse(JsonDocument &doc, double epoch);
+static bool sendLocationRequest(const char *clientUid);
 static void addServerSerialLog(const char *message, const char *level = "info", const char *source = "server");
 static ClientSerialBuffer *findOrCreateClientSerialBuffer(const char *clientUid);
 static void addClientSerialLog(const char *clientUid, const char *message, double timestamp, const char *level = "info", const char *source = "client");
@@ -1140,6 +1216,7 @@ static void saveClientConfigSnapshots();
 static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffer);
 static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
 static float convertMaToLevel(const char *clientUid, uint8_t tankNumber, float mA);
+static float convertMaToLevelWithTemp(const char *clientUid, uint8_t tankNumber, float mA, float currentTempF);
 static float convertVoltageToLevel(const char *clientUid, uint8_t tankNumber, float voltage);
 static ClientMetadata *findClientMetadata(const char *clientUid);
 static ClientMetadata *findOrCreateClientMetadata(const char *clientUid);
@@ -1148,6 +1225,12 @@ static void publishViewerSummary();
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
 static String getQueryParam(const String &query, const char *key);
 static bool requireValidPin(EthernetClient &client, const char *pinValue);
+
+// NWS Weather API functions (for calibration temperature data)
+static bool nwsLookupGridPoint(ClientMetadata *meta);
+static float nwsFetchAverageTemperature(ClientMetadata *meta, double timestamp);
+static float nwsGetCalibrationTemperature(const char *clientUid, double timestamp);
+static float getCachedTemperature(const char *clientUid);
 
 static void handleRefreshPost(EthernetClient &client, const String &body) {
   char clientUid[64] = {0};
@@ -1514,6 +1597,93 @@ static void handleSerialAck(JsonDocument &doc, double epoch) {
   if (strcmp(status, "processing") != 0) {
     buf->awaitingLogs = false;
   }
+}
+
+// ============================================================================
+// Location Request/Response Handling
+// ============================================================================
+// Server can request GPS location from clients for NWS weather lookups
+
+static void handleLocationResponse(JsonDocument &doc, double epoch) {
+  const char *clientUid = doc["client"] | "";
+  if (!clientUid || strlen(clientUid) == 0) {
+    return;
+  }
+
+  bool valid = doc["valid"] | false;
+  if (!valid) {
+    const char *error = doc["error"] | "unknown";
+    Serial.print(F("Location response from "));
+    Serial.print(clientUid);
+    Serial.print(F(": invalid - "));
+    Serial.println(error);
+    return;
+  }
+
+  float latitude = doc["lat"].as<float>();
+  float longitude = doc["lon"].as<float>();
+  
+  // Validate coordinates
+  if (latitude < -90.0f || latitude > 90.0f || 
+      longitude < -180.0f || longitude > 180.0f) {
+    Serial.print(F("Location response from "));
+    Serial.print(clientUid);
+    Serial.println(F(": coordinates out of range"));
+    return;
+  }
+
+  ClientMetadata *meta = findOrCreateClientMetadata(clientUid);
+  if (meta) {
+    meta->latitude = latitude;
+    meta->longitude = longitude;
+    meta->locationEpoch = (epoch > 0.0) ? epoch : currentEpoch();
+    // Invalidate cached NWS grid point if location changed
+    meta->nwsGridValid = false;
+    
+    Serial.print(F("Location received from "));
+    Serial.print(clientUid);
+    Serial.print(F(": "));
+    Serial.print(latitude, 4);
+    Serial.print(F(", "));
+    Serial.println(longitude, 4);
+  }
+}
+
+static bool sendLocationRequest(const char *clientUid) {
+  if (!clientUid || strlen(clientUid) == 0) {
+    return false;
+  }
+
+  J *req = notecard.newRequest("note.add");
+  if (!req) {
+    Serial.println(F("sendLocationRequest: Unable to allocate Notecard request"));
+    return false;
+  }
+
+  // Send to the specific client device
+  char targetFile[80];
+  snprintf(targetFile, sizeof(targetFile), "device:%s:%s", clientUid, LOCATION_REQUEST_FILE);
+  JAddStringToObject(req, "file", targetFile);
+  JAddBoolToObject(req, "sync", true);
+
+  J *body = JCreateObject();
+  if (!body) {
+    Serial.println(F("sendLocationRequest: Unable to allocate body"));
+    return false;
+  }
+
+  JAddStringToObject(body, "request", "get_location");
+  JAddNumberToObject(body, "timestamp", currentEpoch());
+  JAddItemToObject(req, "body", body);
+
+  if (!notecard.sendRequest(req)) {
+    Serial.println(F("sendLocationRequest: Failed to queue Notecard request"));
+    return false;
+  }
+
+  Serial.print(F("Location request sent to client: "));
+  Serial.println(clientUid);
+  return true;
 }
 
 static SerialRequestResult requestClientSerialLogs(const char *clientUid, String &errorMessage) {
@@ -2594,6 +2764,322 @@ static void ftpQuit(FtpSession &session) {
     ftpSendCommand(session, "QUIT", code, msg, sizeof(msg));
     session.ctrl.stop();
   }
+}
+
+// ============================================================================
+// National Weather Service API Integration
+// ============================================================================
+// Fetches weather data for calibration temperature compensation.
+// Uses the NWS public API: https://api.weather.gov
+// Flow: /points/{lat},{lon} -> get grid office/X/Y -> /gridpoints/{office}/{X},{Y} -> get temperature
+
+// Look up NWS grid point for a client's location and cache it
+static bool nwsLookupGridPoint(ClientMetadata *meta) {
+  if (!meta || meta->latitude == 0.0f || meta->longitude == 0.0f) {
+    return false;
+  }
+  
+  // If already cached, don't re-fetch
+  if (meta->nwsGridValid && meta->nwsGridOffice[0] != '\0') {
+    return true;
+  }
+  
+  EthernetClient client;
+  if (!client.connect(NWS_API_HOST, NWS_API_PORT)) {
+    Serial.println(F("NWS: Failed to connect to api.weather.gov"));
+    return false;
+  }
+  
+  // Build request URL: /points/{lat},{lon}
+  char path[64];
+  // Format with 4 decimal places (NWS max precision)
+  snprintf(path, sizeof(path), "/points/%.4f,%.4f", meta->latitude, meta->longitude);
+  
+  // Send HTTP GET request with required User-Agent header
+  client.print(F("GET "));
+  client.print(path);
+  client.println(F(" HTTP/1.1"));
+  client.print(F("Host: "));
+  client.println(F(NWS_API_HOST));
+  client.println(F("User-Agent: TankAlarm/1.0 (tank monitoring system)"));
+  client.println(F("Accept: application/json"));
+  client.println(F("Connection: close"));
+  client.println();
+  
+  // Wait for response
+  unsigned long start = millis();
+  while (!client.available() && millis() - start < NWS_API_TIMEOUT_MS) {
+    delay(10);
+  }
+  
+  if (!client.available()) {
+    Serial.println(F("NWS: Timeout waiting for /points response"));
+    client.stop();
+    return false;
+  }
+  
+  // Read response and parse JSON to find grid office, X, Y
+  // Skip HTTP headers
+  bool headersComplete = false;
+  while (client.available() && !headersComplete) {
+    String line = client.readStringUntil('\n');
+    if (line == "\r" || line.length() == 0) {
+      headersComplete = true;
+    }
+  }
+  
+  // Read JSON body (limited to 4KB for safety)
+  char buffer[4096];
+  size_t len = 0;
+  while (client.available() && len < sizeof(buffer) - 1 && millis() - start < NWS_API_TIMEOUT_MS) {
+    buffer[len++] = client.read();
+  }
+  buffer[len] = '\0';
+  client.stop();
+  
+  // Parse JSON response
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, buffer);
+  if (error) {
+    Serial.print(F("NWS: JSON parse error: "));
+    Serial.println(error.c_str());
+    return false;
+  }
+  
+  // Extract grid office and coordinates from properties
+  // Response format: { "properties": { "gridId": "LWX", "gridX": 96, "gridY": 70 } }
+  const char *gridId = doc["properties"]["gridId"];
+  int gridX = doc["properties"]["gridX"] | -1;
+  int gridY = doc["properties"]["gridY"] | -1;
+  
+  if (!gridId || gridX < 0 || gridY < 0) {
+    Serial.println(F("NWS: Missing grid data in response"));
+    return false;
+  }
+  
+  // Cache the grid point
+  strlcpy(meta->nwsGridOffice, gridId, sizeof(meta->nwsGridOffice));
+  meta->nwsGridX = (uint16_t)gridX;
+  meta->nwsGridY = (uint16_t)gridY;
+  meta->nwsGridValid = true;
+  
+  Serial.print(F("NWS: Grid point cached: "));
+  Serial.print(gridId);
+  Serial.print(F(" ("));
+  Serial.print(gridX);
+  Serial.print(F(","));
+  Serial.print(gridY);
+  Serial.println(F(")"));
+  
+  return true;
+}
+
+// Fetch hourly temperature observations and calculate average for past N hours
+static float nwsFetchAverageTemperature(ClientMetadata *meta, double timestamp) {
+  if (!meta || !meta->nwsGridValid) {
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  EthernetClient client;
+  if (!client.connect(NWS_API_HOST, NWS_API_PORT)) {
+    Serial.println(F("NWS: Failed to connect for gridpoints"));
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Build request URL: /gridpoints/{office}/{X},{Y}
+  char path[64];
+  snprintf(path, sizeof(path), "/gridpoints/%s/%u,%u", 
+           meta->nwsGridOffice, meta->nwsGridX, meta->nwsGridY);
+  
+  // Send HTTP GET request
+  client.print(F("GET "));
+  client.print(path);
+  client.println(F(" HTTP/1.1"));
+  client.print(F("Host: "));
+  client.println(F(NWS_API_HOST));
+  client.println(F("User-Agent: TankAlarm/1.0 (tank monitoring system)"));
+  client.println(F("Accept: application/json"));
+  client.println(F("Connection: close"));
+  client.println();
+  
+  // Wait for response
+  unsigned long start = millis();
+  while (!client.available() && millis() - start < NWS_API_TIMEOUT_MS) {
+    delay(10);
+  }
+  
+  if (!client.available()) {
+    Serial.println(F("NWS: Timeout waiting for gridpoints response"));
+    client.stop();
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Skip HTTP headers
+  bool headersComplete = false;
+  while (client.available() && !headersComplete) {
+    String line = client.readStringUntil('\n');
+    if (line == "\r" || line.length() == 0) {
+      headersComplete = true;
+    }
+  }
+  
+  // Read JSON body (this can be large, limit to 16KB)
+  char *buffer = (char *)malloc(16384);
+  if (!buffer) {
+    Serial.println(F("NWS: Failed to allocate buffer"));
+    client.stop();
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  size_t len = 0;
+  while (client.available() && len < 16383 && millis() - start < NWS_API_TIMEOUT_MS) {
+    buffer[len++] = client.read();
+  }
+  buffer[len] = '\0';
+  client.stop();
+  
+  // Parse JSON response
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, buffer);
+  free(buffer);
+  
+  if (error) {
+    Serial.print(F("NWS: JSON parse error: "));
+    Serial.println(error.c_str());
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Extract temperature time series from properties.temperature.values
+  // Format: { "properties": { "temperature": { "uom": "wmoUnit:degC", "values": [ { "validTime": "...", "value": 25.0 }, ... ] } } }
+  JsonArray tempValues = doc["properties"]["temperature"]["values"];
+  const char *tempUom = doc["properties"]["temperature"]["uom"];
+  
+  if (tempValues.isNull() || tempValues.size() == 0) {
+    Serial.println(F("NWS: No temperature data in response"));
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Determine if temperatures are in Celsius (they usually are from NWS)
+  bool isCelsius = (tempUom && strstr(tempUom, "degC") != nullptr);
+  
+  // Calculate time window for averaging (past NWS_AVG_HOURS hours from timestamp)
+  double windowStart = timestamp - (NWS_AVG_HOURS * 3600.0);
+  double windowEnd = timestamp;
+  
+  // Average temperatures within the window
+  float tempSum = 0.0f;
+  int tempCount = 0;
+  
+  // The NWS data is forecast data, but recent values are essentially observations
+  // We'll use any values that overlap with our window
+  for (JsonObject entry : tempValues) {
+    float tempValue = entry["value"] | TEMPERATURE_UNAVAILABLE;
+    if (tempValue == TEMPERATURE_UNAVAILABLE) continue;
+    
+    // For simplicity, use the first several hourly values
+    // (NWS gridpoint data represents recent/near-term conditions)
+    if (tempCount < NWS_AVG_HOURS) {
+      // Convert to Fahrenheit if needed
+      float tempF = isCelsius ? (tempValue * 9.0f / 5.0f + 32.0f) : tempValue;
+      tempSum += tempF;
+      tempCount++;
+    }
+  }
+  
+  if (tempCount == 0) {
+    Serial.println(F("NWS: No valid temperature values found"));
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  float avgTempF = tempSum / tempCount;
+  
+  Serial.print(F("NWS: Average temperature ("));
+  Serial.print(tempCount);
+  Serial.print(F(" readings): "));
+  Serial.print(avgTempF, 1);
+  Serial.println(F("°F"));
+  
+  return avgTempF;
+}
+
+// Main entry point: get calibration temperature for a client at a given time
+static float nwsGetCalibrationTemperature(const char *clientUid, double timestamp) {
+  if (!clientUid || strlen(clientUid) == 0) {
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Find client metadata with location
+  ClientMetadata *meta = findClientMetadata(clientUid);
+  if (!meta || meta->latitude == 0.0f || meta->longitude == 0.0f) {
+    Serial.print(F("NWS: No location data for client "));
+    Serial.print(clientUid);
+    Serial.println(F(" - requesting location from device"));
+    
+    // Request location from the client - it will respond asynchronously
+    // Temperature will be available for future calibration entries
+    sendLocationRequest(clientUid);
+    
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Look up grid point (caches result)
+  if (!nwsLookupGridPoint(meta)) {
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Fetch average temperature
+  return nwsFetchAverageTemperature(meta, timestamp);
+}
+
+// Get current temperature for real-time telemetry compensation
+// Uses cached value if fresh (< TEMP_CACHE_TTL_SECONDS old), otherwise fetches from NWS
+static float getCachedTemperature(const char *clientUid) {
+  if (!clientUid || strlen(clientUid) == 0) {
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Find client metadata
+  ClientMetadata *meta = findClientMetadata(clientUid);
+  if (!meta) {
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Check if we have a valid cached temperature
+  double now = currentEpoch();
+  if (meta->cachedTemperatureF > TEMPERATURE_UNAVAILABLE + 1.0f &&
+      meta->tempCacheEpoch > 0.0 &&
+      (now - meta->tempCacheEpoch) < TEMP_CACHE_TTL_SECONDS) {
+    // Cached temperature is still fresh
+    return meta->cachedTemperatureF;
+  }
+  
+  // Need to fetch fresh temperature - check if we have location
+  if (meta->latitude == 0.0f || meta->longitude == 0.0f) {
+    // No location - can't fetch temperature
+    // Don't spam location requests here since telemetry comes frequently
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Look up grid point if needed
+  if (!nwsLookupGridPoint(meta)) {
+    return TEMPERATURE_UNAVAILABLE;
+  }
+  
+  // Fetch current temperature (use current time)
+  float temp = nwsFetchAverageTemperature(meta, now);
+  
+  // Cache the result
+  if (temp > TEMPERATURE_UNAVAILABLE + 1.0f) {
+    meta->cachedTemperatureF = temp;
+    meta->tempCacheEpoch = now;
+    Serial.print(F("Temperature cached for "));
+    Serial.print(clientUid);
+    Serial.print(F(": "));
+    Serial.print(temp, 1);
+    Serial.println(F("°F"));
+  }
+  
+  return temp;
 }
 
 // Upload per-client configs (from in-memory snapshots) as individual files plus a manifest.
@@ -3855,6 +4341,12 @@ static void handleWebRequests() {
     } else {
       handleCalibrationPost(client, body);
     }
+  } else if (method == "DELETE" && path == "/api/calibration") {
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleCalibrationDelete(client, body);
+    }
   } else if (method == "POST" && path == "/api/contacts") {
     if (contentLength > 8192) {
       respondStatus(client, 413, "Payload Too Large");
@@ -3929,6 +4421,14 @@ static void handleWebRequests() {
     } else {
       handleDfuEnablePost(client, body);
     }
+  } else if (method == "POST" && path == "/api/location") {
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleLocationRequestPost(client, body);
+    }
+  } else if (method == "GET" && path.startsWith("/api/location")) {
+    handleLocationGet(client, path);
   } else {
     respondStatus(client, 404, F("Not Found"));
   }
@@ -4989,6 +5489,7 @@ static void pollNotecard() {
   processNotefile(UNLOAD_FILE, handleUnload);
   processNotefile(SERIAL_LOG_FILE, handleSerialLog);
   processNotefile(SERIAL_ACK_FILE, handleSerialAck);
+  processNotefile(LOCATION_RESPONSE_FILE, handleLocationResponse);
 }
 
 static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double)) {
@@ -5111,7 +5612,9 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   
   if (isCurrentLoop && mA >= 4.0f) {
     // Current-loop sensor: convert raw mA to level using config
-    newLevel = convertMaToLevel(clientUid, tankNumber, mA);
+    // Use temperature compensation if available
+    float currentTemp = getCachedTemperature(clientUid);
+    newLevel = convertMaToLevelWithTemp(clientUid, tankNumber, mA, currentTemp);
   } else if (isAnalog && voltage > 0.0f) {
     // Analog voltage sensor: convert raw voltage to level using config
     newLevel = convertVoltageToLevel(clientUid, tankNumber, voltage);
@@ -5198,7 +5701,8 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   bool isPulse = (strcmp(rec->sensorType, "pulse") == 0);
   
   if (isCurrentLoop && mA >= 4.0f) {
-    level = convertMaToLevel(clientUid, tankNumber, mA);
+    float currentTemp = getCachedTemperature(clientUid);
+    level = convertMaToLevelWithTemp(clientUid, tankNumber, mA, currentTemp);
   } else if (isAnalog && voltage > 0.0f) {
     level = convertVoltageToLevel(clientUid, tankNumber, voltage);
   } else if (isDigital && doc["fl"]) {
@@ -5298,6 +5802,7 @@ static ClientMetadata *findOrCreateClientMetadata(const char *clientUid) {
     ClientMetadata *meta = &gClientMetadata[gClientMetadataCount++];
     memset(meta, 0, sizeof(ClientMetadata));
     strlcpy(meta->clientUid, clientUid, sizeof(meta->clientUid));
+    meta->cachedTemperatureF = TEMPERATURE_UNAVAILABLE;  // Initialize to sentinel value
     return meta;
   }
   
@@ -5412,7 +5917,8 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     bool isPulse = (strcmp(rec->sensorType, "pulse") == 0);
     
     if (isCurrentLoop && mA >= 4.0f) {
-      newLevel = convertMaToLevel(clientUid, tankNumber, mA);
+      float currentTemp = getCachedTemperature(clientUid);
+      newLevel = convertMaToLevelWithTemp(clientUid, tankNumber, mA, currentTemp);
     } else if (isAnalog && voltage > 0.0f) {
       newLevel = convertVoltageToLevel(clientUid, tankNumber, voltage);
     } else if (isDigital && t["fl"]) {
@@ -5901,12 +6407,38 @@ static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid) {
 }
 
 // Convert raw 4-20mA reading to level/value using sensor config from client config snapshot
+// If learned calibration is available, uses the calibration data instead of theoretical calculation
+// Temperature compensation is applied if available and current temperature is known
 // Returns the computed level, or 0.0 if config not found or invalid mA
 static float convertMaToLevel(const char *clientUid, uint8_t tankNumber, float mA) {
+  return convertMaToLevelWithTemp(clientUid, tankNumber, mA, TEMPERATURE_UNAVAILABLE);
+}
+
+// Convert raw 4-20mA reading to level with optional temperature compensation
+static float convertMaToLevelWithTemp(const char *clientUid, uint8_t tankNumber, float mA, float currentTempF) {
   if (mA < 4.0f || mA > 20.0f) {
     return 0.0f;  // Invalid mA reading
   }
   
+  // Check if we have learned calibration data for this tank
+  TankCalibration *cal = findTankCalibration(clientUid, tankNumber);
+  if (cal && cal->hasLearnedCalibration) {
+    // Use learned calibration: level = slope * mA + offset
+    float level = cal->learnedSlope * mA + cal->learnedOffset;
+    
+    // Apply temperature compensation if available
+    if (cal->hasTempCompensation && currentTempF > TEMPERATURE_UNAVAILABLE + 1.0f) {
+      // Temperature coefficient is in inches per °F deviation from 70°F
+      float tempDeviation = currentTempF - TEMP_REFERENCE_F;
+      level += cal->learnedTempCoef * tempDeviation;
+    }
+    
+    // Ensure level is non-negative
+    if (level < 0.0f) level = 0.0f;
+    return level;
+  }
+  
+  // No calibration available - use theoretical calculation from config
   ClientConfigSnapshot *snap = findClientConfigSnapshot(clientUid);
   if (!snap || strlen(snap->payload) == 0) {
     // No config snapshot available - use simple linear 4-20mA mapping
@@ -7146,6 +7678,23 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
   respondJson(client, responseStr);
 }
 
+// Find existing tank calibration (read-only, does not create)
+static TankCalibration *findTankCalibration(const char *clientUid, uint8_t tankNumber) {
+  if (!clientUid || strlen(clientUid) == 0) {
+    return nullptr;
+  }
+  
+  // Search for existing calibration
+  for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
+    if (strcmp(gTankCalibrations[i].clientUid, clientUid) == 0 && 
+        gTankCalibrations[i].tankNumber == tankNumber) {
+      return &gTankCalibrations[i];
+    }
+  }
+  
+  return nullptr;
+}
+
 static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8_t tankNumber) {
   if (!clientUid || strlen(clientUid) == 0) {
     return nullptr;
@@ -7166,9 +7715,12 @@ static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8
     strlcpy(cal->clientUid, clientUid, sizeof(cal->clientUid));
     cal->tankNumber = tankNumber;
     cal->hasLearnedCalibration = false;
+    cal->hasTempCompensation = false;
     cal->entryCount = 0;
+    cal->tempEntryCount = 0;
     cal->learnedSlope = 0.0f;
     cal->learnedOffset = 0.0f;
+    cal->learnedTempCoef = 0.0f;
     cal->rSquared = 0.0f;
     return cal;
   }
@@ -7176,39 +7728,43 @@ static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8
   return nullptr;
 }
 
-// Simple linear regression using calibration log entries
-// Returns true if enough data points exist for valid calibration
+// Helper struct to hold calibration data points during regression calculation
+struct CalibrationPoint {
+  float sensorReading;  // X1: mA reading
+  float temperature;    // X2: temperature in °F (or TEMPERATURE_UNAVAILABLE)
+  float verifiedLevel;  // Y: measured level in inches
+  bool hasTemp;         // True if temperature data is valid
+};
+
+// Multiple linear regression using calibration log entries
+// Model: level = slope * sensorReading + tempCoef * (temp - refTemp) + offset
+// Falls back to simple linear regression if insufficient temperature data
 static void recalculateCalibration(TankCalibration *cal) {
   if (!cal) {
     return;
   }
   
-  if (cal->entryCount < 2) {
-    cal->hasLearnedCalibration = false;
-    return;
-  }
-  
-  // Read calibration entries from file and compute linear regression
-  // For simplicity in embedded context, we'll re-read entries when needed
-  
 #ifdef FILESYSTEM_AVAILABLE
-  float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
-  int count = 0;
+  // Collect data points from calibration log
+  static CalibrationPoint points[MAX_CALIBRATION_ENTRIES];
+  int totalCount = 0;
+  int tempCount = 0;
   
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     FILE *file = fopen("/fs/calibration_log.txt", "r");
     if (!file) {
       cal->hasLearnedCalibration = false;
+      cal->hasTempCompensation = false;
       return;
     }
     
     char lineBuffer[256];
-    while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && count < MAX_CALIBRATION_ENTRIES) {
+    while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && totalCount < MAX_CALIBRATION_ENTRIES) {
       String line = String(lineBuffer);
       line.trim();
       if (line.length() == 0) continue;
       
-      // Parse: clientUid\ttankNumber\ttimestamp\tsensorReading\tverifiedLevel\tnotes
+      // Parse: clientUid\ttankNumber\ttimestamp\tsensorReading\tverifiedLevel\ttemperatureF\tnotes
       int pos1 = line.indexOf('\t');
       if (pos1 < 0) continue;
       String uid = line.substring(0, pos1);
@@ -7222,27 +7778,47 @@ static void recalculateCalibration(TankCalibration *cal) {
       
       int pos3 = line.indexOf('\t', pos2 + 1);
       if (pos3 < 0) continue;
+      // pos3+1 is timestamp
       
       int pos4 = line.indexOf('\t', pos3 + 1);
       if (pos4 < 0) continue;
       float sensorReading = line.substring(pos3 + 1, pos4).toFloat();
       
       int pos5 = line.indexOf('\t', pos4 + 1);
-      float verifiedLevel;
+      float verifiedLevel = 0.0f;
+      float temperature = TEMPERATURE_UNAVAILABLE;
+      
       if (pos5 < 0) {
+        // Old format without temperature
         verifiedLevel = line.substring(pos4 + 1).toFloat();
       } else {
         verifiedLevel = line.substring(pos4 + 1, pos5).toFloat();
+        // Check for temperature field
+        int pos6 = line.indexOf('\t', pos5 + 1);
+        if (pos6 < 0) {
+          // Could be temp only or notes only (old format)
+          String remaining = line.substring(pos5 + 1);
+          float tempVal = remaining.toFloat();
+          if (tempVal != 0.0f || remaining.startsWith("0") || remaining.startsWith("-")) {
+            temperature = tempVal;
+          }
+        } else {
+          // New format with temperature and notes
+          temperature = line.substring(pos5 + 1, pos6).toFloat();
+        }
       }
       
-      // Only include valid readings (4-20mA range)
+      // Only include valid sensor readings (4-20mA range)
       if (sensorReading >= 4.0f && sensorReading <= 20.0f && verifiedLevel >= 0.0f) {
-        sumX += sensorReading;
-        sumY += verifiedLevel;
-        sumXY += sensorReading * verifiedLevel;
-        sumX2 += sensorReading * sensorReading;
-        sumY2 += verifiedLevel * verifiedLevel;
-        count++;
+        points[totalCount].sensorReading = sensorReading;
+        points[totalCount].verifiedLevel = verifiedLevel;
+        points[totalCount].temperature = temperature;
+        points[totalCount].hasTemp = (temperature != TEMPERATURE_UNAVAILABLE && 
+                                       temperature > -50.0f && temperature < 150.0f);
+        if (points[totalCount].hasTemp) {
+          tempCount++;
+        }
+        totalCount++;
       }
     }
     
@@ -7250,21 +7826,23 @@ static void recalculateCalibration(TankCalibration *cal) {
   #else
     if (!LittleFS.exists(CALIBRATION_LOG_PATH)) {
       cal->hasLearnedCalibration = false;
+      cal->hasTempCompensation = false;
       return;
     }
     
     File file = LittleFS.open(CALIBRATION_LOG_PATH, "r");
     if (!file) {
       cal->hasLearnedCalibration = false;
+      cal->hasTempCompensation = false;
       return;
     }
     
-    while (file.available() && count < MAX_CALIBRATION_ENTRIES) {
+    while (file.available() && totalCount < MAX_CALIBRATION_ENTRIES) {
       String line = file.readStringUntil('\n');
       line.trim();
       if (line.length() == 0) continue;
       
-      // Parse: clientUid\ttankNumber\ttimestamp\tsensorReading\tverifiedLevel\tnotes
+      // Parse: clientUid\ttankNumber\ttimestamp\tsensorReading\tverifiedLevel\ttemperatureF\tnotes
       int pos1 = line.indexOf('\t');
       if (pos1 < 0) continue;
       String uid = line.substring(0, pos1);
@@ -7284,60 +7862,223 @@ static void recalculateCalibration(TankCalibration *cal) {
       float sensorReading = line.substring(pos3 + 1, pos4).toFloat();
       
       int pos5 = line.indexOf('\t', pos4 + 1);
-      float verifiedLevel;
+      float verifiedLevel = 0.0f;
+      float temperature = TEMPERATURE_UNAVAILABLE;
+      
       if (pos5 < 0) {
         verifiedLevel = line.substring(pos4 + 1).toFloat();
       } else {
         verifiedLevel = line.substring(pos4 + 1, pos5).toFloat();
+        int pos6 = line.indexOf('\t', pos5 + 1);
+        if (pos6 < 0) {
+          String remaining = line.substring(pos5 + 1);
+          float tempVal = remaining.toFloat();
+          if (tempVal != 0.0f || remaining.startsWith("0") || remaining.startsWith("-")) {
+            temperature = tempVal;
+          }
+        } else {
+          temperature = line.substring(pos5 + 1, pos6).toFloat();
+        }
       }
       
-      // Only include valid readings (4-20mA range)
       if (sensorReading >= 4.0f && sensorReading <= 20.0f && verifiedLevel >= 0.0f) {
-        sumX += sensorReading;
-        sumY += verifiedLevel;
-        sumXY += sensorReading * verifiedLevel;
-        sumX2 += sensorReading * sensorReading;
-        sumY2 += verifiedLevel * verifiedLevel;
-        count++;
+        points[totalCount].sensorReading = sensorReading;
+        points[totalCount].verifiedLevel = verifiedLevel;
+        points[totalCount].temperature = temperature;
+        points[totalCount].hasTemp = (temperature != TEMPERATURE_UNAVAILABLE && 
+                                       temperature > -50.0f && temperature < 150.0f);
+        if (points[totalCount].hasTemp) {
+          tempCount++;
+        }
+        totalCount++;
       }
     }
     
     file.close();
   #endif
   
-  if (count < 2) {
+  cal->entryCount = totalCount;
+  cal->tempEntryCount = tempCount;
+  
+  // Calculate quality metrics (min/max sensor and level range)
+  if (totalCount > 0) {
+    cal->minSensorMa = 999.0f;
+    cal->maxSensorMa = -999.0f;
+    cal->minLevelInches = 99999.0f;
+    cal->maxLevelInches = -99999.0f;
+    for (int i = 0; i < totalCount; i++) {
+      if (points[i].sensorReading < cal->minSensorMa) cal->minSensorMa = points[i].sensorReading;
+      if (points[i].sensorReading > cal->maxSensorMa) cal->maxSensorMa = points[i].sensorReading;
+      if (points[i].verifiedLevel < cal->minLevelInches) cal->minLevelInches = points[i].verifiedLevel;
+      if (points[i].verifiedLevel > cal->maxLevelInches) cal->maxLevelInches = points[i].verifiedLevel;
+    }
+  } else {
+    cal->minSensorMa = 0.0f;
+    cal->maxSensorMa = 0.0f;
+    cal->minLevelInches = 0.0f;
+    cal->maxLevelInches = 0.0f;
+  }
+  
+  if (totalCount < 2) {
     cal->hasLearnedCalibration = false;
-    cal->entryCount = count;
+    cal->hasTempCompensation = false;
     return;
   }
   
-  // Calculate linear regression: y = slope * x + offset
-  // slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX^2)
-  // offset = (sumY - slope * sumX) / n
-  float n = (float)count;
+  // Decide whether to use temperature compensation
+  // Need at least MIN_TEMP_ENTRIES_FOR_COMPENSATION entries with temp data
+  // and those entries should have some temperature variation
+  bool useTempCompensation = false;
+  if (tempCount >= MIN_TEMP_ENTRIES_FOR_COMPENSATION) {
+    // Check for temperature variation (at least 10°F range)
+    float minTemp = 999.0f, maxTemp = -999.0f;
+    for (int i = 0; i < totalCount; i++) {
+      if (points[i].hasTemp) {
+        if (points[i].temperature < minTemp) minTemp = points[i].temperature;
+        if (points[i].temperature > maxTemp) maxTemp = points[i].temperature;
+      }
+    }
+    useTempCompensation = (maxTemp - minTemp >= 10.0f);
+  }
+  
+  if (useTempCompensation) {
+    // Multiple linear regression: Y = b0 + b1*X1 + b2*X2
+    // Where X1 = sensorReading, X2 = (temperature - TEMP_REFERENCE_F)
+    // Only use points that have temperature data
+    
+    // Calculate sums for multiple regression (only temp-enabled points)
+    float n = 0;
+    float sumX1 = 0, sumX2 = 0, sumY = 0;
+    float sumX1X1 = 0, sumX2X2 = 0, sumX1X2 = 0;
+    float sumX1Y = 0, sumX2Y = 0, sumYY = 0;
+    
+    for (int i = 0; i < totalCount; i++) {
+      if (!points[i].hasTemp) continue;
+      
+      float x1 = points[i].sensorReading;
+      float x2 = points[i].temperature - TEMP_REFERENCE_F;  // Normalize around reference
+      float y = points[i].verifiedLevel;
+      
+      n += 1.0f;
+      sumX1 += x1;
+      sumX2 += x2;
+      sumY += y;
+      sumX1X1 += x1 * x1;
+      sumX2X2 += x2 * x2;
+      sumX1X2 += x1 * x2;
+      sumX1Y += x1 * y;
+      sumX2Y += x2 * y;
+      sumYY += y * y;
+    }
+    
+    // Solve normal equations using Cramer's rule for 3x3 system
+    // [n      sumX1   sumX2 ] [b0]   [sumY  ]
+    // [sumX1  sumX1X1 sumX1X2] [b1] = [sumX1Y]
+    // [sumX2  sumX1X2 sumX2X2] [b2]   [sumX2Y]
+    
+    // Calculate determinant of coefficient matrix
+    float det = n * (sumX1X1 * sumX2X2 - sumX1X2 * sumX1X2)
+              - sumX1 * (sumX1 * sumX2X2 - sumX1X2 * sumX2)
+              + sumX2 * (sumX1 * sumX1X2 - sumX1X1 * sumX2);
+    
+    if (fabs(det) < 0.0001f) {
+      // Matrix is singular, fall back to simple regression
+      useTempCompensation = false;
+    } else {
+      // Solve for b0 (offset), b1 (slope), b2 (tempCoef)
+      float detB0 = sumY * (sumX1X1 * sumX2X2 - sumX1X2 * sumX1X2)
+                  - sumX1 * (sumX1Y * sumX2X2 - sumX1X2 * sumX2Y)
+                  + sumX2 * (sumX1Y * sumX1X2 - sumX1X1 * sumX2Y);
+      
+      float detB1 = n * (sumX1Y * sumX2X2 - sumX1X2 * sumX2Y)
+                  - sumY * (sumX1 * sumX2X2 - sumX1X2 * sumX2)
+                  + sumX2 * (sumX1 * sumX2Y - sumX1Y * sumX2);
+      
+      float detB2 = n * (sumX1X1 * sumX2Y - sumX1Y * sumX1X2)
+                  - sumX1 * (sumX1 * sumX2Y - sumX1Y * sumX2)
+                  + sumY * (sumX1 * sumX1X2 - sumX1X1 * sumX2);
+      
+      cal->learnedOffset = detB0 / det;
+      cal->learnedSlope = detB1 / det;
+      cal->learnedTempCoef = detB2 / det;
+      
+      // Calculate R-squared for multiple regression
+      float meanY = sumY / n;
+      float ssTotal = sumYY - n * meanY * meanY;
+      float ssResid = 0;
+      for (int i = 0; i < totalCount; i++) {
+        if (!points[i].hasTemp) continue;
+        float x1 = points[i].sensorReading;
+        float x2 = points[i].temperature - TEMP_REFERENCE_F;
+        float y = points[i].verifiedLevel;
+        float yPred = cal->learnedOffset + cal->learnedSlope * x1 + cal->learnedTempCoef * x2;
+        float resid = y - yPred;
+        ssResid += resid * resid;
+      }
+      
+      if (ssTotal > 0.0001f) {
+        cal->rSquared = 1.0f - (ssResid / ssTotal);
+        if (cal->rSquared < 0.0f) cal->rSquared = 0.0f;
+        if (cal->rSquared > 1.0f) cal->rSquared = 1.0f;
+      } else {
+        cal->rSquared = 0.0f;
+      }
+      
+      cal->hasTempCompensation = true;
+      cal->hasLearnedCalibration = true;
+      cal->lastCalibrationEpoch = currentEpoch();
+      
+      Serial.print(F("Calibration updated (with temp) for "));
+      Serial.print(cal->clientUid);
+      Serial.print(F(" tank "));
+      Serial.print(cal->tankNumber);
+      Serial.print(F(": slope="));
+      Serial.print(cal->learnedSlope, 4);
+      Serial.print(F(" in/mA, tempCoef="));
+      Serial.print(cal->learnedTempCoef, 4);
+      Serial.print(F(" in/°F, offset="));
+      Serial.print(cal->learnedOffset, 2);
+      Serial.print(F(" in, R2="));
+      Serial.print(cal->rSquared, 3);
+      Serial.print(F(" ("));
+      Serial.print(tempCount);
+      Serial.println(F(" temp points)"));
+      return;
+    }
+  }
+  
+  // Simple linear regression (no temperature compensation)
+  // Use all data points
+  float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
+  for (int i = 0; i < totalCount; i++) {
+    sumX += points[i].sensorReading;
+    sumY += points[i].verifiedLevel;
+    sumXY += points[i].sensorReading * points[i].verifiedLevel;
+    sumX2 += points[i].sensorReading * points[i].sensorReading;
+    sumY2 += points[i].verifiedLevel * points[i].verifiedLevel;
+  }
+  
+  float n = (float)totalCount;
   float denominator = n * sumX2 - sumX * sumX;
   
   if (fabs(denominator) < 0.0001f) {
-    // Avoid division by zero - data points are too similar
     cal->hasLearnedCalibration = false;
-    cal->entryCount = count;
+    cal->hasTempCompensation = false;
     return;
   }
   
   cal->learnedSlope = (n * sumXY - sumX * sumY) / denominator;
   cal->learnedOffset = (sumY - cal->learnedSlope * sumX) / n;
+  cal->learnedTempCoef = 0.0f;  // No temperature compensation
   
-  // Calculate R-squared (coefficient of determination)
-  // R2 = (Covariance(X,Y))^2 / (Variance(X) * Variance(Y))
-  // Which equals: ssCovXY^2 / (ssX * ssTotal)
+  // Calculate R-squared
   float meanX = sumX / n;
   float meanY = sumY / n;
-  float ssTotal = sumY2 - n * meanY * meanY;  // = Variance(Y) * n
-  float ssX = sumX2 - n * meanX * meanX;       // = Variance(X) * n
-  float ssCovXY = sumXY - n * meanX * meanY;   // = Covariance(X,Y) * n
+  float ssTotal = sumY2 - n * meanY * meanY;
+  float ssX = sumX2 - n * meanX * meanX;
+  float ssCovXY = sumXY - n * meanX * meanY;
   
   if (ssTotal > 0.0001f && ssX > 0.0001f) {
-    // R2 = ssCovXY^2 / (ssX * ssTotal)
     cal->rSquared = (ssCovXY * ssCovXY) / (ssX * ssTotal);
     if (cal->rSquared < 0.0f) cal->rSquared = 0.0f;
     if (cal->rSquared > 1.0f) cal->rSquared = 1.0f;
@@ -7345,7 +8086,7 @@ static void recalculateCalibration(TankCalibration *cal) {
     cal->rSquared = 0.0f;
   }
   
-  cal->entryCount = count;
+  cal->hasTempCompensation = false;
   cal->hasLearnedCalibration = true;
   cal->lastCalibrationEpoch = currentEpoch();
   
@@ -7362,17 +8103,18 @@ static void recalculateCalibration(TankCalibration *cal) {
   
 #else
   cal->hasLearnedCalibration = false;
+  cal->hasTempCompensation = false;
 #endif
 }
 
 static void saveCalibrationEntry(const char *clientUid, uint8_t tankNumber, double timestamp, 
-                                  float sensorReading, float verifiedLevelInches, const char *notes) {
+                                  float sensorReading, float verifiedLevelInches, float temperatureF, const char *notes) {
 #ifdef FILESYSTEM_AVAILABLE
-  // Format: clientUid\ttankNumber\ttimestamp\tsensorReading\tverifiedLevel\tnotes
+  // Format: clientUid\ttankNumber\ttimestamp\tsensorReading\tverifiedLevel\ttemperatureF\tnotes
   char entry[256];
-  snprintf(entry, sizeof(entry), "%s\t%d\t%.0f\t%.2f\t%.2f\t%s\n",
+  snprintf(entry, sizeof(entry), "%s\t%d\t%.0f\t%.2f\t%.2f\t%.1f\t%s\n",
            clientUid, tankNumber, timestamp, sensorReading, verifiedLevelInches, 
-           notes ? notes : "");
+           temperatureF, notes ? notes : "");
   
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     FILE *file = fopen("/fs/calibration_log.txt", "a");
@@ -7406,13 +8148,13 @@ static void loadCalibrationData() {
     FILE *file = fopen("/fs/calibration_data.txt", "r");
     if (!file) return;
     
-    char lineBuffer[256];
+    char lineBuffer[384];
     while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && gTankCalibrationCount < MAX_CALIBRATION_TANKS) {
       String line = String(lineBuffer);
       line.trim();
       if (line.length() == 0) continue;
       
-      // Parse: clientUid\ttankNumber\tslope\toffset\trSquared\tentryCount\thasCalibration\tlastEpoch
+      // Parse: clientUid\ttankNumber\tslope\toffset\trSquared\tentryCount\thasCalibration\tlastEpoch\ttempCoef\thasTempComp\ttempEntryCount
       TankCalibration &cal = gTankCalibrations[gTankCalibrationCount];
       memset(&cal, 0, sizeof(TankCalibration));
       
@@ -7444,7 +8186,19 @@ static void loadCalibrationData() {
       if (pos7 < 0) continue;
       cal.hasLearnedCalibration = line.substring(pos6 + 1, pos7).toInt() == 1;
       
-      cal.lastCalibrationEpoch = atof(line.substring(pos7 + 1).c_str());
+      int pos8 = line.indexOf('\t', pos7 + 1);
+      if (pos8 < 0) continue;
+      cal.lastCalibrationEpoch = atof(line.substring(pos7 + 1, pos8).c_str());
+      
+      int pos9 = line.indexOf('\t', pos8 + 1);
+      if (pos9 < 0) continue;
+      cal.learnedTempCoef = line.substring(pos8 + 1, pos9).toFloat();
+      
+      int pos10 = line.indexOf('\t', pos9 + 1);
+      if (pos10 < 0) continue;
+      cal.hasTempCompensation = line.substring(pos9 + 1, pos10).toInt() == 1;
+      
+      cal.tempEntryCount = line.substring(pos10 + 1).toInt();
       
       gTankCalibrationCount++;
     }
@@ -7461,6 +8215,7 @@ static void loadCalibrationData() {
       line.trim();
       if (line.length() == 0) continue;
       
+      // Parse: clientUid\ttankNumber\tslope\toffset\trSquared\tentryCount\thasCalibration\tlastEpoch\ttempCoef\thasTempComp\ttempEntryCount
       TankCalibration &cal = gTankCalibrations[gTankCalibrationCount];
       memset(&cal, 0, sizeof(TankCalibration));
       
@@ -7492,7 +8247,19 @@ static void loadCalibrationData() {
       if (pos7 < 0) continue;
       cal.hasLearnedCalibration = line.substring(pos6 + 1, pos7).toInt() == 1;
       
-      cal.lastCalibrationEpoch = atof(line.substring(pos7 + 1).c_str());
+      int pos8 = line.indexOf('\t', pos7 + 1);
+      if (pos8 < 0) continue;
+      cal.lastCalibrationEpoch = atof(line.substring(pos7 + 1, pos8).c_str());
+      
+      int pos9 = line.indexOf('\t', pos8 + 1);
+      if (pos9 < 0) continue;
+      cal.learnedTempCoef = line.substring(pos8 + 1, pos9).toFloat();
+      
+      int pos10 = line.indexOf('\t', pos9 + 1);
+      if (pos10 < 0) continue;
+      cal.hasTempCompensation = line.substring(pos9 + 1, pos10).toInt() == 1;
+      
+      cal.tempEntryCount = line.substring(pos10 + 1).toInt();
       
       gTankCalibrationCount++;
     }
@@ -7514,10 +8281,12 @@ static void saveCalibrationData() {
     
     for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
       TankCalibration &cal = gTankCalibrations[i];
-      fprintf(file, "%s\t%d\t%.6f\t%.2f\t%.4f\t%d\t%d\t%.0f\n",
+      // Format: uid\ttank\tslope\toffset\trSquared\tentryCount\thasLearned\tlastEpoch\ttempCoef\thasTempComp\ttempEntryCount
+      fprintf(file, "%s\t%d\t%.6f\t%.2f\t%.4f\t%d\t%d\t%.0f\t%.6f\t%d\t%d\n",
               cal.clientUid, cal.tankNumber, cal.learnedSlope, cal.learnedOffset,
               cal.rSquared, cal.entryCount, cal.hasLearnedCalibration ? 1 : 0,
-              cal.lastCalibrationEpoch);
+              cal.lastCalibrationEpoch, cal.learnedTempCoef, 
+              cal.hasTempCompensation ? 1 : 0, cal.tempEntryCount);
     }
     
     fclose(file);
@@ -7541,7 +8310,13 @@ static void saveCalibrationData() {
       file.print('\t');
       file.print(cal.hasLearnedCalibration ? 1 : 0);
       file.print('\t');
-      file.println(cal.lastCalibrationEpoch, 0);
+      file.print(cal.lastCalibrationEpoch, 0);
+      file.print('\t');
+      file.print(cal.learnedTempCoef, 6);
+      file.print('\t');
+      file.print(cal.hasTempCompensation ? 1 : 0);
+      file.print('\t');
+      file.println(cal.tempEntryCount);
     }
     
     file.close();
@@ -7550,8 +8325,8 @@ static void saveCalibrationData() {
 }
 
 static void handleCalibrationGet(EthernetClient &client) {
-  // Size: calibrations(20 x ~200 bytes) + logs(50 x ~180 bytes) + overhead
-  // ~4000 + ~9000 + 512 = ~14KB, using 24KB for generous margin
+  // Size: calibrations(20 x ~200 bytes) + logs(50 x ~200 bytes) + overhead
+  // ~4000 + ~10000 + 512 = ~15KB, using 24KB for generous margin
   static const size_t CALIBRATION_JSON_CAPACITY = 24576;  // 24KB
   JsonDocument doc;
   
@@ -7564,15 +8339,24 @@ static void handleCalibrationGet(EthernetClient &client) {
     obj["tankNumber"] = cal.tankNumber;
     obj["learnedSlope"] = cal.learnedSlope;
     obj["learnedOffset"] = cal.learnedOffset;
+    obj["learnedTempCoef"] = cal.learnedTempCoef;
     obj["hasLearnedCalibration"] = cal.hasLearnedCalibration;
+    obj["hasTempCompensation"] = cal.hasTempCompensation;
     obj["entryCount"] = cal.entryCount;
+    obj["tempEntryCount"] = cal.tempEntryCount;
     obj["rSquared"] = cal.rSquared;
     obj["lastCalibrationEpoch"] = cal.lastCalibrationEpoch;
     obj["originalMaxValue"] = cal.originalMaxValue;
     obj["sensorType"] = cal.sensorType;
+    // Quality metrics for warnings
+    obj["minSensorMa"] = cal.minSensorMa;
+    obj["maxSensorMa"] = cal.maxSensorMa;
+    obj["minLevelInches"] = cal.minLevelInches;
+    obj["maxLevelInches"] = cal.maxLevelInches;
   }
   
   // Add recent calibration log entries
+  // Format: clientUid\ttankNumber\ttimestamp\tsensorReading\tverifiedLevel\ttemperatureF\tnotes
   JsonArray logsArr = doc["logs"].to<JsonArray>();
   
 #ifdef FILESYSTEM_AVAILABLE
@@ -7604,13 +8388,34 @@ static void handleCalibrationGet(EthernetClient &client) {
         float sensorReading = line.substring(pos3 + 1, pos4).toFloat();
         
         int pos5 = line.indexOf('\t', pos4 + 1);
-        float verifiedLevel;
+        float verifiedLevel = 0.0f;
+        float temperatureF = TEMPERATURE_UNAVAILABLE;
         String notes = "";
+        
         if (pos5 < 0) {
+          // Legacy format (no temperature field)
           verifiedLevel = line.substring(pos4 + 1).toFloat();
         } else {
           verifiedLevel = line.substring(pos4 + 1, pos5).toFloat();
-          notes = line.substring(pos5 + 1);
+          
+          // Check for temperature field (new format) vs notes only (old format)
+          int pos6 = line.indexOf('\t', pos5 + 1);
+          if (pos6 < 0) {
+            // Could be old format (notes only) or new format (temp only, no notes)
+            String remaining = line.substring(pos5 + 1);
+            // Try to parse as temperature (numeric)
+            float tempVal = remaining.toFloat();
+            if (tempVal != 0.0f || remaining.startsWith("0") || remaining.startsWith("-")) {
+              temperatureF = tempVal;
+            } else {
+              // Non-numeric: treat as notes (old format)
+              notes = remaining;
+            }
+          } else {
+            // New format with both temperature and notes
+            temperatureF = line.substring(pos5 + 1, pos6).toFloat();
+            notes = line.substring(pos6 + 1);
+          }
         }
         
         JsonObject logObj = logsArr.add<JsonObject>();
@@ -7619,6 +8424,9 @@ static void handleCalibrationGet(EthernetClient &client) {
         logObj["timestamp"] = timestamp;
         logObj["sensorReading"] = sensorReading;
         logObj["verifiedLevelInches"] = verifiedLevel;
+        if (temperatureF != TEMPERATURE_UNAVAILABLE) {
+          logObj["temperatureF"] = temperatureF;
+        }
         logObj["notes"] = notes;
         count++;
       }
@@ -7652,11 +8460,48 @@ static void handleCalibrationGet(EthernetClient &client) {
           float sensorReading = line.substring(pos3 + 1, pos4).toFloat();
           
           int pos5 = line.indexOf('\t', pos4 + 1);
-          float verifiedLevel;
+          float verifiedLevel = 0.0f;
+          float temperatureF = TEMPERATURE_UNAVAILABLE;
           String notes = "";
+          
           if (pos5 < 0) {
             verifiedLevel = line.substring(pos4 + 1).toFloat();
           } else {
+            verifiedLevel = line.substring(pos4 + 1, pos5).toFloat();
+            
+            // Check for temperature field (new format) vs notes only (old format)
+            int pos6 = line.indexOf('\t', pos5 + 1);
+            if (pos6 < 0) {
+              String remaining = line.substring(pos5 + 1);
+              float tempVal = remaining.toFloat();
+              if (tempVal != 0.0f || remaining.startsWith("0") || remaining.startsWith("-")) {
+                temperatureF = tempVal;
+              } else {
+                notes = remaining;
+              }
+            } else {
+              temperatureF = line.substring(pos5 + 1, pos6).toFloat();
+              notes = line.substring(pos6 + 1);
+            }
+          }
+          
+          JsonObject logObj = logsArr.add<JsonObject>();
+          logObj["clientUid"] = uid;
+          logObj["tankNumber"] = tankNum;
+          logObj["timestamp"] = timestamp;
+          logObj["sensorReading"] = sensorReading;
+          logObj["verifiedLevelInches"] = verifiedLevel;
+          if (temperatureF != TEMPERATURE_UNAVAILABLE) {
+            logObj["temperatureF"] = temperatureF;
+          }
+          logObj["notes"] = notes;
+          count++;
+        }
+        file.close();
+      }
+    }
+  #endif
+#endif
             verifiedLevel = line.substring(pos4 + 1, pos5).toFloat();
             notes = line.substring(pos5 + 1);
           }
@@ -7746,8 +8591,32 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   // Validate sensor reading - warn if not in valid range
   bool sensorReadingValid = (sensorReading >= 4.0f && sensorReading <= 20.0f);
   
-  // Save the calibration entry
-  saveCalibrationEntry(clientUid, tankNumber, timestamp, sensorReading, verifiedLevelInches, notes);
+  // Fetch NWS weather data for temperature compensation
+  // This will look up the client's GPS location and get a 6-hour average temperature
+  // If no location is cached, it will request it from the client
+  float temperatureF = nwsGetCalibrationTemperature(clientUid, timestamp);
+  bool locationRequested = false;
+  
+  // Check if we had to request location (no cached location)
+  ClientMetadata *meta = findClientMetadata(clientUid);
+  if (temperatureF == TEMPERATURE_UNAVAILABLE && meta && 
+      (meta->latitude == 0.0f || meta->longitude == 0.0f)) {
+    locationRequested = true;
+  }
+  
+  // Log temperature data
+  if (temperatureF != TEMPERATURE_UNAVAILABLE) {
+    Serial.print(F("NWS temperature at calibration: "));
+    Serial.print(temperatureF, 1);
+    Serial.println(F("°F (6-hour avg)"));
+  } else if (locationRequested) {
+    Serial.println(F("NWS temperature: location requested from client"));
+  } else {
+    Serial.println(F("NWS temperature data unavailable (API error)"));
+  }
+  
+  // Save the calibration entry with temperature
+  saveCalibrationEntry(clientUid, tankNumber, timestamp, sensorReading, verifiedLevelInches, temperatureF, notes);
   
   Serial.print(F("Calibration entry added for "));
   Serial.print(clientUid);
@@ -7759,12 +8628,193 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   Serial.print(sensorReading, 2);
   Serial.println(F(" mA"));
   
+  // Build response message including temperature info
+  String responseMsg = F("Calibration entry saved");
+  if (temperatureF != TEMPERATURE_UNAVAILABLE) {
+    responseMsg += F(" (temp: ");
+    responseMsg += String(temperatureF, 1);
+    responseMsg += F("°F)");
+  } else if (locationRequested) {
+    responseMsg += F(" (location requested - temp will be available for future readings)");
+  }
+  
   if (!sensorReadingValid) {
     Serial.println(F("Warning: Sensor reading not in valid 4-20mA range, entry logged but won't be used for regression"));
     respondStatus(client, 200, F("Calibration entry saved (note: sensor reading outside 4-20mA range won't be used for calibration)"));
   } else {
-    respondStatus(client, 200, F("Calibration entry saved"));
+    respondStatus(client, 200, responseMsg);
   }
+}
+
+static void handleCalibrationDelete(EthernetClient &client, const String &body) {
+  // Parse JSON body to get clientUid and tankNumber
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+  
+  const char *clientUid = doc["clientUid"].as<const char *>();
+  if (!clientUid || strlen(clientUid) == 0) {
+    respondStatus(client, 400, F("Missing clientUid"));
+    return;
+  }
+  
+  if (!doc["tankNumber"]) {
+    respondStatus(client, 400, F("Missing tankNumber"));
+    return;
+  }
+  uint8_t tankNumber = doc["tankNumber"].as<uint8_t>();
+  
+  Serial.print(F("Reset calibration requested for "));
+  Serial.print(clientUid);
+  Serial.print(F(" tank "));
+  Serial.println(tankNumber);
+  
+  // Find and reset the TankCalibration entry
+  bool foundCalibration = false;
+  for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
+    if (strcmp(gTankCalibrations[i].clientUid, clientUid) == 0 && 
+        gTankCalibrations[i].tankNumber == tankNumber) {
+      // Reset calibration fields but keep identity
+      gTankCalibrations[i].learnedSlope = 0.0f;
+      gTankCalibrations[i].learnedOffset = 0.0f;
+      gTankCalibrations[i].learnedTempCoef = 0.0f;
+      gTankCalibrations[i].hasLearnedCalibration = false;
+      gTankCalibrations[i].hasTempCompensation = false;
+      gTankCalibrations[i].entryCount = 0;
+      gTankCalibrations[i].tempEntryCount = 0;
+      gTankCalibrations[i].rSquared = 0.0f;
+      gTankCalibrations[i].lastCalibrationEpoch = 0.0;
+      gTankCalibrations[i].minSensorMa = 0.0f;
+      gTankCalibrations[i].maxSensorMa = 0.0f;
+      gTankCalibrations[i].minLevelInches = 0.0f;
+      gTankCalibrations[i].maxLevelInches = 0.0f;
+      foundCalibration = true;
+      Serial.println(F("TankCalibration entry reset"));
+      break;
+    }
+  }
+  
+#ifdef FILESYSTEM_AVAILABLE
+  // Remove entries from calibration_log.txt for this tank
+  // We need to read the entire file, filter out matching entries, then rewrite
+  int removedCount = 0;
+  
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    // Read all entries, filter, then rewrite
+    std::vector<String> keepEntries;
+    
+    FILE *file = fopen("/fs/calibration_log.txt", "r");
+    if (file) {
+      char lineBuffer[256];
+      while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr) {
+        String line = String(lineBuffer);
+        line.trim();
+        if (line.length() == 0) continue;
+        
+        // Parse clientUid and tankNumber from entry
+        int pos1 = line.indexOf('\t');
+        if (pos1 < 0) {
+          keepEntries.push_back(line);
+          continue;
+        }
+        String entryUid = line.substring(0, pos1);
+        
+        int pos2 = line.indexOf('\t', pos1 + 1);
+        if (pos2 < 0) {
+          keepEntries.push_back(line);
+          continue;
+        }
+        int entryTank = line.substring(pos1 + 1, pos2).toInt();
+        
+        // Check if this entry matches the tank to delete
+        if (entryUid == String(clientUid) && entryTank == (int)tankNumber) {
+          removedCount++;
+        } else {
+          keepEntries.push_back(line);
+        }
+      }
+      fclose(file);
+    }
+    
+    // Rewrite the file without the deleted entries
+    if (removedCount > 0) {
+      file = fopen("/fs/calibration_log.txt", "w");
+      if (file) {
+        for (size_t i = 0; i < keepEntries.size(); i++) {
+          fprintf(file, "%s\n", keepEntries[i].c_str());
+        }
+        fclose(file);
+        Serial.print(F("Removed "));
+        Serial.print(removedCount);
+        Serial.println(F(" calibration log entries"));
+      }
+    }
+  #else
+    // LittleFS implementation
+    if (LittleFS.exists(CALIBRATION_LOG_PATH)) {
+      std::vector<String> keepEntries;
+      
+      File file = LittleFS.open(CALIBRATION_LOG_PATH, "r");
+      if (file) {
+        while (file.available()) {
+          String line = file.readStringUntil('\n');
+          line.trim();
+          if (line.length() == 0) continue;
+          
+          int pos1 = line.indexOf('\t');
+          if (pos1 < 0) {
+            keepEntries.push_back(line);
+            continue;
+          }
+          String entryUid = line.substring(0, pos1);
+          
+          int pos2 = line.indexOf('\t', pos1 + 1);
+          if (pos2 < 0) {
+            keepEntries.push_back(line);
+            continue;
+          }
+          int entryTank = line.substring(pos1 + 1, pos2).toInt();
+          
+          if (entryUid == String(clientUid) && entryTank == (int)tankNumber) {
+            removedCount++;
+          } else {
+            keepEntries.push_back(line);
+          }
+        }
+        file.close();
+      }
+      
+      if (removedCount > 0) {
+        File outFile = LittleFS.open(CALIBRATION_LOG_PATH, "w");
+        if (outFile) {
+          for (size_t i = 0; i < keepEntries.size(); i++) {
+            outFile.println(keepEntries[i]);
+          }
+          outFile.close();
+          Serial.print(F("Removed "));
+          Serial.print(removedCount);
+          Serial.println(F(" calibration log entries"));
+        }
+      }
+    }
+  #endif
+#endif
+  
+  // Save updated calibration data
+  saveCalibrationData();
+  
+  String responseMsg = F("Calibration reset for tank ");
+  responseMsg += String(tankNumber);
+  if (removedCount > 0) {
+    responseMsg += F(", removed ");
+    responseMsg += String(removedCount);
+    responseMsg += F(" log entries");
+  }
+  
+  respondStatus(client, 200, responseMsg);
 }
 
 // ============================================================================
@@ -7805,6 +8855,78 @@ static void handleDfuEnablePost(EthernetClient &client, const String &body) {
   
   // Respond before system resets
   String responseStr = "{\"success\":true,\"message\":\"DFU mode enabled - device will update and restart\"}";
+  respondJson(client, responseStr);
+}
+
+// ============================================================================
+// Location Request Web API Handlers
+// ============================================================================
+
+static void handleLocationRequestPost(EthernetClient &client, const String &body) {
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, body);
+
+  if (error) {
+    respondStatus(client, 400, "Invalid JSON");
+    return;
+  }
+
+  const char *clientUid = doc["clientUid"].as<const char *>();
+  if (!clientUid || strlen(clientUid) == 0) {
+    respondStatus(client, 400, "Missing clientUid");
+    return;
+  }
+
+  // Send location request to client
+  if (sendLocationRequest(clientUid)) {
+    String responseStr = "{\"success\":true,\"message\":\"Location request sent to client\"}";
+    respondJson(client, responseStr);
+  } else {
+    respondStatus(client, 500, "Failed to send location request");
+  }
+}
+
+static void handleLocationGet(EthernetClient &client, const String &path) {
+  // Extract client UID from query string: /api/location?client=xxx
+  String clientUid = "";
+  int queryStart = path.indexOf('?');
+  if (queryStart > 0) {
+    String query = path.substring(queryStart + 1);
+    int clientStart = query.indexOf("client=");
+    if (clientStart >= 0) {
+      int clientEnd = query.indexOf('&', clientStart);
+      if (clientEnd < 0) clientEnd = query.length();
+      clientUid = query.substring(clientStart + 7, clientEnd);
+    }
+  }
+
+  if (clientUid.length() == 0) {
+    respondStatus(client, 400, "Missing client parameter");
+    return;
+  }
+
+  // Look up cached location
+  ClientMetadata *meta = findClientMetadata(clientUid.c_str());
+  
+  String responseStr = "{";
+  responseStr += "\"clientUid\":\"" + clientUid + "\",";
+  
+  if (meta && (meta->latitude != 0.0f || meta->longitude != 0.0f)) {
+    responseStr += "\"hasLocation\":true,";
+    responseStr += "\"latitude\":" + String(meta->latitude, 6) + ",";
+    responseStr += "\"longitude\":" + String(meta->longitude, 6) + ",";
+    responseStr += "\"locationEpoch\":" + String(meta->locationEpoch, 0) + ",";
+    responseStr += "\"nwsGridValid\":" + String(meta->nwsGridValid ? "true" : "false");
+    if (meta->nwsGridValid) {
+      responseStr += ",\"nwsGridOffice\":\"" + String(meta->nwsGridOffice) + "\"";
+      responseStr += ",\"nwsGridX\":" + String(meta->nwsGridX);
+      responseStr += ",\"nwsGridY\":" + String(meta->nwsGridY);
+    }
+  } else {
+    responseStr += "\"hasLocation\":false";
+  }
+  
+  responseStr += "}";
   respondJson(client, responseStr);
 }
 

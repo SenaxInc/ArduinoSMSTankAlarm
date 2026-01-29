@@ -158,6 +158,14 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define SERIAL_REQUEST_FILE "serial_request.qi"  // Receive serial log requests
 #endif
 
+#ifndef LOCATION_REQUEST_FILE
+#define LOCATION_REQUEST_FILE "location_request.qi"  // Server requests GPS location
+#endif
+
+#ifndef LOCATION_RESPONSE_FILE
+#define LOCATION_RESPONSE_FILE "location.qo"  // Client sends GPS location response
+#endif
+
 #ifndef CLIENT_SERIAL_BUFFER_SIZE
 #define CLIENT_SERIAL_BUFFER_SIZE 50  // Buffer up to 50 log messages
 #endif
@@ -606,6 +614,7 @@ struct ClientSerialLog {
 
 static ClientSerialLog gSerialLog;
 static unsigned long gLastSerialRequestCheckMillis = 0;
+static unsigned long gLastLocationRequestCheckMillis = 0;
 
 // Forward declarations
 static PulseSamplingRecommendation getRecommendedPulseSampling(float expectedRate);
@@ -648,12 +657,14 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
 static int getRelayPin(uint8_t relayIndex);
 static float readNotecardVinVoltage();
 static void checkRelayMomentaryTimeout(unsigned long now);
+static bool fetchNotecardLocation(float &latitude, float &longitude);
 static void resetRelayForTank(uint8_t idx);
 static void initializeClearButton();
 static void checkClearButton(unsigned long now);
 static void clearAllRelayAlarms();
 static void addSerialLog(const char *message);
 static void pollForSerialRequests();
+static void pollForLocationRequests();
 static void sendSerialLogs();
 static void evaluateUnload(uint8_t idx);
 static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, double peakEpoch);
@@ -840,6 +851,11 @@ void loop() {
   if (now - gLastSerialRequestCheckMillis >= inboundInterval) {
     gLastSerialRequestCheckMillis = now;
     pollForSerialRequests();
+  }
+
+  if (now - gLastLocationRequestCheckMillis >= inboundInterval) {
+    gLastLocationRequestCheckMillis = now;
+    pollForLocationRequests();
   }
 
   // Check for momentary relay timeout (30 minutes)
@@ -5004,6 +5020,72 @@ static void sendSerialLogs() {
 }
 
 // ============================================================================
+// Location Request Handling
+// ============================================================================
+// Server can request the client's GPS location (e.g., for NWS weather lookup during calibration)
+// Client responds with location via cell tower triangulation (low power)
+
+static void pollForLocationRequests() {
+  // Check for location requests from server
+  J *req = notecard.newRequest("note.get");
+  if (!req) {
+    return;
+  }
+  
+  JAddStringToObject(req, "file", LOCATION_REQUEST_FILE);
+  JAddBoolToObject(req, "delete", true);
+  
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    return;
+  }
+
+  J *body = JGetObject(rsp, "body");
+  if (!body) {
+    notecard.deleteResponse(rsp);
+    return;
+  }
+
+  const char *request = JGetString(body, "request");
+  if (request && strcmp(request, "get_location") == 0) {
+    Serial.println(F("Location request received from server"));
+    
+    // Fetch location and send response
+    float latitude = 0.0f, longitude = 0.0f;
+    bool hasLocation = fetchNotecardLocation(latitude, longitude);
+    
+    // Send location response
+    J *respReq = notecard.newRequest("note.add");
+    if (respReq) {
+      JAddStringToObject(respReq, "file", LOCATION_RESPONSE_FILE);
+      JAddBoolToObject(respReq, "sync", true);
+      
+      J *respBody = JCreateObject();
+      if (respBody) {
+        JAddStringToObject(respBody, "client", gDeviceUID);
+        if (hasLocation) {
+          JAddNumberToObject(respBody, "lat", latitude);
+          JAddNumberToObject(respBody, "lon", longitude);
+          JAddBoolToObject(respBody, "valid", true);
+        } else {
+          JAddBoolToObject(respBody, "valid", false);
+          JAddStringToObject(respBody, "error", "Location unavailable");
+        }
+        JAddItemToObject(respReq, "body", respBody);
+        
+        if (notecard.sendRequest(respReq)) {
+          Serial.println(F("Location response sent to server"));
+        } else {
+          Serial.println(F("Failed to send location response"));
+        }
+      }
+    }
+  }
+
+  notecard.deleteResponse(rsp);
+}
+
+// ============================================================================
 // Notecard VIN Voltage Reading
 // ============================================================================
 
@@ -5039,6 +5121,72 @@ static float readNotecardVinVoltage() {
   }
 
   return (float)voltage;
+}
+
+// ============================================================================
+// Notecard Location Fetching (Cell Tower Triangulation)
+// ============================================================================
+// Fetches the device's location from the Notecard using cell tower triangulation
+// This is much lower power than GPS and provides approximate location for weather lookups
+
+static bool fetchNotecardLocation(float &latitude, float &longitude) {
+  // First, request a location fix using cell tower triangulation
+  J *req = notecard.newRequest("card.location");
+  if (!req) {
+    Serial.println(F("Failed to create card.location request"));
+    return false;
+  }
+  
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    Serial.println(F("No response from card.location"));
+    return false;
+  }
+  
+  // Check for error response
+  const char *err = JGetString(rsp, "err");
+  if (err && strlen(err) > 0) {
+    // Location may not be available yet (device just powered on, no cell signal, etc.)
+    Serial.print(F("card.location: "));
+    Serial.println(err);
+    notecard.deleteResponse(rsp);
+    return false;
+  }
+  
+  // Extract latitude and longitude
+  // Response format: { "lat": 38.8894, "lon": -77.0352, "status": "GPS,WiFi,Triangulated", ... }
+  double lat = JGetNumber(rsp, "lat");
+  double lon = JGetNumber(rsp, "lon");
+  const char *status = JGetString(rsp, "status");
+  
+  notecard.deleteResponse(rsp);
+  
+  // Validate coordinates (must be non-zero and in valid range)
+  if (lat == 0.0 && lon == 0.0) {
+    Serial.println(F("card.location: No valid coordinates"));
+    return false;
+  }
+  
+  if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
+    Serial.println(F("card.location: Coordinates out of range"));
+    return false;
+  }
+  
+  latitude = (float)lat;
+  longitude = (float)lon;
+  
+  Serial.print(F("Location: "));
+  Serial.print(latitude, 4);
+  Serial.print(F(", "));
+  Serial.print(longitude, 4);
+  if (status) {
+    Serial.print(F(" ("));
+    Serial.print(status);
+    Serial.print(F(")"));
+  }
+  Serial.println();
+  
+  return true;
 }
 
 
