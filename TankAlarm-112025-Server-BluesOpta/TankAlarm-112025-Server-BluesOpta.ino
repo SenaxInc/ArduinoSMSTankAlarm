@@ -4238,9 +4238,10 @@ static void serveCss(EthernetClient &client) {
 static void serveFile(EthernetClient &client, const char* htmlContent) {
   size_t htmlLen = strlen_P(htmlContent);
   
-  // For very large HTML files (>32KB), serve directly from PROGMEM without building a String
+  // For very large HTML files, serve directly from PROGMEM without building a String
   // to avoid memory exhaustion. Skip loading overlay injection for these files.
-  if (htmlLen > 32768) {
+  const size_t LARGE_FILE_THRESHOLD = 32768;  // 32KB threshold
+  if (htmlLen > LARGE_FILE_THRESHOLD) {
     client.println(F("HTTP/1.1 200 OK"));
     client.println(F("Content-Type: text/html"));
     client.print(F("Content-Length: "));
@@ -4248,8 +4249,9 @@ static void serveFile(EthernetClient &client, const char* htmlContent) {
     client.println();
     
     // Send HTML content in chunks directly from PROGMEM
+    // Use static buffer to avoid stack overflow on memory-constrained devices
     const size_t chunkSize = 512;
-    char buffer[chunkSize];
+    static char buffer[chunkSize];
     size_t remaining = htmlLen;
     size_t offset = 0;
     
