@@ -79,11 +79,55 @@ For those who want to get started immediately:
 2. Select your server Notecard → Assign to `tankalarm-server`
 3. Select each client Notecard → Assign to `tankalarm-clients`
 
-### 3. Configure Clients (1 minute)
+### 3. Configure Clients (2 minutes per client)
+
+#### New Provisioning Workflow
 
 1. Access server dashboard: `http://<server-ip>/`
-2. Clients appear automatically when they send first telemetry
-3. Use server UI to configure each client remotely
+2. Look for **"New Sites (Unconfigured)"** section
+3. Unconfigured clients appear automatically with:
+   - ⚠️ Warning indicator
+   - Client UID and firmware version
+   - Smart "last seen" timestamp ("● Active now" or "Last seen 5 mins ago")
+   - **"Configure →"** button
+
+#### Configuration Steps
+
+**For each new client:**
+
+1. Click **"Configure →"** button
+2. Fill required fields:
+   - Site Name* (e.g., "North Tank Farm")
+   - Device Label* (e.g., "Tank-01")
+   - Product UID (auto-filled, fleet-wide setting)
+
+3. Add sensors using **"+ Add Sensor"** button:
+   - Choose monitor type (Tank/Gas/RPM)
+   - Select sensor type (Digital/Analog/4-20mA/Hall Effect)
+   - Configure pin/channel assignments
+   - Set max values and thresholds
+   - Add alarms, relays, SMS alerts as needed
+
+4. **Validate before sending:**
+   - System checks for pin conflicts
+   - Validates required fields
+   - Confirms sensor configurations
+   - Shows detailed error messages if issues found
+
+5. **Download backup** (recommended):
+   - Click **"Download JSON"** button
+   - Saves timestamped config file (e.g., `TankAlarm_NorthFarm_abc123_2026-02-05.json`)
+   - Keep for disaster recovery
+
+6. **Send configuration:**
+   - Click **"Send Configuration"** button
+   - Watch status messages:
+     - 🟡 "Validating configuration..."
+     - 🟡 "Sending to server..."
+     - ✅ "Configuration queued for delivery"
+   - Client receives within ~5 minutes
+
+💡 **Pro Tip:** Start with empty sensor list for truly new sites. Click "+ Add Sensor" only for sensors you've physically connected.
 
 **Done!** No manual routes needed. Devices communicate automatically via fleet addressing.
 

@@ -95,6 +95,7 @@
 // Include all common headers
 // ============================================================================
 #include "TankAlarm_Platform.h"
+#include "TankAlarm_Config.h"
 #include "TankAlarm_Utils.h"
 #include "TankAlarm_Notecard.h"
 #include "TankAlarm_Solar.h"

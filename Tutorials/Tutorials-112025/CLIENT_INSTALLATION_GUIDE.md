@@ -494,25 +494,69 @@ Once the server is running, configure clients remotely:
 | **Site Name** | Location identifier | "North Tank Farm" |
 | **Device Label** | Short device name | "Tank-01" |
 | **Server Fleet** | Target for data | "tankalarm-server" |
+| **Product UID** | Fleet-wide identifier | Set in TankAlarm_Config.h |
 | **Sample Interval** | Seconds between readings | 1800 (30 min) |
-| **Level Threshold** | Inches change for event reporting | 0 (disabled) or 6 |
-| **Report Time** | Daily report hour (0-23) | 7 (7 AM) |
-| **Tanks** | Tank definitions | See below |
+| **Report Time** | Daily report hour & minute | 05:00 (5 AM) |
+| **Daily Email** | Report recipient | admin@company.com |
+| **Power Source** | Power configuration | grid / solar / solar_mppt |
 
-### Tank Configuration
+### Sensor Configuration
 
-Each tank (up to 8) can be configured:
+Each sensor (up to 8 on Analog Expansion) supports multiple monitor types:
 
-- **ID**: Single letter identifier (A-H)
-- **Name**: Descriptive name ("Primary Diesel")
-- **Number**: Numeric identifier for display
-- **Sensor Type**: `analog`, `float`, `current_loop`
-- **Pin**: Analog input pin number (0-9)
-- **Height**: Tank height in inches
-- **High Alarm**: Level in inches triggering high alert
-- **Low Alarm**: Level in inches triggering low alert
-- **Daily Report**: Include in daily summary
-- **Alarm SMS**: Send SMS alerts for this tank
+#### Monitor Types
+- **Tank Level** - Liquid level monitoring in tanks
+- **Gas Pressure** - Propane/natural gas pressure monitoring
+- **RPM Sensor** - Engine speed monitoring via Hall effect sensor
+
+#### Sensor Types
+- **Digital (Float Switch)** - Simple on/off switch
+  - Modes: Normally-Open (NO) or Normally-Closed (NC)
+  - Use Opta digital inputs (I1-I8)
+- **Analog (0-10V)** - Voltage-based sensors
+  - Use Opta analog inputs (A0-A7) or Expansion channels
+- **4-20mA Current Loop** - Industrial sensors (most common)
+  - Requires Analog Expansion (CH0-CH7)
+  - Two modes: Pressure (bottom-mount) or Ultrasonic (top-mount)
+- **Hall Effect RPM** - Engine speed detection
+  - Pulses per revolution: 1-255
+
+#### Per-Sensor Settings
+- **Tank/Engine Number**: Numeric identifier (1-8)
+- **Name**: Descriptive label ("Main Diesel Tank")
+- **Contents**: Tank contents type (Diesel, Water, Propane)
+- **Pin/Channel**: Hardware connection point
+- **Max Height/Pressure/RPM**: Full-scale measurement value
+- **Level Change Threshold**: Inches change for event reporting (tank sensors only)
+
+#### Alarm Configuration (Optional)
+Each sensor can have independent alarms:
+- **High Alarm**: Upper threshold (inches/PSI/RPM)
+- **Low Alarm**: Lower threshold (inches/PSI/RPM)
+- **Digital Trigger**: "Activated" or "Not Activated" state
+
+#### Relay Control (Optional)
+Trigger relay outputs on alarm conditions:
+- **Target Client UID**: Remote client with relay outputs
+- **Trigger On**: Any/High/Low alarm
+- **Relay Mode**: Momentary / Until Clear / Manual Reset
+- **Relay Outputs**: Select R1-R4 outputs to activate
+
+#### SMS Alerts (Optional)
+Send text messages on alarm conditions:
+- **Phone Numbers**: Comma-separated list (+15551234567)
+- **Trigger On**: Any/High/Low alarm
+- **Custom Message**: Optional alert text
+
+### Physical Input Configuration
+
+Configure physical buttons for manual control:
+- **Clear All Relays**: Button to reset all active relay alarms
+- **Pin Number**: Hardware input pin (0-99)
+- **Input Mode**: Active LOW (pullup) or Active HIGH
+- **Action**: clear_relays / none (future actions coming)
+
+💡 **Example Use Case:** Emergency stop button to clear all relay-activated alarms across the fleet
 
 ---
 

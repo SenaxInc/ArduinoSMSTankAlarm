@@ -315,31 +315,90 @@ Edit `config_template.h` (or create `config.h` from template):
 
 #### 4.3 Configure Client Settings
 
-**Basic Configuration:**
-1. Click **"Edit Configuration"** button
-2. Fill in:
+**Step 1: Check for Unconfigured Clients**
+
+Look for the **"New Sites (Unconfigured)"** section at the top of the dashboard. New clients appear here automatically with:
+- ⚠ Warning indicator
+- Client UID
+- Last seen timestamp
+- Firmware version
+- **"Configure →"** button
+
+💡 **Tip:** Click the **📘 Quick Start Guide** link for detailed deployment instructions.
+
+**Step 2: Basic Site Information**
+
+1. Click **"Configure →"** on your unconfigured client
+2. The page scrolls to the configuration form
+3. Fill in the required fields (marked with *):
    ```
-   Site Name: QuickStart Test Site
-   Device Label: Tank-01
-   Sample Interval: 1800 seconds (30 min)
+   Site Name*: QuickStart Test Site
+   Device Label*: Tank-01
+   Route (Fleet): tankalarm-server
+   Product UID: [Auto-filled from server]
    ```
 
-**Tank 1 Configuration:**
-1. Scroll to **Tank 1** section:
+⚠️ **Note:** Product UID is fleet-wide and configured in `TankAlarm_Config.h`. It's readonly here.
+
+**Step 3: Sample & Report Settings**
+
+```
+Sample Interval: 1800 seconds (30 min)
+Daily Report Time: 05:00 (5 AM)
+Daily Email: your-email@example.com
+```
+
+**Step 4: Power Source**
+
+Select your power configuration:
+- **Grid Power** - AC mains (default)
+- **Grid + Battery Backup** - AC with UPS
+- **Solar** - Solar panel + battery
+- **Solar + MPPT** - Solar with charge controller
+
+**Step 5: Add Your First Sensor**
+
+1. Click the blue **"+ Add Sensor"** button
+2. Configure sensor details:
+
+   **Monitor Type:**
+   - Tank Level (liquid monitoring)
+   - Gas Pressure (propane/natural gas)
+   - RPM Sensor (engine speed)
+
+   **For Tank Level:**
    ```
-   Enabled: ✓ (checked)
-   Tank ID: "TANK-A"
-   Sensor Type: 4-20mA (Current Loop)
-   Analog Channel: 0
-   Tank Capacity: 1000 gallons
-   Alarm High: 900 gallons (90%)
-   Alarm Low: 100 gallons (10%)
-   Calibration: (leave default for now)
+   Tank Number: 1
+   Name: Diesel Tank
+   Contents: Diesel
+   Sensor Type: 4-20mA Current Loop
+   Pin/Channel: Expansion CH0
+   Height: 96 inches (8 feet)
+   Level Change Threshold: 6 inches
    ```
 
-2. Click **"Send Configuration to Device"**
-3. Server sends configuration via Notehub
-4. Client receives within ~5 minutes (on next Notecard sync)
+3. Click **"+ Add Alarm"** to configure alarms:
+   ```
+   ✓ High Alarm: 90 inches (triggers at 94%)
+   ✓ Low Alarm: 12 inches (triggers at 13%)
+   ```
+
+💡 **Optional Features:**
+- **+ Add Relay Control**: Trigger relay outputs on other clients
+- **+ Add SMS Alert**: Send text messages on alarm conditions
+
+**Step 6: Validate & Send**
+
+1. Review your configuration
+2. Click **"Download JSON"** (blue button) to save a backup copy
+3. Click **"Send Configuration"** (primary button)
+4. Watch the status indicator:
+   - 🟡 Validating configuration...
+   - 🟡 Sending to server...
+   - ✅ Configuration queued for delivery
+
+5. Server sends configuration via Notehub
+6. Client receives within ~5 minutes (on next Notecard sync)
 
 #### 4.4 Verify Configuration Applied
 
