@@ -180,6 +180,8 @@ The TankAlarm Server requires these libraries:
 |---------|---------|---------|-----------------|
 | **ArduinoJson** | 7.0.0+ | JSON parsing & REST API | Search "ArduinoJson" → Install |
 | **Blues Wireless Notecard** | Latest | Cellular communication | Search "Notecard" → Install |
+| **ArduinoRS485** | Latest | RS-485 hardware interface | Search "ArduinoRS485" → Install |
+| **ArduinoModbus** | Latest | Modbus RTU protocol (solar monitoring) | Search "ArduinoModbus" → Install |
 | **TankAlarm-112025-Common** | This repo | Shared constants/config (`TankAlarm_Common.h`) | Install from ZIP (recommended) |
 | **Ethernet** | Built-in | Web server & networking | No install needed |
 | **LittleFS** | Built-in | Configuration storage | No install needed |
@@ -208,7 +210,25 @@ The TankAlarm Server requires these libraries:
 
 **Why Notecard Library?** High-level API for cellular communication without complex AT commands.
 
-#### 3. Install TankAlarm-112025-Common (Custom Library)
+#### 3. Install ArduinoRS485
+
+1. In Library Manager, type: `ArduinoRS485`
+2. Find **ArduinoRS485 by Arduino**
+3. Click **Install** (latest version)
+4. Wait for installation to complete
+
+**Why ArduinoRS485?** Provides the low-level RS-485 hardware interface needed for Modbus communication with solar charge controllers.
+
+#### 4. Install ArduinoModbus
+
+1. In Library Manager, type: `ArduinoModbus`
+2. Find **ArduinoModbus by Arduino**
+3. Click **Install** (latest version)
+4. Wait for installation to complete
+
+**Why ArduinoModbus?** Implements the Modbus RTU protocol for reading solar charge controller data (battery voltage, charging current, etc.).
+
+#### 5. Install TankAlarm-112025-Common (Custom Library)
 
 TankAlarm uses a shared custom library included in this repository. Your sketches include it with:
 
@@ -231,7 +251,7 @@ Copy the entire `TankAlarm-112025-Common/` folder to:
 - macOS: `~/Documents/Arduino/libraries/`
 - Linux: `~/Arduino/libraries/`
 
-#### 4. Verify Built-In Libraries
+#### 6. Verify Built-In Libraries
 
 These come with Arduino Mbed OS core:
 
@@ -246,6 +266,8 @@ No separate installation required!
 1. Go to **Sketch → Include Library**
 2. Confirm you see:
    - ArduinoJson
+   - ArduinoModbus
+   - ArduinoRS485
    - Ethernet
    - Notecard
    - TankAlarm-112025-Common

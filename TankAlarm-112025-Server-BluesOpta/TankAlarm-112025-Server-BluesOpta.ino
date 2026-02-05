@@ -39,6 +39,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <vector>
 
 // POSIX file I/O types (for platforms that support it)
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -8494,24 +8495,6 @@ static void handleCalibrationGet(EthernetClient &client) {
           if (temperatureF != TEMPERATURE_UNAVAILABLE) {
             logObj["temperatureF"] = temperatureF;
           }
-          logObj["notes"] = notes;
-          count++;
-        }
-        file.close();
-      }
-    }
-  #endif
-#endif
-            verifiedLevel = line.substring(pos4 + 1, pos5).toFloat();
-            notes = line.substring(pos5 + 1);
-          }
-          
-          JsonObject logObj = logsArr.add<JsonObject>();
-          logObj["clientUid"] = uid;
-          logObj["tankNumber"] = tankNum;
-          logObj["timestamp"] = timestamp;
-          logObj["sensorReading"] = sensorReading;
-          logObj["verifiedLevelInches"] = verifiedLevel;
           logObj["notes"] = notes;
           count++;
         }
