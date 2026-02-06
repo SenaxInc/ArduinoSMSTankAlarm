@@ -9055,6 +9055,7 @@ static void handleDfuStatusGet(EthernetClient &client) {
   String responseStr = "{";
   responseStr += "\"currentVersion\":\"" + String(FIRMWARE_VERSION) + "\",";
   responseStr += "\"buildDate\":\"" + String(FIRMWARE_BUILD_DATE) + "\",";
+  responseStr += "\"buildTime\":\"" + String(FIRMWARE_BUILD_TIME) + "\",";
   responseStr += "\"updateAvailable\":" + String(gDfuUpdateAvailable ? "true" : "false") + ",";
   responseStr += "\"availableVersion\":\"" + String(gDfuUpdateAvailable ? gDfuVersion : "") + "\",";
   responseStr += "\"dfuInProgress\":" + String(gDfuInProgress ? "true" : "false") + ",";

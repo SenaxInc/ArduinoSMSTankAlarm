@@ -21,6 +21,10 @@
 #define FIRMWARE_BUILD_DATE __DATE__
 #endif
 
+#ifndef FIRMWARE_BUILD_TIME
+#define FIRMWARE_BUILD_TIME __TIME__
+#endif
+
 // ============================================================================
 // Notecard Configuration
 // ============================================================================
