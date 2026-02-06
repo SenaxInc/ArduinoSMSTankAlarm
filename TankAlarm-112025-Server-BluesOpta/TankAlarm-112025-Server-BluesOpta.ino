@@ -573,6 +573,7 @@ static bool gPaused = false;  // When true, pause Notecard processing for mainte
 // Rate limiting for authentication attempts
 static uint8_t gAuthFailureCount = 0;
 static unsigned long gLastAuthFailureTime = 0;
+static unsigned long gNextAllowedAuthTime = 0;  // Non-blocking rate limit
 static const unsigned long AUTH_LOCKOUT_DURATION = 30000;  // 30 seconds after max failures
 static const uint8_t AUTH_MAX_FAILURES = 5;  // Max failures before lockout
 
@@ -824,25 +825,16 @@ static bool pinMatches(const char *pin) {
     return false;
   }
   
-  // Constant-time string comparison to prevent timing attacks
-  // An attacker could otherwise measure response times to determine correct PIN digits
-  size_t len1 = strlen(pin);
-  size_t len2 = strlen(gConfig.configPin);
-  
-  // Compare all bytes regardless of early mismatch
-  volatile uint8_t diff = (len1 != len2) ? 1 : 0;
-  size_t compareLen = (len1 < len2) ? len1 : len2;
-  
-  for (size_t i = 0; i < compareLen; ++i) {
-    diff |= (pin[i] ^ gConfig.configPin[i]);
+  // Ensure both supplied and configured PINs are valid 4-digit PINs
+  if (!isValidPin(pin) || !isValidPin(gConfig.configPin)) {
+    return false;
   }
   
-  // Also check remaining bytes if lengths differ
-  for (size_t i = compareLen; i < len2; ++i) {
-    diff |= gConfig.configPin[i];
-  }
-  for (size_t i = compareLen; i < len1; ++i) {
-    diff |= pin[i];
+  // Constant-time 4-byte comparison to prevent timing attacks
+  // The admin PIN is always exactly 4 digits when valid.
+  volatile uint8_t diff = 0;
+  for (size_t i = 0; i < 4; ++i) {
+    diff |= (uint8_t)(pin[i] ^ gConfig.configPin[i]);
   }
   
   return (diff == 0);
@@ -859,7 +851,7 @@ static bool isValidClientUid(const char *clientUid) {
   const size_t MAX_CLIENT_UID_LEN = 47;
   
   size_t len = strlen(clientUid);
-  if (len >= MAX_CLIENT_UID_LEN) {
+  if (len > MAX_CLIENT_UID_LEN) {
     Serial.print(F("WARNING: Client UID too long ("));
     Serial.print(len);
     Serial.print(F(" chars): "));
@@ -879,16 +871,82 @@ static void respondStatus(EthernetClient &client, int status, const String &mess
 static bool performFtpBackup(char *errorOut = nullptr, size_t errorSize = 0);
 static bool performFtpRestore(char *errorOut = nullptr, size_t errorSize = 0);
 
+// Check if authentication is currently rate-limited (non-blocking)
+// Returns true if rate-limited, and responds with 429 status
+static bool isAuthRateLimited(EthernetClient &client) {
+  unsigned long now = millis();
+  
+  // Check if we're in an active rate limit window
+  if (now < gNextAllowedAuthTime) {
+    unsigned long remaining = (gNextAllowedAuthTime - now) / 1000;
+    String msg = "Too many failed attempts. Try again in ";
+    msg += String(remaining);
+    msg += " seconds.";
+    respondStatus(client, 429, msg);
+    return true;
+  }
+  
+  // Check if we're in lockout period after max failures
+  if (gAuthFailureCount >= AUTH_MAX_FAILURES) {
+    unsigned long timeSinceFail = now - gLastAuthFailureTime;
+    if (timeSinceFail < AUTH_LOCKOUT_DURATION) {
+      unsigned long remaining = (AUTH_LOCKOUT_DURATION - timeSinceFail) / 1000;
+      String msg = "Too many failed attempts. Try again in ";
+      msg += String(remaining);
+      msg += " seconds.";
+      respondStatus(client, 429, msg);
+      return true;
+    } else {
+      // Lockout period expired, reset counter
+      gAuthFailureCount = 0;
+      gNextAllowedAuthTime = 0;
+    }
+  }
+  
+  return false;
+}
+
+// Record a failed authentication attempt and calculate next allowed time (non-blocking)
+static void recordAuthFailure() {
+  unsigned long now = millis();
+  gAuthFailureCount++;
+  gLastAuthFailureTime = now;
+  
+  // Calculate exponential backoff: 1s, 2s, 4s, 8s, 16s
+  if (gAuthFailureCount > 0 && gAuthFailureCount <= 5) {
+    unsigned long delayMs = 1000UL << (gAuthFailureCount - 1);  // 2^(n-1) seconds
+    gNextAllowedAuthTime = now + delayMs;
+  } else if (gAuthFailureCount > AUTH_MAX_FAILURES) {
+    // Enter full lockout period
+    gNextAllowedAuthTime = now + AUTH_LOCKOUT_DURATION;
+  }
+}
+
+// Reset auth failure tracking on successful authentication
+static void resetAuthFailures() {
+  gAuthFailureCount = 0;
+  gNextAllowedAuthTime = 0;
+}
+
 // Require that a valid admin PIN is configured and provided; respond with 403/400 on failure.
 static bool requireValidPin(EthernetClient &client, const char *pinValue) {
+  // Check rate limiting first (non-blocking)
+  if (isAuthRateLimited(client)) {
+    return false;
+  }
+  
   if (!isValidPin(gConfig.configPin)) {
     respondStatus(client, 403, "Configure admin PIN before making changes");
     return false;
   }
+  
   if (!pinMatches(pinValue)) {
+    recordAuthFailure();  // Track failed attempt
     respondStatus(client, 403, "Invalid PIN");
     return false;
   }
+  
+  resetAuthFailures();  // Successful auth, reset tracking
   return true;
 }
 
@@ -4349,21 +4407,9 @@ static void serveFile(EthernetClient &client, const char* htmlContent) {
 }
 
 static void handleLoginPost(EthernetClient &client, const String &body) {
-  // Check if we're in lockout period
-  unsigned long now = millis();
-  if (gAuthFailureCount >= AUTH_MAX_FAILURES) {
-    unsigned long timeSinceFail = now - gLastAuthFailureTime;
-    if (timeSinceFail < AUTH_LOCKOUT_DURATION) {
-      unsigned long remaining = (AUTH_LOCKOUT_DURATION - timeSinceFail) / 1000;
-      String msg = "Too many failed attempts. Try again in ";
-      msg += String(remaining);
-      msg += " seconds.";
-      respondStatus(client, 429, msg);
-      return;
-    } else {
-      // Lockout period expired, reset counter
-      gAuthFailureCount = 0;
-    }
+  // Check rate limiting first (non-blocking)
+  if (isAuthRateLimited(client)) {
+    return;
   }
   
   StaticJsonDocument<128> doc;
@@ -4383,22 +4429,15 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
 
   if (valid) {
     // Successful login - reset failure counter
-    gAuthFailureCount = 0;
+    resetAuthFailures();
     client.println(F("HTTP/1.1 200 OK"));
     client.println(F("Content-Type: application/json"));
     client.println(F("Connection: close"));
     client.println();
     client.println(F("{\"success\":true}"));
   } else {
-    // Failed login - increment counter and add delay
-    gAuthFailureCount++;
-    gLastAuthFailureTime = now;
-    
-    // Add exponential backoff delay (1s, 2s, 4s, 8s, 16s)
-    if (gAuthFailureCount > 0 && gAuthFailureCount <= 5) {
-      unsigned long delayMs = 1000UL << (gAuthFailureCount - 1);  // 2^(n-1) seconds
-      delay(delayMs);
-    }
+    // Failed login - record failure (non-blocking)
+    recordAuthFailure();
     
     client.println(F("HTTP/1.1 401 Unauthorized"));
     client.println(F("Content-Type: application/json"));
