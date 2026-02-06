@@ -570,6 +570,12 @@ static bool gConfigDirty = false;
 static bool gPendingFtpBackup = false;
 static bool gPaused = false;  // When true, pause Notecard processing for maintenance
 
+// Rate limiting for authentication attempts
+static uint8_t gAuthFailureCount = 0;
+static unsigned long gLastAuthFailureTime = 0;
+static const unsigned long AUTH_LOCKOUT_DURATION = 30000;  // 30 seconds after max failures
+static const uint8_t AUTH_MAX_FAILURES = 5;  // Max failures before lockout
+
 static String gContactsCache;
 static bool gContactsCacheValid = false;
 
@@ -641,6 +647,13 @@ static TankRecord *findTankByHash(const char *clientUid, uint8_t tankNumber) {
     
     if (recordIdx == TANK_HASH_EMPTY) {
       return nullptr;  // Not found
+    }
+    
+    // Validate recordIdx is within bounds before accessing array
+    if (recordIdx >= MAX_TANK_RECORDS) {
+      Serial.print(F("ERROR: Invalid hash table entry: "));
+      Serial.println(recordIdx);
+      return nullptr;  // Corrupted hash table entry
     }
     
     TankRecord &rec = gTankRecords[recordIdx];
@@ -810,7 +823,29 @@ static bool pinMatches(const char *pin) {
   if (!pin || gConfig.configPin[0] == '\0') {
     return false;
   }
-  return strcmp(pin, gConfig.configPin) == 0;
+  
+  // Constant-time string comparison to prevent timing attacks
+  // An attacker could otherwise measure response times to determine correct PIN digits
+  size_t len1 = strlen(pin);
+  size_t len2 = strlen(gConfig.configPin);
+  
+  // Compare all bytes regardless of early mismatch
+  volatile uint8_t diff = (len1 != len2) ? 1 : 0;
+  size_t compareLen = (len1 < len2) ? len1 : len2;
+  
+  for (size_t i = 0; i < compareLen; ++i) {
+    diff |= (pin[i] ^ gConfig.configPin[i]);
+  }
+  
+  // Also check remaining bytes if lengths differ
+  for (size_t i = compareLen; i < len2; ++i) {
+    diff |= gConfig.configPin[i];
+  }
+  for (size_t i = compareLen; i < len1; ++i) {
+    diff |= pin[i];
+  }
+  
+  return (diff == 0);
 }
 
 // Forward declaration for respondStatus (defined later in the web server section)
@@ -2600,7 +2635,8 @@ static bool ftpReadResponse(EthernetClient &client, int &code, char *message, si
             multilineCode = thisCode;
             // Append to message if space allows
             size_t currentLen = strlen(message);
-            if (currentLen + linePos + 2 < maxLen) {
+            size_t needed = currentLen + linePos + 2;  // +1 for \n, +1 for \0
+            if (needed <= maxLen) {
               strcat(message, line);
               strcat(message, "\n");
             }
@@ -2608,7 +2644,8 @@ static bool ftpReadResponse(EthernetClient &client, int &code, char *message, si
             code = thisCode;
             // Append last line
             size_t currentLen = strlen(message);
-            if (currentLen + linePos + 1 < maxLen) {
+            size_t needed = currentLen + linePos + 1;  // +1 for \0
+            if (needed <= maxLen) {
               strcat(message, line);
             }
             return true;
@@ -4289,6 +4326,23 @@ static void serveFile(EthernetClient &client, const char* htmlContent) {
 }
 
 static void handleLoginPost(EthernetClient &client, const String &body) {
+  // Check if we're in lockout period
+  unsigned long now = millis();
+  if (gAuthFailureCount >= AUTH_MAX_FAILURES) {
+    unsigned long timeSinceFail = now - gLastAuthFailureTime;
+    if (timeSinceFail < AUTH_LOCKOUT_DURATION) {
+      unsigned long remaining = (AUTH_LOCKOUT_DURATION - timeSinceFail) / 1000;
+      String msg = "Too many failed attempts. Try again in ";
+      msg += String(remaining);
+      msg += " seconds.";
+      respondStatus(client, 429, msg);
+      return;
+    } else {
+      // Lockout period expired, reset counter
+      gAuthFailureCount = 0;
+    }
+  }
+  
   StaticJsonDocument<128> doc;
   DeserializationError error = deserializeJson(doc, body);
 
@@ -4300,17 +4354,29 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
   const char* pin = doc["pin"];
   bool valid = false;
 
-  if (pin && gConfig.configPin[0] != '\0' && strcmp(pin, gConfig.configPin) == 0) {
+  if (pin && gConfig.configPin[0] != '\0' && pinMatches(pin)) {
      valid = true;
   }
 
   if (valid) {
+    // Successful login - reset failure counter
+    gAuthFailureCount = 0;
     client.println(F("HTTP/1.1 200 OK"));
     client.println(F("Content-Type: application/json"));
     client.println(F("Connection: close"));
     client.println();
     client.println(F("{\"success\":true}"));
   } else {
+    // Failed login - increment counter and add delay
+    gAuthFailureCount++;
+    gLastAuthFailureTime = now;
+    
+    // Add exponential backoff delay (1s, 2s, 4s, 8s, 16s)
+    if (gAuthFailureCount > 0 && gAuthFailureCount <= 5) {
+      unsigned long delayMs = 1000UL << (gAuthFailureCount - 1);  // 2^(n-1) seconds
+      delay(delayMs);
+    }
+    
     client.println(F("HTTP/1.1 401 Unauthorized"));
     client.println(F("Content-Type: application/json"));
     client.println(F("Connection: close"));
