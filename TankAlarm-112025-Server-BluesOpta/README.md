@@ -38,8 +38,8 @@ The TankAlarm 112025 Server receives tank level data from multiple clients, disp
    - **Ethernet** (built-in)
    - LittleFS (built into Mbed core)
 4. Open `TankAlarm-112025-Server-BluesOpta.ino` in Arduino IDE
-5. Update `SERVER_PRODUCT_UID` to match your Blues Notehub project
-6. Compile and upload to Arduino Opta
+5. Compile and upload to Arduino Opta
+6. Access the web dashboard and set your Blues Notehub **Product UID** in **Server Settings**
 
 **For detailed step-by-step instructions, see [INSTALLATION.md](INSTALLATION.md)**
 

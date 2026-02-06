@@ -7,6 +7,7 @@
 # Configuration files with actual credentials (keep templates only)
 **/config.h
 **/server_config.h
+**/ServerConfig.h
 
 # Build directories
 build/

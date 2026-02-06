@@ -1,0 +1,22 @@
+/**
+ * ServerConfig.h  —  Optional compile-time overrides for the TankAlarm Server
+ *
+ * Copy this file to "ServerConfig.h" in the same folder and edit the values
+ * below.  The file is automatically picked up at compile time via __has_include.
+ *
+ * Any value defined here takes effect as the *initial default* when no saved
+ * configuration exists yet (first boot / factory reset).  Values can still be
+ * changed at runtime through the Server Settings web page.
+ *
+ * NOTE: ServerConfig.h is listed in .gitignore so your credentials are never
+ *       committed to version control.
+ */
+
+#ifndef SERVER_CONFIG_H
+#define SERVER_CONFIG_H
+
+// Blues Notehub Product UID  — required for Notecard communication
+// Format: com.company.product:project
+#define DEFAULT_SERVER_PRODUCT_UID "com.your-company.your-product:your-project"
+
+#endif // SERVER_CONFIG_H

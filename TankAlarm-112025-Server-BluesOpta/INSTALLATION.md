@@ -132,11 +132,27 @@ The server uses LittleFS (internal flash storage) for configuration. You need to
 
 ### Product UID Configuration
 
-Update the Product UID to match your Blues Notehub project:
+The Product UID can be configured in two ways:
 
-```cpp
-#define SERVER_PRODUCT_UID "com.your-company.your-product:your-project"
-```
+**Option A — Web interface (recommended for most users):**
+
+1. Upload the sketch to your Arduino Opta
+2. Access the web dashboard at the device's IP address
+3. Navigate to **Server Settings**
+4. Enter your Blues Notehub **Product UID** (e.g. `com.your-company.your-product:your-project`)
+5. Click **Save Settings** — a device restart is required for the change to take effect
+
+**Option B — Compile-time header file:**
+
+1. Copy `ServerConfig.h.example` to `ServerConfig.h` in the server sketch folder
+2. Edit `ServerConfig.h` and set your Product UID:
+   ```cpp
+   #define DEFAULT_SERVER_PRODUCT_UID "com.your-company.your-product:your-project"
+   ```
+3. Compile and upload — the value is used as the initial default on first boot
+4. The value can still be changed later via the Server Settings web page
+
+> **Note:** `ServerConfig.h` is listed in `.gitignore` so your credentials are never committed to version control.
 
 Find your Product UID in your Blues Notehub project settings.
 
@@ -322,7 +338,7 @@ Configuration can also be managed by editing the LittleFS JSON file, but web int
 - Check that Blues Wireless for Opta module is properly seated
 - Verify I2C connections
 - Check that Notecard has valid SIM and is activated
-- Verify SERVER_PRODUCT_UID matches your Blues Notehub project
+- Verify Product UID is set correctly in **Server Settings** on the web dashboard
 
 **Serial Monitor shows: "Ethernet failed"**
 - Verify Ethernet cable is properly connected
@@ -363,7 +379,7 @@ The server requires Blues Notehub configuration to receive data from clients:
 
 1. **Create Notehub Account**: [https://notehub.io](https://notehub.io)
 2. **Create a Product**: Set up a product for your tank alarm system
-3. **Note the Product UID**: Update SERVER_PRODUCT_UID in sketch
+3. **Note the Product UID**: Enter it in **Server Settings** on the web dashboard
 4. **Create Fleets**:
    - Create a fleet named `tankalarm-server` (or your preferred name)
    - Create a fleet named `tankalarm-clients`
