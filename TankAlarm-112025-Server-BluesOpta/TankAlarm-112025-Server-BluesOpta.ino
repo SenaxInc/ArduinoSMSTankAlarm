@@ -4522,7 +4522,7 @@ static void handleWebRequests() {
     sendTankJson(client);
   } else if (method == "GET" && path == "/api/unloads") {
     sendUnloadLogJson(client);
-  } else if (method == "GET" && path.startsWith("/api/clients?summary=1")) {
+  } else if (method == "GET" && (path == "/api/clients" || path.startsWith("/api/clients?"))) {
     String queryString = "";
     int queryStart = path.indexOf('?');
     if (queryStart >= 0) {
