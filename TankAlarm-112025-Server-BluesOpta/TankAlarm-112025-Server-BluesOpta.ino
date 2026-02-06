@@ -20,6 +20,11 @@
 // Shared library - common constants and utilities
 #include <TankAlarm_Common.h>
 
+// Ensure FIRMWARE_BUILD_TIME is defined (in case library cache is stale)
+#ifndef FIRMWARE_BUILD_TIME
+#define FIRMWARE_BUILD_TIME __TIME__
+#endif
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
