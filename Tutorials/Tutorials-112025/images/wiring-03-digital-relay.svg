@@ -1,0 +1,335 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 780" font-family="'Segoe UI', Arial, sans-serif">
+  <defs>
+    <linearGradient id="optaGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a4a4a"/>
+      <stop offset="100%" stop-color="#333"/>
+    </linearGradient>
+    <filter id="shadow" x="-2%" y="-2%" width="104%" height="104%">
+      <feDropShadow dx="2" dy="2" stdDeviation="3" flood-opacity="0.25"/>
+    </filter>
+    <marker id="arrGrn" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#27ae60"/>
+    </marker>
+    <marker id="arrRed" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#c0392b"/>
+    </marker>
+    <marker id="arrBlk" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#2c3e50"/>
+    </marker>
+    <marker id="arrBlu" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#2980b9"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1000" height="780" rx="8" fill="#fafaf5"/>
+  
+  <!-- Title -->
+  <text x="500" y="35" text-anchor="middle" font-size="20" font-weight="bold" fill="#222">Digital Inputs &amp; Relay Outputs — Wiring Detail</text>
+  <text x="500" y="55" text-anchor="middle" font-size="12" fill="#666">Arduino Opta Lite: Float Switches (I1-I8) &amp; Relay Outputs (D0-D3)</text>
+
+  <!-- ================================================= -->
+  <!-- SECTION 1: FLOAT SWITCH WIRING                    -->
+  <!-- ================================================= -->
+  <rect x="30" y="75" width="940" height="320" rx="8" fill="white" stroke="#ddd" stroke-width="1"/>
+  <text x="50" y="100" font-size="14" font-weight="bold" fill="#16a085">Digital Input Wiring — Float Switches &amp; Hall Effect Sensors</text>
+
+  <!-- Opta Digital Inputs Section -->
+  <g transform="translate(350, 110)" filter="url(#shadow)">
+    <rect width="300" height="260" rx="6" fill="url(#optaGrad)" stroke="#222" stroke-width="2"/>
+    <rect x="10" y="8" width="280" height="24" rx="3" fill="#00979D" opacity="0.9"/>
+    <text x="150" y="26" text-anchor="middle" font-size="11" font-weight="bold" fill="white">ARDUINO OPTA LITE — DIGITAL INPUTS</text>
+    
+    <!-- Input terminals row -->
+    <rect x="10" y="42" width="280" height="70" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+    <text x="150" y="58" text-anchor="middle" font-size="9" font-weight="bold" fill="#3498db">SCREW TERMINAL BLOCK</text>
+
+    <!-- I1-I8 terminals -->
+    <rect x="15" y="65" width="30" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="30" y="79" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I1</text>
+    <rect x="49" y="65" width="30" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="64" y="79" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I2</text>
+    <rect x="83" y="65" width="30" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="98" y="79" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I3</text>
+    <rect x="117" y="65" width="30" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="132" y="79" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I4</text>
+    <rect x="151" y="65" width="30" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="166" y="79" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I5</text>
+    <rect x="185" y="65" width="30" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="200" y="79" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I6</text>
+    <rect x="219" y="65" width="30" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="234" y="79" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I7</text>
+    <rect x="253" y="65" width="30" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="268" y="79" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I8</text>
+
+    <!-- GND terminal -->
+    <rect x="15" y="95" width="60" height="16" rx="3" fill="#2c3e50"/>
+    <text x="45" y="107" text-anchor="middle" font-size="8" font-weight="bold" fill="white">GND</text>
+
+    <!-- Internal circuit detail -->
+    <rect x="10" y="125" width="280" height="120" rx="4" fill="#2d3436" stroke="#555" stroke-width="1"/>
+    <text x="150" y="145" text-anchor="middle" font-size="9" font-weight="bold" fill="#f39c12">INTERNAL CIRCUIT (per input)</text>
+    
+    <!-- Pull-up resistor diagram -->
+    <text x="40" y="170" text-anchor="middle" font-size="9" fill="#e74c3c">3.3V</text>
+    <line x1="40" y1="175" x2="40" y2="183" stroke="#e74c3c" stroke-width="1.5"/>
+    <!-- Resistor symbol -->
+    <rect x="33" y="183" width="14" height="28" rx="2" fill="none" stroke="#aaa" stroke-width="1.5"/>
+    <text x="60" y="200" font-size="7" fill="#aaa">Pull-up</text>
+    <text x="60" y="210" font-size="7" fill="#aaa">resistor</text>
+    <line x1="40" y1="211" x2="40" y2="225" stroke="#aaa" stroke-width="1.5"/>
+    <!-- Pin connection point -->
+    <circle cx="40" cy="225" r="4" fill="#f39c12" stroke="#d4a017" stroke-width="1"/>
+    <text x="55" y="229" font-size="8" fill="#3498db">→ digitalRead(pin)</text>
+    
+    <!-- State labels -->
+    <text x="170" y="175" font-size="9" font-weight="bold" fill="#ddd">Pin States:</text>
+    <rect x="170" y="183" width="110" height="22" rx="3" fill="#27ae60" opacity="0.3"/>
+    <text x="225" y="199" text-anchor="middle" font-size="8" fill="#2ecc71">HIGH = Switch OPEN</text>
+    <rect x="170" y="210" width="110" height="22" rx="3" fill="#c0392b" opacity="0.3"/>
+    <text x="225" y="226" text-anchor="middle" font-size="8" fill="#e74c3c">LOW = Switch CLOSED</text>
+  </g>
+
+  <!-- ======================== -->
+  <!-- FLOAT SWITCH (NO) - Left -->
+  <!-- ======================== -->
+  <g transform="translate(50, 140)" filter="url(#shadow)">
+    <rect width="200" height="180" rx="6" fill="#e8f8f5" stroke="#1abc9c" stroke-width="1.5"/>
+    <text x="100" y="22" text-anchor="middle" font-size="11" font-weight="bold" fill="#0e6251">Normally-Open (NO)</text>
+    <text x="100" y="38" text-anchor="middle" font-size="9" fill="#666">Float Switch — Tank A</text>
+    
+    <!-- Float switch icon -->
+    <g transform="translate(60, 50)">
+      <!-- Tank/pipe outline -->
+      <rect x="0" y="0" width="80" height="60" rx="3" fill="#d1f2eb" stroke="#48c9b0" stroke-width="1"/>
+      <!-- Float ball -->
+      <circle cx="40" cy="20" r="12" fill="#f39c12" stroke="#d4a017" stroke-width="1.5"/>
+      <text x="40" y="24" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">Float</text>
+      <!-- Water line -->
+      <rect x="2" y="35" width="76" height="23" rx="1" fill="#85c1e9" opacity="0.4"/>
+      <path d="M 2 35 Q 20 30 40 35 Q 60 40 78 35" stroke="#3498db" stroke-width="1" fill="none"/>
+    </g>
+
+    <!-- Terminal labels -->
+    <rect x="20" y="125" width="70" height="20" rx="3" fill="#16a085"/>
+    <text x="55" y="139" text-anchor="middle" font-size="8" font-weight="bold" fill="white">COM</text>
+    <rect x="110" y="125" width="70" height="20" rx="3" fill="#2c3e50"/>
+    <text x="145" y="139" text-anchor="middle" font-size="8" font-weight="bold" fill="white">NO</text>
+    
+    <text x="100" y="164" text-anchor="middle" font-size="8" fill="#555">Opens when NO fluid</text>
+    <text x="100" y="176" text-anchor="middle" font-size="8" fill="#555">Closes when fluid rises</text>
+  </g>
+
+  <!-- Wires: NO Float Switch → Opta -->
+  <path d="M 120 265 L 120 300 Q 120 310 130 310 L 335 310 Q 345 310 345 300 L 345 285 Q 345 275 355 275 L 380 275" 
+        stroke="#27ae60" stroke-width="2.5" fill="none" marker-end="url(#arrGrn)"/>
+  <text x="245" y="305" text-anchor="middle" font-size="8" font-weight="bold" fill="#27ae60">COM → I1</text>
+
+  <path d="M 195 265 L 195 285 Q 195 295 200 295 L 350 295 Q 360 295 360 287 L 360 287 Q 360 275 362 268 L 365 213" 
+        stroke="#2c3e50" stroke-width="2.5" fill="none" marker-end="url(#arrBlk)"/>
+  <text x="280" y="290" text-anchor="middle" font-size="8" font-weight="bold" fill="#2c3e50">NO → GND</text>
+
+  <!-- ======================== -->
+  <!-- HALL EFFECT - Right      -->
+  <!-- ======================== -->
+  <g transform="translate(750, 140)" filter="url(#shadow)">
+    <rect width="200" height="180" rx="6" fill="#eaf2f8" stroke="#2980b9" stroke-width="1.5"/>
+    <text x="100" y="22" text-anchor="middle" font-size="11" font-weight="bold" fill="#1a5276">Hall Effect RPM</text>
+    <text x="100" y="38" text-anchor="middle" font-size="9" fill="#666">Engine/Pump Speed Sensor</text>
+    
+    <!-- Hall sensor icon -->
+    <g transform="translate(50, 48)">
+      <rect x="0" y="0" width="100" height="55" rx="4" fill="#d4e6f1" stroke="#85c1e9" stroke-width="1"/>
+      <!-- Magnet passing -->
+      <rect x="40" y="5" width="20" height="15" rx="2" fill="#e74c3c"/>
+      <text x="50" y="16" text-anchor="middle" font-size="6" font-weight="bold" fill="white">MAG</text>
+      <!-- Sensor chip -->
+      <rect x="35" y="30" width="30" height="20" rx="2" fill="#2c3e50" stroke="#34495e" stroke-width="1"/>
+      <text x="50" y="44" text-anchor="middle" font-size="6" font-weight="bold" fill="white">HALL</text>
+      <!-- Rotation arrow -->
+      <path d="M 80 12 Q 92 5 95 18" stroke="#e74c3c" stroke-width="1.5" fill="none"/>
+      <text x="90" y="30" font-size="6" fill="#e74c3c">RPM</text>
+    </g>
+
+    <!-- 3-wire connection labels -->
+    <rect x="10" y="115" width="55" height="18" rx="3" fill="#c0392b"/>
+    <text x="37" y="128" text-anchor="middle" font-size="8" font-weight="bold" fill="white">VCC</text>
+    <rect x="72" y="115" width="55" height="18" rx="3" fill="#f39c12"/>
+    <text x="99" y="128" text-anchor="middle" font-size="8" font-weight="bold" fill="white">SIGNAL</text>
+    <rect x="135" y="115" width="55" height="18" rx="3" fill="#2c3e50"/>
+    <text x="162" y="128" text-anchor="middle" font-size="8" font-weight="bold" fill="white">GND</text>
+
+    <text x="100" y="152" text-anchor="middle" font-size="8" fill="#555">3-wire: VCC, Signal, GND</text>
+    <text x="100" y="164" text-anchor="middle" font-size="8" fill="#555">Signal → Digital Input (I1-I8)</text>
+    <text x="100" y="176" text-anchor="middle" font-size="8" fill="#888">Check sensor: 3.3V or 5V</text>
+  </g>
+
+  <!-- Wires: Hall Effect → Opta -->
+  <path d="M 849 258 L 849 300 Q 849 310 839 310 L 710 310 Q 700 310 700 300 L 700 280 Q 700 270 690 270 L 650 270" 
+        stroke="#f39c12" stroke-width="2.5" fill="none"/>
+  <text x="720" y="308" text-anchor="middle" font-size="8" font-weight="bold" fill="#f39c12">Signal → I3</text>
+
+  <path d="M 912 258 L 912 340 Q 912 350 902 350 L 680 350 Q 670 350 670 340 L 670 315 Q 670 305 660 305 L 650 300" 
+        stroke="#2c3e50" stroke-width="2.5" fill="none"/>
+  <text x="770" y="348" text-anchor="middle" font-size="8" font-weight="bold" fill="#2c3e50">GND → GND</text>
+
+
+  <!-- ================================================= -->
+  <!-- SECTION 2: RELAY OUTPUT WIRING                    -->
+  <!-- ================================================= -->
+  <rect x="30" y="415" width="940" height="340" rx="8" fill="white" stroke="#ddd" stroke-width="1"/>
+  <text x="50" y="442" font-size="14" font-weight="bold" fill="#c0392b">Relay Output Wiring — Pump, Valve &amp; Alarm Control</text>
+
+  <!-- Opta Relay Section -->
+  <g transform="translate(50, 460)" filter="url(#shadow)">
+    <rect width="340" height="270" rx="6" fill="url(#optaGrad)" stroke="#222" stroke-width="2"/>
+    <rect x="10" y="8" width="320" height="24" rx="3" fill="#00979D" opacity="0.9"/>
+    <text x="170" y="26" text-anchor="middle" font-size="11" font-weight="bold" fill="white">ARDUINO OPTA LITE — RELAY OUTPUTS</text>
+    <text x="170" y="48" text-anchor="middle" font-size="9" fill="#aaa">4x Mechanical Relays | 250V AC / 10A | SPST-NO</text>
+
+    <!-- Relay D0 -->
+    <g transform="translate(10, 60)">
+      <rect width="145" height="80" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+      <text x="72" y="18" text-anchor="middle" font-size="9" font-weight="bold" fill="#f39c12">RELAY 1 (D0 / LED_D0)</text>
+      <!-- NO terminal -->
+      <rect x="10" y="28" width="50" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="35" y="42" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">NO</text>
+      <!-- COM terminal -->
+      <rect x="70" y="28" width="50" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="95" y="42" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">COM</text>
+      <!-- LED indicator -->
+      <circle cx="130" cy="38" r="5" fill="#2ecc71" opacity="0.7"/>
+      <!-- Rating -->
+      <text x="72" y="66" text-anchor="middle" font-size="7" fill="#999">250V AC / 10A max</text>
+      <text x="72" y="76" text-anchor="middle" font-size="7" fill="#888">Pump / Valve control</text>
+    </g>
+
+    <!-- Relay D1 -->
+    <g transform="translate(170, 60)">
+      <rect width="145" height="80" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+      <text x="72" y="18" text-anchor="middle" font-size="9" font-weight="bold" fill="#f39c12">RELAY 2 (D1 / LED_D1)</text>
+      <rect x="10" y="28" width="50" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="35" y="42" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">NO</text>
+      <rect x="70" y="28" width="50" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="95" y="42" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">COM</text>
+      <circle cx="130" cy="38" r="5" fill="#2ecc71" opacity="0.7"/>
+      <text x="72" y="66" text-anchor="middle" font-size="7" fill="#999">250V AC / 10A max</text>
+      <text x="72" y="76" text-anchor="middle" font-size="7" fill="#888">Pump / Valve control</text>
+    </g>
+
+    <!-- Relay D2 -->
+    <g transform="translate(10, 150)">
+      <rect width="145" height="80" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+      <text x="72" y="18" text-anchor="middle" font-size="9" font-weight="bold" fill="#f39c12">RELAY 3 (D2 / LED_D2)</text>
+      <rect x="10" y="28" width="50" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="35" y="42" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">NO</text>
+      <rect x="70" y="28" width="50" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="95" y="42" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">COM</text>
+      <circle cx="130" cy="38" r="5" fill="#2ecc71" opacity="0.7"/>
+      <text x="72" y="66" text-anchor="middle" font-size="7" fill="#999">250V AC / 10A max</text>
+      <text x="72" y="76" text-anchor="middle" font-size="7" fill="#888">Alarm buzzer</text>
+    </g>
+
+    <!-- Relay D3 -->
+    <g transform="translate(170, 150)">
+      <rect width="145" height="80" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+      <text x="72" y="18" text-anchor="middle" font-size="9" font-weight="bold" fill="#f39c12">RELAY 4 (D3 / LED_D3)</text>
+      <rect x="10" y="28" width="50" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="35" y="42" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">NO</text>
+      <rect x="70" y="28" width="50" height="20" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="95" y="42" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">COM</text>
+      <circle cx="130" cy="38" r="5" fill="#2ecc71" opacity="0.7"/>
+      <text x="72" y="66" text-anchor="middle" font-size="7" fill="#999">250V AC / 10A max</text>
+      <text x="72" y="76" text-anchor="middle" font-size="7" fill="#888">Alarm light</text>
+    </g>
+  </g>
+
+  <!-- ======================== -->
+  <!-- PUMP LOAD EXAMPLE        -->
+  <!-- ======================== -->
+  <g transform="translate(480, 470)" filter="url(#shadow)">
+    <rect width="460" height="120" rx="6" fill="#fdecea" stroke="#e74c3c" stroke-width="1.5"/>
+    <text x="230" y="22" text-anchor="middle" font-size="12" font-weight="bold" fill="#922b21">External Load Wiring Example (Relay D0 → Pump)</text>
+    
+    <!-- Wiring diagram -->
+    <g transform="translate(20, 35)">
+      <!-- Separate power supply -->
+      <rect x="0" y="10" width="100" height="60" rx="4" fill="#555" stroke="#333" stroke-width="1"/>
+      <text x="50" y="32" text-anchor="middle" font-size="8" font-weight="bold" fill="#ddd">LOAD</text>
+      <text x="50" y="44" text-anchor="middle" font-size="8" font-weight="bold" fill="#ddd">POWER</text>
+      <text x="50" y="58" text-anchor="middle" font-size="7" fill="#aaa">120V/240V AC</text>
+      
+      <!-- L (hot) terminal -->
+      <rect x="110" y="10" width="30" height="16" rx="2" fill="#c0392b"/>
+      <text x="125" y="22" text-anchor="middle" font-size="7" font-weight="bold" fill="white">HOT</text>
+      <!-- N (neutral) terminal -->
+      <rect x="110" y="54" width="30" height="16" rx="2" fill="#2980b9"/>
+      <text x="125" y="66" text-anchor="middle" font-size="7" font-weight="bold" fill="white">NEU</text>
+      
+      <!-- Hot wire to relay COM -->
+      <path d="M 140 18 L 180 18 Q 190 18 190 25 L 190 25" stroke="#c0392b" stroke-width="2.5" fill="none"/>
+      <text x="165" y="14" font-size="7" fill="#c0392b">HOT</text>
+      
+      <!-- Relay symbol -->
+      <rect x="180" y="10" width="80" height="55" rx="4" fill="#fef5e7" stroke="#f0c27f" stroke-width="1.5"/>
+      <text x="220" y="26" text-anchor="middle" font-size="8" font-weight="bold" fill="#d35400">Opta Relay</text>
+      <text x="220" y="38" text-anchor="middle" font-size="8" font-weight="bold" fill="#d35400">D0</text>
+      <text x="200" y="54" font-size="7" fill="#888">COM</text>
+      <text x="240" y="54" font-size="7" fill="#888">NO</text>
+      <!-- Switch symbol -->
+      <line x1="200" y1="45" x2="230" y2="38" stroke="#333" stroke-width="2"/>
+      <circle cx="200" cy="45" r="3" fill="#333"/>
+      <circle cx="240" cy="45" r="3" fill="none" stroke="#333" stroke-width="1.5"/>
+      
+      <!-- NO to Load -->
+      <path d="M 260 25 L 300 25 Q 310 25 310 30 L 310 30" stroke="#e67e22" stroke-width="2.5" fill="none"/>
+      <text x="285" y="20" font-size="7" fill="#e67e22">SWITCHED</text>
+
+      <!-- Pump/Load -->
+      <rect x="295" y="10" width="100" height="60" rx="4" fill="#d5f5e3" stroke="#27ae60" stroke-width="1.5"/>
+      <text x="345" y="30" text-anchor="middle" font-size="9" font-weight="bold" fill="#1e8449">PUMP</text>
+      <text x="345" y="44" text-anchor="middle" font-size="9" fill="#27ae60">or VALVE</text>
+      <text x="345" y="58" text-anchor="middle" font-size="7" fill="#666">or ALARM</text>
+
+      <!-- Neutral return -->
+      <path d="M 140 62 L 300 62 Q 310 62 310 55 L 310 55" stroke="#2980b9" stroke-width="2.5" fill="none"/>
+      <text x="220" y="78" text-anchor="middle" font-size="7" fill="#2980b9">NEUTRAL (direct to load)</text>
+    </g>
+  </g>
+
+  <!-- Relay Modes Table -->
+  <g transform="translate(480, 600)">
+    <rect width="460" height="130" rx="6" fill="#fef9e7" stroke="#f0c27f" stroke-width="1"/>
+    <text x="230" y="22" text-anchor="middle" font-size="11" font-weight="bold" fill="#7d6608">Relay Operating Modes (Software Configurable)</text>
+    
+    <!-- Table -->
+    <g transform="translate(15, 35)">
+      <rect x="0" y="0" width="430" height="20" rx="2" fill="#f9e79f"/>
+      <text x="10" y="14" font-size="8" font-weight="bold" fill="#333">Mode</text>
+      <text x="140" y="14" font-size="8" font-weight="bold" fill="#333">Config Value</text>
+      <text x="280" y="14" font-size="8" font-weight="bold" fill="#333">Behavior</text>
+      
+      <line x1="0" y1="22" x2="430" y2="22" stroke="#e8daef" stroke-width="0.5"/>
+      <text x="10" y="36" font-size="8" fill="#333">Momentary</text>
+      <text x="140" y="36" font-size="8" fill="#555" font-style="italic">RELAY_MODE_MOMENTARY</text>
+      <text x="280" y="36" font-size="8" fill="#555">On for duration, then auto-off (30 min default)</text>
+      
+      <line x1="0" y1="42" x2="430" y2="42" stroke="#e8daef" stroke-width="0.5"/>
+      <text x="10" y="56" font-size="8" fill="#333">Until Clear</text>
+      <text x="140" y="56" font-size="8" fill="#555" font-style="italic">RELAY_MODE_UNTIL_CLEAR</text>
+      <text x="280" y="56" font-size="8" fill="#555">On until alarm condition clears</text>
+      
+      <line x1="0" y1="62" x2="430" y2="62" stroke="#e8daef" stroke-width="0.5"/>
+      <text x="10" y="76" font-size="8" fill="#333">Manual Reset</text>
+      <text x="140" y="76" font-size="8" fill="#555" font-style="italic">RELAY_MODE_MANUAL_RESET</text>
+      <text x="280" y="76" font-size="8" fill="#555">On until manually reset from server</text>
+    </g>
+  </g>
+
+  <!-- Wire from Opta relay to load example -->
+  <path d="M 390 548 L 440 548 Q 450 548 450 540 L 450 540 Q 450 530 460 530 L 480 530"
+        stroke="#c0392b" stroke-width="2.5" fill="none" marker-end="url(#arrRed)"/>
+
+  <!-- Footer -->
+  <text x="500" y="765" text-anchor="middle" font-size="9" fill="#888">TankAlarm 112025 | Digital Inputs &amp; Relay Outputs Wiring | Rev 1.0 Feb 2026</text>
+</svg>

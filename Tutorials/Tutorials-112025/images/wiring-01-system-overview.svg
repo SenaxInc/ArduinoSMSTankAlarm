@@ -1,0 +1,441 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 820" font-family="'Segoe UI', Arial, sans-serif">
+  <defs>
+    <linearGradient id="optaBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a4a4a"/>
+      <stop offset="100%" stop-color="#333333"/>
+    </linearGradient>
+    <linearGradient id="a0602Body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a4a4a"/>
+      <stop offset="100%" stop-color="#383838"/>
+    </linearGradient>
+    <linearGradient id="bluesBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a3a5c"/>
+      <stop offset="100%" stop-color="#0f2a45"/>
+    </linearGradient>
+    <linearGradient id="powerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#666"/>
+      <stop offset="100%" stop-color="#444"/>
+    </linearGradient>
+    <filter id="shadow" x="-2%" y="-2%" width="104%" height="104%">
+      <feDropShadow dx="2" dy="2" stdDeviation="3" flood-opacity="0.3"/>
+    </filter>
+    <marker id="arrowRed" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#c0392b"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#2980b9"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#27ae60"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#e67e22"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#8e44ad"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1100" height="820" rx="8" fill="#f5f5f0"/>
+  
+  <!-- Title -->
+  <text x="550" y="35" text-anchor="middle" font-size="20" font-weight="bold" fill="#222">TankAlarm 112025 — Complete System Wiring Overview</text>
+  <text x="550" y="55" text-anchor="middle" font-size="12" fill="#666">Arduino Opta Lite + Blues Wireless for Opta + Opta Ext A0602</text>
+
+  <!-- DIN Rail -->
+  <rect x="60" y="710" width="980" height="18" rx="3" fill="#b0b0b0" stroke="#888" stroke-width="1"/>
+  <text x="550" y="723" text-anchor="middle" font-size="10" fill="#555" font-weight="bold">35mm DIN RAIL</text>
+  <rect x="60" y="710" width="980" height="3" rx="1" fill="#c8c8c8"/>
+
+  <!-- ======================== -->
+  <!-- 24V POWER SUPPLY         -->
+  <!-- ======================== -->
+  <g transform="translate(80, 540)" filter="url(#shadow)">
+    <rect width="140" height="150" rx="5" fill="url(#powerGrad)" stroke="#333" stroke-width="1.5"/>
+    <text x="70" y="20" text-anchor="middle" font-size="11" font-weight="bold" fill="#ddd">24V DC</text>
+    <text x="70" y="34" text-anchor="middle" font-size="11" font-weight="bold" fill="#ddd">POWER SUPPLY</text>
+    <!-- Terminals -->
+    <rect x="20" y="55" width="40" height="18" rx="3" fill="#c0392b"/>
+    <text x="40" y="68" text-anchor="middle" font-size="9" font-weight="bold" fill="white">V+ 24V</text>
+    <rect x="80" y="55" width="40" height="18" rx="3" fill="#2c3e50"/>
+    <text x="100" y="68" text-anchor="middle" font-size="9" font-weight="bold" fill="white">GND</text>
+    <!-- AC Input -->
+    <rect x="30" y="95" width="80" height="16" rx="3" fill="#555"/>
+    <text x="70" y="107" text-anchor="middle" font-size="9" fill="#ccc">AC INPUT</text>
+    <text x="70" y="130" text-anchor="middle" font-size="9" fill="#999">120/240V AC</text>
+    <text x="70" y="142" text-anchor="middle" font-size="8" fill="#888">DIN Rail Mount</text>
+  </g>
+
+  <!-- ======================== -->
+  <!-- ARDUINO OPTA LITE        -->
+  <!-- ======================== -->
+  <g transform="translate(310, 80)" filter="url(#shadow)">
+    <!-- Main body -->
+    <rect width="280" height="610" rx="6" fill="url(#optaBody)" stroke="#222" stroke-width="2"/>
+    
+    <!-- Arduino branding -->
+    <rect x="10" y="10" width="260" height="30" rx="4" fill="#00979D" opacity="0.9"/>
+    <text x="140" y="30" text-anchor="middle" font-size="13" font-weight="bold" fill="white">ARDUINO OPTA LITE</text>
+    <text x="140" y="55" text-anchor="middle" font-size="9" fill="#aaa">AFX00003 | STM32H747XI</text>
+
+    <!-- ---- RELAY OUTPUT TERMINALS (top) ---- -->
+    <rect x="10" y="70" width="260" height="90" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+    <text x="140" y="87" text-anchor="middle" font-size="10" font-weight="bold" fill="#f39c12">RELAY OUTPUTS (250V AC / 10A)</text>
+    
+    <!-- Relay D0 -->
+    <rect x="18" y="95" width="52" height="24" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="44" y="111" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">D0</text>
+    <circle cx="44" cy="125" r="4" fill="#2ecc71" opacity="0.8"/>
+    <text x="44" y="140" text-anchor="middle" font-size="7" fill="#888">NO/COM</text>
+    
+    <!-- Relay D1 -->
+    <rect x="78" y="95" width="52" height="24" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="104" y="111" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">D1</text>
+    <circle cx="104" cy="125" r="4" fill="#2ecc71" opacity="0.8"/>
+    <text x="104" y="140" text-anchor="middle" font-size="7" fill="#888">NO/COM</text>
+
+    <!-- Relay D2 -->
+    <rect x="138" y="95" width="52" height="24" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="164" y="111" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">D2</text>
+    <circle cx="164" cy="125" r="4" fill="#2ecc71" opacity="0.8"/>
+    <text x="164" y="140" text-anchor="middle" font-size="7" fill="#888">NO/COM</text>
+
+    <!-- Relay D3 -->
+    <rect x="198" y="95" width="52" height="24" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="224" y="111" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">D3</text>
+    <circle cx="224" cy="125" r="4" fill="#2ecc71" opacity="0.8"/>
+    <text x="224" y="140" text-anchor="middle" font-size="7" fill="#888">NO/COM</text>
+
+    <!-- ---- DIGITAL INPUT TERMINALS ---- -->
+    <rect x="10" y="155" width="260" height="110" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+    <text x="140" y="172" text-anchor="middle" font-size="10" font-weight="bold" fill="#3498db">DIGITAL INPUTS (8x) — 0-10V / DIGITAL</text>
+
+    <!-- Input terminals I1-I8 -->
+    <g>
+      <rect x="15" y="180" width="28" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="29" y="195" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I1</text>
+
+      <rect x="47" y="180" width="28" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="61" y="195" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I2</text>
+
+      <rect x="79" y="180" width="28" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="93" y="195" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I3</text>
+
+      <rect x="111" y="180" width="28" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="125" y="195" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I4</text>
+
+      <rect x="143" y="180" width="28" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="157" y="195" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I5</text>
+
+      <rect x="175" y="180" width="28" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="189" y="195" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I6</text>
+
+      <rect x="207" y="180" width="28" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="221" y="195" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I7</text>
+
+      <rect x="239" y="180" width="28" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="253" y="195" text-anchor="middle" font-size="7" font-weight="bold" fill="#333">I8</text>
+    </g>
+
+    <!-- GND terminal -->
+    <rect x="100" y="210" width="80" height="18" rx="3" fill="#2c3e50"/>
+    <text x="140" y="223" text-anchor="middle" font-size="8" font-weight="bold" fill="white">GND</text>
+    
+    <text x="140" y="250" text-anchor="middle" font-size="8" fill="#999">INPUT_PULLUP mode</text>
+    <text x="140" y="260" text-anchor="middle" font-size="8" fill="#999">Float switches, Hall Effect RPM</text>
+
+    <!-- ---- I2C BUS ---- -->
+    <rect x="10" y="275" width="260" height="55" rx="4" fill="#1a3355" stroke="#2980b9" stroke-width="1"/>
+    <text x="140" y="293" text-anchor="middle" font-size="10" font-weight="bold" fill="#5dade2">I2C BUS (Wire) — 400 kHz</text>
+    <text x="140" y="310" text-anchor="middle" font-size="9" fill="#85c1e9">SDA / SCL shared bus</text>
+    <text x="80" y="324" text-anchor="middle" font-size="8" fill="#aed6f1">Notecard: 0x17</text>
+    <text x="200" y="324" text-anchor="middle" font-size="8" fill="#aed6f1">A0602: 0x64</text>
+
+    <!-- ---- BLUES WIRELESS CARRIER ---- -->
+    <rect x="15" y="345" width="250" height="100" rx="4" fill="url(#bluesBody)" stroke="#2471a3" stroke-width="1.5"/>
+    <rect x="20" y="350" width="100" height="16" rx="3" fill="#2e86c1" opacity="0.8"/>
+    <text x="70" y="362" text-anchor="middle" font-size="8" font-weight="bold" fill="white">BLUES WIRELESS</text>
+    <text x="140" y="380" text-anchor="middle" font-size="9" font-weight="bold" fill="#85c1e9">Blues Notecard (NOTE-NBGL)</text>
+    <text x="140" y="394" text-anchor="middle" font-size="8" fill="#5dade2">LTE-M / NB-IoT Cellular</text>
+    <text x="140" y="408" text-anchor="middle" font-size="8" fill="#5dade2">I2C Address: 0x17</text>
+    <!-- Antenna icon -->
+    <line x1="230" y1="360" x2="250" y2="348" stroke="#e74c3c" stroke-width="2"/>
+    <line x1="242" y1="360" x2="256" y2="351" stroke="#e74c3c" stroke-width="1.5"/>
+    <line x1="236" y1="360" x2="253" y2="346" stroke="#e74c3c" stroke-width="1"/>
+    <text x="243" y="375" text-anchor="middle" font-size="7" fill="#e74c3c">ANT</text>
+    <!-- SIM slot -->
+    <rect x="25" y="415" width="55" height="18" rx="2" fill="#34495e" stroke="#5d6d7e" stroke-width="1"/>
+    <text x="52" y="428" text-anchor="middle" font-size="7" fill="#aaa">SIM CARD</text>
+    <text x="140" y="440" text-anchor="middle" font-size="7" fill="#7fb3d8">Plugs into Opta expansion connector</text>
+
+    <!-- ---- POWER INPUT ---- -->
+    <rect x="10" y="460" width="260" height="55" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+    <text x="140" y="478" text-anchor="middle" font-size="10" font-weight="bold" fill="#e74c3c">POWER INPUT</text>
+    <rect x="50" y="486" width="50" height="18" rx="3" fill="#c0392b"/>
+    <text x="75" y="499" text-anchor="middle" font-size="8" font-weight="bold" fill="white">V+ 24V</text>
+    <rect x="120" y="486" width="50" height="18" rx="3" fill="#2c3e50"/>
+    <text x="145" y="499" text-anchor="middle" font-size="8" font-weight="bold" fill="white">GND</text>
+    <text x="230" y="498" text-anchor="middle" font-size="8" fill="#999">12-24V DC</text>
+
+    <!-- ---- BOTTOM PORTS ---- -->
+    <rect x="10" y="530" width="260" height="65" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+    <!-- Ethernet -->
+    <rect x="25" y="542" width="60" height="22" rx="3" fill="#2c3e50" stroke="#34495e" stroke-width="1"/>
+    <text x="55" y="557" text-anchor="middle" font-size="8" font-weight="bold" fill="#aaa">ETHERNET</text>
+    <text x="55" y="575" text-anchor="middle" font-size="7" fill="#888">RJ45 10/100</text>
+    <!-- USB-C -->
+    <rect x="110" y="542" width="55" height="22" rx="3" fill="#2c3e50" stroke="#34495e" stroke-width="1"/>
+    <text x="137" y="557" text-anchor="middle" font-size="8" font-weight="bold" fill="#aaa">USB-C</text>
+    <text x="137" y="575" text-anchor="middle" font-size="7" fill="#888">Program</text>
+
+    <!-- Expansion connector arrow (right side) -->
+    <rect x="255" y="300" width="25" height="80" rx="3" fill="#00979D" stroke="#007a7e" stroke-width="1"/>
+    <text x="267" y="335" text-anchor="middle" font-size="7" font-weight="bold" fill="white" transform="rotate(90, 267, 335)">EXPANSION</text>
+  </g>
+
+  <!-- ======================== -->
+  <!-- OPTA EXT A0602           -->
+  <!-- ======================== -->
+  <g transform="translate(680, 80)" filter="url(#shadow)">
+    <rect width="200" height="470" rx="6" fill="url(#a0602Body)" stroke="#222" stroke-width="2"/>
+    
+    <!-- Branding -->
+    <rect x="10" y="10" width="180" height="30" rx="4" fill="#00979D" opacity="0.9"/>
+    <text x="100" y="30" text-anchor="middle" font-size="12" font-weight="bold" fill="white">OPTA EXT A0602</text>
+    <text x="100" y="55" text-anchor="middle" font-size="9" fill="#aaa">AFX00007 | Analog Expansion</text>
+    <text x="100" y="68" text-anchor="middle" font-size="8" fill="#888">I2C: 0x64 | 8 Channels</text>
+
+    <!-- Channel header -->
+    <rect x="10" y="80" width="180" height="22" rx="3" fill="#1a3355"/>
+    <text x="100" y="95" text-anchor="middle" font-size="9" font-weight="bold" fill="#f39c12">ANALOG INPUTS (0-10V / 4-20mA)</text>
+
+    <!-- Channel terminals CH0-CH7 -->
+    <g>
+      <!-- CH0 -->
+      <rect x="15" y="110" width="170" height="34" rx="3" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+      <rect x="20" y="115" width="38" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="39" y="130" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">CH0 +</text>
+      <rect x="62" y="115" width="38" height="22" rx="3" fill="#2c3e50"/>
+      <text x="81" y="130" text-anchor="middle" font-size="8" font-weight="bold" fill="white">CH0 -</text>
+      <text x="150" y="130" text-anchor="middle" font-size="7" fill="#aaa">Tank A</text>
+
+      <!-- CH1 -->
+      <rect x="15" y="148" width="170" height="34" rx="3" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+      <rect x="20" y="153" width="38" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="39" y="168" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">CH1 +</text>
+      <rect x="62" y="153" width="38" height="22" rx="3" fill="#2c3e50"/>
+      <text x="81" y="168" text-anchor="middle" font-size="8" font-weight="bold" fill="white">CH1 -</text>
+      <text x="150" y="168" text-anchor="middle" font-size="7" fill="#aaa">Tank B</text>
+
+      <!-- CH2 -->
+      <rect x="15" y="186" width="170" height="34" rx="3" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+      <rect x="20" y="191" width="38" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="39" y="206" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">CH2 +</text>
+      <rect x="62" y="191" width="38" height="22" rx="3" fill="#2c3e50"/>
+      <text x="81" y="206" text-anchor="middle" font-size="8" font-weight="bold" fill="white">CH2 -</text>
+      <text x="150" y="206" text-anchor="middle" font-size="7" fill="#aaa">Tank C</text>
+
+      <!-- CH3 -->
+      <rect x="15" y="224" width="170" height="34" rx="3" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+      <rect x="20" y="229" width="38" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="39" y="244" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">CH3 +</text>
+      <rect x="62" y="229" width="38" height="22" rx="3" fill="#2c3e50"/>
+      <text x="81" y="244" text-anchor="middle" font-size="8" font-weight="bold" fill="white">CH3 -</text>
+      <text x="150" y="244" text-anchor="middle" font-size="7" fill="#aaa">Tank D</text>
+
+      <!-- CH4 -->
+      <rect x="15" y="262" width="170" height="34" rx="3" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+      <rect x="20" y="267" width="38" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="39" y="282" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">CH4 +</text>
+      <rect x="62" y="267" width="38" height="22" rx="3" fill="#2c3e50"/>
+      <text x="81" y="282" text-anchor="middle" font-size="8" font-weight="bold" fill="white">CH4 -</text>
+      <text x="150" y="282" text-anchor="middle" font-size="7" fill="#aaa">Tank E</text>
+
+      <!-- CH5 -->
+      <rect x="15" y="300" width="170" height="34" rx="3" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+      <rect x="20" y="305" width="38" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="39" y="320" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">CH5 +</text>
+      <rect x="62" y="305" width="38" height="22" rx="3" fill="#2c3e50"/>
+      <text x="81" y="320" text-anchor="middle" font-size="8" font-weight="bold" fill="white">CH5 -</text>
+      <text x="150" y="320" text-anchor="middle" font-size="7" fill="#aaa">Tank F</text>
+
+      <!-- CH6 -->
+      <rect x="15" y="338" width="170" height="34" rx="3" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+      <rect x="20" y="343" width="38" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="39" y="358" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">CH6 +</text>
+      <rect x="62" y="343" width="38" height="22" rx="3" fill="#2c3e50"/>
+      <text x="81" y="358" text-anchor="middle" font-size="8" font-weight="bold" fill="white">CH6 -</text>
+      <text x="150" y="358" text-anchor="middle" font-size="7" fill="#aaa">Tank G</text>
+
+      <!-- CH7 -->
+      <rect x="15" y="376" width="170" height="34" rx="3" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
+      <rect x="20" y="381" width="38" height="22" rx="3" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+      <text x="39" y="396" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">CH7 +</text>
+      <rect x="62" y="381" width="38" height="22" rx="3" fill="#2c3e50"/>
+      <text x="81" y="396" text-anchor="middle" font-size="8" font-weight="bold" fill="white">CH7 -</text>
+      <text x="150" y="396" text-anchor="middle" font-size="7" fill="#aaa">Tank H</text>
+    </g>
+
+    <!-- Expansion connector (left side) -->
+    <rect x="-12" y="200" width="25" height="80" rx="3" fill="#00979D" stroke="#007a7e" stroke-width="1"/>
+    <text x="1" y="235" text-anchor="middle" font-size="7" font-weight="bold" fill="white" transform="rotate(-90, 1, 235)">EXPANSION</text>
+
+    <!-- Info -->
+    <text x="100" y="435" text-anchor="middle" font-size="8" fill="#888">12-bit ADC (0-4095)</text>
+    <text x="100" y="450" text-anchor="middle" font-size="8" fill="#888">Powered via expansion bus</text>
+    <text x="100" y="465" text-anchor="middle" font-size="7" fill="#666">Snaps onto Opta right side</text>
+  </g>
+
+  <!-- ======================== -->
+  <!-- EXPANSION CONNECTOR LINE -->
+  <!-- ======================== -->
+  <line x1="590" y1="380" x2="668" y2="380" stroke="#00979D" stroke-width="4" stroke-dasharray="8,4"/>
+  <text x="629" y="370" text-anchor="middle" font-size="8" font-weight="bold" fill="#00979D">I2C + Power</text>
+  <text x="629" y="397" text-anchor="middle" font-size="7" fill="#00979D">Snap-on Bus</text>
+
+  <!-- ======================== -->
+  <!-- POWER WIRING LINES       -->
+  <!-- ======================== -->
+  <!-- V+ from PSU to Opta -->
+  <path d="M 180 595 L 260 595 Q 270 595 270 585 L 270 555 Q 270 545 280 545 L 360 545" 
+        stroke="#c0392b" stroke-width="2.5" fill="none" marker-end="url(#arrowRed)"/>
+  <text x="260" y="540" text-anchor="middle" font-size="8" font-weight="bold" fill="#c0392b">V+ (24V)</text>
+  
+  <!-- GND from PSU to Opta -->
+  <path d="M 180 607 L 240 607 Q 250 607 250 597 L 250 565 Q 250 555 260 555 L 430 555" 
+        stroke="#2c3e50" stroke-width="2.5" fill="none" marker-end="url(#arrowBlue)"/>
+  <text x="290" y="570" text-anchor="middle" font-size="8" font-weight="bold" fill="#2c3e50">GND</text>
+
+  <!-- ======================== -->
+  <!-- SENSOR CONNECTIONS       -->
+  <!-- ======================== -->
+  
+  <!-- 4-20mA Sensors (right side) -->
+  <g transform="translate(920, 120)">
+    <rect width="160" height="240" rx="6" fill="#fff3e0" stroke="#e67e22" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="80" y="20" text-anchor="middle" font-size="10" font-weight="bold" fill="#e67e22">4-20mA SENSORS</text>
+    
+    <!-- Sensor 1 -->
+    <rect x="10" y="35" width="140" height="55" rx="4" fill="#fff8ee" stroke="#f0c27f" stroke-width="1"/>
+    <text x="80" y="50" text-anchor="middle" font-size="8" font-weight="bold" fill="#d35400">Pressure Sensor</text>
+    <text x="80" y="62" text-anchor="middle" font-size="7" fill="#666">Dwyer 626-06-CB-P1-E5-S1</text>
+    <text x="80" y="74" text-anchor="middle" font-size="7" fill="#888">0-5 PSI, Bottom-Mounted</text>
+    <text x="80" y="85" text-anchor="middle" font-size="7" fill="#27ae60">→ CH0 on A0602</text>
+    
+    <!-- Sensor 2 -->
+    <rect x="10" y="95" width="140" height="55" rx="4" fill="#fff8ee" stroke="#f0c27f" stroke-width="1"/>
+    <text x="80" y="110" text-anchor="middle" font-size="8" font-weight="bold" fill="#d35400">Ultrasonic Sensor</text>
+    <text x="80" y="122" text-anchor="middle" font-size="7" fill="#666">Siemens Sitrans LU240</text>
+    <text x="80" y="134" text-anchor="middle" font-size="7" fill="#888">Top-Mounted, Distance</text>
+    <text x="80" y="145" text-anchor="middle" font-size="7" fill="#27ae60">→ CH1 on A0602</text>
+
+    <!-- Loop wiring note -->
+    <rect x="10" y="160" width="140" height="70" rx="4" fill="#fef9e7" stroke="#f0c27f" stroke-width="1"/>
+    <text x="80" y="175" text-anchor="middle" font-size="8" font-weight="bold" fill="#7d6608">2-Wire Loop Wiring</text>
+    <text x="80" y="188" text-anchor="middle" font-size="7" fill="#666">24V → Sensor (+)</text>
+    <text x="80" y="200" text-anchor="middle" font-size="7" fill="#666">Sensor (−) → A0602 CH+</text>
+    <text x="80" y="212" text-anchor="middle" font-size="7" fill="#666">A0602 CH− → 24V GND</text>
+    <text x="80" y="224" text-anchor="middle" font-size="7" fill="#c0392b">Series circuit!</text>
+  </g>
+
+  <!-- Wire from sensors to A0602 -->
+  <path d="M 920 200 L 895 200 Q 885 200 885 195 L 885 195" 
+        stroke="#e67e22" stroke-width="2" fill="none" marker-end="url(#arrowOrange)"/>
+
+  <!-- ======================== -->
+  <!-- FLOAT SWITCHES (left)    -->
+  <!-- ======================== -->
+  <g transform="translate(80, 100)">
+    <rect width="160" height="180" rx="6" fill="#e8f8f5" stroke="#1abc9c" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="80" y="20" text-anchor="middle" font-size="10" font-weight="bold" fill="#16a085">FLOAT SWITCHES</text>
+    <text x="80" y="35" text-anchor="middle" font-size="8" fill="#666">Digital Sensors</text>
+
+    <!-- Switch 1 -->
+    <rect x="10" y="45" width="140" height="50" rx="4" fill="#f0faf7" stroke="#a3d9c8" stroke-width="1"/>
+    <text x="80" y="60" text-anchor="middle" font-size="8" font-weight="bold" fill="#0e6251">Tank A — Float Switch</text>
+    <text x="80" y="74" text-anchor="middle" font-size="7" fill="#666">Normally-Open (NO)</text>
+    <text x="80" y="86" text-anchor="middle" font-size="7" fill="#27ae60">COM → I1, NO → GND</text>
+
+    <!-- Switch 2 -->
+    <rect x="10" y="100" width="140" height="50" rx="4" fill="#f0faf7" stroke="#a3d9c8" stroke-width="1"/>
+    <text x="80" y="115" text-anchor="middle" font-size="8" font-weight="bold" fill="#0e6251">Tank B — Float Switch</text>
+    <text x="80" y="129" text-anchor="middle" font-size="7" fill="#666">Normally-Closed (NC)</text>
+    <text x="80" y="141" text-anchor="middle" font-size="7" fill="#27ae60">COM → I2, NC → GND</text>
+
+    <text x="80" y="168" text-anchor="middle" font-size="7" fill="#888">Internal pull-up (INPUT_PULLUP)</text>
+    <text x="80" y="178" text-anchor="middle" font-size="7" fill="#888">No external power needed</text>
+  </g>
+
+  <!-- Wire from float switches to Opta inputs -->
+  <path d="M 240 200 L 280 200 Q 290 200 290 210 L 290 260 Q 290 270 300 270 L 330 270" 
+        stroke="#1abc9c" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
+  <text x="275" y="235" text-anchor="middle" font-size="7" font-weight="bold" fill="#16a085">I1-I8</text>
+
+  <!-- ======================== -->
+  <!-- PUMP/VALVE (top right)   -->
+  <!-- ======================== -->
+  <g transform="translate(920, 410)">
+    <rect width="160" height="120" rx="6" fill="#fdecea" stroke="#e74c3c" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="80" y="20" text-anchor="middle" font-size="10" font-weight="bold" fill="#c0392b">EXTERNAL LOADS</text>
+    
+    <rect x="10" y="35" width="140" height="35" rx="4" fill="#fff5f5" stroke="#f1948a" stroke-width="1"/>
+    <text x="80" y="50" text-anchor="middle" font-size="8" font-weight="bold" fill="#922b21">Pump / Valve</text>
+    <text x="80" y="63" text-anchor="middle" font-size="7" fill="#666">Relay D0 → NO/COM</text>
+
+    <rect x="10" y="75" width="140" height="35" rx="4" fill="#fff5f5" stroke="#f1948a" stroke-width="1"/>
+    <text x="80" y="90" text-anchor="middle" font-size="8" font-weight="bold" fill="#922b21">Alarm Buzzer / Light</text>
+    <text x="80" y="103" text-anchor="middle" font-size="7" fill="#666">Relay D2/D3 → NO/COM</text>
+  </g>
+
+  <!-- Wire from Opta relays to loads -->
+  <path d="M 590 170 L 630 170 Q 640 170 640 180 L 640 470 Q 640 480 650 480 L 920 480" 
+        stroke="#c0392b" stroke-width="2" fill="none" marker-end="url(#arrowRed)"/>
+  <text x="650" y="170" text-anchor="start" font-size="7" font-weight="bold" fill="#c0392b">D0-D3</text>
+
+  <!-- ======================== -->
+  <!-- CELLULAR CLOUD (top)     -->
+  <!-- ======================== -->
+  <g transform="translate(80, 370)">
+    <rect width="160" height="110" rx="6" fill="#eaf2f8" stroke="#2980b9" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="80" y="20" text-anchor="middle" font-size="10" font-weight="bold" fill="#2471a3">BLUES NOTEHUB</text>
+    <text x="80" y="38" text-anchor="middle" font-size="8" fill="#5499c7">notehub.io (Cloud)</text>
+    <!-- Cloud icon -->
+    <ellipse cx="80" cy="62" rx="35" ry="16" fill="#d4e6f1" stroke="#85c1e9" stroke-width="1"/>
+    <text x="80" y="66" text-anchor="middle" font-size="9" font-weight="bold" fill="#2471a3">CLOUD</text>
+    <text x="80" y="90" text-anchor="middle" font-size="7" fill="#666">LTE-M / NB-IoT</text>
+    <text x="80" y="102" text-anchor="middle" font-size="7" fill="#666">→ Routes to Server fleet</text>
+  </g>
+
+  <!-- Wire from Notecard to Cloud -->
+  <path d="M 240 430 L 280 430 Q 290 430 290 435 L 290 435" 
+        stroke="#2980b9" stroke-width="2" fill="none" stroke-dasharray="6,3"/>
+  <text x="262" y="420" text-anchor="middle" font-size="7" font-weight="bold" fill="#2980b9">Cellular</text>
+
+  <!-- ======================== -->
+  <!-- LEGEND                   -->
+  <!-- ======================== -->
+  <g transform="translate(680, 570)">
+    <rect width="200" height="120" rx="5" fill="white" stroke="#ccc" stroke-width="1"/>
+    <text x="100" y="18" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">LEGEND</text>
+    
+    <line x1="15" y1="30" x2="55" y2="30" stroke="#c0392b" stroke-width="2.5"/>
+    <text x="65" y="34" font-size="8" fill="#333">Power (24V DC)</text>
+    
+    <line x1="15" y1="48" x2="55" y2="48" stroke="#1abc9c" stroke-width="2"/>
+    <text x="65" y="52" font-size="8" fill="#333">Digital Inputs (Float/RPM)</text>
+    
+    <line x1="15" y1="66" x2="55" y2="66" stroke="#e67e22" stroke-width="2"/>
+    <text x="65" y="70" font-size="8" fill="#333">Analog / 4-20mA Sensors</text>
+    
+    <line x1="15" y1="84" x2="55" y2="84" stroke="#2980b9" stroke-width="2" stroke-dasharray="6,3"/>
+    <text x="65" y="88" font-size="8" fill="#333">Cellular (Wireless)</text>
+    
+    <line x1="15" y1="102" x2="55" y2="102" stroke="#00979D" stroke-width="4" stroke-dasharray="8,4"/>
+    <text x="65" y="106" font-size="8" fill="#333">Expansion Bus (I2C + Power)</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="550" y="760" text-anchor="middle" font-size="10" fill="#888">TankAlarm 112025 — System Wiring Overview | Rev 1.0 | February 2026</text>
+  <text x="550" y="775" text-anchor="middle" font-size="8" fill="#aaa">See WIRING_DIAGRAM.md for complete connection details and pin mappings</text>
+</svg>

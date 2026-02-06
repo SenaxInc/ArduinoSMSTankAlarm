@@ -1,0 +1,327 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 850" font-family="'Segoe UI', Arial, sans-serif">
+  <defs>
+    <linearGradient id="sensorBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e67e22"/>
+      <stop offset="100%" stop-color="#d35400"/>
+    </linearGradient>
+    <linearGradient id="sensorBodyGray" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#999"/>
+      <stop offset="100%" stop-color="#777"/>
+    </linearGradient>
+    <linearGradient id="a0602Grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a4a4a"/>
+      <stop offset="100%" stop-color="#333"/>
+    </linearGradient>
+    <linearGradient id="psuGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#666"/>
+      <stop offset="100%" stop-color="#444"/>
+    </linearGradient>
+    <filter id="shadow" x="-2%" y="-2%" width="104%" height="104%">
+      <feDropShadow dx="2" dy="2" stdDeviation="3" flood-opacity="0.25"/>
+    </filter>
+    <marker id="arrowR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#c0392b"/>
+    </marker>
+    <marker id="arrowB" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#2c3e50"/>
+    </marker>
+    <marker id="arrowO" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#e67e22"/>
+    </marker>
+    <marker id="arrowCur" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#8e44ad"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1000" height="850" rx="8" fill="#fafaf5"/>
+  
+  <!-- Title -->
+  <text x="500" y="32" text-anchor="middle" font-size="20" font-weight="bold" fill="#222">4-20mA Pressure Sensor — Dwyer 626 CB Wiring Detail</text>
+  <text x="500" y="52" text-anchor="middle" font-size="12" fill="#666">Based on Dwyer 626/628 CB Option instruction manual — accurate terminal mapping</text>
+
+  <!-- ================================================= -->
+  <!-- SECTION 1: Detailed Wiring Diagram                -->
+  <!-- ================================================= -->
+  <rect x="30" y="70" width="940" height="400" rx="8" fill="white" stroke="#ddd" stroke-width="1"/>
+  <text x="50" y="95" font-size="14" font-weight="bold" fill="#d35400">2-Wire Current Loop Wiring — Dwyer 626 CB Option</text>
+
+  <!-- ======================== -->
+  <!-- DWYER 626 SENSOR BODY    -->
+  <!-- ======================== -->
+  <g transform="translate(310, 110)" filter="url(#shadow)">
+    <!-- Process connection (threaded fitting) at top -->
+    <rect x="93" y="-30" width="54" height="28" rx="2" fill="#aaa" stroke="#888" stroke-width="1.5"/>
+    <rect x="98" y="-44" width="44" height="16" rx="8" fill="#bbb" stroke="#999" stroke-width="1"/>
+    <text x="120" y="-32" text-anchor="middle" font-size="7" fill="#555">1/4" NPT</text>
+    
+    <!-- Main sensor body -->
+    <rect x="0" y="0" width="240" height="80" rx="8" fill="url(#sensorBodyGray)" stroke="#666" stroke-width="2"/>
+    
+    <!-- Label -->
+    <text x="120" y="20" text-anchor="middle" font-size="12" font-weight="bold" fill="white">DWYER 626-06-CB-P1-E5-S1</text>
+    <text x="120" y="36" text-anchor="middle" font-size="9" fill="#ddd">Pressure Transmitter  (0–5 PSI)</text>
+    <text x="120" y="50" text-anchor="middle" font-size="9" fill="#ccc">4-20mA Current Output — CB Option</text>
+    
+    <!-- Terminal block strip -->
+    <rect x="30" y="63" width="180" height="17" rx="3" fill="#555" stroke="#444" stroke-width="1"/>
+    <text x="120" y="75" text-anchor="middle" font-size="7" font-weight="bold" fill="#ddd">TERMINAL BLOCK</text>
+    
+    <!-- Terminal #1 VIN -->
+    <rect x="35" y="80" width="34" height="34" rx="3" fill="#c0392b" stroke="#922b21" stroke-width="1.5"/>
+    <text x="52" y="94" text-anchor="middle" font-size="7" font-weight="bold" fill="white">TERM</text>
+    <text x="52" y="107" text-anchor="middle" font-size="8" font-weight="bold" fill="white">#1</text>
+    <text x="52" y="128" text-anchor="middle" font-size="9" font-weight="bold" fill="#c0392b">VIN</text>
+    
+    <!-- Terminal #2 COM -->
+    <rect x="78" y="80" width="34" height="34" rx="3" fill="#e67e22" stroke="#d35400" stroke-width="1.5"/>
+    <text x="95" y="94" text-anchor="middle" font-size="7" font-weight="bold" fill="white">TERM</text>
+    <text x="95" y="107" text-anchor="middle" font-size="8" font-weight="bold" fill="white">#2</text>
+    <text x="95" y="128" text-anchor="middle" font-size="9" font-weight="bold" fill="#e67e22">COM</text>
+
+    <!-- Terminal #3 Vo (not used for 4-20mA) -->
+    <rect x="130" y="80" width="34" height="34" rx="3" fill="#7f8c8d" stroke="#5d6d7e" stroke-width="1"/>
+    <text x="147" y="94" text-anchor="middle" font-size="7" font-weight="bold" fill="white">TERM</text>
+    <text x="147" y="107" text-anchor="middle" font-size="8" font-weight="bold" fill="white">#3</text>
+    <text x="147" y="128" text-anchor="middle" font-size="8" fill="#7f8c8d">Vo</text>
+    <text x="147" y="140" text-anchor="middle" font-size="7" fill="#95a5a6">(unused)</text>
+
+    <!-- Terminal #4 SHIELD -->
+    <rect x="173" y="80" width="34" height="34" rx="3" fill="#27ae60" stroke="#1e8449" stroke-width="1.5"/>
+    <text x="190" y="94" text-anchor="middle" font-size="7" font-weight="bold" fill="white">TERM</text>
+    <text x="190" y="107" text-anchor="middle" font-size="8" font-weight="bold" fill="white">#4</text>
+    <text x="190" y="128" text-anchor="middle" font-size="9" font-weight="bold" fill="#27ae60">SHIELD</text>
+
+    <!-- ZERO button -->
+    <circle cx="210" cy="18" r="9" fill="#555" stroke="#444" stroke-width="1"/>
+    <text x="210" y="21" text-anchor="middle" font-size="6" fill="#ccc">ZERO</text>
+    
+    <!-- UNIT button -->
+    <circle cx="185" cy="18" r="9" fill="#555" stroke="#444" stroke-width="1"/>
+    <text x="185" y="21" text-anchor="middle" font-size="6" fill="#ccc">UNIT</text>
+  </g>
+
+  <!-- ======================== -->
+  <!-- 24V POWER SUPPLY         -->
+  <!-- ======================== -->
+  <g transform="translate(55, 300)" filter="url(#shadow)">
+    <rect width="150" height="120" rx="6" fill="url(#psuGrad)" stroke="#333" stroke-width="1.5"/>
+    <text x="75" y="22" text-anchor="middle" font-size="12" font-weight="bold" fill="#ddd">24V DC</text>
+    <text x="75" y="38" text-anchor="middle" font-size="12" font-weight="bold" fill="#ddd">POWER SUPPLY</text>
+    
+    <!-- V+ terminal -->
+    <rect x="20" y="55" width="45" height="24" rx="4" fill="#c0392b"/>
+    <text x="42" y="72" text-anchor="middle" font-size="10" font-weight="bold" fill="white">V+</text>
+    <!-- GND terminal -->
+    <rect x="85" y="55" width="45" height="24" rx="4" fill="#2c3e50"/>
+    <text x="107" y="72" text-anchor="middle" font-size="10" font-weight="bold" fill="white">V−</text>
+    
+    <text x="75" y="100" text-anchor="middle" font-size="9" fill="#aaa">10-35V range accepted</text>
+    <text x="75" y="114" text-anchor="middle" font-size="8" fill="#888">24V recommended</text>
+  </g>
+
+  <!-- ======================== -->
+  <!-- OPTA EXT A0602 (RECEIVER) -->
+  <!-- ======================== -->
+  <g transform="translate(680, 120)" filter="url(#shadow)">
+    <rect width="240" height="160" rx="6" fill="url(#a0602Grad)" stroke="#222" stroke-width="2"/>
+    <rect x="10" y="8" width="220" height="22" rx="3" fill="#00979D" opacity="0.9"/>
+    <text x="120" y="24" text-anchor="middle" font-size="10" font-weight="bold" fill="white">OPTA EXT A0602 (RECEIVER)</text>
+    <text x="120" y="45" text-anchor="middle" font-size="9" fill="#aaa">Analog Expansion Module</text>
+    <text x="120" y="60" text-anchor="middle" font-size="8" fill="#888">I2C Address: 0x64</text>
+    
+    <!-- Channel 0 -->
+    <rect x="15" y="72" width="210" height="55" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+    <text x="120" y="90" text-anchor="middle" font-size="9" font-weight="bold" fill="#f39c12">CHANNEL 0 — Current Loop Input</text>
+    
+    <rect x="25" y="98" width="75" height="22" rx="4" fill="#d4a017" stroke="#b8860b" stroke-width="1"/>
+    <text x="62" y="113" text-anchor="middle" font-size="9" font-weight="bold" fill="#333">CH0 (+)</text>
+    
+    <rect x="130" y="98" width="75" height="22" rx="4" fill="#2c3e50"/>
+    <text x="167" y="113" text-anchor="middle" font-size="9" font-weight="bold" fill="white">CH0 (−)</text>
+
+    <text x="120" y="148" text-anchor="middle" font-size="8" fill="#888">12-bit ADC  |  8 channels  |  readCurrentLoopMilliamps()</text>
+  </g>
+
+  <!-- ================================================= -->
+  <!-- WIRING LINES — The Current Loop                   -->
+  <!-- ================================================= -->
+  
+  <!-- STEP 1: PSU V+ → Sensor VIN (Term #1) — RED wire -->
+  <path d="M 97 355 L 97 280 Q 97 270 107 270 L 310 270 Q 320 270 320 260 L 320 238 Q 320 228 330 228 L 345 224 Q 355 220 360 210 L 362 194" 
+        stroke="#c0392b" stroke-width="3.5" fill="none" marker-end="url(#arrowR)"/>
+  <circle cx="210" cy="270" r="14" fill="#c0392b"/>
+  <text x="210" y="274" text-anchor="middle" font-size="11" font-weight="bold" fill="white">1</text>
+  <text x="210" y="255" text-anchor="middle" font-size="9" font-weight="bold" fill="#c0392b">RED wire (+24V)</text>
+  <text x="210" y="293" text-anchor="middle" font-size="8" fill="#c0392b">PSU V+ → TERM #1 (VIN)</text>
+
+  <!-- STEP 2: Sensor COM (Term #2) → A0602 CH0 (+) — ORANGE wire (signal) -->
+  <path d="M 405 224 Q 415 235 425 245 Q 432 252 440 252 L 580 252 Q 590 252 590 242 L 590 232 Q 590 222 600 222 L 680 222" 
+        stroke="#e67e22" stroke-width="3.5" fill="none" marker-end="url(#arrowO)"/>
+  <circle cx="510" cy="252" r="14" fill="#e67e22"/>
+  <text x="510" y="256" text-anchor="middle" font-size="11" font-weight="bold" fill="white">2</text>
+  <text x="510" y="238" text-anchor="middle" font-size="9" font-weight="bold" fill="#e67e22">SIGNAL wire (4-20mA)</text>
+  <text x="510" y="275" text-anchor="middle" font-size="8" fill="#e67e22">TERM #2 (COM) → A0602 CH0 (+)</text>
+
+  <!-- STEP 3: A0602 CH0 (−) → PSU V− — BLACK wire (return) -->
+  <path d="M 885 222 L 910 222 Q 920 222 920 232 L 920 430 Q 920 440 910 440 L 200 440 Q 190 440 190 430 L 190 395 Q 190 385 180 385 L 152 382" 
+        stroke="#2c3e50" stroke-width="3.5" fill="none" marker-end="url(#arrowB)"/>
+  <circle cx="550" cy="440" r="14" fill="#2c3e50"/>
+  <text x="550" y="444" text-anchor="middle" font-size="11" font-weight="bold" fill="white">3</text>
+  <text x="550" y="425" text-anchor="middle" font-size="9" font-weight="bold" fill="#2c3e50">BLACK wire (Return)</text>
+  <text x="550" y="460" text-anchor="middle" font-size="8" fill="#2c3e50">A0602 CH0 (−) → PSU V−</text>
+
+  <!-- Optional: Shield wire -->
+  <path d="M 500 240 L 500 196 Q 500 186 510 186 L 530 186" 
+        stroke="#27ae60" stroke-width="2" fill="none" stroke-dasharray="5,3"/>
+  <rect x="530" y="176" width="90" height="20" rx="4" fill="#eafaf1" stroke="#27ae60" stroke-width="1"/>
+  <text x="575" y="190" text-anchor="middle" font-size="8" fill="#27ae60">TERM #4 SHIELD</text>
+  <text x="575" y="206" text-anchor="middle" font-size="7" fill="#1e8449">→ Cable shield / earth gnd</text>
+
+  <!-- ================================================= -->
+  <!-- Current Flow Annotation Box                       -->
+  <!-- ================================================= -->
+  <rect x="240" y="328" width="380" height="50" rx="6" fill="#f5eef8" stroke="#8e44ad" stroke-width="1.5"/>
+  <text x="430" y="348" text-anchor="middle" font-size="11" font-weight="bold" fill="#8e44ad">Current Loop Path (series circuit):</text>
+  <text x="430" y="366" text-anchor="middle" font-size="9" fill="#6c3483">PSU V+ → VIN (#1) → [sensor] → COM (#2) → A0602 CH+(in) → CH−(out) → PSU V−</text>
+
+  <!-- ================================================= -->
+  <!-- SECTION 2: Terminal Reference                     -->
+  <!-- ================================================= -->
+  <rect x="30" y="485" width="455" height="340" rx="8" fill="white" stroke="#ddd" stroke-width="1"/>
+  <text x="50" y="512" font-size="14" font-weight="bold" fill="#d35400">Dwyer 626 CB Terminal Reference</text>
+
+  <!-- Terminal table -->
+  <g transform="translate(50, 528)">
+    <!-- Header -->
+    <rect x="0" y="0" width="415" height="24" rx="3" fill="#f39c12"/>
+    <text x="35" y="16" text-anchor="middle" font-size="9" font-weight="bold" fill="white">Terminal</text>
+    <text x="110" y="16" text-anchor="middle" font-size="9" font-weight="bold" fill="white">Label</text>
+    <text x="215" y="16" text-anchor="middle" font-size="9" font-weight="bold" fill="white">Function</text>
+    <text x="355" y="16" text-anchor="middle" font-size="9" font-weight="bold" fill="white">Connects To</text>
+
+    <!-- Row 1 — VIN -->
+    <rect x="0" y="26" width="415" height="32" rx="0" fill="#fef9e7"/>
+    <rect x="10" y="30" width="50" height="22" rx="3" fill="#c0392b"/>
+    <text x="35" y="45" text-anchor="middle" font-size="9" font-weight="bold" fill="white">#1</text>
+    <text x="110" y="46" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">VIN</text>
+    <text x="215" y="41" text-anchor="middle" font-size="8" fill="#555">Power input (+)</text>
+    <text x="215" y="53" text-anchor="middle" font-size="8" fill="#555">10-35 VDC</text>
+    <text x="355" y="46" text-anchor="middle" font-size="9" fill="#c0392b" font-weight="bold">PSU V+</text>
+
+    <!-- Row 2 — COM -->
+    <rect x="0" y="60" width="415" height="32" rx="0" fill="#fff8ee"/>
+    <rect x="10" y="64" width="50" height="22" rx="3" fill="#e67e22"/>
+    <text x="35" y="79" text-anchor="middle" font-size="9" font-weight="bold" fill="white">#2</text>
+    <text x="110" y="80" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">COM</text>
+    <text x="215" y="75" text-anchor="middle" font-size="8" fill="#555">Current output</text>
+    <text x="215" y="87" text-anchor="middle" font-size="8" fill="#555">(4-20mA signal)</text>
+    <text x="355" y="80" text-anchor="middle" font-size="9" fill="#e67e22" font-weight="bold">A0602 CH (+)</text>
+
+    <!-- Row 3 — Vo -->
+    <rect x="0" y="94" width="415" height="32" rx="0" fill="#f2f3f4"/>
+    <rect x="10" y="98" width="50" height="22" rx="3" fill="#7f8c8d"/>
+    <text x="35" y="113" text-anchor="middle" font-size="9" font-weight="bold" fill="white">#3</text>
+    <text x="110" y="114" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">Vo</text>
+    <text x="215" y="109" text-anchor="middle" font-size="8" fill="#555">Voltage output</text>
+    <text x="215" y="121" text-anchor="middle" font-size="8" fill="#999">(not used for mA out)</text>
+    <text x="355" y="114" text-anchor="middle" font-size="9" fill="#7f8c8d">N/C (leave open)</text>
+
+    <!-- Row 4 — SHIELD -->
+    <rect x="0" y="128" width="415" height="32" rx="0" fill="#eafaf1"/>
+    <rect x="10" y="132" width="50" height="22" rx="3" fill="#27ae60"/>
+    <text x="35" y="147" text-anchor="middle" font-size="9" font-weight="bold" fill="white">#4</text>
+    <text x="110" y="148" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">SHIELD</text>
+    <text x="215" y="143" text-anchor="middle" font-size="8" fill="#555">Cable shield /</text>
+    <text x="215" y="155" text-anchor="middle" font-size="8" fill="#555">earth ground</text>
+    <text x="355" y="148" text-anchor="middle" font-size="9" fill="#27ae60" font-weight="bold">Earth ground</text>
+  </g>
+
+  <!-- Specs box -->
+  <g transform="translate(50, 705)">
+    <rect x="0" y="0" width="415" height="82" rx="4" fill="#fef5e7" stroke="#f0c27f" stroke-width="1"/>
+    <text x="10" y="18" font-size="10" font-weight="bold" fill="#7d6608">Dwyer 626-06-CB-P1-E5-S1 Specifications</text>
+    <text x="10" y="35" font-size="8" fill="#666">Range: 0-5 PSI   |   Output: 4-20mA (CB option)   |   Supply: 10-35 VDC</text>
+    <text x="10" y="50" font-size="8" fill="#666">Accuracy: ±0.25% BFSL   |   Process: 1/4" NPT male   |   Wetted: 316L SS</text>
+    <text x="10" y="65" font-size="8" fill="#666">Note: Term #3 (Vo) is voltage output — leave unconnected when using CB (current) mode</text>
+    <text x="10" y="78" font-size="7" fill="#888">Ref: Dwyer 626/628 Instruction Manual, CB Option</text>
+  </g>
+
+  <!-- ================================================= -->
+  <!-- SECTION 3: Simplified Schematic                   -->
+  <!-- ================================================= -->
+  <rect x="515" y="485" width="455" height="340" rx="8" fill="white" stroke="#ddd" stroke-width="1"/>
+  <text x="535" y="512" font-size="14" font-weight="bold" fill="#2471a3">Simplified Wiring Schematic</text>
+
+  <g transform="translate(545, 540)">
+    <!-- PSU box -->
+    <rect x="0" y="55" width="80" height="90" rx="4" fill="#555" stroke="#333" stroke-width="1.5"/>
+    <text x="40" y="78" text-anchor="middle" font-size="10" font-weight="bold" fill="#ddd">24V DC</text>
+    <text x="40" y="93" text-anchor="middle" font-size="10" font-weight="bold" fill="#ddd">PSU</text>
+    <!-- V+ dot at top -->
+    <circle cx="40" cy="50" r="6" fill="#c0392b" stroke="#922b21" stroke-width="1"/>
+    <text x="55" y="50" font-size="8" font-weight="bold" fill="#c0392b">V+</text>
+    <!-- V- dot at bottom -->
+    <circle cx="40" cy="150" r="6" fill="#2c3e50" stroke="#1a2530" stroke-width="1"/>
+    <text x="55" y="155" font-size="8" font-weight="bold" fill="#2c3e50">V−</text>
+
+    <!-- Wire: PSU V+ UP and RIGHT to Sensor VIN -->
+    <line x1="40" y1="44" x2="40" y2="15" stroke="#c0392b" stroke-width="3"/>
+    <line x1="40" y1="15" x2="175" y2="15" stroke="#c0392b" stroke-width="3"/>
+    <line x1="175" y1="15" x2="175" y2="42" stroke="#c0392b" stroke-width="3"/>
+    
+    <!-- Sensor box -->
+    <rect x="140" y="42" width="110" height="70" rx="6" fill="#f5f5f5" stroke="#999" stroke-width="2"/>
+    <text x="195" y="60" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">DWYER 626</text>
+    <text x="195" y="75" text-anchor="middle" font-size="8" fill="#666">4-20mA</text>
+    <!-- VIN terminal label -->
+    <text x="160" y="100" font-size="7" font-weight="bold" fill="#c0392b">VIN(#1)</text>
+    <!-- COM terminal label -->
+    <text x="215" y="100" font-size="7" font-weight="bold" fill="#e67e22">COM(#2)</text>
+    <!-- Terminal dots -->
+    <circle cx="175" cy="112" r="5" fill="#c0392b"/>
+    <circle cx="225" cy="112" r="5" fill="#e67e22"/>
+
+    <!-- Wire: Sensor COM down and right to A0602 CH0+ -->
+    <line x1="225" y1="117" x2="225" y2="150" stroke="#e67e22" stroke-width="3"/>
+    <line x1="225" y1="150" x2="340" y2="150" stroke="#e67e22" stroke-width="3"/>
+    <line x1="340" y1="150" x2="340" y2="160" stroke="#e67e22" stroke-width="3"/>
+    
+    <!-- A0602 box -->
+    <rect x="300" y="160" width="100" height="50" rx="6" fill="#3a3a3a" stroke="#222" stroke-width="2"/>
+    <rect x="305" y="163" width="90" height="16" rx="2" fill="#00979D" opacity="0.8"/>
+    <text x="350" y="175" text-anchor="middle" font-size="7" font-weight="bold" fill="white">A0602</text>
+    <text x="350" y="196" text-anchor="middle" font-size="8" fill="#aaa">CH0</text>
+    <!-- + terminal dot -->
+    <circle cx="330" cy="157" r="5" fill="#d4a017"/>
+    <text x="323" y="152" font-size="7" fill="#d4a017">+</text>
+    <!-- - terminal dot -->
+    <circle cx="370" cy="214" r="5" fill="#2c3e50"/>
+    <text x="363" y="226" font-size="7" fill="#2c3e50">−</text>
+
+    <!-- Wire: A0602 CH0- down and left back to PSU V- -->
+    <line x1="370" y1="219" x2="370" y2="235" stroke="#2c3e50" stroke-width="3"/>
+    <line x1="370" y1="235" x2="40" y2="235" stroke="#2c3e50" stroke-width="3"/>
+    <line x1="40" y1="235" x2="40" y2="156" stroke="#2c3e50" stroke-width="3"/>
+
+    <!-- Current flow arrows (purple) -->
+    <path d="M 100 10 L 120 10" stroke="#8e44ad" stroke-width="1.5" fill="none" marker-end="url(#arrowCur)"/>
+    <path d="M 260 155 L 290 155" stroke="#8e44ad" stroke-width="1.5" fill="none" marker-end="url(#arrowCur)"/>
+    <path d="M 200 240 L 170 240" stroke="#8e44ad" stroke-width="1.5" fill="none" marker-end="url(#arrowCur)"/>
+    
+    <!-- Current flow label -->
+    <text x="200" y="260" text-anchor="middle" font-size="9" font-weight="bold" fill="#8e44ad">Current flows clockwise: 4-20mA</text>
+  </g>
+
+  <!-- Important notes -->
+  <g transform="translate(548, 810)">
+    <text x="0" y="0" font-size="8" fill="#888">• Vo (Term #3) is for voltage output — leave disconnected for 4-20mA mode</text>
+    <text x="0" y="14" font-size="8" fill="#888">• Use shielded cable for runs > 10 ft; connect shield to Term #4</text>
+  </g>
+
+  <!-- ================================================= -->
+  <!-- Footer                                            -->
+  <!-- ================================================= -->
+  <rect x="30" y="836" width="940" height="2" rx="1" fill="#ddd"/>
+  <text x="500" y="848" text-anchor="middle" font-size="8" fill="#888">TankAlarm 112025 | Dwyer 626 CB 4-20mA Wiring Detail | Ref: Dwyer 626/628 CB Option Manual | Rev 1.1 Feb 2026</text>
+</svg>
