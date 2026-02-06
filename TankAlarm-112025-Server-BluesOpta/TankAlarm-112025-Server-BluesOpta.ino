@@ -570,6 +570,13 @@ static bool gConfigDirty = false;
 static bool gPendingFtpBackup = false;
 static bool gPaused = false;  // When true, pause Notecard processing for maintenance
 
+// Rate limiting for authentication attempts
+static uint8_t gAuthFailureCount = 0;
+static unsigned long gLastAuthFailureTime = 0;
+static unsigned long gNextAllowedAuthTime = 0;  // Non-blocking rate limit
+static const unsigned long AUTH_LOCKOUT_DURATION = 30000;  // 30 seconds after max failures
+static const uint8_t AUTH_MAX_FAILURES = 5;  // Max failures before lockout
+
 static String gContactsCache;
 static bool gContactsCacheValid = false;
 
@@ -641,6 +648,13 @@ static TankRecord *findTankByHash(const char *clientUid, uint8_t tankNumber) {
     
     if (recordIdx == TANK_HASH_EMPTY) {
       return nullptr;  // Not found
+    }
+    
+    // Validate recordIdx is within bounds before accessing array
+    if (recordIdx >= MAX_TANK_RECORDS) {
+      Serial.print(F("ERROR: Invalid hash table entry: "));
+      Serial.println(recordIdx);
+      return nullptr;  // Corrupted hash table entry
     }
     
     TankRecord &rec = gTankRecords[recordIdx];
@@ -810,8 +824,44 @@ static bool pinMatches(const char *pin) {
   if (!pin || gConfig.configPin[0] == '\0') {
     return false;
   }
-  return strcmp(pin, gConfig.configPin) == 0;
+  
+  // Ensure both supplied and configured PINs are valid 4-digit PINs
+  if (!isValidPin(pin) || !isValidPin(gConfig.configPin)) {
+    return false;
+  }
+  
+  // Constant-time 4-byte comparison to prevent timing attacks
+  // The admin PIN is always exactly 4 digits when valid.
+  volatile uint8_t diff = 0;
+  for (size_t i = 0; i < 4; ++i) {
+    diff |= (uint8_t)(pin[i] ^ gConfig.configPin[i]);
+  }
+  
+  return (diff == 0);
 }
+
+// Validate that a client UID will fit in our buffers without truncation
+// Returns false if UID is too long, logs a warning
+static bool isValidClientUid(const char *clientUid) {
+  if (!clientUid) {
+    return false;
+  }
+  
+  // Most clientUid buffers in the codebase are 48 bytes (47 chars + null)
+  const size_t MAX_CLIENT_UID_LEN = 47;
+  
+  size_t len = strlen(clientUid);
+  if (len > MAX_CLIENT_UID_LEN) {
+    Serial.print(F("WARNING: Client UID too long ("));
+    Serial.print(len);
+    Serial.print(F(" chars): "));
+    Serial.println(clientUid);
+    return false;
+  }
+  
+  return true;
+}
+
 
 // Forward declaration for respondStatus (defined later in the web server section)
 static void respondStatus(EthernetClient &client, int status, const char *message);
@@ -821,16 +871,82 @@ static void respondStatus(EthernetClient &client, int status, const String &mess
 static bool performFtpBackup(char *errorOut = nullptr, size_t errorSize = 0);
 static bool performFtpRestore(char *errorOut = nullptr, size_t errorSize = 0);
 
+// Check if authentication is currently rate-limited (non-blocking)
+// Returns true if rate-limited, and responds with 429 status
+static bool isAuthRateLimited(EthernetClient &client) {
+  unsigned long now = millis();
+  
+  // Check if we're in an active rate limit window
+  if (now < gNextAllowedAuthTime) {
+    unsigned long remaining = (gNextAllowedAuthTime - now) / 1000;
+    String msg = "Too many failed attempts. Try again in ";
+    msg += String(remaining);
+    msg += " seconds.";
+    respondStatus(client, 429, msg);
+    return true;
+  }
+  
+  // Check if we're in lockout period after max failures
+  if (gAuthFailureCount >= AUTH_MAX_FAILURES) {
+    unsigned long timeSinceFail = now - gLastAuthFailureTime;
+    if (timeSinceFail < AUTH_LOCKOUT_DURATION) {
+      unsigned long remaining = (AUTH_LOCKOUT_DURATION - timeSinceFail) / 1000;
+      String msg = "Too many failed attempts. Try again in ";
+      msg += String(remaining);
+      msg += " seconds.";
+      respondStatus(client, 429, msg);
+      return true;
+    } else {
+      // Lockout period expired, reset counter
+      gAuthFailureCount = 0;
+      gNextAllowedAuthTime = 0;
+    }
+  }
+  
+  return false;
+}
+
+// Record a failed authentication attempt and calculate next allowed time (non-blocking)
+static void recordAuthFailure() {
+  unsigned long now = millis();
+  gAuthFailureCount++;
+  gLastAuthFailureTime = now;
+  
+  // Calculate exponential backoff: 1s, 2s, 4s, 8s, 16s
+  if (gAuthFailureCount > 0 && gAuthFailureCount <= 5) {
+    unsigned long delayMs = 1000UL << (gAuthFailureCount - 1);  // 2^(n-1) seconds
+    gNextAllowedAuthTime = now + delayMs;
+  } else if (gAuthFailureCount > AUTH_MAX_FAILURES) {
+    // Enter full lockout period
+    gNextAllowedAuthTime = now + AUTH_LOCKOUT_DURATION;
+  }
+}
+
+// Reset auth failure tracking on successful authentication
+static void resetAuthFailures() {
+  gAuthFailureCount = 0;
+  gNextAllowedAuthTime = 0;
+}
+
 // Require that a valid admin PIN is configured and provided; respond with 403/400 on failure.
 static bool requireValidPin(EthernetClient &client, const char *pinValue) {
+  // Check rate limiting first (non-blocking)
+  if (isAuthRateLimited(client)) {
+    return false;
+  }
+  
   if (!isValidPin(gConfig.configPin)) {
     respondStatus(client, 403, "Configure admin PIN before making changes");
     return false;
   }
+  
   if (!pinMatches(pinValue)) {
+    recordAuthFailure();  // Track failed attempt
     respondStatus(client, 403, "Invalid PIN");
     return false;
   }
+  
+  resetAuthFailures();  // Successful auth, reset tracking
   return true;
 }
 
@@ -2600,7 +2716,8 @@ static bool ftpReadResponse(EthernetClient &client, int &code, char *message, si
             multilineCode = thisCode;
             // Append to message if space allows
             size_t currentLen = strlen(message);
-            if (currentLen + linePos + 2 < maxLen) {
+            size_t needed = currentLen + linePos + 2;  // +1 for \n, +1 for \0
+            if (needed <= maxLen) {
               strcat(message, line);
               strcat(message, "\n");
             }
@@ -2608,7 +2725,8 @@ static bool ftpReadResponse(EthernetClient &client, int &code, char *message, si
             code = thisCode;
             // Append last line
             size_t currentLen = strlen(message);
-            if (currentLen + linePos + 1 < maxLen) {
+            size_t needed = currentLen + linePos + 1;  // +1 for \0
+            if (needed <= maxLen) {
               strcat(message, line);
             }
             return true;
@@ -4289,6 +4407,11 @@ static void serveFile(EthernetClient &client, const char* htmlContent) {
 }
 
 static void handleLoginPost(EthernetClient &client, const String &body) {
+  // Check rate limiting first (non-blocking)
+  if (isAuthRateLimited(client)) {
+    return;
+  }
+  
   StaticJsonDocument<128> doc;
   DeserializationError error = deserializeJson(doc, body);
 
@@ -4300,17 +4423,22 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
   const char* pin = doc["pin"];
   bool valid = false;
 
-  if (pin && gConfig.configPin[0] != '\0' && strcmp(pin, gConfig.configPin) == 0) {
+  if (pin && gConfig.configPin[0] != '\0' && pinMatches(pin)) {
      valid = true;
   }
 
   if (valid) {
+    // Successful login - reset failure counter
+    resetAuthFailures();
     client.println(F("HTTP/1.1 200 OK"));
     client.println(F("Content-Type: application/json"));
     client.println(F("Connection: close"));
     client.println();
     client.println(F("{\"success\":true}"));
   } else {
+    // Failed login - record failure (non-blocking)
+    recordAuthFailure();
+    
     client.println(F("HTTP/1.1 401 Unauthorized"));
     client.println(F("Content-Type: application/json"));
     client.println(F("Connection: close"));
@@ -6147,6 +6275,12 @@ static void sendUnloadSms(const UnloadLogEntry &entry) {
 }
 
 static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber) {
+  // Validate UID length to prevent silent truncation issues
+  if (!isValidClientUid(clientUid)) {
+    Serial.println(F("ERROR: Invalid client UID, skipping tank record"));
+    return nullptr;
+  }
+  
   // Use O(1) hash lookup instead of O(n) linear search
   TankRecord *existing = findTankByHash(clientUid, tankNumber);
   if (existing) {
