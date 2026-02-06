@@ -5933,6 +5933,10 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   // Digital sensor (float switch) alarm types
   bool isDigitalAlarm = (strcmp(type, "triggered") == 0) ||
                         (strcmp(type, "not_triggered") == 0);
+  // System-level alarm types (solar charger, battery, power conservation)
+  bool isSystemAlarm = (strcmp(type, "solar") == 0) ||
+                       (strcmp(type, "battery") == 0) ||
+                       (strcmp(type, "power") == 0);
 
   if (strcmp(type, "clear") == 0 || isRecovery) {
     rec->alarmActive = false;
@@ -5945,39 +5949,62 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   } else {
     rec->alarmActive = true;
     strlcpy(rec->alarmType, type, sizeof(rec->alarmType));
-    // Log new alarm event
-    const char *siteName = doc["s"] | doc["site"] | "";
-    bool isHigh = (strcmp(type, "high") == 0 || strcmp(type, "triggered") == 0);
-    logAlarmEvent(clientUid, siteName, tankNumber, level, isHigh);
+    // Log new alarm event (skip for system alarms — they don't have tank levels)
+    if (!isSystemAlarm) {
+      const char *siteName = doc["s"] | doc["site"] | "";
+      bool isHigh = (strcmp(type, "high") == 0 || strcmp(type, "triggered") == 0);
+      logAlarmEvent(clientUid, siteName, tankNumber, level, isHigh);
+    }
   }
-  rec->levelInches = level;
+  if (!isSystemAlarm) {
+    rec->levelInches = level;
+  }
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
 
   // Check rate limit before sending SMS
-  bool smsEnabled = true;
+  bool smsEnabled = false;  // Default off — only send SMS when client explicitly requests (se=true)
   if (doc["se"]) {
     smsEnabled = doc["se"].as<bool>();
   } else if (doc["smsEnabled"]) {
     smsEnabled = doc["smsEnabled"].as<bool>();
   }
-  bool smsAllowedByServer = true;
+  // For tank-level alarms (high/low/clear/digital), SMS is controlled by server policy
+  bool smsAllowedByServer = false;
   if (strcmp(type, "high") == 0) {
+    smsEnabled = true;  // Tank alarms always eligible
     smsAllowedByServer = gConfig.smsOnHigh;
   } else if (strcmp(type, "low") == 0) {
+    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnLow;
   } else if (strcmp(type, "clear") == 0) {
+    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnClear;
   } else if (isDigitalAlarm) {
-    // Digital sensor alarms are treated like high alarms for SMS purposes
+    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnHigh;
+  } else if (isSystemAlarm && doc["se"]) {
+    // System alarms: SMS only if client flagged as critical (se=true)
+    smsAllowedByServer = true;
   }
 
   if (!isDiagnostic && smsEnabled && smsAllowedByServer && checkSmsRateLimit(rec)) {
     char message[160];
-    // Format message differently for digital sensors
     if (isDigitalAlarm) {
       const char *stateDesc = (strcmp(type, "triggered") == 0) ? "ACTIVATED" : "NOT ACTIVATED";
       snprintf(message, sizeof(message), "%s #%d Float Switch %s", rec->site, rec->tankNumber, stateDesc);
+    } else if (strcmp(type, "solar") == 0) {
+      const char *alert = doc["alert"] | "unknown";
+      float bv = doc["bv"] | 0.0f;
+      snprintf(message, sizeof(message), "%s Solar: %s (%.1fV)", rec->site, alert, bv);
+    } else if (strcmp(type, "battery") == 0) {
+      const char *alert = doc["alert"] | "unknown";
+      float v = doc["v"] | 0.0f;
+      snprintf(message, sizeof(message), "%s Battery: %s (%.1fV)", rec->site, alert, v);
+    } else if (strcmp(type, "power") == 0) {
+      const char *from = doc["from"] | "?";
+      const char *to = doc["to"] | "?";
+      float v = doc["v"] | 0.0f;
+      snprintf(message, sizeof(message), "%s Power: %s->%s (%.1fV)", rec->site, from, to, v);
     } else {
       snprintf(message, sizeof(message), "%s #%d %s alarm %.1f in", rec->site, rec->tankNumber, rec->alarmType, level);
     }

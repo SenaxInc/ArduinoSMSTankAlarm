@@ -252,6 +252,88 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define DEFAULT_RELAY_MOMENTARY_SECONDS 1800  // 30 minutes
 #endif
 
+// ============================================================================
+// Power Conservation State Machine
+// Progressive duty-cycle reduction based on battery voltage.
+// Uses hysteresis thresholds to prevent oscillation during charge/discharge.
+// Voltage source: best of SunSaver MPPT (Modbus) and Notecard card.voltage.
+// ============================================================================
+enum PowerState : uint8_t {
+  POWER_STATE_NORMAL            = 0,  // Full operation
+  POWER_STATE_ECO               = 1,  // Reduced polling, longer sleep
+  POWER_STATE_LOW_POWER         = 2,  // Minimal polling, relays frozen
+  POWER_STATE_CRITICAL_HIBERNATE = 3  // Essential monitoring only, relays OFF
+};
+
+// --- Entry thresholds (voltage falling) ---
+// We enter a worse state when battery drops BELOW these values.
+#ifndef POWER_ECO_ENTER_VOLTAGE
+#define POWER_ECO_ENTER_VOLTAGE            12.0f   // Enter ECO below 12.0V (~25% SOC lead-acid)
+#endif
+#ifndef POWER_LOW_ENTER_VOLTAGE
+#define POWER_LOW_ENTER_VOLTAGE            11.8f   // Enter LOW_POWER below 11.8V (~10% SOC)
+#endif
+#ifndef POWER_CRITICAL_ENTER_VOLTAGE
+#define POWER_CRITICAL_ENTER_VOLTAGE       11.5f   // Enter CRITICAL below 11.5V (risk of damage)
+#endif
+
+// --- Exit thresholds (voltage rising, with hysteresis) ---
+// We return to a better state when battery rises ABOVE these values.
+// The gap between enter and exit prevents rapid state toggling.
+#ifndef POWER_CRITICAL_EXIT_VOLTAGE
+#define POWER_CRITICAL_EXIT_VOLTAGE        12.2f   // Exit CRITICAL above 12.2V (+0.7V hysteresis)
+#endif
+#ifndef POWER_LOW_EXIT_VOLTAGE
+#define POWER_LOW_EXIT_VOLTAGE             12.3f   // Exit LOW_POWER above 12.3V (+0.5V hysteresis)
+#endif
+#ifndef POWER_ECO_EXIT_VOLTAGE
+#define POWER_ECO_EXIT_VOLTAGE             12.4f   // Exit ECO above 12.4V (+0.4V hysteresis)
+#endif
+
+// --- Timing for each power state ---
+// Loop sleep duration (rtos::ThisThread::sleep_for)
+#ifndef POWER_NORMAL_SLEEP_MS
+#define POWER_NORMAL_SLEEP_MS              100       // 100ms (existing default)
+#endif
+#ifndef POWER_ECO_SLEEP_MS
+#define POWER_ECO_SLEEP_MS                 5000      // 5 seconds
+#endif
+#ifndef POWER_LOW_SLEEP_MS
+#define POWER_LOW_SLEEP_MS                 30000     // 30 seconds
+#endif
+#ifndef POWER_CRITICAL_SLEEP_MS
+#define POWER_CRITICAL_SLEEP_MS            300000    // 5 minutes
+#endif
+
+// Outbound sync multipliers (applied to base outbound interval)
+#ifndef POWER_ECO_OUTBOUND_MULTIPLIER
+#define POWER_ECO_OUTBOUND_MULTIPLIER      2    // 2x slower (e.g., 12h instead of 6h)
+#endif
+#ifndef POWER_LOW_OUTBOUND_MULTIPLIER
+#define POWER_LOW_OUTBOUND_MULTIPLIER      4    // 4x slower (e.g., 24h instead of 6h)
+#endif
+
+// Inbound check multipliers
+#ifndef POWER_ECO_INBOUND_MULTIPLIER
+#define POWER_ECO_INBOUND_MULTIPLIER       4    // 4x slower
+#endif
+#ifndef POWER_LOW_INBOUND_MULTIPLIER
+#define POWER_LOW_INBOUND_MULTIPLIER       12   // 12x slower
+#endif
+
+// Sample interval multiplier
+#ifndef POWER_ECO_SAMPLE_MULTIPLIER
+#define POWER_ECO_SAMPLE_MULTIPLIER        2    // 2x slower
+#endif
+#ifndef POWER_LOW_SAMPLE_MULTIPLIER
+#define POWER_LOW_SAMPLE_MULTIPLIER        4    // 4x slower
+#endif
+
+// Minimum consecutive readings before changing power state (debounce)
+#ifndef POWER_STATE_DEBOUNCE_COUNT
+#define POWER_STATE_DEBOUNCE_COUNT         3
+#endif
+
 // Digital sensor (float switch) constants
 #ifndef DIGITAL_SWITCH_THRESHOLD
 #define DIGITAL_SWITCH_THRESHOLD 0.5f  // Threshold to determine activated vs not-activated state
@@ -499,6 +581,14 @@ static unsigned long gLastBatteryAlarmMillis = 0;
 static BatteryAlertType gLastBatteryAlert = BATTERY_ALERT_NONE;
 static float gLastBatteryAlertVoltage = 0.0f;
 
+// Power conservation state machine
+static PowerState gPowerState = POWER_STATE_NORMAL;
+static PowerState gPreviousPowerState = POWER_STATE_NORMAL;
+static float gEffectiveBatteryVoltage = 0.0f;  // Best voltage from either source
+static uint8_t gPowerStateDebounce = 0;        // Consecutive readings at proposed new state
+static unsigned long gPowerStateChangeMillis = 0; // When the current power state was entered
+static unsigned long gLastPowerStateLogMillis = 0; // Rate-limit power state log messages
+
 static Notecard notecard;
 static char gDeviceUID[48] = {0};
 static unsigned long gLastTelemetryMillis = 0;
@@ -676,6 +766,11 @@ static void checkBatteryAlerts(const BatteryData &data, const BatteryConfig &cfg
 static void sendBatteryAlarm(BatteryAlertType alertType, float voltage);
 static bool appendBatteryDataToDaily(JsonDocument &doc);
 static void configureBatteryMonitoring(const BatteryConfig &cfg);
+// Power conservation
+static void updatePowerState();
+static void sendPowerStateChange(PowerState oldState, PowerState newState, float voltage);
+static const char* getPowerStateDescription(PowerState state);
+static unsigned long getPowerStateSleepMs(PowerState state);
 
 void setup() {
   Serial.begin(115200);
@@ -828,48 +923,75 @@ void loop() {
     }
   }
 
-  if (now - gLastTelemetryMillis >= (unsigned long)gConfig.sampleSeconds * 1000UL) {
-    gLastTelemetryMillis = now;
-    sampleTanks();
+  // ---- Power-state-aware sample interval ----
+  // In ECO/LOW_POWER states, sample less frequently to conserve energy
+  unsigned long sampleInterval = (unsigned long)gConfig.sampleSeconds * 1000UL;
+  if (gPowerState == POWER_STATE_ECO) {
+    sampleInterval *= POWER_ECO_SAMPLE_MULTIPLIER;
+  } else if (gPowerState == POWER_STATE_LOW_POWER) {
+    sampleInterval *= POWER_LOW_SAMPLE_MULTIPLIER;
+  }
+  // In CRITICAL_HIBERNATE, skip sampling entirely
+  if (gPowerState != POWER_STATE_CRITICAL_HIBERNATE) {
+    if (now - gLastTelemetryMillis >= sampleInterval) {
+      gLastTelemetryMillis = now;
+      sampleTanks();
+    }
   }
 
-  // Determine polling interval based on power source
-  unsigned long inboundInterval = gConfig.solarPowered ? 
+  // ---- Power-state-aware polling intervals ----
+  // Determine base polling interval based on power source
+  unsigned long baseInboundInterval = gConfig.solarPowered ? 
       (unsigned long)SOLAR_INBOUND_INTERVAL_MINUTES * 60000UL : 
       600000UL; // 10 minutes for grid power
 
-  if (now - gLastConfigCheckMillis >= inboundInterval) {
-    gLastConfigCheckMillis = now;
-    pollForConfigUpdates();
+  // Apply power-state multiplier
+  unsigned long inboundInterval = baseInboundInterval;
+  if (gPowerState == POWER_STATE_ECO) {
+    inboundInterval *= POWER_ECO_INBOUND_MULTIPLIER;
+  } else if (gPowerState == POWER_STATE_LOW_POWER) {
+    inboundInterval *= POWER_LOW_INBOUND_MULTIPLIER;
+  }
+  // In CRITICAL_HIBERNATE, skip all inbound polling
+
+  if (gPowerState != POWER_STATE_CRITICAL_HIBERNATE) {
+    if (now - gLastConfigCheckMillis >= inboundInterval) {
+      gLastConfigCheckMillis = now;
+      pollForConfigUpdates();
+    }
+
+    if (now - gLastRelayCheckMillis >= inboundInterval) {
+      gLastRelayCheckMillis = now;
+      pollForRelayCommands();
+    }
+
+    if (now - gLastSerialRequestCheckMillis >= inboundInterval) {
+      gLastSerialRequestCheckMillis = now;
+      pollForSerialRequests();
+    }
+
+    if (now - gLastLocationRequestCheckMillis >= inboundInterval) {
+      gLastLocationRequestCheckMillis = now;
+      pollForLocationRequests();
+    }
   }
 
-  if (now - gLastRelayCheckMillis >= inboundInterval) {
-    gLastRelayCheckMillis = now;
-    pollForRelayCommands();
+  // Check for momentary relay timeout (30 minutes) — skip in CRITICAL (relays are off)
+  if (gPowerState != POWER_STATE_CRITICAL_HIBERNATE) {
+    checkRelayMomentaryTimeout(now);
   }
-
-  if (now - gLastSerialRequestCheckMillis >= inboundInterval) {
-    gLastSerialRequestCheckMillis = now;
-    pollForSerialRequests();
-  }
-
-  if (now - gLastLocationRequestCheckMillis >= inboundInterval) {
-    gLastLocationRequestCheckMillis = now;
-    pollForLocationRequests();
-  }
-
-  // Check for momentary relay timeout (30 minutes)
-  checkRelayMomentaryTimeout(now);
   
   // Check for physical clear button press
   checkClearButton(now);
   
   // Poll solar charger for battery health data (SunSaver MPPT via RS-485)
+  // In CRITICAL_HIBERNATE we still poll the solar charger (if enabled) to detect
+  // battery recovery, but at reduced frequency (controlled by sleep duration).
   if (gSolarManager.isEnabled()) {
     if (gSolarManager.poll(now)) {
-      // New data available - check for alerts
+      // New data available - check for alerts (suppress alarm sending in CRITICAL to save power)
       SolarAlertType alert = gSolarManager.checkAlerts();
-      if (alert != SOLAR_ALERT_NONE && gNotecardAvailable) {
+      if (alert != SOLAR_ALERT_NONE && gNotecardAvailable && gPowerState != POWER_STATE_CRITICAL_HIBERNATE) {
         // Only send alert if different from last, or enough time has passed
         if (alert != gLastSolarAlert || 
             (now - gLastSolarAlarmMillis >= SOLAR_ALARM_MIN_INTERVAL_MS)) {
@@ -884,44 +1006,77 @@ void loop() {
   }
   
   // Poll battery voltage via Notecard (when wired directly to battery)
+  // Always poll even in CRITICAL — needed to detect battery recovery.
   if (gConfig.batteryMonitor.enabled && gNotecardAvailable) {
     unsigned long batteryPollInterval = (unsigned long)gConfig.batteryMonitor.pollIntervalSec * 1000UL;
+    // In reduced power states, poll less often (but still poll for recovery detection)
+    if (gPowerState >= POWER_STATE_LOW_POWER) {
+      batteryPollInterval *= 2;  // 2x slower when conserving
+    }
     if (now - gLastBatteryPollMillis >= batteryPollInterval) {
       gLastBatteryPollMillis = now;
       if (pollBatteryVoltage(gBatteryData, gConfig.batteryMonitor)) {
-        checkBatteryAlerts(gBatteryData, gConfig.batteryMonitor);
+        // Suppress normal battery alert processing in CRITICAL to avoid redundant alarms
+        if (gPowerState != POWER_STATE_CRITICAL_HIBERNATE) {
+          checkBatteryAlerts(gBatteryData, gConfig.batteryMonitor);
+        }
       }
     }
   }
   
+  // ---- Update power conservation state (after polling battery sources) ----
+  updatePowerState();
+  
   // Periodic firmware update check via Notecard DFU
-  if (now - gLastDfuCheckMillis > DFU_CHECK_INTERVAL_MS) {
-    gLastDfuCheckMillis = now;
-    if (!gDfuInProgress && gNotecardAvailable) {
-      checkForFirmwareUpdate();
-      // Auto-enable DFU if update is available (can be disabled for manual control)
-      // Comment out next 3 lines to require manual trigger
-      if (gDfuUpdateAvailable) {
-        enableDfuMode();
+  // Skip in LOW_POWER and CRITICAL — firmware updates are not urgent
+  if (gPowerState <= POWER_STATE_ECO) {
+    if (now - gLastDfuCheckMillis > DFU_CHECK_INTERVAL_MS) {
+      gLastDfuCheckMillis = now;
+      if (!gDfuInProgress && gNotecardAvailable) {
+        checkForFirmwareUpdate();
+        // Auto-enable DFU if update is available (can be disabled for manual control)
+        // Comment out next 3 lines to require manual trigger
+        if (gDfuUpdateAvailable) {
+          enableDfuMode();
+        }
       }
     }
   }
 
   persistConfigIfDirty();
-  ensureTimeSync();
-  updateDailyScheduleIfNeeded();
+  
+  // Skip time sync and daily reports in CRITICAL_HIBERNATE
+  if (gPowerState != POWER_STATE_CRITICAL_HIBERNATE) {
+    ensureTimeSync();
+    updateDailyScheduleIfNeeded();
 
-  if (gNextDailyReportEpoch > 0.0 && currentEpoch() >= gNextDailyReportEpoch) {
-    sendDailyReport();
-    scheduleNextDailyReport();
+    if (gNextDailyReportEpoch > 0.0 && currentEpoch() >= gNextDailyReportEpoch) {
+      sendDailyReport();
+      scheduleNextDailyReport();
+    }
   }
 
   // Sleep to reduce power consumption between loop iterations
-  // Use Mbed OS thread sleep for power efficiency - allows CPU to enter low-power states during sleep periods
+  // Duration is controlled by the power conservation state machine.
+  // Higher states = longer sleep = lower power draw.
+  // For sleep durations longer than the watchdog timeout, we sleep in chunks
+  // and kick the watchdog between each chunk to prevent a hardware reset.
+  unsigned long sleepMs = getPowerStateSleepMs(gPowerState);
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    rtos::ThisThread::sleep_for(std::chrono::milliseconds(100));  // Thread sleep for 100ms - enables power saving
+    // Watchdog timeout is WATCHDOG_TIMEOUT_SECONDS (default 30s).
+    // Sleep in chunks of at most half the watchdog timeout to stay safe.
+    const unsigned long maxChunk = (WATCHDOG_TIMEOUT_SECONDS * 1000UL) / 2;  // 15s default
+    unsigned long remaining = sleepMs;
+    while (remaining > 0) {
+      unsigned long chunk = (remaining > maxChunk) ? maxChunk : remaining;
+      rtos::ThisThread::sleep_for(std::chrono::milliseconds(chunk));
+      #ifdef WATCHDOG_AVAILABLE
+        mbedWatchdog.kick();
+      #endif
+      remaining -= chunk;
+    }
   #else
-    delay(100);  // Fallback for non-Mbed platforms
+    delay(sleepMs);
   #endif
 }
 
@@ -2464,13 +2619,12 @@ static bool validateSensorReading(uint8_t idx, float reading) {
         // Send sensor failure alert with rate limiting
         if (checkAlarmRateLimit(idx, "sensor-fault")) {
           JsonDocument doc;
-          doc["client"] = gDeviceUID;
-          doc["site"] = gConfig.siteName;
-          doc["label"] = cfg.name;
-          doc["tank"] = cfg.monitorNumber;
-          doc["type"] = "sensor-fault";
-          doc["reading"] = reading;
-          doc["time"] = currentEpoch();
+          doc["c"] = gDeviceUID;
+          doc["s"] = gConfig.siteName;
+          doc["k"] = cfg.monitorNumber;
+          doc["y"] = "sensor-fault";
+          doc["rd"] = reading;
+          doc["t"] = currentEpoch();
           publishNote(ALARM_FILE, doc, true);
         }
       }
@@ -2489,13 +2643,12 @@ static bool validateSensorReading(uint8_t idx, float reading) {
         // Send stuck sensor alert with rate limiting
         if (checkAlarmRateLimit(idx, "sensor-stuck")) {
           JsonDocument doc;
-          doc["client"] = gDeviceUID;
-          doc["site"] = gConfig.siteName;
-          doc["label"] = cfg.name;
-          doc["tank"] = cfg.monitorNumber;
-          doc["type"] = "sensor-stuck";
-          doc["reading"] = reading;
-          doc["time"] = currentEpoch();
+          doc["c"] = gDeviceUID;
+          doc["s"] = gConfig.siteName;
+          doc["k"] = cfg.monitorNumber;
+          doc["y"] = "sensor-stuck";
+          doc["rd"] = reading;
+          doc["t"] = currentEpoch();
           publishNote(ALARM_FILE, doc, true);
         }
       }
@@ -2513,13 +2666,12 @@ static bool validateSensorReading(uint8_t idx, float reading) {
     Serial.println(cfg.name);
     // Send recovery notification (no rate limit on recovery)
     JsonDocument doc;
-    doc["client"] = gDeviceUID;
-    doc["site"] = gConfig.siteName;
-    doc["label"] = cfg.name;
-    doc["tank"] = cfg.monitorNumber;
-    doc["type"] = "sensor-recovered";
-    doc["reading"] = reading;
-    doc["time"] = currentEpoch();
+    doc["c"] = gDeviceUID;
+    doc["s"] = gConfig.siteName;
+    doc["k"] = cfg.monitorNumber;
+    doc["y"] = "sensor-recovered";
+    doc["rd"] = reading;
+    doc["t"] = currentEpoch();
     publishNote(ALARM_FILE, doc, true);
   }
   state.lastValidReading = reading;
@@ -3144,52 +3296,32 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   doc["c"] = gDeviceUID;
   doc["s"] = gConfig.siteName;
   doc["k"] = cfg.monitorNumber;
-  doc["i"] = String(cfg.id);
+  // Note: object type (ot), measurement unit (mu), and monitor id (i) are
+  // omitted from telemetry to reduce payload — server already knows these from config/daily.
   
-  // Include object type (what is being monitored)
-  switch (cfg.objectType) {
-    case OBJECT_TANK:   doc["ot"] = "tank";   break;
-    case OBJECT_ENGINE: doc["ot"] = "engine"; break;
-    case OBJECT_PUMP:   doc["ot"] = "pump";   break;
-    case OBJECT_GAS:    doc["ot"] = "gas";    break;
-    case OBJECT_FLOW:   doc["ot"] = "flow";   break;
-    default:            doc["ot"] = "custom"; break;
-  }
-  
-  // Include measurement unit if configured
-  if (strlen(cfg.measurementUnit) > 0) {
-    doc["mu"] = cfg.measurementUnit;
-  }
-  
-  // Include sensor interface type and type-specific data in telemetry
-  // For current loop and analog sensors, send raw sensor data - server converts using config
+  // Include sensor interface type and type-specific raw data only
+  // Server converts to display units using its stored config
   switch (cfg.sensorInterface) {
     case SENSOR_DIGITAL:
       doc["st"] = "digital";
-      {
-        bool activated = (state.currentInches > DIGITAL_SWITCH_THRESHOLD);
-        doc["act"] = activated;  // Boolean state: true = switch activated
-        doc["fl"] = state.currentInches;  // 1.0 or 0.0 (float switch state)
-      }
+      doc["fl"] = state.currentInches;  // 1.0 or 0.0 (float switch state)
       break;
     case SENSOR_CURRENT_LOOP:
       doc["st"] = "currentLoop";
-      // Send raw mA only - server converts to display units using config
       if (state.currentSensorMa >= 4.0f) {
         doc["ma"] = roundTo(state.currentSensorMa, 2);
       }
       break;
     case SENSOR_ANALOG:
       doc["st"] = "analog";
-      // Send raw voltage only - server converts to display units using config
       if (state.currentSensorVoltage > 0.0f) {
-        doc["vt"] = roundTo(state.currentSensorVoltage, 3);  // voltage in V
+        doc["vt"] = roundTo(state.currentSensorVoltage, 3);
       }
       break;
     case SENSOR_PULSE:
     default:
       doc["st"] = "pulse";
-      doc["rm"] = roundTo(state.currentInches, 1);  // Pulse/RPM value
+      doc["rm"] = roundTo(state.currentInches, 1);
       break;
   }
   doc["r"] = reason;
@@ -3321,43 +3453,27 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     doc["s"] = gConfig.siteName;
     doc["k"] = cfg.monitorNumber;
     doc["y"] = alarmType;
+    // Note: object type (ot) and measurement unit (mu) omitted — server knows from config/daily.
     
-    // Include object type (what is being monitored)
-    switch (cfg.objectType) {
-      case OBJECT_TANK:   doc["ot"] = "tank";   break;
-      case OBJECT_ENGINE: doc["ot"] = "engine"; break;
-      case OBJECT_PUMP:   doc["ot"] = "pump";   break;
-      case OBJECT_GAS:    doc["ot"] = "gas";    break;
-      case OBJECT_FLOW:   doc["ot"] = "flow";   break;
-      default:            doc["ot"] = "custom"; break;
-    }
-    
-    // Include measurement unit if configured
-    if (strlen(cfg.measurementUnit) > 0) {
-      doc["mu"] = cfg.measurementUnit;
-    }
-    
-    // Send sensor-type-appropriate raw data - server converts using config
+    // Send sensor-type-appropriate raw data only
     if (cfg.sensorInterface == SENSOR_CURRENT_LOOP) {
-      // Current loop: send raw mA only
       if (state.currentSensorMa >= 4.0f) {
         doc["ma"] = roundTo(state.currentSensorMa, 2);
       }
     } else if (cfg.sensorInterface == SENSOR_ANALOG) {
-      // Analog voltage: send raw voltage only
       if (state.currentSensorVoltage > 0.0f) {
         doc["vt"] = roundTo(state.currentSensorVoltage, 3);
       }
     } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
-      // Digital float switch: send float state
       doc["fl"] = roundTo(inches, 1);
     } else {
-      // Pulse/RPM: send value
       doc["rm"] = roundTo(inches, 1);
     }
     doc["th"] = roundTo(cfg.highAlarmThreshold, 1);
     doc["tl"] = roundTo(cfg.lowAlarmThreshold, 1);
-    doc["se"] = allowSmsEscalation;
+    if (allowSmsEscalation) {
+      doc["se"] = true;  // Only include when true (false is default)
+    }
     doc["t"] = currentEpoch();
 
     publishNote(ALARM_FILE, doc, true);
@@ -3561,28 +3677,20 @@ static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, 
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
     doc["k"] = cfg.monitorNumber;
-    doc["type"] = "unload";
+    // Note: "type" = "unload" omitted — routing is by file (unload.qi)
     doc["pk"] = roundTo(peakInches, 1);      // Peak height
     doc["em"] = roundTo(currentInches, 1);   // Empty/low height
     doc["pt"] = peakEpoch;                    // Peak timestamp
     doc["t"] = currentEpoch();               // Event timestamp
     
-    // Include raw sensor readings if available
+    // Include raw sensor readings only if available
     if (state.unloadPeakSensorMa >= 4.0f) {
-      doc["pma"] = roundTo(state.unloadPeakSensorMa, 2);  // Peak sensor mA
+      doc["pma"] = roundTo(state.unloadPeakSensorMa, 2);
     }
     if (state.currentSensorMa >= 4.0f) {
-      doc["ema"] = roundTo(state.currentSensorMa, 2);     // Empty sensor mA
+      doc["ema"] = roundTo(state.currentSensorMa, 2);
     }
-    
-    // Include SMS/email flags
-    doc["sms"] = cfg.unloadAlarmSms;
-    doc["email"] = cfg.unloadAlarmEmail;
-    
-    // Include measurement unit if configured
-    if (strlen(cfg.measurementUnit) > 0) {
-      doc["mu"] = cfg.measurementUnit;
-    }
+    // Note: sms/email flags and measurement unit omitted — server has config
 
     publishNote(UNLOAD_FILE, doc, true);
     Serial.println(F("Unload event sent to server"));
@@ -3618,10 +3726,10 @@ static void sendSolarAlarm(SolarAlertType alertType) {
   JsonDocument doc;
   doc["c"] = gDeviceUID;
   doc["s"] = gConfig.siteName;
-  doc["type"] = "solar";
+  doc["y"] = "solar";
   doc["t"] = currentEpoch();
   
-  // Alert type and description
+  // Alert type ("desc" omitted — derivable from alert enum on server)
   switch (alertType) {
     case SOLAR_ALERT_BATTERY_LOW:     doc["alert"] = "battery_low"; break;
     case SOLAR_ALERT_BATTERY_CRITICAL: doc["alert"] = "battery_critical"; break;
@@ -3633,15 +3741,13 @@ static void sendSolarAlarm(SolarAlertType alertType) {
     case SOLAR_ALERT_NO_CHARGE:       doc["alert"] = "no_charge"; break;
     default:                          doc["alert"] = "unknown"; break;
   }
-  doc["desc"] = alertDesc;
   
-  // Battery and solar data
+  // Battery and solar data (essential only)
   doc["bv"] = roundTo(data.batteryVoltage, 2);       // Battery voltage
   doc["av"] = roundTo(data.arrayVoltage, 2);         // Array (solar) voltage
   doc["ic"] = roundTo(data.chargeCurrent, 2);        // Charge current
-  doc["cs"] = gSolarManager.getChargeStateDescription();  // Charge state
   
-  // Include faults/alarms if present
+  // Include faults/alarms descriptions only if present
   if (data.hasFault) {
     doc["faults"] = gSolarManager.getFaultDescription();
   }
@@ -3649,14 +3755,12 @@ static void sendSolarAlarm(SolarAlertType alertType) {
     doc["alarms"] = gSolarManager.getAlarmDescription();
   }
   
-  // Daily stats
-  doc["bvMin"] = roundTo(data.batteryVoltageMinDaily, 2);  // Daily min voltage
-  doc["bvMax"] = roundTo(data.batteryVoltageMaxDaily, 2);  // Daily max voltage
-  
-  // Send as alarm with SMS escalation if critical
+  // SMS escalation if critical
   bool critical = (alertType == SOLAR_ALERT_BATTERY_CRITICAL || 
                    alertType == SOLAR_ALERT_FAULT);
-  doc["se"] = critical && gConfig.solarCharger.alertOnLowBattery;  // SMS escalation
+  if (critical && gConfig.solarCharger.alertOnLowBattery) {
+    doc["se"] = true;
+  }
   
   publishNote(ALARM_FILE, doc, true);
   Serial.println(F("Solar alarm sent to server"));
@@ -3681,19 +3785,18 @@ static bool appendSolarDataToDaily(JsonDocument &doc) {
   solar["bv"] = roundTo(data.batteryVoltage, 2);       // Battery voltage
   solar["av"] = roundTo(data.arrayVoltage, 2);         // Array voltage
   solar["ic"] = roundTo(data.chargeCurrent, 2);        // Charge current
-  solar["cs"] = gSolarManager.getChargeStateDescription();  // Charge state
   
   // Daily statistics
   solar["bvMin"] = roundTo(data.batteryVoltageMinDaily, 2);
   solar["bvMax"] = roundTo(data.batteryVoltageMaxDaily, 2);
-  solar["ah"] = roundTo(data.ampHoursDaily, 1);        // Amp-hours today
+  if (data.ampHoursDaily > 0.0f) {
+    solar["ah"] = roundTo(data.ampHoursDaily, 1);      // Amp-hours today (only if non-zero)
+  }
   
-  // Health status
-  solar["healthy"] = data.solarHealthy;
-  solar["battOk"] = data.batteryHealthy;
-  solar["commOk"] = data.communicationOk;
+  // Omitted: healthy, battOk (derivable from bv thresholds); cs (charge state string)
+  // commOk is implicit (if this data exists, comm is OK)
   
-  // Include any active faults/alarms
+  // Include any active faults/alarms (only when present)
   if (data.hasFault) {
     solar["faults"] = gSolarManager.getFaultDescription();
   }
@@ -3911,10 +4014,10 @@ static void sendBatteryAlarm(BatteryAlertType alertType, float voltage) {
   JsonDocument doc;
   doc["c"] = gDeviceUID;
   doc["s"] = gConfig.siteName;
-  doc["type"] = "battery";
+  doc["y"] = "battery";
   doc["t"] = currentEpoch();
   
-  // Alert type and description
+  // Alert type ("desc" and "state" omitted — derivable from alert + voltage on server)
   switch (alertType) {
     case BATTERY_ALERT_LOW:       doc["alert"] = "low"; break;
     case BATTERY_ALERT_CRITICAL:  doc["alert"] = "critical"; break;
@@ -3923,32 +4026,19 @@ static void sendBatteryAlarm(BatteryAlertType alertType, float voltage) {
     case BATTERY_ALERT_RECOVERED: doc["alert"] = "recovered"; break;
     default:                      doc["alert"] = "unknown"; break;
   }
-  doc["desc"] = alertDesc;
   
-  // Current voltage data
+  // Voltage only — server can derive state description and SOC
   doc["v"] = roundTo(voltage, 2);
-  doc["state"] = getBatteryStateDescription(voltage, &gConfig.batteryMonitor);
   
-  // Include trend data if available
-  if (gBatteryData.valid) {
-    if (gBatteryData.weeklyChange != 0.0f) {
-      doc["weekly"] = roundTo(gBatteryData.weeklyChange, 2);
-    }
-    if (gBatteryData.voltageMin > 0.0f) {
-      doc["vMin"] = roundTo(gBatteryData.voltageMin, 2);
-      doc["vMax"] = roundTo(gBatteryData.voltageMax, 2);
-    }
-    // Estimate state of charge for 12V lead-acid
-    if (gConfig.batteryMonitor.batteryType == BATTERY_TYPE_LEAD_ACID_12V) {
-      doc["soc"] = estimateLeadAcidSOC(voltage);
-    } else if (gConfig.batteryMonitor.batteryType == BATTERY_TYPE_LIFEPO4_12V) {
-      doc["soc"] = estimateLiFePO4SOC(voltage);
-    }
+  // Include weekly trend only if meaningful
+  if (gBatteryData.valid && gBatteryData.weeklyChange != 0.0f) {
+    doc["weekly"] = roundTo(gBatteryData.weeklyChange, 2);
   }
   
-  // SMS escalation for critical alerts
-  bool critical = (alertType == BATTERY_ALERT_CRITICAL);
-  doc["se"] = critical;  // SMS escalation
+  // SMS escalation for critical alerts only
+  if (alertType == BATTERY_ALERT_CRITICAL) {
+    doc["se"] = true;
+  }
   
   publishNote(ALARM_FILE, doc, true);
   Serial.println(F("Battery alarm sent to server"));
@@ -3973,42 +4063,258 @@ static bool appendBatteryDataToDaily(JsonDocument &doc) {
   
   JsonObject battery = doc["battery"].to<JsonObject>();
   
-  // Current voltage
+  // Current voltage (state/healthy derivable from voltage + config thresholds on server)
   battery["v"] = roundTo(gBatteryData.voltage, 2);
-  battery["state"] = getBatteryStateDescription(gBatteryData.voltage, &gConfig.batteryMonitor);
-  battery["healthy"] = gBatteryData.isHealthy;
   
   // Stats over analysis period
   if (gBatteryData.voltageMin > 0.0f) {
     battery["vMin"] = roundTo(gBatteryData.voltageMin, 2);
     battery["vMax"] = roundTo(gBatteryData.voltageMax, 2);
-    battery["vAvg"] = roundTo(gBatteryData.voltageAvg, 2);
+    // vAvg omitted — derivable from vMin/vMax approximation on server
   }
   
-  // Trend data
-  if (gBatteryData.dailyChange != 0.0f) {
-    battery["daily"] = roundTo(gBatteryData.dailyChange, 2);
-  }
+  // Trend data (only include non-zero trends)
   if (gBatteryData.weeklyChange != 0.0f) {
     battery["weekly"] = roundTo(gBatteryData.weeklyChange, 2);
   }
-  if (gBatteryData.monthlyChange != 0.0f) {
-    battery["monthly"] = roundTo(gBatteryData.monthlyChange, 2);
-  }
   
-  // Estimated SOC
-  if (gConfig.batteryMonitor.batteryType == BATTERY_TYPE_LEAD_ACID_12V) {
-    battery["soc"] = estimateLeadAcidSOC(gBatteryData.voltage);
-  } else if (gConfig.batteryMonitor.batteryType == BATTERY_TYPE_LIFEPO4_12V) {
-    battery["soc"] = estimateLiFePO4SOC(gBatteryData.voltage);
-  }
-  
-  // Uptime
-  if (gBatteryData.uptimeMinutes > 0) {
-    battery["uptime"] = gBatteryData.uptimeMinutes;  // Minutes
-  }
+  // Omitted: state (string), healthy (bool), daily/monthly trends, soc, uptime
+  // Server derives these from voltage + configured thresholds
   
   return true;
+}
+
+// ============================================================================
+// Power Conservation State Machine
+// Progressive duty-cycle reduction with hysteresis-based recovery.
+// Merges voltage data from both SunSaver MPPT and Notecard card.voltage 
+// to drive a single power-state decision.
+// ============================================================================
+
+/**
+ * Get human-readable description of a power state.
+ */
+static const char* getPowerStateDescription(PowerState state) {
+  switch (state) {
+    case POWER_STATE_NORMAL:             return "NORMAL";
+    case POWER_STATE_ECO:                return "ECO";
+    case POWER_STATE_LOW_POWER:          return "LOW_POWER";
+    case POWER_STATE_CRITICAL_HIBERNATE: return "CRITICAL_HIBERNATE";
+    default:                             return "UNKNOWN";
+  }
+}
+
+/**
+ * Get the loop sleep duration (ms) for a given power state.
+ */
+static unsigned long getPowerStateSleepMs(PowerState state) {
+  switch (state) {
+    case POWER_STATE_ECO:                return POWER_ECO_SLEEP_MS;
+    case POWER_STATE_LOW_POWER:          return POWER_LOW_SLEEP_MS;
+    case POWER_STATE_CRITICAL_HIBERNATE: return POWER_CRITICAL_SLEEP_MS;
+    case POWER_STATE_NORMAL:
+    default:                             return POWER_NORMAL_SLEEP_MS;
+  }
+}
+
+/**
+ * Send a server notification when the power state changes.
+ * Logs the transition so the server has a clear record of hibernation
+ * entry and exit times. Sends a "returning to normal" message on recovery.
+ */
+static void sendPowerStateChange(PowerState oldState, PowerState newState, float voltage) {
+  const char *oldDesc = getPowerStateDescription(oldState);
+  const char *newDesc = getPowerStateDescription(newState);
+  
+  // Determine if this is an improvement (recovering) or degradation
+  bool recovering = (newState < oldState);
+  
+  // Build alert description
+  char alertDesc[96];
+  if (recovering) {
+    snprintf(alertDesc, sizeof(alertDesc), "Power recovered: %s -> %s (%.2fV)", oldDesc, newDesc, voltage);
+  } else {
+    snprintf(alertDesc, sizeof(alertDesc), "Power reduced: %s -> %s (%.2fV)", oldDesc, newDesc, voltage);
+  }
+  
+  Serial.print(F("Power state change: "));
+  Serial.println(alertDesc);
+  addSerialLog(alertDesc);
+  
+  if (!gNotecardAvailable) {
+    Serial.println(F("Network offline - power state change not sent"));
+    return;
+  }
+  
+  JsonDocument doc;
+  doc["c"] = gDeviceUID;
+  doc["s"] = gConfig.siteName;
+  doc["y"] = "power";
+  doc["t"] = currentEpoch();
+  
+  // State transition (compact: "from"/"to" encode direction, no need for "recovering" or "desc")
+  doc["from"] = oldDesc;
+  doc["to"] = newDesc;
+  doc["v"] = roundTo(voltage, 2);
+  
+  // Duration in previous state (seconds) — only if meaningful
+  if (gPowerStateChangeMillis > 0) {
+    doc["dur"] = (millis() - gPowerStateChangeMillis) / 1000UL;
+  }
+  
+  // SMS escalation for critical hibernation entry only
+  if (newState == POWER_STATE_CRITICAL_HIBERNATE && !recovering) {
+    doc["se"] = true;
+  }
+  
+  publishNote(ALARM_FILE, doc, true);
+  Serial.println(F("Power state change sent to server"));
+}
+
+/**
+ * Determine the best available battery voltage from both monitoring sources.
+ * Returns the lower of the two (conservative approach — protect the battery).
+ * A source is only considered if it has valid recent data.
+ */
+static float getEffectiveBatteryVoltage() {
+  float voltage = 0.0f;
+  bool hasVoltage = false;
+  
+  // Source 1: SunSaver MPPT via Modbus RS-485
+  if (gSolarManager.isEnabled() && gSolarManager.isCommunicationOk()) {
+    const SolarData &solar = gSolarManager.getData();
+    if (solar.batteryVoltage > 0.0f) {
+      voltage = solar.batteryVoltage;
+      hasVoltage = true;
+    }
+  }
+  
+  // Source 2: Notecard card.voltage (direct battery connection)
+  if (gConfig.batteryMonitor.enabled && gBatteryData.valid && gBatteryData.voltage > 0.0f) {
+    if (!hasVoltage) {
+      voltage = gBatteryData.voltage;
+      hasVoltage = true;
+    } else {
+      // Use the LOWER of the two readings (conservative — protect battery)
+      voltage = min(voltage, gBatteryData.voltage);
+    }
+  }
+  
+  return hasVoltage ? voltage : 0.0f;
+}
+
+/**
+ * Evaluate battery voltage and update the power conservation state.
+ * Uses hysteresis thresholds to prevent rapid oscillation:
+ *   - Enter a worse state at the ENTER threshold (falling voltage)
+ *   - Exit back to a better state at the EXIT threshold (rising voltage, higher than enter)
+ * Requires POWER_STATE_DEBOUNCE_COUNT consecutive readings at the new state before transitioning.
+ *
+ * Called once per loop iteration, after battery/solar polling.
+ */
+static void updatePowerState() {
+  float voltage = getEffectiveBatteryVoltage();
+  
+  // If no battery monitoring is active, stay in NORMAL
+  if (voltage <= 0.0f) {
+    gPowerState = POWER_STATE_NORMAL;
+    return;
+  }
+  
+  gEffectiveBatteryVoltage = voltage;
+  
+  // Determine the proposed state based on current voltage and hysteresis direction
+  PowerState proposed;
+  
+  if (gPowerState == POWER_STATE_NORMAL) {
+    // Currently NORMAL — check if we should degrade
+    if (voltage < POWER_CRITICAL_ENTER_VOLTAGE) {
+      proposed = POWER_STATE_CRITICAL_HIBERNATE;
+    } else if (voltage < POWER_LOW_ENTER_VOLTAGE) {
+      proposed = POWER_STATE_LOW_POWER;
+    } else if (voltage < POWER_ECO_ENTER_VOLTAGE) {
+      proposed = POWER_STATE_ECO;
+    } else {
+      proposed = POWER_STATE_NORMAL;
+    }
+  } else if (gPowerState == POWER_STATE_ECO) {
+    // Currently ECO — can degrade further or recover
+    if (voltage < POWER_CRITICAL_ENTER_VOLTAGE) {
+      proposed = POWER_STATE_CRITICAL_HIBERNATE;
+    } else if (voltage < POWER_LOW_ENTER_VOLTAGE) {
+      proposed = POWER_STATE_LOW_POWER;
+    } else if (voltage >= POWER_ECO_EXIT_VOLTAGE) {
+      proposed = POWER_STATE_NORMAL;  // Recovered
+    } else {
+      proposed = POWER_STATE_ECO;     // Stay in ECO
+    }
+  } else if (gPowerState == POWER_STATE_LOW_POWER) {
+    // Currently LOW_POWER — can degrade to CRITICAL or recover
+    if (voltage < POWER_CRITICAL_ENTER_VOLTAGE) {
+      proposed = POWER_STATE_CRITICAL_HIBERNATE;
+    } else if (voltage >= POWER_LOW_EXIT_VOLTAGE) {
+      proposed = POWER_STATE_ECO;     // Step up one level (not straight to NORMAL)
+    } else {
+      proposed = POWER_STATE_LOW_POWER;
+    }
+  } else {
+    // Currently CRITICAL_HIBERNATE — only recover if voltage is high enough
+    if (voltage >= POWER_CRITICAL_EXIT_VOLTAGE) {
+      proposed = POWER_STATE_LOW_POWER;  // Step up one level at a time
+    } else {
+      proposed = POWER_STATE_CRITICAL_HIBERNATE;
+    }
+  }
+  
+  // Debounce: require consecutive readings at the proposed new state
+  if (proposed != gPowerState) {
+    gPowerStateDebounce++;
+    if (gPowerStateDebounce >= POWER_STATE_DEBOUNCE_COUNT) {
+      // State transition confirmed
+      PowerState oldState = gPowerState;
+      gPowerState = proposed;
+      gPowerStateDebounce = 0;
+      
+      // Handle relay safety on entering CRITICAL
+      if (gPowerState == POWER_STATE_CRITICAL_HIBERNATE) {
+        // De-energize all relays to eliminate coil current draw (~100mA each)
+        for (uint8_t i = 0; i < MAX_RELAYS; i++) {
+          setRelayState(i, false);
+        }
+        Serial.println(F("CRITICAL HIBERNATE: All relays de-energized for battery protection"));
+        addSerialLog("Relays off - critical battery");
+      }
+      
+      // Notify server of the state change (entry or recovery)
+      sendPowerStateChange(oldState, gPowerState, voltage);
+      gPowerStateChangeMillis = millis();
+      gPreviousPowerState = oldState;
+      
+      // Log to serial
+      Serial.print(F("Power state: "));
+      Serial.print(getPowerStateDescription(oldState));
+      Serial.print(F(" -> "));
+      Serial.print(getPowerStateDescription(gPowerState));
+      Serial.print(F(" ("));
+      Serial.print(voltage, 2);
+      Serial.println(F("V)"));
+    }
+  } else {
+    gPowerStateDebounce = 0;  // Reset debounce if proposed matches current
+  }
+  
+  // Periodic power state log (every 30 minutes, only when not NORMAL)
+  if (gPowerState != POWER_STATE_NORMAL) {
+    unsigned long now = millis();
+    if (now - gLastPowerStateLogMillis >= 1800000UL) {
+      gLastPowerStateLogMillis = now;
+      char logMsg[96];
+      snprintf(logMsg, sizeof(logMsg), "Power: %s (%.2fV, sleep=%lums)", 
+               getPowerStateDescription(gPowerState), voltage, getPowerStateSleepMs(gPowerState));
+      Serial.println(logMsg);
+      addSerialLog(logMsg);
+    }
+  }
 }
 
 static void sendDailyReport() {
@@ -4048,6 +4354,16 @@ static void sendDailyReport() {
     if (part == 0) {
       appendSolarDataToDaily(doc);
       appendBatteryDataToDaily(doc);  // Notecard battery voltage monitoring
+      // Include power conservation state in daily report
+      if (gPowerState != POWER_STATE_NORMAL) {
+        JsonObject powerObj = doc["power"].to<JsonObject>();
+        powerObj["state"] = getPowerStateDescription(gPowerState);
+        powerObj["v"] = roundTo(gEffectiveBatteryVoltage, 2);
+        powerObj["sleepMs"] = (long)getPowerStateSleepMs(gPowerState);
+        if (gPowerStateChangeMillis > 0) {
+          powerObj["stateDurSec"] = (millis() - gPowerStateChangeMillis) / 1000UL;
+        }
+      }
     }
 
     JsonArray tanks = doc["tanks"].to<JsonArray>();
@@ -4101,7 +4417,7 @@ static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankInd
   t["n"] = cfg.name;                              // label/name
   t["k"] = cfg.monitorNumber;                     // monitor number
   
-  // Include object type (what is being monitored)
+  // Include object type in daily report (server's metadata refresh after restarts)
   switch (cfg.objectType) {
     case OBJECT_TANK:   t["ot"] = "tank";   break;
     case OBJECT_ENGINE: t["ot"] = "engine"; break;
@@ -4111,7 +4427,7 @@ static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankInd
     default:            t["ot"] = "custom"; break;
   }
   
-  // Include measurement unit if configured
+  // Include measurement unit in daily (server refresh, omitted from frequent telemetry/alarms)
   if (strlen(cfg.measurementUnit) > 0) {
     t["mu"] = cfg.measurementUnit;
   }
