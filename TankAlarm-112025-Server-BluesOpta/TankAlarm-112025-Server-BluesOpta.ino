@@ -848,6 +848,29 @@ static bool pinMatches(const char *pin) {
   return (diff == 0);
 }
 
+// Validate that a client UID will fit in our buffers without truncation
+// Returns false if UID is too long, logs a warning
+static bool isValidClientUid(const char *clientUid) {
+  if (!clientUid) {
+    return false;
+  }
+  
+  // Most clientUid buffers in the codebase are 48 bytes (47 chars + null)
+  const size_t MAX_CLIENT_UID_LEN = 47;
+  
+  size_t len = strlen(clientUid);
+  if (len >= MAX_CLIENT_UID_LEN) {
+    Serial.print(F("WARNING: Client UID too long ("));
+    Serial.print(len);
+    Serial.print(F(" chars): "));
+    Serial.println(clientUid);
+    return false;
+  }
+  
+  return true;
+}
+
+
 // Forward declaration for respondStatus (defined later in the web server section)
 static void respondStatus(EthernetClient &client, int status, const char *message);
 static void respondStatus(EthernetClient &client, int status, const String &message);
@@ -6213,6 +6236,12 @@ static void sendUnloadSms(const UnloadLogEntry &entry) {
 }
 
 static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber) {
+  // Validate UID length to prevent silent truncation issues
+  if (!isValidClientUid(clientUid)) {
+    Serial.println(F("ERROR: Invalid client UID, skipping tank record"));
+    return nullptr;
+  }
+  
   // Use O(1) hash lookup instead of O(n) linear search
   TankRecord *existing = findTankByHash(clientUid, tankNumber);
   if (existing) {
