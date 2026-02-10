@@ -42,6 +42,7 @@ __pycache__/
 node_modules/
 package.json
 package-lock.json
+take-screenshots.js
 
 # SD card test files (generated during testing)
 test_logs/
