@@ -148,7 +148,7 @@ jobs:
       - name: Create screenshot script
         shell: bash
         run: |
-          cat > /tmp/take-screenshots.js << 'EOF'
+          cat > take-screenshots.js << 'EOF'
           const { chromium } = require('@playwright/test');
           const fs = require('fs');
           const path = require('path');
@@ -265,7 +265,7 @@ jobs:
           EOF
       
       - name: Take screenshots
-        run: node /tmp/take-screenshots.js
+        run: node take-screenshots.js
       
       - name: Update WEBSITE_PREVIEW.md timestamps
         shell: bash
