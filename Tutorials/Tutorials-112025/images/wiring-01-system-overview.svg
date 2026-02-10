@@ -152,22 +152,37 @@
     <text x="80" y="324" text-anchor="middle" font-size="8" fill="#aed6f1">Notecard: 0x17</text>
     <text x="200" y="324" text-anchor="middle" font-size="8" fill="#aed6f1">A0602: 0x64</text>
 
-    <!-- ---- BLUES WIRELESS CARRIER ---- -->
+    <!-- ---- BLUES WIRELESS FOR OPTA CARRIER ---- -->
     <rect x="15" y="345" width="250" height="100" rx="4" fill="url(#bluesBody)" stroke="#2471a3" stroke-width="1.5"/>
-    <rect x="20" y="350" width="100" height="16" rx="3" fill="#2e86c1" opacity="0.8"/>
-    <text x="70" y="362" text-anchor="middle" font-size="8" font-weight="bold" fill="white">BLUES WIRELESS</text>
-    <text x="140" y="380" text-anchor="middle" font-size="9" font-weight="bold" fill="#85c1e9">Blues Notecard (NOTE-NBGL)</text>
-    <text x="140" y="394" text-anchor="middle" font-size="8" fill="#5dade2">LTE-M / NB-IoT Cellular</text>
-    <text x="140" y="408" text-anchor="middle" font-size="8" fill="#5dade2">I2C Address: 0x17</text>
-    <!-- Antenna icon -->
-    <line x1="230" y1="360" x2="250" y2="348" stroke="#e74c3c" stroke-width="2"/>
-    <line x1="242" y1="360" x2="256" y2="351" stroke="#e74c3c" stroke-width="1.5"/>
-    <line x1="236" y1="360" x2="253" y2="346" stroke="#e74c3c" stroke-width="1"/>
-    <text x="243" y="375" text-anchor="middle" font-size="7" fill="#e74c3c">ANT</text>
-    <!-- SIM slot -->
-    <rect x="25" y="415" width="55" height="18" rx="2" fill="#34495e" stroke="#5d6d7e" stroke-width="1"/>
-    <text x="52" y="428" text-anchor="middle" font-size="7" fill="#aaa">SIM CARD</text>
-    <text x="140" y="440" text-anchor="middle" font-size="7" fill="#7fb3d8">Plugs into Opta expansion connector</text>
+    <!-- Blues logo -->
+    <circle cx="55" cy="385" r="7" fill="none" stroke="#85c1e9" stroke-width="1.5"/>
+    <circle cx="55" cy="385" r="2.5" fill="#85c1e9"/>
+    <text x="70" y="389" font-size="10" font-weight="bold" fill="#85c1e9">blues</text>
+    <text x="200" y="389" text-anchor="middle" font-size="7" fill="#5dade2">Wireless For Opta</text>
+    <!-- Notecard details -->
+    <text x="140" y="405" text-anchor="middle" font-size="8" fill="#5dade2">Notecard NOTE-NBGL | I2C: 0x17</text>
+    <text x="140" y="418" text-anchor="middle" font-size="8" fill="#5dade2">LTE-M / NB-IoT Cellular</text>
+    <!-- Two V-antennas (LTE + GPS) -->
+    <line x1="195" y1="365" x2="230" y2="340" stroke="#333" stroke-width="3" stroke-linecap="round"/>
+    <line x1="215" y1="365" x2="250" y2="340" stroke="#333" stroke-width="3" stroke-linecap="round"/>
+    <text x="220" y="338" text-anchor="middle" font-size="6" fill="#888">LTE</text>
+    <text x="253" y="338" text-anchor="middle" font-size="6" fill="#888">GPS</text>
+    <!-- TEST button + LED -->
+    <circle cx="170" cy="363" r="4" fill="#555" stroke="#444" stroke-width="1"/>
+    <text x="170" y="358" text-anchor="middle" font-size="5" fill="#aaa">TEST</text>
+    <circle cx="155" cy="363" r="2.5" fill="#2ecc71" opacity="0.7"/>
+    <!-- Top terminals: + + - - -->
+    <rect x="60" y="347" width="80" height="12" rx="2" fill="#2a2a2a" stroke="#555" stroke-width="0.5"/>
+    <text x="70" y="356" font-size="6" font-weight="bold" fill="#c0392b">+</text>
+    <text x="82" y="356" font-size="6" font-weight="bold" fill="#c0392b">+</text>
+    <text x="94" y="356" font-size="6" font-weight="bold" fill="#85c1e9">−</text>
+    <text x="106" y="356" font-size="6" font-weight="bold" fill="#85c1e9">−</text>
+    <!-- Bottom: USB + SIM -->
+    <rect x="35" y="430" width="45" height="12" rx="2" fill="#34495e" stroke="#5d6d7e" stroke-width="1"/>
+    <text x="57" y="440" text-anchor="middle" font-size="6" fill="#aaa">USB</text>
+    <rect x="100" y="430" width="45" height="12" rx="2" fill="#34495e" stroke="#5d6d7e" stroke-width="1"/>
+    <text x="122" y="440" text-anchor="middle" font-size="6" fill="#aaa">SIM</text>
+    <text x="140" y="452" text-anchor="middle" font-size="7" fill="#7fb3d8">Plugs onto Opta expansion connector</text>
 
     <!-- ---- POWER INPUT ---- -->
     <rect x="10" y="460" width="260" height="55" rx="4" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
@@ -332,11 +347,11 @@
 
     <!-- Loop wiring note -->
     <rect x="10" y="160" width="140" height="70" rx="4" fill="#fef9e7" stroke="#f0c27f" stroke-width="1"/>
-    <text x="80" y="175" text-anchor="middle" font-size="8" font-weight="bold" fill="#7d6608">2-Wire Loop Wiring</text>
-    <text x="80" y="188" text-anchor="middle" font-size="7" fill="#666">24V → Sensor (+)</text>
-    <text x="80" y="200" text-anchor="middle" font-size="7" fill="#666">Sensor (−) → A0602 CH+</text>
-    <text x="80" y="212" text-anchor="middle" font-size="7" fill="#666">A0602 CH− → 24V GND</text>
-    <text x="80" y="224" text-anchor="middle" font-size="7" fill="#c0392b">Series circuit!</text>
+    <text x="80" y="175" text-anchor="middle" font-size="8" font-weight="bold" fill="#7d6608">2-Wire Loop (Dwyer 626 CB)</text>
+    <text x="80" y="188" text-anchor="middle" font-size="7" fill="#666">24V V+ → #1 VIN</text>
+    <text x="80" y="200" text-anchor="middle" font-size="7" fill="#666">#2 COM → A0602 CH+</text>
+    <text x="80" y="212" text-anchor="middle" font-size="7" fill="#666">A0602 CH− → 24V V−</text>
+    <text x="80" y="224" text-anchor="middle" font-size="7" fill="#c0392b">Series circuit!
   </g>
 
   <!-- Wire from sensors to A0602 -->

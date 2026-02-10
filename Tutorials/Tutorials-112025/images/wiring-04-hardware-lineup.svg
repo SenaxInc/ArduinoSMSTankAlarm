@@ -1,0 +1,462 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 680" font-family="'Segoe UI', Arial, sans-serif">
+  <defs>
+    <linearGradient id="optaFace" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3d3d3d"/>
+      <stop offset="100%" stop-color="#2a2a2a"/>
+    </linearGradient>
+    <linearGradient id="bluesFace" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2a5075"/>
+      <stop offset="100%" stop-color="#1d3b5a"/>
+    </linearGradient>
+    <linearGradient id="a0602Face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3d3d3d"/>
+      <stop offset="100%" stop-color="#2a2a2a"/>
+    </linearGradient>
+    <filter id="shadow" x="-2%" y="-2%" width="104%" height="104%">
+      <feDropShadow dx="3" dy="3" stdDeviation="4" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1100" height="680" rx="8" fill="#f0f0ea"/>
+
+  <!-- Title -->
+  <text x="550" y="32" text-anchor="middle" font-size="20" font-weight="bold" fill="#222">TankAlarm 112025 Hardware — Board Lineup</text>
+  <text x="550" y="52" text-anchor="middle" font-size="12" fill="#666">Arduino Opta Lite + Opta Ext A0602 + Blues Wireless for Opta — all snap together on DIN rail</text>
+
+  <!-- DIN Rail -->
+  <rect x="40" y="588" width="1020" height="20" rx="4" fill="#b8b8b8" stroke="#999" stroke-width="1"/>
+  <rect x="40" y="588" width="1020" height="5" rx="2" fill="#ccc"/>
+  <text x="550" y="602" text-anchor="middle" font-size="9" font-weight="bold" fill="#666">35mm DIN RAIL</text>
+
+  <!-- Snap-on connection: Opta → A0602 -->
+  <path d="M 393 350 L 415 350" stroke="#00979D" stroke-width="3" stroke-dasharray="4,3"/>
+  <path d="M 415 340 L 415 360 L 430 350 Z" fill="#00979D"/>
+  <text x="412" y="330" text-anchor="middle" font-size="8" font-weight="bold" fill="#00979D">SNAP</text>
+  <text x="412" y="370" text-anchor="middle" font-size="7" fill="#00979D">Expansion</text>
+
+  <!-- Snap-on connection: A0602 → Blues -->
+  <path d="M 713 350 L 735 350" stroke="#00979D" stroke-width="3" stroke-dasharray="4,3"/>
+  <path d="M 735 340 L 735 360 L 750 350 Z" fill="#00979D"/>
+  <text x="732" y="330" text-anchor="middle" font-size="8" font-weight="bold" fill="#00979D">SNAP</text>
+  <text x="732" y="370" text-anchor="middle" font-size="7" fill="#00979D">I2C bus</text>
+
+  <!-- ================================================================ -->
+  <!-- BOARD 1: ARDUINO OPTA LITE (LEFT)                                -->
+  <!-- ================================================================ -->
+  <g transform="translate(65, 75)" filter="url(#shadow)">
+    <!-- Main body -->
+    <rect width="320" height="500" rx="6" fill="url(#optaFace)" stroke="#1a1a1a" stroke-width="2"/>
+
+    <!-- Top screw terminal strip -->
+    <rect x="10" y="8" width="300" height="28" rx="3" fill="#222" stroke="#444" stroke-width="1"/>
+    <g>
+      <!-- D0 terminals -->
+      <rect x="16" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="23" cy="15" r="3" fill="#888"/>
+      <text x="23" y="35" text-anchor="middle" font-size="5" fill="#999">+</text>
+      <rect x="33" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="40" cy="15" r="3" fill="#888"/>
+      <text x="40" y="35" text-anchor="middle" font-size="5" fill="#999">+</text>
+      <rect x="50" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="57" cy="15" r="3" fill="#888"/>
+      <text x="57" y="35" text-anchor="middle" font-size="5" fill="#999">−</text>
+      <rect x="67" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="74" cy="15" r="3" fill="#888"/>
+      <text x="74" y="35" text-anchor="middle" font-size="5" fill="#999">−</text>
+
+      <!-- D1 terminals -->
+      <rect x="90" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="97" cy="15" r="3" fill="#888"/>
+      <rect x="107" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="114" cy="15" r="3" fill="#888"/>
+      <rect x="124" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="131" cy="15" r="3" fill="#888"/>
+      <rect x="141" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="148" cy="15" r="3" fill="#888"/>
+
+      <!-- D2 terminals -->
+      <rect x="164" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="171" cy="15" r="3" fill="#888"/>
+      <rect x="181" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="188" cy="15" r="3" fill="#888"/>
+      <rect x="198" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="205" cy="15" r="3" fill="#888"/>
+      <rect x="215" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="222" cy="15" r="3" fill="#888"/>
+
+      <!-- D3 terminals -->
+      <rect x="238" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="245" cy="15" r="3" fill="#888"/>
+      <rect x="255" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="262" cy="15" r="3" fill="#888"/>
+      <rect x="272" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="279" cy="15" r="3" fill="#888"/>
+      <rect x="289" y="12" width="14" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="296" cy="15" r="3" fill="#888"/>
+    </g>
+
+    <!-- Relay labels -->
+    <text x="48" y="52" text-anchor="middle" font-size="7" font-weight="bold" fill="#d4a017">D0</text>
+    <text x="122" y="52" text-anchor="middle" font-size="7" font-weight="bold" fill="#d4a017">D1</text>
+    <text x="196" y="52" text-anchor="middle" font-size="7" font-weight="bold" fill="#d4a017">D2</text>
+    <text x="270" y="52" text-anchor="middle" font-size="7" font-weight="bold" fill="#d4a017">D3</text>
+
+    <!-- Relay status LEDs -->
+    <circle cx="48" cy="62" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+    <circle cx="48" cy="62" r="2" fill="#2ecc71" opacity="0.6"/>
+    <circle cx="122" cy="62" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+    <circle cx="122" cy="62" r="2" fill="#2ecc71" opacity="0.6"/>
+    <circle cx="196" cy="62" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+    <circle cx="196" cy="62" r="2" fill="#2ecc71" opacity="0.6"/>
+    <circle cx="270" cy="62" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+    <circle cx="270" cy="62" r="2" fill="#2ecc71" opacity="0.6"/>
+
+    <!-- RELAY OUTPUTS label -->
+    <text x="160" y="80" text-anchor="middle" font-size="8" fill="#999">RELAY OUTPUTS (250V AC / 10A SPST-NO)</text>
+
+    <!-- Divider -->
+    <line x1="10" y1="90" x2="310" y2="90" stroke="#444" stroke-width="0.5"/>
+
+    <!-- Digital input terminals strip -->
+    <rect x="10" y="95" width="300" height="28" rx="3" fill="#222" stroke="#444" stroke-width="1"/>
+    <g>
+      <rect x="18" y="99" width="28" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="32" cy="102" r="3" fill="#888"/>
+      <text x="32" y="115" text-anchor="middle" font-size="6" font-weight="bold" fill="#bbb">I1</text>
+
+      <rect x="52" y="99" width="28" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="66" cy="102" r="3" fill="#888"/>
+      <text x="66" y="115" text-anchor="middle" font-size="6" font-weight="bold" fill="#bbb">I2</text>
+
+      <rect x="86" y="99" width="28" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="100" cy="102" r="3" fill="#888"/>
+      <text x="100" y="115" text-anchor="middle" font-size="6" font-weight="bold" fill="#bbb">I3</text>
+
+      <rect x="120" y="99" width="28" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="134" cy="102" r="3" fill="#888"/>
+      <text x="134" y="115" text-anchor="middle" font-size="6" font-weight="bold" fill="#bbb">I4</text>
+
+      <rect x="154" y="99" width="28" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="168" cy="102" r="3" fill="#888"/>
+      <text x="168" y="115" text-anchor="middle" font-size="6" font-weight="bold" fill="#bbb">I5</text>
+
+      <rect x="188" y="99" width="28" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="202" cy="102" r="3" fill="#888"/>
+      <text x="202" y="115" text-anchor="middle" font-size="6" font-weight="bold" fill="#bbb">I6</text>
+
+      <rect x="222" y="99" width="28" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="236" cy="102" r="3" fill="#888"/>
+      <text x="236" y="115" text-anchor="middle" font-size="6" font-weight="bold" fill="#bbb">I7</text>
+
+      <rect x="256" y="99" width="28" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <circle cx="270" cy="102" r="3" fill="#888"/>
+      <text x="270" y="115" text-anchor="middle" font-size="6" font-weight="bold" fill="#bbb">I8</text>
+
+      <!-- GND terminals -->
+      <rect x="290" y="99" width="16" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+      <text x="298" y="115" text-anchor="middle" font-size="5" fill="#888">G</text>
+    </g>
+
+    <!-- Digital input label -->
+    <text x="160" y="140" text-anchor="middle" font-size="8" fill="#999">DIGITAL INPUTS (8x) — INPUT_PULLUP</text>
+
+    <!-- Power input terminals -->
+    <rect x="10" y="148" width="300" height="28" rx="3" fill="#222" stroke="#444" stroke-width="1"/>
+    <rect x="18" y="152" width="40" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="38" cy="155" r="3" fill="#888"/>
+    <text x="38" y="167" text-anchor="middle" font-size="6" font-weight="bold" fill="#c0392b">V+</text>
+    <rect x="64" y="152" width="40" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="84" cy="155" r="3" fill="#888"/>
+    <text x="84" y="167" text-anchor="middle" font-size="6" font-weight="bold" fill="#5dade2">GND</text>
+    <text x="200" y="167" text-anchor="middle" font-size="8" fill="#999">12-24V DC Power</text>
+
+    <!-- Main face area -->
+    <rect x="10" y="185" width="300" height="220" rx="4" fill="#222"/>
+    
+    <!-- Arduino logo -->
+    <text x="160" y="225" text-anchor="middle" font-size="22" font-weight="bold" fill="#00979D">ARDUINO</text>
+    
+    <!-- Status LEDs -->
+    <circle cx="80" cy="250" r="5" fill="#333" stroke="#555" stroke-width="0.5"/>
+    <circle cx="80" cy="250" r="2.5" fill="#e74c3c" opacity="0.5"/>
+    <text x="80" y="264" text-anchor="middle" font-size="6" fill="#777">PWR</text>
+
+    <circle cx="120" cy="250" r="5" fill="#333" stroke="#555" stroke-width="0.5"/>
+    <circle cx="120" cy="250" r="2.5" fill="#2ecc71" opacity="0.5"/>
+    <text x="120" y="264" text-anchor="middle" font-size="6" fill="#777">RUN</text>
+
+    <circle cx="160" cy="250" r="5" fill="#333" stroke="#555" stroke-width="0.5"/>
+    <circle cx="160" cy="250" r="2.5" fill="#f39c12" opacity="0.5"/>
+    <text x="160" y="264" text-anchor="middle" font-size="6" fill="#777">ERR</text>
+
+    <!-- Buttons -->
+    <rect x="220" y="243" width="40" height="16" rx="3" fill="#444" stroke="#555" stroke-width="1"/>
+    <text x="240" y="254" text-anchor="middle" font-size="7" fill="#aaa">USER</text>
+    <rect x="220" y="268" width="40" height="16" rx="3" fill="#444" stroke="#555" stroke-width="1"/>
+    <text x="240" y="279" text-anchor="middle" font-size="7" fill="#aaa">RESET</text>
+
+    <!-- Board model -->
+    <text x="160" y="310" text-anchor="middle" font-size="11" font-weight="bold" fill="#aaa">OPTA LITE</text>
+    <text x="160" y="325" text-anchor="middle" font-size="8" fill="#777">AFX00003</text>
+    <text x="160" y="340" text-anchor="middle" font-size="8" fill="#666">STM32H747XI Dual-Core</text>
+
+    <!-- Ethernet + USB-C -->
+    <rect x="30" y="358" width="60" height="30" rx="3" fill="#1a1a1a" stroke="#444" stroke-width="1"/>
+    <rect x="35" y="363" width="50" height="20" rx="2" fill="#333" stroke="#555" stroke-width="0.5"/>
+    <text x="60" y="377" text-anchor="middle" font-size="7" font-weight="bold" fill="#888">ETHERNET</text>
+    <text x="60" y="396" text-anchor="middle" font-size="6" fill="#666">RJ45</text>
+
+    <rect x="130" y="365" width="50" height="18" rx="8" fill="#1a1a1a" stroke="#444" stroke-width="1"/>
+    <rect x="140" y="369" width="30" height="10" rx="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+    <text x="155" y="396" text-anchor="middle" font-size="6" fill="#666">USB-C</text>
+
+    <!-- Expansion connector (right edge) -->
+    <rect x="305" y="200" width="15" height="160" rx="2" fill="#00979D" stroke="#007a7e" stroke-width="1"/>
+    <text x="312" y="285" text-anchor="middle" font-size="6" font-weight="bold" fill="white" transform="rotate(90, 312, 285)">EXPANSION PORT</text>
+
+    <!-- DIN rail clip -->
+    <rect x="120" y="480" width="80" height="20" rx="2" fill="#555" stroke="#444" stroke-width="1"/>
+    <text x="160" y="494" text-anchor="middle" font-size="7" fill="#aaa">DIN CLIP</text>
+  </g>
+
+  <!-- ================================================================ -->
+  <!-- BOARD 2: OPTA EXT A0602 (CENTER)                                 -->
+  <!-- ================================================================ -->
+  <g transform="translate(435, 75)" filter="url(#shadow)">
+    <!-- Main body -->
+    <rect width="270" height="500" rx="6" fill="url(#a0602Face)" stroke="#1a1a1a" stroke-width="2"/>
+
+    <!-- Top screw terminal strip row 1 (CH0-CH3) -->
+    <rect x="10" y="8" width="250" height="28" rx="3" fill="#222" stroke="#444" stroke-width="1"/>
+    <rect x="20" y="12" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="30" cy="15" r="3" fill="#888"/>
+    <text x="30" y="35" text-anchor="middle" font-size="5" fill="#999">+</text>
+    <rect x="45" y="12" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="55" cy="15" r="3" fill="#888"/>
+    <text x="55" y="35" text-anchor="middle" font-size="5" fill="#999">−</text>
+    <rect x="70" y="12" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="80" cy="15" r="3" fill="#888"/>
+    <text x="80" y="35" text-anchor="middle" font-size="5" fill="#999">+</text>
+    <rect x="95" y="12" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="105" cy="15" r="3" fill="#888"/>
+    <text x="105" y="35" text-anchor="middle" font-size="5" fill="#999">−</text>
+
+    <rect x="125" y="12" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="135" cy="15" r="3" fill="#888"/>
+    <text x="135" y="35" text-anchor="middle" font-size="5" fill="#999">+</text>
+    <rect x="150" y="12" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="160" cy="15" r="3" fill="#888"/>
+    <text x="160" y="35" text-anchor="middle" font-size="5" fill="#999">−</text>
+    <rect x="175" y="12" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="185" cy="15" r="3" fill="#888"/>
+    <text x="185" y="35" text-anchor="middle" font-size="5" fill="#999">+</text>
+    <rect x="200" y="12" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="210" cy="15" r="3" fill="#888"/>
+    <text x="210" y="35" text-anchor="middle" font-size="5" fill="#999">−</text>
+
+    <!-- Channel labels row 1 -->
+    <text x="42" y="52" text-anchor="middle" font-size="6" font-weight="bold" fill="#d4a017">CH0</text>
+    <text x="92" y="52" text-anchor="middle" font-size="6" font-weight="bold" fill="#d4a017">CH1</text>
+    <text x="142" y="52" text-anchor="middle" font-size="6" font-weight="bold" fill="#d4a017">CH2</text>
+    <text x="192" y="52" text-anchor="middle" font-size="6" font-weight="bold" fill="#d4a017">CH3</text>
+
+    <!-- Second row of channel terminals (CH4-CH7) -->
+    <rect x="10" y="62" width="250" height="28" rx="3" fill="#222" stroke="#444" stroke-width="1"/>
+    <rect x="20" y="66" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="30" cy="69" r="3" fill="#888"/>
+    <rect x="45" y="66" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="55" cy="69" r="3" fill="#888"/>
+    <rect x="70" y="66" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="80" cy="69" r="3" fill="#888"/>
+    <rect x="95" y="66" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="105" cy="69" r="3" fill="#888"/>
+    <rect x="125" y="66" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="135" cy="69" r="3" fill="#888"/>
+    <rect x="150" y="66" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="160" cy="69" r="3" fill="#888"/>
+    <rect x="175" y="66" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="185" cy="69" r="3" fill="#888"/>
+    <rect x="200" y="66" width="20" height="20" rx="2" fill="#555" stroke="#666" stroke-width="0.5"/>
+    <circle cx="210" cy="69" r="3" fill="#888"/>
+
+    <text x="42" y="102" text-anchor="middle" font-size="6" font-weight="bold" fill="#d4a017">CH4</text>
+    <text x="92" y="102" text-anchor="middle" font-size="6" font-weight="bold" fill="#d4a017">CH5</text>
+    <text x="142" y="102" text-anchor="middle" font-size="6" font-weight="bold" fill="#d4a017">CH6</text>
+    <text x="192" y="102" text-anchor="middle" font-size="6" font-weight="bold" fill="#d4a017">CH7</text>
+
+    <text x="135" y="118" text-anchor="middle" font-size="7" fill="#999">ANALOG INPUTS (8x) — 0-10V / 4-20mA</text>
+
+    <!-- Main face -->
+    <rect x="10" y="128" width="250" height="280" rx="4" fill="#222"/>
+    
+    <!-- Arduino logo -->
+    <text x="135" y="180" text-anchor="middle" font-size="18" font-weight="bold" fill="#00979D">ARDUINO</text>
+
+    <!-- Board name -->
+    <text x="135" y="230" text-anchor="middle" font-size="14" font-weight="bold" fill="#aaa">OPTA EXT</text>
+    <text x="135" y="250" text-anchor="middle" font-size="14" font-weight="bold" fill="#aaa">A0602</text>
+    <text x="135" y="270" text-anchor="middle" font-size="8" fill="#777">AFX00007</text>
+
+    <!-- Channel status LEDs -->
+    <g transform="translate(30, 290)">
+      <circle cx="0" cy="0" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+      <circle cx="0" cy="0" r="2" fill="#2ecc71" opacity="0.4"/>
+      <text x="0" y="14" text-anchor="middle" font-size="5" fill="#777">CH0</text>
+
+      <circle cx="25" cy="0" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+      <circle cx="25" cy="0" r="2" fill="#2ecc71" opacity="0.4"/>
+      <text x="25" y="14" text-anchor="middle" font-size="5" fill="#777">CH1</text>
+
+      <circle cx="50" cy="0" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+      <circle cx="50" cy="0" r="2" fill="#2ecc71" opacity="0.4"/>
+      <text x="50" y="14" text-anchor="middle" font-size="5" fill="#777">CH2</text>
+
+      <circle cx="75" cy="0" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+      <circle cx="75" cy="0" r="2" fill="#2ecc71" opacity="0.4"/>
+      <text x="75" y="14" text-anchor="middle" font-size="5" fill="#777">CH3</text>
+
+      <circle cx="100" cy="0" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+      <circle cx="100" cy="0" r="2" fill="#f39c12" opacity="0.4"/>
+      <text x="100" y="14" text-anchor="middle" font-size="5" fill="#777">CH4</text>
+
+      <circle cx="125" cy="0" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+      <circle cx="125" cy="0" r="2" fill="#f39c12" opacity="0.4"/>
+      <text x="125" y="14" text-anchor="middle" font-size="5" fill="#777">CH5</text>
+
+      <circle cx="150" cy="0" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+      <circle cx="150" cy="0" r="2" fill="#f39c12" opacity="0.4"/>
+      <text x="150" y="14" text-anchor="middle" font-size="5" fill="#777">CH6</text>
+
+      <circle cx="175" cy="0" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+      <circle cx="175" cy="0" r="2" fill="#f39c12" opacity="0.4"/>
+      <text x="175" y="14" text-anchor="middle" font-size="5" fill="#777">CH7</text>
+    </g>
+
+    <!-- Board specs -->
+    <text x="135" y="340" text-anchor="middle" font-size="8" fill="#777">Analog Expansion Module</text>
+    <text x="135" y="355" text-anchor="middle" font-size="8" fill="#666">I2C: 0x64 | 12-bit ADC</text>
+    <text x="135" y="370" text-anchor="middle" font-size="8" fill="#666">Per-channel: voltage or current</text>
+    <text x="135" y="385" text-anchor="middle" font-size="7" fill="#555">Powered via expansion bus</text>
+
+    <!-- Expansion connector (left edge) -->
+    <rect x="-8" y="200" width="15" height="160" rx="2" fill="#00979D" stroke="#007a7e" stroke-width="1"/>
+
+    <!-- Expansion connector (right edge) -->
+    <rect x="263" y="200" width="15" height="160" rx="2" fill="#00979D" stroke="#007a7e" stroke-width="1"/>
+
+    <!-- DIN rail clip -->
+    <rect x="95" y="480" width="80" height="20" rx="2" fill="#555" stroke="#444" stroke-width="1"/>
+    <text x="135" y="494" text-anchor="middle" font-size="7" fill="#aaa">DIN CLIP</text>
+  </g>
+
+  <!-- ================================================================ -->
+  <!-- BOARD 3: BLUES WIRELESS FOR OPTA (RIGHT)                        -->
+  <!-- ================================================================ -->
+  <g transform="translate(755, 75)" filter="url(#shadow)">
+    <!-- Main body (blue) -->
+    <rect width="270" height="500" rx="6" fill="url(#bluesFace)" stroke="#14324a" stroke-width="2"/>
+
+    <!-- Top screw terminal strip (+ + - -) -->
+    <rect x="10" y="8" width="250" height="28" rx="3" fill="#1a2a3a" stroke="#2a4a6a" stroke-width="1"/>
+    <rect x="65" y="12" width="20" height="20" rx="2" fill="#3a5a7a" stroke="#4a6a8a" stroke-width="0.5"/>
+    <circle cx="75" cy="15" r="3" fill="#6a8aaa"/>
+    <text x="75" y="35" text-anchor="middle" font-size="6" font-weight="bold" fill="#c0392b">+</text>
+    <rect x="90" y="12" width="20" height="20" rx="2" fill="#3a5a7a" stroke="#4a6a8a" stroke-width="0.5"/>
+    <circle cx="100" cy="15" r="3" fill="#6a8aaa"/>
+    <text x="100" y="35" text-anchor="middle" font-size="6" font-weight="bold" fill="#c0392b">+</text>
+    <rect x="115" y="12" width="20" height="20" rx="2" fill="#3a5a7a" stroke="#4a6a8a" stroke-width="0.5"/>
+    <circle cx="125" cy="15" r="3" fill="#6a8aaa"/>
+    <text x="125" y="35" text-anchor="middle" font-size="6" font-weight="bold" fill="#5dade2">−</text>
+    <rect x="140" y="12" width="20" height="20" rx="2" fill="#3a5a7a" stroke="#4a6a8a" stroke-width="0.5"/>
+    <circle cx="150" cy="15" r="3" fill="#6a8aaa"/>
+    <text x="150" y="35" text-anchor="middle" font-size="6" font-weight="bold" fill="#5dade2">−</text>
+
+    <!-- Two V-shaped antennas -->
+    <line x1="180" y1="50" x2="220" y2="-30" stroke="#1a1a1a" stroke-width="5" stroke-linecap="round"/>
+    <line x1="200" y1="50" x2="255" y2="-25" stroke="#1a1a1a" stroke-width="5" stroke-linecap="round"/>
+    <!-- Antenna bases -->
+    <rect x="173" y="42" width="14" height="16" rx="3" fill="#333" stroke="#222" stroke-width="1"/>
+    <rect x="193" y="42" width="14" height="16" rx="3" fill="#333" stroke="#222" stroke-width="1"/>
+    <text x="180" y="70" text-anchor="middle" font-size="6" fill="#7aabcc">LTE</text>
+    <text x="200" y="70" text-anchor="middle" font-size="6" fill="#7aabcc">GPS</text>
+
+    <!-- Antenna SMA connectors -->
+    <circle cx="180" cy="50" r="5" fill="#888" stroke="#666" stroke-width="1"/>
+    <circle cx="200" cy="50" r="5" fill="#888" stroke="#666" stroke-width="1"/>
+
+    <!-- LED indicator -->
+    <circle cx="50" cy="90" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+    <circle cx="50" cy="90" r="2" fill="#2ecc71" opacity="0.6"/>
+
+    <!-- TEST button -->
+    <rect x="65" y="83" width="30" height="14" rx="3" fill="#3a5a7a" stroke="#4a7090" stroke-width="1"/>
+    <text x="80" y="93" text-anchor="middle" font-size="7" font-weight="bold" fill="#bbd4e8">TEST</text>
+
+    <!-- Main face area -->
+    <rect x="15" y="115" width="240" height="280" rx="4" fill="#1d3b5a"/>
+
+    <!-- Blues logo -->
+    <circle cx="65" cy="200" r="12" fill="none" stroke="#85c1e9" stroke-width="2.5"/>
+    <circle cx="65" cy="200" r="4" fill="#85c1e9"/>
+    <text x="90" y="205" font-size="18" font-weight="bold" fill="#85c1e9">blues</text>
+
+    <!-- "Wireless For Opta" label -->
+    <text x="185" y="260" text-anchor="middle" font-size="9" fill="#5d9ec0">Wireless For Opta</text>
+
+    <!-- Notecard module -->
+    <rect x="40" y="280" width="120" height="60" rx="4" fill="#14324a" stroke="#2a5575" stroke-width="1"/>
+    <text x="100" y="300" text-anchor="middle" font-size="8" font-weight="bold" fill="#7aabcc">NOTE-NBGL</text>
+    <text x="100" y="314" text-anchor="middle" font-size="7" fill="#5a8aaa">Notecard</text>
+    <text x="100" y="328" text-anchor="middle" font-size="7" fill="#5a8aaa">I2C: 0x17</text>
+
+    <!-- Bottom ports: USB + SIM -->
+    <rect x="10" y="420" width="250" height="28" rx="3" fill="#1a2a3a" stroke="#2a4a6a" stroke-width="1"/>
+    
+    <!-- USB port -->
+    <rect x="55" y="424" width="50" height="20" rx="3" fill="#14324a" stroke="#2a5575" stroke-width="1"/>
+    <rect x="62" y="429" width="36" height="10" rx="4" fill="#0f2540" stroke="#1a3a5a" stroke-width="0.5"/>
+    <text x="80" y="456" text-anchor="middle" font-size="7" font-weight="bold" fill="#7aabcc">USB</text>
+    
+    <!-- SIM card slot -->
+    <rect x="140" y="424" width="60" height="20" rx="3" fill="#14324a" stroke="#2a5575" stroke-width="1"/>
+    <rect x="148" y="428" width="44" height="12" rx="2" fill="#0f2540" stroke="#1a3a5a" stroke-width="0.5"/>
+    <text x="170" y="456" text-anchor="middle" font-size="7" font-weight="bold" fill="#7aabcc">SIM</text>
+
+    <!-- Board info -->
+    <text x="135" y="480" text-anchor="middle" font-size="8" fill="#5a8aaa">LTE-M / NB-IoT Cellular</text>
+    <text x="135" y="493" text-anchor="middle" font-size="7" fill="#4a7a9a">Plugs into Opta expansion port</text>
+
+    <!-- Expansion connector (left edge) -->
+    <rect x="-8" y="200" width="15" height="160" rx="2" fill="#00979D" stroke="#007a7e" stroke-width="1"/>
+
+    <!-- DIN rail clip -->
+    <rect x="95" y="480" width="80" height="20" rx="2" fill="#2a4a6a" stroke="#1a3a5a" stroke-width="1"/>
+    <text x="135" y="494" text-anchor="middle" font-size="7" fill="#7aabcc">DIN CLIP</text>
+  </g>
+
+  <!-- ================================================================ -->
+  <!-- LABELS BELOW EACH BOARD                                          -->
+  <!-- ================================================================ -->
+  
+  <!-- Opta Lite label -->
+  <rect x="115" y="608" width="220" height="52" rx="5" fill="white" stroke="#00979D" stroke-width="1.5"/>
+  <text x="225" y="626" text-anchor="middle" font-size="11" font-weight="bold" fill="#00979D">Arduino Opta Lite</text>
+  <text x="225" y="640" text-anchor="middle" font-size="8" fill="#666">Main controller | 4 relays | 8 digital in</text>
+  <text x="225" y="652" text-anchor="middle" font-size="8" fill="#666">STM32H747 | Ethernet | USB-C</text>
+
+  <!-- A0602 label (center) -->
+  <rect x="470" y="608" width="200" height="52" rx="5" fill="white" stroke="#d4a017" stroke-width="1.5"/>
+  <text x="570" y="626" text-anchor="middle" font-size="11" font-weight="bold" fill="#d4a017">Opta Ext A0602</text>
+  <text x="570" y="640" text-anchor="middle" font-size="8" fill="#666">8-ch analog expansion</text>
+  <text x="570" y="652" text-anchor="middle" font-size="8" fill="#666">0-10V or 4-20mA per channel</text>
+
+  <!-- Blues label (right) -->
+  <rect x="790" y="608" width="200" height="52" rx="5" fill="white" stroke="#2a5075" stroke-width="1.5"/>
+  <text x="890" y="626" text-anchor="middle" font-size="11" font-weight="bold" fill="#2a5075">Blues Wireless for Opta</text>
+  <text x="890" y="640" text-anchor="middle" font-size="8" fill="#666">Cellular modem | Notecard</text>
+  <text x="890" y="652" text-anchor="middle" font-size="8" fill="#666">LTE-M / NB-IoT | SIM + USB</text>
+
+  <!-- Footer -->
+  <text x="550" y="675" text-anchor="middle" font-size="8" fill="#888">TankAlarm 112025 Hardware Lineup | All boards snap together via expansion port | DIN rail mount | Rev 1.0 Feb 2026</text>
+</svg>

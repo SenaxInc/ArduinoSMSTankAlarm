@@ -13,6 +13,7 @@ The following SVG diagrams are available in the `images/` folder:
 1. **[System Overview](images/wiring-01-system-overview.svg)** — Complete system showing Opta, Blues Notecard, A0602 expansion, sensors, and relay outputs
 2. **[4-20mA Sensor Wiring](images/wiring-02-4-20ma-sensor.svg)** — Detailed Dwyer 626 CB terminal wiring with current loop schematic
 3. **[Digital Inputs & Relay Outputs](images/wiring-03-digital-relay.svg)** — Float switch, Hall effect RPM, and relay output wiring details
+4. **[Hardware Lineup](images/wiring-04-hardware-lineup.svg)** — All three boards side-by-side: Opta Lite, Blues Wireless for Opta, and A0602 expansion
 
 ---
 
