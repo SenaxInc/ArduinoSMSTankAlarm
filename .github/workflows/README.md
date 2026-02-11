@@ -186,18 +186,18 @@ The workflow runs on:
 
 ### Binary File Conflict Resolution
 
-The workflow uses the `-X theirs` merge strategy during rebase to automatically resolve conflicts in binary firmware files. This prevents build failures when multiple builds update firmware concurrently.
+The workflow uses the `-X theirs` merge strategy option during rebase to automatically resolve conflicts in binary firmware files. This prevents build failures when multiple builds update firmware concurrently.
 
 **How it works:**
-- During `git pull --rebase -X theirs`, git keeps the newly built firmware (from the current commit) instead of the older version
+- During `git pull --rebase -X theirs`, git applies the merge strategy with the `-X theirs` option so it keeps the newly built firmware (from the rebased commit) instead of the older version
 - This is the correct behavior since we always want the latest build
 - No manual intervention required for binary file conflicts
 
 **Why this is needed:**
 - Binary files cannot be automatically merged by git like text files
 - When two builds run in quick succession, both try to update the same `.bin` files
-- Without this strategy, the rebase would fail with a merge conflict
-- The `-X theirs` strategy tells git to always use our version (the new build) when conflicts occur
+- Without this strategy option, the rebase would fail with a merge conflict
+- The `-X theirs` strategy option tells git to prefer the version from the commit being rebased (the new build) when conflicts occur
 
 ### Concurrency Control
 

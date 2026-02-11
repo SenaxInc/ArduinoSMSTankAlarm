@@ -63,8 +63,8 @@ jobs:
           if [ -n "$(git status --porcelain firmware)" ]; then
             git add firmware
             git commit -m "Update Opta firmware binaries"
-            # Use -X theirs strategy to automatically resolve binary conflicts
-            # by keeping the new version (our commit being rebased)
+            # Use the `-X theirs` strategy option to automatically resolve binary conflicts
+            # by keeping the version from the commit being rebased (the new build)
             if git pull --rebase -X theirs origin "${GITHUB_REF_NAME}"; then
               git push origin "HEAD:${GITHUB_REF_NAME}"
             else
