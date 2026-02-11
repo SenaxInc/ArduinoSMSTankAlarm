@@ -506,7 +506,9 @@ struct MonitorConfig {
 
 struct ClientConfig {
   char siteName[32];
+  char deviceUid[32];   // Device UID (e.g., dev:...)
   char deviceLabel[24];
+  char clientFleet[32]; // Fleet for this device context
   char serverFleet[32]; // Target fleet name for server (e.g., "tankalarm-server")
   char productUid[64];  // Notehub product UID (configurable for different fleets)
   char dailyEmail[64];
@@ -1365,8 +1367,10 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   memset(&cfg, 0, sizeof(ClientConfig));
 
   strlcpy(cfg.siteName, doc["site"].as<const char *>() ? doc["site"].as<const char *>() : "", sizeof(cfg.siteName));
+  strlcpy(cfg.deviceUid, doc["deviceUid"].as<const char *>() ? doc["deviceUid"].as<const char *>() : "", sizeof(cfg.deviceUid));
   strlcpy(cfg.deviceLabel, doc["deviceLabel"].as<const char *>() ? doc["deviceLabel"].as<const char *>() : "", sizeof(cfg.deviceLabel));
   strlcpy(cfg.serverFleet, doc["serverFleet"].as<const char *>() ? doc["serverFleet"].as<const char *>() : "", sizeof(cfg.serverFleet));
+  strlcpy(cfg.clientFleet, doc["clientFleet"].as<const char *>() ? doc["clientFleet"].as<const char *>() : "", sizeof(cfg.clientFleet));
   strlcpy(cfg.dailyEmail, doc["dailyEmail"].as<const char *>() ? doc["dailyEmail"].as<const char *>() : "", sizeof(cfg.dailyEmail));
 
   cfg.sampleSeconds = doc["sampleSeconds"].is<uint16_t>() ? doc["sampleSeconds"].as<uint16_t>() : DEFAULT_SAMPLE_SECONDS;
@@ -1616,7 +1620,9 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   JsonDocument &doc = *docPtr;
 
   doc["site"] = cfg.siteName;
+  doc["deviceUid"] = cfg.deviceUid;
   doc["deviceLabel"] = cfg.deviceLabel;
+  doc["clientFleet"] = cfg.clientFleet;
   doc["serverFleet"] = cfg.serverFleet;
   doc["sampleSeconds"] = cfg.sampleSeconds;
   doc["levelChangeThreshold"] = cfg.minLevelChangeInches;
@@ -1901,6 +1907,9 @@ static void configureNotecardHubMode() {
     // Use configurable product UID - allows fleet-specific deployments without recompilation
     const char *productUid = (gConfig.productUid[0] != '\0') ? gConfig.productUid : DEFAULT_PRODUCT_UID;
     JAddStringToObject(req, "product", productUid);
+    if (gConfig.clientFleet[0] != '\0') {
+      JAddStringToObject(req, "fleet", gConfig.clientFleet);
+    }
     Serial.print(F("Product UID: "));
     Serial.println(productUid);
     
@@ -2270,7 +2279,10 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     strlcpy(gConfig.deviceLabel, doc["deviceLabel"].as<const char *>(), sizeof(gConfig.deviceLabel));
   }
   if (!doc["serverFleet"].isNull()) {
-    strlcpy(gConfig.serverFleet, doc["serverFleet"].as<const char *>(), sizeof(gConfig.serverFleet));
+   
+  if (!doc["clientFleet"].isNull()) {
+    strlcpy(gConfig.clientFleet, doc["clientFleet"].as<const char *>(), sizeof(gConfig.clientFleet));
+  } strlcpy(gConfig.serverFleet, doc["serverFleet"].as<const char *>(), sizeof(gConfig.serverFleet));
   }
   if (!doc["sampleSeconds"].isNull()) {
     gConfig.sampleSeconds = doc["sampleSeconds"].as<uint16_t>();
