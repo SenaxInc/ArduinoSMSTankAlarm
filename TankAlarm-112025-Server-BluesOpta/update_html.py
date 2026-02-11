@@ -48,12 +48,12 @@ function createSensorHtml(id){
   return `<div class="sensor-card" id="sensor-${id}"><div class="sensor-header"><span class="sensor-title">Sensor #${id+1}</span><button type="button" class="remove-btn" onclick="removeSensor(${id})">Remove</button></div>
   <div class="form-grid">
   <label class="field"><span>Monitor Type</span><select class="monitor-type" onchange="updateMonitorFields(${id})">${monitorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label>
-  <label class="field tank-num-field"><span>Tank #</span><input type="number" class="tank-num" value="${id+1}"></label>
-  <label class="field"><span>Name</span><input type="text" class="tank-name"></label>
+  <label class="field tank-num-field"><span class="tank-num-label">Tank #</span><input type="number" class="tank-num" value="${id+1}"></label>
+  <label class="field"><span class="name-label">Name</span><input type="text" class="tank-name"></label>
   <label class="field contents-field"><span>Contents</span><input type="text" class="tank-contents"></label>
   <label class="field"><span>Sensor Type</span><select class="sensor-type" onchange="updateFields(${id})">${sensorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label>
   <label class="field"><span>Pin</span><select class="sensor-pin"><option value="0">I1</option><option value="1">I2</option><option value="2">I3</option><option value="3">I4</option><option value="4">I5</option><option value="5">I6</option><option value="6">I7</option><option value="7">I8</option></select></label>
-  <label class="field height-field"><span>Height(in)</span><input type="number" class="tank-height" value="120"></label>
+  <label class="field height-field"><span class="height-label">Height(in)</span><input type="number" class="tank-height" value="120"></label>
   </div>
   <div class="collapsible-section alarm-section visible"><h4 style="margin:10px 0;">Alarms</h4><div class="form-grid">
   <label class="field"><input type="checkbox" class="high-alarm-enabled" checked> High Alarm <input type="number" class="high-alarm" value="100"></label>
@@ -65,10 +65,8 @@ function createSensorHtml(id){
   </div>`;
 }
 
-// NOTE: Minified logic for UI updates (updateMonitorFields, updateFields) is simplified here for brevity but assumes existence.
-// Since we are replacing the logic, we must IMPLEMENT it fully.
-window.updateMonitorFields=function(id){/*Simplified for injection*/};
-window.updateFields=function(id){/*Simplified for injection*/};
+window.updateMonitorFields=function(id){const card=document.getElementById(`sensor-${id}`);const type=card.querySelector('.monitor-type').value;const numField=card.querySelector('.tank-num-field');const numFieldLabel=card.querySelector('.tank-num-label');const nameLabel=card.querySelector('.name-label');const heightLabel=card.querySelector('.height-label');const contentsField=card.querySelector('.contents-field');if(type==='gas'){numField.style.display='none';nameLabel.textContent='System Name';heightLabel.textContent='Max Pressure(PSI)';contentsField.style.display='flex';}else if(type==='rpm'){numField.style.display='flex';numFieldLabel.textContent='Engine #';nameLabel.textContent='Engine Name';heightLabel.textContent='Max RPM';contentsField.style.display='none';}else{numField.style.display='flex';numFieldLabel.textContent='Tank #';nameLabel.textContent='Name';heightLabel.textContent='Height(in)';contentsField.style.display='flex';}};
+window.updateFields=function(id){};
 window.removeSensor=function(id){const e=document.getElementById(`sensor-${id}`);if(e)e.remove();};
 window.removeInput=function(id){const e=document.getElementById(`input-${id}`);if(e)e.remove();};
 function addSensor(){
