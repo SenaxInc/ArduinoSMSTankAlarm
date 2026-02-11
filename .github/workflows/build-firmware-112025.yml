@@ -59,15 +59,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # Configure merge driver to always use 'ours' (incoming) for binary conflicts
-          git config merge.ours.driver "true"
-          git config merge.ours.name "Always use our version for binary files"
 
           if [ -n "$(git status --porcelain firmware)" ]; then
             git add firmware
             git commit -m "Update Opta firmware binaries"
-            if git pull --rebase origin "${GITHUB_REF_NAME}"; then
+            # Use -X theirs strategy to automatically resolve binary conflicts
+            # by keeping the new version (our commit being rebased)
+            if git pull --rebase -X theirs origin "${GITHUB_REF_NAME}"; then
               git push origin "HEAD:${GITHUB_REF_NAME}"
             else
               echo "Rebase failed. Aborting..."

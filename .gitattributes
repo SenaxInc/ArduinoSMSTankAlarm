@@ -3,7 +3,3 @@
 
 # Arduino sources should be UTF-8 (no BOM) with LF line endings
 *.ino text eol=lf
-
-# Binary firmware files: use 'ours' (the new version) during merge conflicts
-# This prevents rebase failures when multiple builds update firmware binaries concurrently
-firmware/**/*.bin binary merge=ours
