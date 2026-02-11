@@ -145,6 +145,104 @@ To modify the workflow:
 2. Test changes in a branch before merging
 3. Monitor the Actions tab after deployment
 
+## Build Firmware Binaries Workflow
+
+**File:** `build-firmware-112025.yml`
+
+### Purpose
+Automatically builds firmware binary files (.bin) for the TankAlarm-112025 project and commits them to the repository for easy deployment.
+
+### Triggers
+The workflow runs on:
+- **Push events** to `main` or `master` branches when changes are made to:
+  - `TankAlarm-112025-Client-BluesOpta/` directory
+  - `TankAlarm-112025-Server-BluesOpta/` directory
+  - `TankAlarm-112025-Common/` directory
+  - The workflow file itself (`.github/workflows/build-firmware-112025.yml`)
+
+### What It Does
+
+1. **Sets up the build environment**
+   - Checks out the repository with full history (`fetch-depth: 0`)
+   - Installs Arduino CLI
+   - Installs Arduino Mbed OS Opta Boards core
+
+2. **Installs required libraries for 112025**
+   - Ethernet
+   - ArduinoJson
+   - Blues Wireless Notecard
+   - ArduinoRS485
+   - ArduinoModbus
+
+3. **Builds firmware binaries**
+   - **Client firmware:** `firmware/112025/client/TankAlarm-112025-Client-BluesOpta.ino.bin`
+   - **Server firmware:** `firmware/112025/server/TankAlarm-112025-Server-BluesOpta.ino.bin`
+   - Also generates bootloader versions: `*.ino.with_bootloader.bin`
+
+4. **Commits and pushes binaries**
+   - Automatically commits new firmware binaries if changes detected
+   - Uses rebase strategy with conflict resolution for binary files
+   - Pushes changes back to the branch that triggered the workflow
+
+### Binary File Conflict Resolution
+
+The workflow uses the `-X theirs` merge strategy during rebase to automatically resolve conflicts in binary firmware files. This prevents build failures when multiple builds update firmware concurrently.
+
+**How it works:**
+- During `git pull --rebase -X theirs`, git keeps the newly built firmware (from the current commit) instead of the older version
+- This is the correct behavior since we always want the latest build
+- No manual intervention required for binary file conflicts
+
+**Why this is needed:**
+- Binary files cannot be automatically merged by git like text files
+- When two builds run in quick succession, both try to update the same `.bin` files
+- Without this strategy, the rebase would fail with a merge conflict
+- The `-X theirs` strategy tells git to always use our version (the new build) when conflicts occur
+
+### Concurrency Control
+
+The workflow uses concurrency settings to serialize builds:
+- **Concurrency group:** `firmware-build-${{ github.ref_name }}`
+- **Cancel-in-progress:** `false` (builds run to completion, queued sequentially)
+
+This ensures builds for the same branch run one at a time, minimizing conflicts.
+
+### Viewing Results
+
+After the workflow runs:
+1. Check the **Actions** tab for build status
+2. Download firmware binaries from the `firmware/112025/` directory
+3. Review build logs for compilation statistics (memory usage, etc.)
+
+### Using the Firmware Binaries
+
+The compiled binaries can be uploaded to Arduino Opta devices using:
+- **Arduino IDE:** Tools → Programmer → DFU Mode, then File → Upload
+- **Arduino CLI:** `arduino-cli upload -b arduino:mbed_opta:opta -i firmware.bin`
+- **Bootloader versions:** Use `*.with_bootloader.bin` for fresh devices
+
+### Troubleshooting
+
+**Workflow fails to push:**
+- Check that the `GITHUB_TOKEN` has write permissions
+- Verify that the branch is not protected or has appropriate rules
+
+**Rebase conflicts:**
+- The workflow automatically resolves binary file conflicts using `-X theirs`
+- If the workflow still fails, check logs for non-binary conflicts (e.g., workflow file changes)
+
+**Build failures:**
+- Review compilation errors in the workflow logs
+- Check that all required libraries are properly installed
+- Verify sketch syntax and Arduino Mbed OS core version
+
+### Maintenance
+
+To modify the workflow:
+1. Edit `.github/workflows/build-firmware-112025.yml`
+2. Test changes in a branch before merging to ensure the rebase strategy still works
+3. Monitor the Actions tab after deployment
+
 ## Website Screenshots Workflow
 
 **File:** `update-screenshots.yml`
