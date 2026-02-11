@@ -680,7 +680,8 @@ struct ClientConfigSnapshot {
 enum class ConfigDispatchStatus {
   Ok,
   PayloadTooLarge,
-  NotecardFailure
+  NotecardFailure,
+  CachedOnly          // Config saved locally but Notecard unavailable
 };
 
 // FTP session and result structures for backup/restore operations
@@ -1185,7 +1186,7 @@ const sensorCards=document.querySelectorAll('#sensorsContainer .sensor-card');if
 sensorCards.forEach((card,index)=>{const monitorType=card.querySelector('.monitor-type').value;const type=parseInt(card.querySelector('.sensor-type').value);const pin=parseInt(card.querySelector('.sensor-pin').value);let tankNum=parseInt(card.querySelector('.tank-num').value)||(index+1);let name=card.querySelector('.tank-name').value;const contents=card.querySelector('.tank-contents')?.value||'';if(monitorType==='gas'){if(!name)name=`Gas System ${index+1}`;}else if(monitorType==='rpm'){if(!name)name=`Engine ${tankNum}`;}else{if(!name)name=`Tank ${index+1}`;}const sensor=sensorKeyFromValue(type);const pulsesPerRev=Math.max(1,Math.min(255,parseInt(card.querySelector('.pulses-per-rev').value)||1));const switchMode=card.querySelector('.switch-mode').value;const alarmSectionVisible=card.querySelector('.alarm-section').classList.contains('visible');const highAlarmEnabled=card.querySelector('.high-alarm-enabled').checked;const lowAlarmEnabled=card.querySelector('.low-alarm-enabled').checked;const highAlarmValue=card.querySelector('.high-alarm').value;const lowAlarmValue=card.querySelector('.low-alarm').value;const tank={id:String.fromCharCode(65+index),name:name,contents:contents,number:tankNum,sensor:sensor,primaryPin:sensor==='current'?0:pin,secondaryPin:-1,loopChannel:sensor==='current'?pin:-1,rpmPin:sensor==='rpm'?pin:-1,maxValue:sensor==='digital'?1:(parseFloat(card.querySelector('.tank-height').value)||120),hysteresis:sensor==='digital'?0:2.0,daily:true,upload:true};if(sensor==='digital'){tank.digitalSwitchMode=switchMode;}if(sensor==='current'){const currentLoopType=card.querySelector('.current-loop-type').value;const sensorMountHeight=parseFloat(card.querySelector('.sensor-mount-height').value)||0;const sMin=parseFloat(card.querySelector('.sensor-range-min').value)||0;const sMax=parseFloat(card.querySelector('.sensor-range-max').value)||5;const sUnit=card.querySelector('.sensor-range-unit').value||'PSI';tank.currentLoopType=currentLoopType;tank.sensorMountHeight=sensorMountHeight;tank.sensorRangeMin=sMin;tank.sensorRangeMax=sMax;tank.sensorRangeUnit=sUnit;}if(alarmSectionVisible){if(sensor==='digital'){const digitalTriggerState=card.querySelector('.digital-trigger-state').value;tank.digitalTrigger=digitalTriggerState;if(digitalTriggerState==='activated'){tank.highAlarm=1;}else{tank.lowAlarm=0;}tank.alarmSms=true;}else if(highAlarmEnabled||lowAlarmEnabled){if(highAlarmEnabled&&highAlarmValue!==''){const v=parseFloat(highAlarmValue);if(!isNaN(v))tank.highAlarm=v;}if(lowAlarmEnabled&&lowAlarmValue!==''){const v=parseFloat(lowAlarmValue);if(!isNaN(v))tank.lowAlarm=v;}tank.alarmSms=true;}else{tank.alarmSms=false;}}else{tank.alarmSms=false;}if(sensor==='rpm'){tank.pulsesPerRev=pulsesPerRev;}const relaySectionVisible=card.querySelector('.relay-section').classList.contains('visible');if(relaySectionVisible){let relayMask=0;['relay-1','relay-2','relay-3','relay-4'].forEach(cls=>{const cb=card.querySelector('.'+cls);if(cb.checked)relayMask|=parseInt(cb.value);});const relayTarget=card.querySelector('.relay-target').value.trim();const relayTrigger=card.querySelector('.relay-trigger').value;const relayMode=card.querySelector('.relay-mode').value;if(relayTarget){tank.relayTargetClient=relayTarget;tank.relayMask=relayMask;tank.relayTrigger=relayTrigger;tank.relayMode=relayMode;if(relayMode==='momentary'){tank.relayMomentaryDurations=[parseInt(card.querySelector('.relay-duration-1').value)||0,parseInt(card.querySelector('.relay-duration-2').value)||0,parseInt(card.querySelector('.relay-duration-3').value)||0,parseInt(card.querySelector('.relay-duration-4').value)||0];}}}const smsSectionVisible=card.querySelector('.sms-section').classList.contains('visible');if(smsSectionVisible){const smsPhones=card.querySelector('.sms-phones').value.trim();const smsTrigger=card.querySelector('.sms-trigger').value;const smsMessage=card.querySelector('.sms-message').value.trim();if(smsPhones){const phoneArray=smsPhones.split(',').map(p=>p.trim()).filter(p=>p.length>0);if(phoneArray.length>0){tank.smsAlert={phones:phoneArray,trigger:smsTrigger,message:smsMessage||'Tank alarm triggered'};}}}cfg.tanks.push(tank);});
 const inputCards=document.querySelectorAll('#inputsContainer .sensor-card');let clearButtonConfigured=false;inputCards.forEach(card=>{const inputAction=card.querySelector('.input-action').value;if(inputAction==='clear_relays'&&!clearButtonConfigured){cfg.clearButtonPin=parseInt(card.querySelector('.input-pin').value)||0;cfg.clearButtonActiveHigh=(card.querySelector('.input-mode').value==='active_high');clearButtonConfigured=true;}});return cfg;}
 /* SUBMIT & DOWNLOAD */
-async function submitConfig(e){e.preventDefault();requestPin(async(pin)=>{try{const clientUid=(els.clientUid&&els.clientUid.value?els.clientUid.value:'').trim();if(!clientUid){showToast('Device UID is required to send config',true);return;}const cfg=collectConfig();if(!cfg)return;const res=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin,client:clientUid,config:cfg})});if(res.ok){showToast('Configuration saved to device');}else{const t=await res.text();showToast('Error: '+t,true);}}catch(err){showToast('Error: '+err.message,true);}});}
+async function submitConfig(e){e.preventDefault();requestPin(async(pin)=>{try{const clientUid=(els.clientUid&&els.clientUid.value?els.clientUid.value:'').trim();if(!clientUid){showToast('Device UID is required to send config',true);return;}const cfg=collectConfig();if(!cfg)return;const res=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin,client:clientUid,config:cfg})});if(res.status===200){showToast('Configuration saved and queued for device');}else if(res.status===202){const t=await res.text();showToast(t||'Config saved locally (Notecard offline)');}else{const t=await res.text();showToast('Error: '+t,true);}}catch(err){showToast('Error: '+err.message,true);}});}
 if(els.form)els.form.addEventListener('submit',submitConfig);
 document.getElementById('downloadBtn').addEventListener('click',()=>{const cfg=collectConfig();if(!cfg)return;const blob=new Blob([JSON.stringify(cfg,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='client_config.json';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);});
 /* LOAD CONFIG */
@@ -4607,7 +4608,7 @@ static void handleWebRequests() {
       handleServerSettingsPost(client, body);
     }
   } else if (method == "POST" && path == "/api/config") {
-    if (contentLength > 8192) {
+    if (contentLength > MAX_HTTP_BODY_BYTES) {
       respondStatus(client, 413, "Payload Too Large");
     } else {
       handleConfigPost(client, body);
@@ -5364,6 +5365,10 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
         respondStatus(client, 500, F("Failed to queue config"));
         return;
       }
+      if (status == ConfigDispatchStatus::CachedOnly) {
+        respondStatus(client, 202, F("Config saved locally but Notecard is unavailable - will sync when connected"));
+        return;
+      }
     }
   }
 
@@ -5687,7 +5692,7 @@ static void handleFtpRestorePost(EthernetClient &client, const String &body) {
 }
 
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
-  char buffer[4096];
+  char buffer[8192];
   size_t len = serializeJson(cfgObj, buffer, sizeof(buffer));
   if (len == 0 || len >= sizeof(buffer)) {
     Serial.println(F("Client config payload too large"));
@@ -5695,9 +5700,13 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
   }
   buffer[len] = '\0';
 
+  // Always cache locally first so config is preserved even if Notecard is down
+  cacheClientConfigFromBuffer(clientUid, buffer);
+
   J *req = notecard.newRequest("note.add");
   if (!req) {
-    return ConfigDispatchStatus::NotecardFailure;
+    Serial.println(F("Notecard unavailable - config cached locally only"));
+    return ConfigDispatchStatus::CachedOnly;
   }
   // Use device-specific targeting: send directly to client's config.qi inbox
   char targetFile[80];
@@ -5712,10 +5721,9 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
   JAddItemToObject(req, "body", body);
   bool queued = notecard.sendRequest(req);
   if (!queued) {
-    return ConfigDispatchStatus::NotecardFailure;
+    Serial.println(F("Notecard send failed - config cached locally only"));
+    return ConfigDispatchStatus::CachedOnly;
   }
-
-  cacheClientConfigFromBuffer(clientUid, buffer);
 
   Serial.print(F("Queued config update for client " ));
   Serial.println(clientUid);
