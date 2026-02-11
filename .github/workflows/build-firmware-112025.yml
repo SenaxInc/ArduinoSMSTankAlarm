@@ -1,0 +1,64 @@
+name: Build Firmware Binaries - 112025 (Opta)
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'TankAlarm-112025-Client-BluesOpta/**'
+      - 'TankAlarm-112025-Server-BluesOpta/**'
+      - 'TankAlarm-112025-Common/**'
+      - '.github/workflows/build-firmware-112025.yml'
+
+jobs:
+  build-firmware:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v1
+
+      - name: Install Arduino Mbed OS Opta Boards core
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:mbed_opta
+
+      - name: Install required libraries for 112025
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "Ethernet"
+          arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "Blues Wireless Notecard"
+          arduino-cli lib install "ArduinoRS485"
+          arduino-cli lib install "ArduinoModbus"
+
+      - name: Build client firmware (.bin)
+        run: |
+          arduino-cli compile --fqbn arduino:mbed_opta:opta \
+            --library TankAlarm-112025-Common \
+            --output-dir firmware/112025/client \
+            TankAlarm-112025-Client-BluesOpta/TankAlarm-112025-Client-BluesOpta.ino
+
+      - name: Build server firmware (.bin)
+        run: |
+          arduino-cli compile --fqbn arduino:mbed_opta:opta \
+            --library TankAlarm-112025-Common \
+            --output-dir firmware/112025/server \
+            TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino
+
+      - name: Commit firmware binaries
+        if: github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ -n "$(git status --porcelain firmware)" ]; then
+            git add firmware
+            git commit -m "Update Opta firmware binaries"
+            git push
+          else
+            echo "No firmware changes to commit."
+          fi
