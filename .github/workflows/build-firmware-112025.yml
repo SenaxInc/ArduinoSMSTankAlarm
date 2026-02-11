@@ -58,6 +58,7 @@ jobs:
           if [ -n "$(git status --porcelain firmware)" ]; then
             git add firmware
             git commit -m "Update Opta firmware binaries"
+            git pull --rebase origin master
             git push
           else
             echo "No firmware changes to commit."
