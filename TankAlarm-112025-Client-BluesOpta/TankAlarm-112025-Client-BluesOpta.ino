@@ -163,7 +163,7 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #endif
 
 #ifndef LOCATION_RESPONSE_FILE
-#define LOCATION_RESPONSE_FILE "location.qo"  // Client sends GPS location response
+#define LOCATION_RESPONSE_FILE "location_response.qi"  // Client sends GPS location response (routed to server fleet)
 #endif
 
 #ifndef CLIENT_SERIAL_BUFFER_SIZE
@@ -5295,7 +5295,11 @@ static void sendSerialLogs() {
     return;
   }
 
-  JAddStringToObject(req, "file", SERIAL_LOG_FILE);
+  // Route serial logs to server fleet
+  char targetFile[80];
+  const char *fleetName = (strlen(gConfig.serverFleet) > 0) ? gConfig.serverFleet : "tankalarm-server";
+  snprintf(targetFile, sizeof(targetFile), "fleet:%s:%s", fleetName, SERIAL_LOG_FILE);
+  JAddStringToObject(req, "file", targetFile);
   JAddBoolToObject(req, "sync", true);
 
   J *body = JCreateObject();
@@ -5382,10 +5386,14 @@ static void pollForLocationRequests() {
     float latitude = 0.0f, longitude = 0.0f;
     bool hasLocation = fetchNotecardLocation(latitude, longitude);
     
-    // Send location response
+    // Send location response (fleet-targeted to server)
     J *respReq = notecard.newRequest("note.add");
     if (respReq) {
-      JAddStringToObject(respReq, "file", LOCATION_RESPONSE_FILE);
+      // Route to server fleet
+      char targetFile[80];
+      const char *fleetName = (strlen(gConfig.serverFleet) > 0) ? gConfig.serverFleet : "tankalarm-server";
+      snprintf(targetFile, sizeof(targetFile), "fleet:%s:%s", fleetName, LOCATION_RESPONSE_FILE);
+      JAddStringToObject(respReq, "file", targetFile);
       JAddBoolToObject(respReq, "sync", true);
       
       J *respBody = JCreateObject();
