@@ -451,7 +451,18 @@ static void respondHtml(EthernetClient &client, const char *body, size_t len) {
   client.println(len);
   client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
   client.println();
-  client.write((const uint8_t *)body, len);
+  
+  // Send in chunks to avoid memory issues with large strings
+  const size_t chunkSize = 512;
+  size_t remaining = len;
+  size_t offset = 0;
+  
+  while (remaining > 0) {
+    size_t toSend = (remaining < chunkSize) ? remaining : chunkSize;
+    client.write((const uint8_t *)body + offset, toSend);
+    offset += toSend;
+    remaining -= toSend;
+  }
 }
 
 static void respondJson(EthernetClient &client, const String &body) {
@@ -461,7 +472,18 @@ static void respondJson(EthernetClient &client, const String &body) {
   client.println(body.length());
   client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
   client.println();
-  client.print(body);
+  
+  // Send in chunks to avoid memory issues with large strings
+  const size_t chunkSize = 512;
+  size_t remaining = body.length();
+  size_t offset = 0;
+  
+  while (remaining > 0) {
+    size_t toSend = (remaining < chunkSize) ? remaining : chunkSize;
+    client.write((const uint8_t*)body.c_str() + offset, toSend);
+    offset += toSend;
+    remaining -= toSend;
+  }
 }
 
 static void respondStatus(EthernetClient &client, int status, const char *message) {

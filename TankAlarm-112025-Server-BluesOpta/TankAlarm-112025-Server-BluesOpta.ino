@@ -2388,22 +2388,18 @@ static void initializeStorage() {
       Serial.println(F("Filesystem mount failed, attempting to reformat..."));
       err = mbedFS->reformat(mbedBD);
       if (err) {
-        Serial.println(F("LittleFS format failed; halting"));
+        Serial.println(F("LittleFS format failed; continuing without filesystem"));
         delete mbedFS;
         mbedFS = nullptr;
-        while (true) {
-          delay(1000);
-        }
       }
     }
-    Serial.println(F("Mbed OS LittleFileSystem initialized"));
+    if (mbedFS) {
+      Serial.println(F("Mbed OS LittleFileSystem initialized"));
+    }
   #else
     // STM32duino LittleFS
     if (!LittleFS.begin()) {
-      Serial.println(F("LittleFS init failed; halting"));
-      while (true) {
-        delay(1000);
-      }
+      Serial.println(F("LittleFS init failed; continuing without filesystem"));
     }
   #endif
 #else
@@ -4510,9 +4506,8 @@ static void initializeEthernet() {
   if (Ethernet.hardwareStatus() == EthernetNoHardware) {
     Serial.println(F(" FAILED - No Ethernet hardware detected!"));
     Serial.println(F("ERROR: Cannot continue without Ethernet. Please check hardware."));
-    while (true) {
-      delay(1000);
-    }
+    // Don't halt, just return and let the main loop handle the lack of network
+    return;
   }
 
   // Retrieve hardware MAC address if not set
@@ -4540,9 +4535,8 @@ static void initializeEthernet() {
     } else {
       Serial.println(F("ERROR: Static IP configuration failed."));
     }
-    while (true) {
-      delay(1000);
-    }
+    // Don't halt, just return and let the main loop handle the lack of network
+    return;
   }
   
   // Check link status
@@ -5071,7 +5065,18 @@ static void respondHtml(EthernetClient &client, const String &body) {
   client.print(F("Content-Length: "));
   client.println(output.length());
   client.println();
-  client.print(output);
+  
+  // Send in chunks to avoid memory issues with large strings
+  const size_t chunkSize = 512;
+  size_t remaining = output.length();
+  size_t offset = 0;
+  
+  while (remaining > 0) {
+    size_t toSend = (remaining < chunkSize) ? remaining : chunkSize;
+    client.write((const uint8_t*)output.c_str() + offset, toSend);
+    offset += toSend;
+    remaining -= toSend;
+  }
 }
 
 static void respondJson(EthernetClient &client, const String &body, int status) {
@@ -5086,7 +5091,18 @@ static void respondJson(EthernetClient &client, const String &body, int status) 
   client.print(F("Content-Length: "));
   client.println(body.length());
   client.println();
-  client.print(body);
+  
+  // Send in chunks to avoid memory issues with large strings
+  const size_t chunkSize = 512;
+  size_t remaining = body.length();
+  size_t offset = 0;
+  
+  while (remaining > 0) {
+    size_t toSend = (remaining < chunkSize) ? remaining : chunkSize;
+    client.write((const uint8_t*)body.c_str() + offset, toSend);
+    offset += toSend;
+    remaining -= toSend;
+  }
 }
 
 static bool respondJson(EthernetClient &client, const JsonDocument &doc, int status) {
