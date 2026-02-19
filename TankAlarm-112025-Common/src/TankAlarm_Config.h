@@ -18,11 +18,9 @@
 // ============================================================================
 
 // Product UID - SAME for all TankAlarm clients in your deployment
-// Replace this with your actual Notehub Product UID
+// Each project (.ino) must define DEFAULT_PRODUCT_UID before including this header.
 // Format: com.company.product:project
-#ifndef DEFAULT_PRODUCT_UID
-#define DEFAULT_PRODUCT_UID "com.blues.tankalarm:fleet"
-#endif
+// Example: #define DEFAULT_PRODUCT_UID "com.senax.tankalarm112025"
 
 // Default server fleet name (can be overridden in JSON config)
 #ifndef DEFAULT_SERVER_FLEET
@@ -83,6 +81,11 @@
 
 #ifndef GRID_INBOUND_INTERVAL_MINUTES
 #define GRID_INBOUND_INTERVAL_MINUTES 10   // 10 minutes for grid power
+#endif
+
+// Solar-powered devices sync outbound less frequently to save power
+#ifndef SOLAR_OUTBOUND_INTERVAL_MINUTES
+#define SOLAR_OUTBOUND_INTERVAL_MINUTES 360  // 6 hours for solar
 #endif
 
 #endif // TANKALARM_CONFIG_H

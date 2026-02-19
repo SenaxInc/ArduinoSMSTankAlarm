@@ -1,5 +1,5 @@
 // Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
-// Version: 1.0.2
+// Version: 1.1.0
 // NOTE: Save this file as UTF-8 without BOM to avoid stray character compile errors.
 //
 // Hardware:
@@ -129,6 +129,30 @@
 #define CLIENT_CONFIG_CACHE_PATH "/client_config_cache.txt"
 #endif
 
+#ifndef TANK_REGISTRY_PATH
+#define TANK_REGISTRY_PATH "/tank_registry.json"
+#endif
+
+#ifndef CLIENT_METADATA_CACHE_PATH
+#define CLIENT_METADATA_CACHE_PATH "/client_metadata.json"
+#endif
+
+// Stale client alerting threshold (25 hours in seconds)
+#ifndef STALE_CLIENT_THRESHOLD_SECONDS
+#define STALE_CLIENT_THRESHOLD_SECONDS 90000UL  // 25 hours
+#endif
+
+#ifndef STALE_CHECK_INTERVAL_MS
+#define STALE_CHECK_INTERVAL_MS 3600000UL  // Check every hour
+#endif
+
+// Persistence save interval (avoid writing flash on every telemetry update)
+#ifndef REGISTRY_SAVE_INTERVAL_MS
+#define REGISTRY_SAVE_INTERVAL_MS 300000UL  // Save every 5 minutes if dirty
+#endif
+
+// CONFIG_ACK_INBOX_FILE is defined in TankAlarm_Common.h
+
 #ifndef FTP_PORT_DEFAULT
 #define FTP_PORT_DEFAULT 21
 #endif
@@ -161,16 +185,10 @@
 #define VIEWER_SUMMARY_BASE_HOUR 6
 #endif
 
-#ifndef MAX_RELAYS
-#define MAX_RELAYS 4  // Arduino Opta has 4 relay outputs (D0-D3)
-#endif
+// MAX_RELAYS and CLIENT_SERIAL_BUFFER_SIZE are defined in TankAlarm_Common.h
 
 #ifndef SERVER_SERIAL_BUFFER_SIZE
 #define SERVER_SERIAL_BUFFER_SIZE 100  // Keep last 100 server serial messages
-#endif
-
-#ifndef CLIENT_SERIAL_BUFFER_SIZE
-#define CLIENT_SERIAL_BUFFER_SIZE 50  // Keep last 50 messages per client
 #endif
 
 #ifndef MAX_CLIENT_SERIAL_LOGS
@@ -347,6 +365,10 @@ struct ClientMetadata {
   // Current temperature cache for real-time compensation
   float cachedTemperatureF;  // Cached current temperature in °F
   double tempCacheEpoch;     // When temperature was last fetched
+  // Client firmware version tracking
+  char firmwareVersion[16];  // Firmware version string from client telemetry/daily
+  // Stale alerting state
+  bool staleAlertSent;       // Whether a stale alert has been sent for this client
 };
 
 struct SerialLogEntry {
@@ -687,7 +709,10 @@ struct ClientConfigSnapshot {
   char uid[48];
   char site[32];
   char payload[1536];
-  bool pendingDispatch;  // RAM-only: true when Notecard send failed and needs retry
+  bool pendingDispatch;      // true when Notecard send failed and needs retry (persisted)
+  char configVersion[16];    // Config version hash for ACK tracking
+  double lastAckEpoch;       // When last config ACK was received from client
+  char lastAckStatus[16];    // Last ACK status: "applied", "rejected", "parse_error"
 };
 
 // Enum for client config dispatch status
@@ -762,6 +787,12 @@ static unsigned long gLastVoltageCheckMillis = 0;
 // Email rate limiting
 static double gLastDailyEmailSentEpoch = 0.0;
 #define MIN_DAILY_EMAIL_INTERVAL_SECONDS 3600  // Minimum 1 hour between daily emails
+
+// Tank registry & client metadata persistence state
+static bool gTankRegistryDirty = false;         // True when tank records need saving
+static bool gClientMetadataDirty = false;        // True when client metadata needs saving
+static unsigned long gLastRegistrySaveMillis = 0;
+static unsigned long gLastStaleCheckMillis = 0;
 
 // POSIX file helpers - use tankalarm_ prefixed versions from shared library
 // Keep posix_write_file and posix_read_file locally as they have custom implementations
@@ -1219,12 +1250,12 @@ async function basicInit(){try{const r=await fetch('/api/clients?summary=1');con
 })();
 </script></body></html>)HTML";
 
-static const char SERIAL_MONITOR_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Serial Monitor - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Server Serial Output</h2><div class="controls"><button id="refreshServerBtn">Refresh Server Logs</button><button class="secondary" id="clearServerBtn">Clear Display</button><span style="color: var(--muted); font-size: 0.9rem;">Auto-refreshes every 5 seconds</span></div><div class="log-container" id="serverLogs"><div class="empty-state">Loading server logs...</div></div></div><div class="card"><h2>Client Serial Output</h2><div class="controls-grid"><label class="control-group"><span>Site Filter</span><select id="siteSelect"><option value="all">All sites</option></select></label><label class="control-group"><span>Client</span><select id="clientSelect"><option value="">-- Select a client --</option></select></label><)HTML" R"HTML(div class="control-group compact" style="flex: 1 1 340px;"><button id="pinClientBtn" disabled>Add Client Panel</button><button id="pinSiteBtn" class="secondary" disabled>Add Site Clients</button><button id="refreshAllBtn" class="secondary">Refresh All</button><button id="clearClientBtn" class="secondary">Clear Panels</button></div></div><div class="panel-grid" id="clientPanels"><div class="empty-state">Pin one or more clients to view their serial output alongside the server.</div></div></div></main><div id="toast"></div><script>(() => {const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
+static const char SERIAL_MONITOR_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Serial Monitor - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Server Serial Output</h2><div class="controls"><button id="refreshServerBtn">Refresh Server Logs</button><button class="secondary" id="clearServerBtn">Clear Display</button><span style="color: var(--muted); font-size: 0.9rem;">Auto-refreshes every 5 seconds</span></div><div class="log-container" id="serverLogs"><div class="empty-state">Loading server logs...</div></div></div><div class="card"><h2>Client Serial Output</h2><div class="controls-grid"><label class="control-group"><span>Site Filter</span><select id="siteSelect"><option value="all">All sites</option></select></label><label class="control-group"><span>Client</span><select id="clientSelect"><option value="">-- Select a client --</option></select></label><)HTML" R"HTML(div class="control-group compact" style="flex: 1 1 340px;"><button id="pinClientBtn" disabled>Add Client Panel</button><button id="pinSiteBtn" class="secondary" disabled>Add Site Clients</button><button id="clearClientBtn" class="secondary">Clear Panels</button></div></div><div class="panel-grid" id="clientPanels"><div class="empty-state">Pin one or more clients to view their serial output alongside the server.</div></div></div></main><div id="toast"></div><script>(() => {const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
 const pause_state={paused:false,pin:token||null,pinConfigured:false};if(pause_els.btn)pause_els.btn.addEventListener('click',togglePauseFlow);if(pause_els.btn)pause_els.btn.addEventListener('mouseenter',()=>{if(pause_state.paused)pause_els.btn.textContent='Resume';});if(pause_els.btn)pause_els.btn.addEventListener('mouseleave',()=>{renderPauseBtn();});fetch('/api/clients?summary=1').then(r=>r.json()).then(d=>{if(d&&d.srv){pause_state.paused=!!d.srv.ps;pause_state.pinConfigured=!!d.srv.pc;renderPauseBtn();}}).catch(e=>console.error('Failed to load pause state',e));
 funct)HTML" R"HTML(ion showPauseToast(message,isError){if(!pause_els.toast)return;const t=pause_els.toast;t.textContent=message;t.style.background=isError?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion renderPauseBtn(){const btn=pause_els.btn;if(!btn)return;if(pause_state.paused){btn.classList.add('paused');btn.style.display='';btn.textContent='Unpause';btn.title='Resume data flow';}else{btn.classList.remove('paused');btn.style.display='none';}}
 async funct)HTML" R"HTML(ion togglePauseFlow(){if(!pause_state.pinConfigured){}else if(!pause_state.pin){const pinInput=prompt('Enter admin PIN to toggle pause');if(!pinInput)return;pause_state.pin=pinInput.trim();}const targetPaused=!pause_state.paused;try{const res=await fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:targetPaused,pin:pause_state.pin||''})});if(!res.ok){if(res.status===403){pause_state.pin=token;pause_state.pinConfigured=true;throw new Error('PIN required or invalid');}const text=await res.text();throw new Error(text||'Pause toggle failed');}const data=await res.json();pause_state.paused=!!data.paused;renderPauseBtn();showPauseToast(pause_state.paused?'Paused for maintenance':'Resumed');}catch(err){showPauseToast(err.message||'Pause toggle failed',true);}}(()=>{funct)HTML" R"HTML(ion escapeHtml(str){if(!str)return'';const div=document.createElement('div');div.textContent=str;return div.innerHTML;}const state ={siteFilter:'all',clients:[],clientsByUid:new Map(),clientsBySite:new Map()};
-const clientPanels = new Map();const els ={serverLogs:document.getElementById('serverLogs'),refreshServerBtn:document.getElementById('refreshServerBtn'),clearServerBtn:document.getElementById('clearServerBtn'),siteSelect:document.getElementById('siteSelect'),clientSelect:document.getElementById('clientSelect'),pinClientBtn:document.getElementById('pinClientBtn'),pinSiteBtn:document.getElementById('pinSiteBtn'),refreshAllBtn:document.getElementById('refreshAllBtn'),clearClientBtn:document.getElementById('clearClientBtn'),clientPanels:document.getElementById('clientPanels'),toast:document.getElementById('toast')};
+const clientPanels = new Map();const els ={serverLogs:document.getElementById('serverLogs'),refreshServerBtn:document.getElementById('refreshServerBtn'),clearServerBtn:document.getElementById('clearServerBtn'),siteSelect:document.getElementById('siteSelect'),clientSelect:document.getElementById('clientSelect'),pinClientBtn:document.getElementById('pinClientBtn'),pinSiteBtn:document.getElementById('pinSiteBtn'),clearClientBtn:document.getElementById('clearClientBtn'),clientPanels:document.getElementById('clientPanels'),toast:document.getElementById('toast')};
 let serverRefreshTimer = null;funct)HTML" R"HTML(ion showToast(message,isError){if(els.toast)els.toast.textContent= message;if(els.toast)els.toast.style.background = isError ? '#dc2626':'#0284c7';if(els.toast)els.toast.classList.add('show');setTimeout(()=>{if(els.toast)els.toast.classList.remove('show')},2500);}
 funct)HTML" R"HTML(ion formatTime(epoch){if(!epoch)return '--';const date = new Date(epoch * 1000);return date.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 funct)HTML" R"HTML(ion formatRelative(epoch){if(!epoch)return '';const diff = Math.max(0,(Date.now()/ 1000)- epoch);if(diff < 60)return `${Math.floor(diff)}s ago`;if(diff < 3600)return `${Math.floor(diff / 60)}m ago`;if(diff < 86400)return `${Math.floor(diff / 3600)}h ago`;return `${Math.floor(diff / 86400)}d ago`;}
@@ -1240,14 +1271,13 @@ funct)HTML" R"HTML(ion updatePanelHeader(uid){const info = getClientInfo(uid);co
 funct)HTML" R"HTML(ion updateSiteButtons(){if(state.siteFilter === 'all'){els.pinSiteBtn.disabled = true;return;}const count = state.clientsBySite.get(state.siteFilter)?.length || 0;els.pinSiteBtn.disabled = count === 0;}
 funct)HTML" R"HTML(ion pinClient(uid){if(!uid){showToast('Select a client first',true);return;}if(clientPanels.has(uid)){showToast('Client already pinned');refreshClientLogs(uid);return;}createClientPanel(uid);}
 async funct)HTML" R"HTML(ion pinSiteClients(){if(state.siteFilter === 'all'){showToast('Select a specific site first',true);return;}const clients = state.clientsBySite.get(state.siteFilter)|| [];if(!clients.length){showToast('No clients found for that site',true);return;}els.pinSiteBtn.disabled = true;for(const c of clients){if(!clientPanels.has(c.uid)){createClientPanel(c.uid);await new Promise(r => setTimeout(r,500));}}els.pinSiteBtn.disabled = false;}
-async funct)HTML" R"HTML(ion refreshAllClients(){const uids = Array.from(clientPanels.keys());if(uids.length === 0)return;els.refreshAllBtn.disabled = true;for(const uid of uids){await refreshClientLogs(uid);await new Promise(r => setTimeout(r,200));}els.refreshAllBtn.disabled = false;}
 funct)HTML" R"HTML(ion clearClientPanels(){clientPanels.forEach(panel => panel.root.remove());clientPanels.clear();ensureClientPanelPlaceholder();}
 funct)HTML" R"HTML(ion createClientPanel(uid){const info = getClientInfo(uid);if(!info){showToast('Client metadata not available yet',true);return;}if(clientPanels.size === 0){clearClientPanelPlaceholder();}const panel = document.createElement('div');panel.className = 'client-panel';panel.dataset.client = uid;panel.innerHTML = ` <div class="panel-head"><div><div class="panel-title">${escapeHtml(info.site || 'Unknown Site')}</div><div class="panel-subtitle">${escapeHtml(info.label || uid)}</div><div class="panel-meta">${escapeHtml(uid)}</div></div><div class="panel-actions"><button class="secondary" data-action="refresh">Refresh</button><button data-action="request">Request Logs</button><button class="ghost" data-action="close" title="Remove panel">&times;</button></div></div><div class="chip-row"><span class="chip" data-role="lastLog">Last log:--</span><span class="chip" data-role="lastAck">Ack:--</span><span class="chip" data-role="status">Status:idle</span></div><div class="log-container slim"><div class="empty-state">No logs yet</div></div> `;els.clientPanels.appendChild(panel);const panelState ={root:panel,logs:panel.querySelector('.log-container'),title:panel.querySelector('.panel-title'),subtitle:panel.querySelector('.panel-subtitle'),meta:panel.querySelector('.panel-meta'),requestBtn:panel.querySelector('[data-action="request"]'),refreshBtn:panel.querySelector('[data-action="refresh"]'),chips:{lastLog:panel.querySelector('[data-role="lastLog"]'),lastAck:panel.querySelector('[data-role="lastAck"]'),status:panel.querySelector('[data-role="status"]')}};panelState.refreshBtn.addEventListener('click',()=> refreshClientLogs(uid));panelState.requestBtn.addEventListener('click',()=> requestClientLogs(uid,panelState));panel.querySelector('[data-action="close"]').addEventListener('click',()=> removeClientPanel(uid));clientPanels.set(uid,panelState);refreshClientLogs(uid);}
 funct)HTML" R"HTML(ion removeClientPanel(uid){const panelState = clientPanels.get(uid);if(!panelState){return;}panelState.root.remove();clientPanels.delete(uid);ensureClientPanelPlaceholder();}
 funct)HTML" R"HTML(ion updatePanelMeta(panelState,meta ={}){const lastLog = meta.lastLogEpoch || meta.lastLog;const lastAck = meta.lastAckEpoch;const ackStatus = meta.lastAckStatus || 'n/a';panelState.chips.lastLog.textContent = lastLog ? `Last log:${formatTime(lastLog)}(${formatRelative(lastLog)})`:'Last log:--';panelState.chips.lastAck.textContent = lastAck ? `Ack:${formatTime(lastAck)}(${ackStatus})`:'Ack:--';panelState.chips.status.textContent = meta.awaitingLogs ? 'Status:awaiting client response':'Status:ready';}
 async funct)HTML" R"HTML(ion refreshClientLogs(clientUid){const panelState = clientPanels.get(clientUid);if(!panelState){return;}panelState.refreshBtn.disabled = true;panelState.chips.status.textContent = 'Status:refreshing...';try{const res = await fetch(`/api/serial-logs?source=client&client=${encodeURIComponent(clientUid)}`);if(!res.ok)throw new Error('Failed to fetch client logs');const data = await res.json();renderLogs(panelState.logs,data.logs || []);updatePanelMeta(panelState,data.meta ||{});}catch(err){console.error('Client logs error:',err);panelState.logs.innerHTML = '<div class="empty-state">Error loading client logs</div>';panelState.chips.status.textContent = 'Status:error fetching logs';}finally{panelState.refreshBtn.disabled = false;}}
 async funct)HTML" R"HTML(ion requestClientLogs(clientUid,panelState){if(!clientUid){showToast('Select a client first',true);return;}if(panelState){panelState.requestBtn.disabled = true;panelState.chips.status.textContent = 'Status:requesting logs...';}try{const res = await fetch('/api/serial-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client:clientUid, pin:state.pin || token || ''})});if(!res.ok){const text = await res.text();throw new Error(text || 'Request failed');}showToast(`Log request sent to ${clientUid}`);if(panelState){panelState.chips.status.textContent = 'Status:awaiting client response';setTimeout(()=> refreshClientLogs(clientUid),3500);}}catch(err){console.error('Client request error:',err);showToast(err.message || 'Request failed',true);if(panelState){panelState.chips.status.textContent = 'Status:request failed';}}finally{if(panelState){setTimeout(()=>{panelState.requestBtn.disabled = false;},4000);}}}
-async funct)HTML" R"HTML(ion loadClients(){try{const res = await fetch('/api/clients?summary=1');if(!res.ok)throw new Error('Failed to fetch clients');const data = await res.json();const rawClients = data.cs || [];const unique = new Map();rawClients.forEach(c =>{if(c.c){unique.set(c.c,{uid:c.c,site:c.s || 'Unassigned',label:c.n || c.c});}});setClients(Array.from(unique.values()));renderSiteOptions();renderClientOptions();clientPanels.forEach((_,uid)=> updatePanelHeader(uid));}catch(err){console.error('Failed to load clients:',err);}}if(els.refreshServerBtn)els.refreshServerBtn.addEventListener('click',refreshServerLogs);if(els.clearServerBtn)els.clearServerBtn.addEventListener('click',()=>{els.serverLogs.innerHTML = '<div class="empty-state">Logs cleared</div>';});if(els.siteSelect)els.siteSelect.addEventListener('change',()=>{state.siteFilter = els.siteSelect.value;renderClientOptions();updateSiteButtons();});if(els.clientSelect)els.clientSelect.addEventListener('change',()=>{els.pinClientBtn.disabled = !els.clientSelect.value;});if(els.pinClientBtn)els.pinClientBtn.addEventListener('click',()=> pinClient(els.clientSelect.value));if(els.pinSiteBtn)els.pinSiteBtn.addEventListener('click',pinSiteClients);if(els.refreshAllBtn)els.refreshAllBtn.addEventListener('click',refreshAllClients);if(els.clearClientBtn)els.clearClientBtn.addEventListener('click',clearClientPanels);serverRefreshTimer = setInterval(refreshServerLogs,5000);refreshServerLogs();ensureClientPanelPlaceholder();loadClients();})();})();
+async funct)HTML" R"HTML(ion loadClients(){try{const res = await fetch('/api/clients?summary=1');if(!res.ok)throw new Error('Failed to fetch clients');const data = await res.json();const rawClients = data.cs || [];const unique = new Map();rawClients.forEach(c =>{if(c.c){unique.set(c.c,{uid:c.c,site:c.s || 'Unassigned',label:c.n || c.c});}});setClients(Array.from(unique.values()));renderSiteOptions();renderClientOptions();clientPanels.forEach((_,uid)=> updatePanelHeader(uid));}catch(err){console.error('Failed to load clients:',err);}}if(els.refreshServerBtn)els.refreshServerBtn.addEventListener('click',refreshServerLogs);if(els.clearServerBtn)els.clearServerBtn.addEventListener('click',()=>{els.serverLogs.innerHTML = '<div class="empty-state">Logs cleared</div>';});if(els.siteSelect)els.siteSelect.addEventListener('change',()=>{state.siteFilter = els.siteSelect.value;renderClientOptions();updateSiteButtons();});if(els.clientSelect)els.clientSelect.addEventListener('change',()=>{els.pinClientBtn.disabled = !els.clientSelect.value;});if(els.pinClientBtn)els.pinClientBtn.addEventListener('click',()=> pinClient(els.clientSelect.value));if(els.pinSiteBtn)els.pinSiteBtn.addEventListener('click',pinSiteClients);if(els.clearClientBtn)els.clearClientBtn.addEventListener('click',clearClientPanels);serverRefreshTimer = setInterval(refreshServerLogs,5000);refreshServerLogs();ensureClientPanelPlaceholder();loadClients();})();})();
 </script></body></html>)HTML";
 
 static const char CALIBRATION_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Calibration Learning - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Add Calibration Reading</h2><p style="color: var(--muted); margin-bottom: 16px;"> Enter a manually verified tank level reading. For best results, take readings at different fill levels (e.g., 25%, 50%, 75%, full). </p><form id="calibrationForm"><div class="form-grid"><label class="field"><span>Select Tank</span><select id="tankSelect" required><option value="">-- Select a tank --</option></select></label><label class="field"><span>Verified Level</span><div class="level-input-group"><input type="number" id="levelFeet" min="0" max="100" placeholder="Feet" required><span>'</span><input type="number" id="levelInches" min="0" max="11.9" step="0.1" placeholder="Inches" required><span>"</span></div></label><labe)HTML" R"HTML(l class="field"><span>Reading Timestamp</span><input type="datetime-local" id="readingTimestamp"></label></div><label class="field" style="margin-top: 12px;"><span>Notes (optional)</span><textarea id="notes" rows="2" placeholder="e.g., Measured with stick gauge at front of tank"></textarea></label><div style="margin-top: 16px;"><button type="submit">Submit Calibration Reading</button><button type="button" class="secondary" onclick="document.getElementById('calibrationForm').reset();">Clear Form</button></div></form><div class="info-box"><strong>How it works:</strong> Each calibration reading pairs a verified tank level (measured with a stick gauge, sight glass, or other method) with the raw 4-20mA sensor reading from telemetry. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and tank level. This learned calibration replaces the theoretical maxValue-based calculation. <br><br><strong>Temperature Compensation:</strong> When 5+ calibration readings with temperature data are collected across a 10°F+ temperature range, the system automatically learns a temperature coefficient. This allows predictions to account for thermal expansion/contraction effects on tank level readings. The status will show "Calibrated+Temp" when temperature compensation is active. </div></div><div class="card"><h2>Calibration Status</h2><div id="calibrationStats" class="stats-row"><div class="stat-item"><span>Total Tanks</span><strong id="statTotalTanks">0</strong></div><div class="stat-item"><span>Calibrated</span><strong id="statCalibrated">0</strong></div><div class="stat-item"><span>Learning (1 point)</span><strong id="statLearning">0</strong></div><div class="stat-item"><span>Uncalibrated</span><strong id="statUncalibrated">0</strong></div></div><table><thead><tr><th>Tank</th><th>Site</th><th>Status</th><th>Data Points</th><th>R2 Fit</th><th>Learned Slope</th><th>Temp Coef</th><th>Drift from Original</th><th>Last Calibration</th><th>Actions</th></tr></thead><tbody id="calibrationTableBody"></tbody></table></div><div class="card"><h2>Calibration Log</h2><div class="form-grid" style="margin-bottom: 12px;"><label class="field"><span>Filter by Tank</span><select id="logTankFilter"><option value="">All Tanks</option></select></label></div><table><thead><tr><th>Timestamp</th><th>Tank</th><th>Sensor (mA)</th><th)HTML" R"HTML(>Verified Level</th><th>Temp °F</th><th>Notes</th></tr></thead><tbody id="logTableBody"></tbody></table></div><div class="card"><h2>Drift Analysis</h2><p style="color: var(--muted); margin-bottom: 16px;"> Shows how sensor accuracy has changed over time. High drift may indicate sensor degradation, tank modifications, or environmental factors. </p><div id="driftAnalysis"><p style="color: var(--muted);">Select a tank with calibration data to view drift analysis.</p></div></div></main><div id="toast"></div><script>(() => {const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
@@ -1338,9 +1368,9 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="e
 .status-pill.alarm{background:#fee2e2;color:#991b1b;}
 .status-pill.stale{background:#fef3c7;color:#92400e;}
 .no-data{padding:40px 18px;text-align:center;color:var(--muted);}
-</style></head><body data-theme="light"><div id="loading-overlay"><div class="spinner"></div></div><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="logout()">Logout</button></div></div></header><main><div class="stats-grid"><div class="stat-card"><span>Total Clients</span><strong id="statClients">0</strong></div><div class="stat-card"><span>Active Sensors</span><strong id="statTanks">0</strong></div><div class="stat-card"><span>Active Alarms</span><strong id="statAlarms">0</strong></div><div class="stat-card"><span>Stale (&gt;60m)</span><strong id="statStale">0</strong></div></div><section class="card"><h2 style="margin:0 0 0.5rem;">Historical Data</h2><p style="color:var(--muted);margin-bottom:12px;">Review long-term trends, alarms, and site summaries.</p><div class="actions"><a class="pill" href="/historical">Open Historical Data</a></div></section><section><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><h2 style="margin:0;">Fleet Telemetry</h2><span style="font-size:0.85rem;color:var(--muted);">Auto-refreshes while this page is open</span></div><div id="siteContainer"><div class="no-data">Loading fleet data...</div></div></section></main><div id="toast"></div>)HTML" R"HTML(<script>
+</style></head><body data-theme="light"><div id="loading-overlay"><div class="spinner"></div></div><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="logout()">Logout</button></div></div></header><main><div class="stats-grid"><div class="stat-card"><span>Total Clients</span><strong id="statClients">0</strong></div><div class="stat-card"><span>Active Sensors</span><strong id="statTanks">0</strong></div><div class="stat-card"><span>Active Alarms</span><strong id="statAlarms">0</strong></div><div class="stat-card"><span>Stale (&gt;25h)</span><strong id="statStale">0</strong></div></div><section class="card"><h2 style="margin:0 0 0.5rem;">Historical Data</h2><p style="color:var(--muted);margin-bottom:12px;">Review long-term trends, alarms, and site summaries.</p><div class="actions"><a class="pill" href="/historical">Open Historical Data</a></div></section><section><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><h2 style="margin:0;">Fleet Telemetry</h2><span style="font-size:0.85rem;color:var(--muted);">Auto-refreshes while this page is open</span></div><div id="siteContainer"><div class="no-data">Loading fleet data...</div></div></section></main><div id="toast"></div>)HTML" R"HTML(<script>
 (()=>{const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}
-const STALE_MIN=60;const DEFAULT_REFRESH_S=60;
+const STALE_MIN=1500;const DEFAULT_REFRESH_S=60;
 const els={pauseBtn:document.getElementById('pauseBtn'),siteContainer:document.getElementById('siteContainer'),statClients:document.getElementById('statClients'),statTanks:document.getElementById('statTanks'),statAlarms:document.getElementById('statAlarms'),statStale:document.getElementById('statStale'),toast:document.getElementById('toast')};
 const state={clients:[],sites:{},refreshing:false,timer:null,uiRefreshS:DEFAULT_REFRESH_S,paused:false,pin:token||null,pinConfigured:false,expandedDot:null};
 function escapeHtml(u){if(!u)return'';return String(u).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
@@ -1387,11 +1417,11 @@ async function refreshData(){try{const res=await fetch('/api/clients?summary=1')
 refreshData();})();
 </script></body></html>)HTML";
 
-static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tank Alarm Client Console</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><section class="card"><h2 style="margin-top:0;">Remote Configuration</h2><p style="color:var(--muted);margin-bottom:12px;">Access remote update tools and generate new client configurations.</p><div class="actions"><a class="pill" href="/config-generator">Client Configuration Tool</a></div></section><section class="card"><h2 style="margin-top:0;">Calibration & Help</h2><p style="color:var(--muted);margin-bottom:12px;">Manage calibration entries and view setup guidance.</p><div class="actions"><a class="pill" href="/calibration">Open Calibration</a><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/CLIENT_INSTALLATION_GUIDE.md" target="_blank" title="View Client Installation Guide">Help</a></div></section><div class="console-layout"><section class="card"><label class="field"><span>Select Client</span><select id="clientSelect"></select></label><div id="clientDetails" class="details">Select a client to review configuration.</div><div class="refresh-actions"><button type="button" id="refreshSelectedBtn">Refresh Selected Site</button><button type="button" class="secondary" id="refreshAllBtn">Refresh All Sites</button><button type="button" class="secondary" id="requestLocationBtn">Request GPS Location</button></div><div id="locationInfo" class="details" style="margin-top:8px;display:none;"></div></section><section class="card"><h2 style="margin-top:0;">New Sites (Unconfigured)</h2><p style="color:var(--muted);font-size:0.9rem;margin-bottom:12px;">Clients that need initial configuration. Click "Configure" to set up a new client remotely.</p><div class="actions" style="margin-bottom:12px;"><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/CLIENT_INSTALLATION_GUIDE.md" target="_blank">Quick Start Guide</a></div><div id="newSitesContainer" class="site-list"><div class="empty-state">No unconfigured clients detected.</div></div></section><section class="card"><h2 style="margin-top:0;">Active Sites</h2><div id="telemetryContainer" class="site-list"></div></section></div></main><div id="toast"></div><script>
+static const char CLIENT_CONSOLE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tank Alarm Client Console</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><section class="card"><h2 style="margin-top:0;">Remote Configuration</h2><p style="color:var(--muted);margin-bottom:12px;">Access remote update tools and generate new client configurations.</p><div class="actions"><a class="pill" href="/config-generator">Client Configuration Tool</a></div></section><section class="card"><h2 style="margin-top:0;">Calibration & Help</h2><p style="color:var(--muted);margin-bottom:12px;">Manage calibration entries and view setup guidance.</p><div class="actions"><a class="pill" href="/calibration">Open Calibration</a><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/CLIENT_INSTALLATION_GUIDE.md" target="_blank" title="View Client Installation Guide">Help</a></div></section><div class="console-layout"><section class="card"><label class="field"><span>Select Client</span><select id="clientSelect"></select></label><div id="clientDetails" class="details">Select a client to review configuration.</div><div class="refresh-actions"><button type="button" id="refreshSelectedBtn">Refresh Selected Site</button><button type="button" class="secondary" id="requestLocationBtn">Request GPS Location</button></div><div id="locationInfo" class="details" style="margin-top:8px;display:none;"></div></section><section class="card"><h2 style="margin-top:0;">New Sites (Unconfigured)</h2><p style="color:var(--muted);font-size:0.9rem;margin-bottom:12px;">Clients that need initial configuration. Click "Configure" to set up a new client remotely.</p><div class="actions" style="margin-bottom:12px;"><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/CLIENT_INSTALLATION_GUIDE.md" target="_blank">Quick Start Guide</a></div><div id="newSitesContainer" class="site-list"><div class="empty-state">No unconfigured clients detected.</div></div></section><section class="card"><h2 style="margin-top:0;">Active Sites</h2><div id="telemetryContainer" class="site-list"></div></section></div></main><div id="toast"></div><script>
 (function(){const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}
 function escapeHtml(str){if(!str)return'';const div=document.createElement('div');div.textContent=str;return div.innerHTML;}
 const state ={data:null,selected:null};
-const els ={telemetryContainer:document.getElementById('telemetryContainer'),newSitesContainer:document.getElementById('newSitesContainer'),clientSelect:document.getElementById('clientSelect'),clientDetails:document.getElementById('clientDetails'),toast:document.getElementById('toast'),refreshSelectedBtn:document.getElementById('refreshSelectedBtn'),refreshAllBtn:document.getElementById('refreshAllBtn'),requestLocationBtn:document.getElementById('requestLocationBtn'),locationInfo:document.getElementById('locationInfo')};
+const els ={telemetryContainer:document.getElementById('telemetryContainer'),newSitesContainer:document.getElementById('newSitesContainer'),clientSelect:document.getElementById('clientSelect'),clientDetails:document.getElementById('clientDetails'),toast:document.getElementById('toast'),refreshSelectedBtn:document.getElementById('refreshSelectedBtn'),requestLocationBtn:document.getElementById('requestLocationBtn'),locationInfo:document.getElementById('locationInfo')};
 function showToast(message,isError){if(els.toast)els.toast.textContent= message;if(els.toast)els.toast.style.background = isError ? '#dc2626':'#0284c7';if(els.toast)els.toast.classList.add('show');setTimeout(()=>{if(els.toast)els.toast.classList.remove('show')},2500);}
 function formatNumber(value){return(typeof value === 'number' && isFinite(value))? value.toFixed(1):'--';}
 function formatEpoch(epoch){if(!epoch)return '--';const date = new Date(epoch * 1000);if(isNaN(date.getTime()))return '--';return date.toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});}
@@ -1407,7 +1437,7 @@ async function refreshData(preferredUid){try{const query=preferredUid?'&client='
 async function triggerManualRefresh(targetUid){const payload = targetUid ?{client:targetUid,pin:token}:{pin:token};try{const res = await fetch('/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text = await res.text();throw new Error(text || 'Refresh failed');}const data = await res.json();applyServerData(data,targetUid || state.selected);showToast(targetUid ? 'Selected site updated':'All sites updated');}catch(err){showToast(err.message || 'Refresh failed',true);}}
 async function requestLocation(clientUid){if(!clientUid){showToast('Select a client first.',true);return;}try{const res = await fetch('/api/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid})});if(!res.ok){const text = await res.text();throw new Error(text || 'Location request failed');}showToast('Location request sent - check back in a few minutes');await fetchLocationInfo(clientUid);}catch(err){showToast(err.message || 'Location request failed',true);}}
 async function fetchLocationInfo(clientUid){if(!clientUid || !els.locationInfo)return;try{const res = await fetch(`/api/location?client=${encodeURIComponent(clientUid)}`);if(!res.ok)return;const data = await res.json();if(data.hasLocation){const date = data.locationEpoch ? new Date(data.locationEpoch * 1000).toLocaleString():'Unknown';els.locationInfo.innerHTML = `<strong>&#x1F4CD; Cached Location:</strong> ${data.latitude.toFixed(4)}, ${data.longitude.toFixed(4)} <span style="color:var(--muted)">(as of ${date})</span>`;els.locationInfo.style.display = 'block';}else{els.locationInfo.innerHTML = '<strong>&#x1F4CD; Location:</strong> <span style="color:var(--muted)">Not yet received. Click "Request GPS Location" to fetch.</span>';els.locationInfo.style.display = 'block';}}catch(err){els.locationInfo.style.display = 'none';}}
-if(els.clientSelect)els.clientSelect.addEventListener('change',event =>{state.selected=event.target.value;updateClientDetails(state.selected);fetchLocationInfo(state.selected);});if(els.refreshSelectedBtn)els.refreshSelectedBtn.addEventListener('click',()=>{const target = state.selected ||(els.clientSelect.value || '');if(!target){showToast('Select a client first.',true);return;}triggerManualRefresh(target);});if(els.refreshAllBtn)els.refreshAllBtn.addEventListener('click',()=>{triggerManualRefresh(null);});if(els.requestLocationBtn)els.requestLocationBtn.addEventListener('click',()=>{const target = state.selected ||(els.clientSelect.value || '');requestLocation(target);});refreshData().then(()=>{if(state.selected)fetchLocationInfo(state.selected);});})();
+if(els.clientSelect)els.clientSelect.addEventListener('change',event =>{state.selected=event.target.value;updateClientDetails(state.selected);fetchLocationInfo(state.selected);});if(els.refreshSelectedBtn)els.refreshSelectedBtn.addEventListener('click',()=>{const target = state.selected ||(els.clientSelect.value || '');if(!target){showToast('Select a client first.',true);return;}triggerManualRefresh(target);});if(els.requestLocationBtn)els.requestLocationBtn.addEventListener('click',()=>{const target = state.selected ||(els.clientSelect.value || '');requestLocation(target);});refreshData().then(()=>{if(state.selected)fetchLocationInfo(state.selected);});})();
 </script></body></html>)HTML";
 
 static const char SITE_CONFIG_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Site Configuration - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"><style>.site-title{font-size:1.5rem;font-weight:700;margin:0;}.site-subtitle{color:var(--muted);font-size:0.9rem;margin-top:4px;}.client-grid{display:grid;gap:16px;margin-top:16px;}.client-card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:8px;padding:16px;}.client-card.has-alarm{border-left:4px solid var(--danger);}.client-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;}.client-name{font-weight:600;font-size:1.05rem;}.client-uid{font-family:monospace;font-size:0.8rem;color:var(--muted);margin-top:2px;}.tank-list{display:grid;gap:8px;}.tank-row{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg);border-radius:6px;font-size:0.9rem;}.tank-row.alarm{background:rgba(220,38,38,0.08);}.tank-level{font-weight:600;font-size:1.1rem;}.tank-status{font-size:0.85rem;}.uid-table{width:100%;border-collapse:collapse;margin-top:12px;font-size:0.9rem;}.uid-table th,.uid-table td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--card-border);}.uid-table th{font-weight:600;color:var(--muted);font-size:0.8rem;text-transform:uppercase;}.uid-table td code{font-size:0.85rem;cursor:pointer;}.uid-table td code:hover{color:var(--accent);}.copy-toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;padding:8px 16px;border-radius:6px;font-size:0.85rem;opacity:0;transition:opacity 0.3s;pointer-events:none;}.copy-toast.show{opacity:1;}</style></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;"><div><h1 class="site-title" id="siteTitle">Loading...</h1><p class="site-subtitle" id="siteSubtitle"></p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="addClientBtn" class="pill">+ Add Client</button><button id="backBtn" class="pill secondary" onclick="window.location.href='/client-console'">Back to Console</button></div></div></div><div class="card"><h2 style="margin-top:0;">Client Devices</h2><div id="clientGrid" class="client-grid"><div class="empty-state">Loading site data...</div></div></div><div class="card"><h2 style="margin-top:0;">Client UID Quick Reference</h2><p style="color:var(--muted);font-size:0.9rem;margin-bottom:8px;">Click any UID to copy it. Use these UIDs for relay target configuration.</p><table class="uid-table"><thead><tr><th>Device Label</th><th>Client UID</th><th>Sensors</th><th>Status</th></tr></thead><tbody id="uidTableBody"></tbody></table></div></main><div id="toast"></div><div class="copy-toast" id="copyToast">UID copied to clipboard</div>)HTML" R"HTML(<script>(()=>{const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}function escapeHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}function formatNumber(v){return(typeof v==='number'&&isFinite(v))?v.toFixed(1):'--';}function formatEpoch(e){if(!e)return'--';const d=new Date(e*1000);if(isNaN(d.getTime()))return'--';return d.toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});}function getQueryParam(n){return new URLSearchParams(window.location.search).get(n)||'';}const siteName=getQueryParam('site');if(!siteName){document.getElementById('siteTitle').textContent='No site specified';document.getElementById('clientGrid').innerHTML='<div class="empty-state">Use ?site=SiteName in the URL or navigate from the Client Console.</div>';return;}document.getElementById('siteTitle').textContent=siteName;document.title=siteName+' - Site Configuration';document.getElementById('addClientBtn').addEventListener('click',()=>{window.location.href='/config-generator?site='+encodeURIComponent(siteName);});function showToast(msg,isErr){const t=document.getElementById('toast');t.textContent=msg;t.style.background=isErr?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}function copyUid(uid){navigator.clipboard.writeText(uid).then(()=>{const ct=document.getElementById('copyToast');ct.classList.add('show');setTimeout(()=>ct.classList.remove('show'),1500);}).catch(()=>{showToast('Copy failed',true);});}window.copyUid=copyUid;)HTML" R"HTML(async function loadSiteData(){try{const r=await fetch('/api/clients?summary=1');if(!r.ok)throw new Error('Failed to fetch');const raw=await r.json();const srv=raw.srv||{};const allClients=(raw.cs||[]).map(c=>({uid:c.c||'',site:c.s||'',label:c.n||'',tank:c.k||'',alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,levelInches:c.l,sensorMa:c.ma,vinVoltage:c.v,vinVoltageEpoch:c.ve,tankCount:c.tc||1,tanks:(c.ts||[]).map(t=>({label:t.n||'',tank:t.k||'',levelInches:t.l,alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,sensorType:t.st||'',objectType:t.ot||'',measurementUnit:t.mu||'',contents:t.ct||'',change24h:t.d}))}));const siteClients=allClients.filter(c=>c.site===siteName);const uniqueMap=new Map();siteClients.forEach(c=>{if(!uniqueMap.has(c.uid)){uniqueMap.set(c.uid,{uid:c.uid,label:c.label,alarm:false,vinVoltage:c.vinVoltage,vinVoltageEpoch:c.vinVoltageEpoch,tanks:[]});}const entry=uniqueMap.get(c.uid);if(c.tanks&&c.tanks.length){c.tanks.forEach(t=>entry.tanks.push(t));}else{entry.tanks.push({label:c.label||'',tank:c.tank,levelInches:c.levelInches,alarm:c.alarm,alarmType:c.alarmType,lastUpdate:c.lastUpdate,objectType:'',measurementUnit:'',contents:''});}if(c.alarm)entry.alarm=true;entry.tanks.forEach(t=>{if(t.alarm)entry.alarm=true;});});const clients=Array.from(uniqueMap.values());document.getElementById('siteSubtitle').textContent=clients.length+' client device'+(clients.length===1?'':'s')+' at this site';renderClients(clients);renderUidTable(clients);}catch(e){console.error(e);document.getElementById('clientGrid').innerHTML='<div class="empty-state">Error loading site data.</div>';}}function objectTypeLabel(ot){const map={tank:'Tank',gas:'Gas Monitor',engine:'Engine',pump:'Pump',flow:'Flow Meter'};return map[ot]||'Sensor';}function sensorDisplayName(t){const ot=t.objectType||'';const lbl=t.label||objectTypeLabel(ot);if(ot==='tank'||ot==='')return lbl+(t.tank?' #'+t.tank:'');return lbl+(t.tank?' #'+t.tank:'');}function unitLabel(mu){if(!mu)return'in';const map={inches:'in',psi:'psi',rpm:'rpm',gpm:'gpm'};return map[mu]||mu;}function renderClients(clients){const grid=document.getElementById('clientGrid');grid.innerHTML='';if(!clients.length){grid.innerHTML='<div class="empty-state">No client devices found at this site.</div>';return;})HTML" R"HTML(clients.forEach(client=>{const card=document.createElement('div');card.className='client-card'+(client.alarm?' has-alarm':'');let tanksHtml='';client.tanks.forEach(t=>{const alarmClass=t.alarm?' alarm':'';const statusHtml=t.alarm?`<span class="tank-status" style="color:var(--danger);font-weight:600;">ALARM: ${escapeHtml(t.alarmType)}</span>`:'<span class="tank-status" style="color:#10b981;">Normal</span>';const mu=unitLabel(t.measurementUnit);const changeHtml=(typeof t.change24h==='number')?`<span style="font-size:0.8rem;color:var(--muted);">${t.change24h>=0?'+':''}${t.change24h.toFixed(1)} ${mu}/24h</span>`:'';const contentsHtml=t.contents?`<span style="font-size:0.8rem;color:var(--muted);margin-left:6px;">(${escapeHtml(t.contents)})</span>`:'';tanksHtml+=`<div class="tank-row${alarmClass}"><div><strong>${escapeHtml(sensorDisplayName(t))}</strong>${contentsHtml} ${changeHtml}</div><div style="text-align:right;"><span class="tank-level">${formatNumber(t.levelInches)}</span> <small style="color:var(--muted)">${mu}</small><div style="font-size:0.8rem;color:var(--muted);">${formatEpoch(t.lastUpdate)}</div></div></div>`;});const voltageHtml=(typeof client.vinVoltage==='number'&&client.vinVoltage>0)?`<span style="font-size:0.85rem;color:var(--muted);">VIN: ${client.vinVoltage.toFixed(2)}V</span>`:'';card.innerHTML=`<div class="client-header"><div><div class="client-name">${escapeHtml(client.label||'Client Device')}</div><div class="client-uid">${escapeHtml(client.uid)}</div>${voltageHtml}</div><div style="display:flex;gap:6px;"><button class="pill secondary" style="font-size:0.8rem;padding:4px 12px;" onclick="window.location.href='/config-generator?uid=${encodeURIComponent(client.uid)}'">Edit Config</button></div></div><div class="tank-list">${tanksHtml}</div>`;grid.appendChild(card);});}function renderUidTable(clients){const tbody=document.getElementById('uidTableBody');tbody.innerHTML='';if(!clients.length){tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--muted);">No clients at this site.</td></tr>';return;}clients.forEach(client=>{const tr=document.createElement('tr');const hasAlarm=client.tanks.some(t=>t.alarm);const statusHtml=hasAlarm?'<span style="color:var(--danger);font-weight:600;">ALARM</span>':'<span style="color:#10b981;">Normal</span>';tr.innerHTML=`<td>${escapeHtml(client.label||'Client Device')}</td><td><code onclick="copyUid('${escapeHtml(client.uid)}')" title="Click to copy">${escapeHtml(client.uid)}</code></td><td>${client.tanks.length}</td><td>${statusHtml}</td>`;tbody.appendChild(tr);});}loadSiteData();setInterval(loadSiteData,30000);})();</script></body></html>)HTML";
@@ -1524,6 +1554,17 @@ static ClientMetadata *findOrCreateClientMetadata(const char *clientUid);
 static bool checkSmsRateLimit(TankRecord *rec);
 static void publishViewerSummary();
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
+// Persistence: tank registry and client metadata
+static void saveTankRegistry();
+static void loadTankRegistry();
+static void saveClientMetadataCache();
+static void loadClientMetadataCache();
+// Stale client alerting
+static void checkStaleClients();
+// Config push acknowledgment
+static void handleConfigAck(JsonDocument &doc, double epoch);
+// Client removal
+static void handleClientDeleteRequest(EthernetClient &client, const String &body);
 static String getQueryParam(const String &query, const char *key);
 static bool requireValidPin(EthernetClient &client, const char *pinValue);
 
@@ -2085,6 +2126,8 @@ void setup() {
   ensureConfigLoaded();
   gLastHeartbeatFileEpoch = loadServerHeartbeatEpoch();
   loadCalibrationData();  // Load calibration learning data
+  loadTankRegistry();     // Restore tank records from LittleFS
+  loadClientMetadataCache();  // Restore client metadata from LittleFS
   printHardwareRequirements();
 
   Wire.begin();
@@ -2286,6 +2329,25 @@ void loop() {
   if (now - gLastVoltageCheckMillis > VOLTAGE_CHECK_INTERVAL_MS) {
     gLastVoltageCheckMillis = now;
     checkServerVoltage();
+  }
+  
+  // Periodic tank registry save (when dirty, every 5 minutes)
+  if (gTankRegistryDirty && (now - gLastRegistrySaveMillis > REGISTRY_SAVE_INTERVAL_MS)) {
+    gLastRegistrySaveMillis = now;
+    saveTankRegistry();
+    gTankRegistryDirty = false;
+  }
+  
+  // Periodic client metadata save (when dirty, piggyback on same interval)
+  if (gClientMetadataDirty && (now - gLastRegistrySaveMillis > REGISTRY_SAVE_INTERVAL_MS)) {
+    saveClientMetadataCache();
+    gClientMetadataDirty = false;
+  }
+  
+  // Periodic stale client check (every hour)
+  if (now - gLastStaleCheckMillis > STALE_CHECK_INTERVAL_MS) {
+    gLastStaleCheckMillis = now;
+    checkStaleClients();
   }
 
   if (gConfigDirty) {
@@ -4735,6 +4797,12 @@ static void handleWebRequests() {
     } else {
       handleCalibrationDelete(client, body);
     }
+  } else if (method == "DELETE" && path == "/api/client") {
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleClientDeleteRequest(client, body);
+    }
   } else if (method == "POST" && path == "/api/contacts") {
     if (contentLength > 8192) {
       respondStatus(client, 413, "Payload Too Large");
@@ -5332,6 +5400,10 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
         clientObj["v"] = meta->vinVoltage;
         clientObj["ve"] = meta->vinVoltageEpoch;
       }
+      // Add firmware version from client metadata
+      if (meta && meta->firmwareVersion[0] != '\0') {
+        clientObj["fv"] = meta->firmwareVersion;
+      }
     }
 
     const char *existingSite = clientObj["s"] ? clientObj["s"].as<const char *>() : nullptr;
@@ -5457,6 +5529,14 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
     cfgEntry["c"] = snap.uid;
     cfgEntry["s"] = snap.site;
     cfgEntry["cj"] = snap.payload;
+    cfgEntry["pd"] = snap.pendingDispatch;
+    if (snap.configVersion[0] != '\0') {
+      cfgEntry["cv"] = snap.configVersion;
+    }
+    if (snap.lastAckEpoch > 0.0) {
+      cfgEntry["ae"] = snap.lastAckEpoch;
+      cfgEntry["as"] = snap.lastAckStatus;
+    }
   }
 
   // Detect if we ran out of memory while building the document
@@ -6026,18 +6106,31 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
 
   // Always cache locally first so config is preserved even if Notecard is down
   cacheClientConfigFromBuffer(clientUid, buffer);
+  
+  // Generate config version hash for ACK tracking
+  // Simple hash of the payload to create a short version identifier
+  ClientConfigSnapshot *snapPre = findClientConfigSnapshot(clientUid);
+  if (snapPre) {
+    uint32_t hash = 5381;
+    for (size_t i = 0; i < len; ++i) {
+      hash = ((hash << 5) + hash) ^ (uint8_t)buffer[i];
+    }
+    snprintf(snapPre->configVersion, sizeof(snapPre->configVersion), "%08lX", (unsigned long)hash);
+    snapPre->pendingDispatch = true;
+    saveClientConfigSnapshots();
+  }
 
   // Attempt to send via Notecard
   if (sendConfigViaNotecard(clientUid, buffer)) {
-    // Clear pending flag on success
+    // Mark as dispatched but still pending ACK
     ClientConfigSnapshot *snap = findClientConfigSnapshot(clientUid);
-    if (snap) snap->pendingDispatch = false;
+    if (snap) {
+      // pendingDispatch stays true until ACK received
+    }
     return ConfigDispatchStatus::Ok;
   }
 
-  // Send failed — mark for auto-retry
-  ClientConfigSnapshot *snap = findClientConfigSnapshot(clientUid);
-  if (snap) snap->pendingDispatch = true;
+  // Send failed — mark for auto-retry (pendingDispatch already true)
   return ConfigDispatchStatus::CachedOnly;
 }
 
@@ -6068,6 +6161,7 @@ static void pollNotecard() {
   processNotefile(SERIAL_LOG_FILE, handleSerialLog);
   processNotefile(SERIAL_ACK_FILE, handleSerialAck);
   processNotefile(LOCATION_RESPONSE_FILE, handleLocationResponse);
+  processNotefile(CONFIG_ACK_INBOX_FILE, handleConfigAck);
 }
 
 static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double)) {
@@ -6118,6 +6212,16 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   TankRecord *rec = upsertTankRecord(clientUid, tankNumber);
   if (!rec) {
     return;
+  }
+  
+  // Extract client firmware version if provided
+  const char *fwVer = doc["fv"] | doc["firmwareVersion"] | "";
+  if (fwVer && strlen(fwVer) > 0) {
+    ClientMetadata *meta = findOrCreateClientMetadata(clientUid);
+    if (meta && strcmp(meta->firmwareVersion, fwVer) != 0) {
+      strlcpy(meta->firmwareVersion, fwVer, sizeof(meta->firmwareVersion));
+      gClientMetadataDirty = true;
+    }
   }
 
   strlcpy(rec->site, doc["s"] | doc["site"] | "", sizeof(rec->site));
@@ -6219,6 +6323,7 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   
   rec->levelInches = newLevel;
   rec->lastUpdateEpoch = now;
+  gTankRegistryDirty = true;
   
   // Record telemetry snapshot for historical charting
   // Get site name and tank height for history record
@@ -6242,6 +6347,16 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   TankRecord *rec = upsertTankRecord(clientUid, tankNumber);
   if (!rec) {
     return;
+  }
+  
+  // Extract client firmware version if provided
+  const char *fwVer = doc["fv"] | doc["firmwareVersion"] | "";
+  if (fwVer && strlen(fwVer) > 0) {
+    ClientMetadata *meta = findOrCreateClientMetadata(clientUid);
+    if (meta && strcmp(meta->firmwareVersion, fwVer) != 0) {
+      strlcpy(meta->firmwareVersion, fwVer, sizeof(meta->firmwareVersion));
+      gClientMetadataDirty = true;
+    }
   }
 
   const char *type = doc["y"] | doc["type"] | "";
@@ -6323,6 +6438,7 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
     rec->levelInches = level;
   }
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
+  gTankRegistryDirty = true;
 
   // Check rate limit before sending SMS
   bool smsEnabled = false;  // Default off -- only send SMS when client explicitly requests (se=true)
@@ -6408,16 +6524,35 @@ static ClientMetadata *findOrCreateClientMetadata(const char *clientUid) {
     memset(meta, 0, sizeof(ClientMetadata));
     strlcpy(meta->clientUid, clientUid, sizeof(meta->clientUid));
     meta->cachedTemperatureF = TEMPERATURE_UNAVAILABLE;  // Initialize to sentinel value
+    gClientMetadataDirty = true;
     return meta;
   }
   
-  // Maximum client metadata capacity reached
-  Serial.print(F("Warning: Cannot create client metadata for "));
-  Serial.print(clientUid);
-  Serial.print(F(" - max capacity ("));
+  // Maximum capacity reached - evict stalest entry (oldest vinVoltageEpoch)
+  uint8_t evictIdx = 0;
+  double oldestEpoch = 1e18;
+  for (uint8_t i = 0; i < gClientMetadataCount; ++i) {
+    double epoch = gClientMetadata[i].vinVoltageEpoch;
+    if (epoch <= 0.0) epoch = 0.0;  // Prioritize removing entries with no voltage data
+    if (epoch < oldestEpoch) {
+      oldestEpoch = epoch;
+      evictIdx = i;
+    }
+  }
+  
+  Serial.print(F("WARNING: Client metadata full ("));
   Serial.print(MAX_CLIENT_METADATA);
-  Serial.println(F(") reached"));
-  return nullptr;
+  Serial.print(F(") - evicting stale entry: "));
+  Serial.println(gClientMetadata[evictIdx].clientUid);
+  addServerSerialLog("Client metadata evicted (capacity full)", "warn", "registry");
+  
+  // Reuse evicted slot
+  ClientMetadata *meta = &gClientMetadata[evictIdx];
+  memset(meta, 0, sizeof(ClientMetadata));
+  strlcpy(meta->clientUid, clientUid, sizeof(meta->clientUid));
+  meta->cachedTemperatureF = TEMPERATURE_UNAVAILABLE;
+  gClientMetadataDirty = true;
+  return meta;
 }
 
 static void handleDaily(JsonDocument &doc, double epoch) {
@@ -6425,6 +6560,16 @@ static void handleDaily(JsonDocument &doc, double epoch) {
   const char *clientUid = doc["c"] | doc["client"] | "";
   if (!clientUid || strlen(clientUid) == 0) {
     return;
+  }
+  
+  // Extract client firmware version if provided
+  const char *fwVer = doc["fv"] | doc["firmwareVersion"] | "";
+  if (fwVer && strlen(fwVer) > 0) {
+    ClientMetadata *meta = findOrCreateClientMetadata(clientUid);
+    if (meta && strcmp(meta->firmwareVersion, fwVer) != 0) {
+      strlcpy(meta->firmwareVersion, fwVer, sizeof(meta->firmwareVersion));
+      gClientMetadataDirty = true;
+    }
   }
 
   // Extract VIN voltage from daily report if present
@@ -6442,6 +6587,7 @@ static void handleDaily(JsonDocument &doc, double epoch) {
       Serial.print(F(": "));
       Serial.print(vinVoltage);
       Serial.println(F(" V"));
+      gClientMetadataDirty = true;
     }
   }
 
@@ -6548,6 +6694,7 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     
     rec->levelInches = newLevel;
     rec->lastUpdateEpoch = now;
+    gTankRegistryDirty = true;
   }
 }
 
@@ -6678,7 +6825,44 @@ static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber) {
   }
   
   if (gTankRecordCount >= MAX_TANK_RECORDS) {
-    return nullptr;
+    // Evict the stalest non-alarm tank record (LRU policy)
+    uint8_t evictIdx = 0xFF;
+    double oldestEpoch = 1e18;
+    for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+      if (!gTankRecords[i].alarmActive && gTankRecords[i].lastUpdateEpoch < oldestEpoch) {
+        oldestEpoch = gTankRecords[i].lastUpdateEpoch;
+        evictIdx = i;
+      }
+    }
+    if (evictIdx == 0xFF) {
+      // All records have active alarms - evict absolute stalest
+      for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+        if (gTankRecords[i].lastUpdateEpoch < oldestEpoch) {
+          oldestEpoch = gTankRecords[i].lastUpdateEpoch;
+          evictIdx = i;
+        }
+      }
+    }
+    if (evictIdx == 0xFF) {
+      Serial.println(F("ERROR: Cannot evict any tank record"));
+      return nullptr;
+    }
+    
+    Serial.print(F("WARNING: Tank capacity full ("));
+    Serial.print(MAX_TANK_RECORDS);
+    Serial.print(F(") - evicting stale record: "));
+    Serial.print(gTankRecords[evictIdx].site);
+    Serial.print(F(" #"));
+    Serial.println(gTankRecords[evictIdx].tankNumber);
+    addServerSerialLog("Tank record evicted (capacity full)", "warn", "registry");
+    
+    // Move last record into the evicted slot, then decrement count
+    if (evictIdx < gTankRecordCount - 1) {
+      memcpy(&gTankRecords[evictIdx], &gTankRecords[gTankRecordCount - 1], sizeof(TankRecord));
+    }
+    gTankRecordCount--;
+    rebuildTankHashTable();
+    gTankRegistryDirty = true;
   }
   
   // Create new record
@@ -6696,6 +6880,7 @@ static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber) {
   
   // Insert into hash table
   insertTankIntoHash(newIndex);
+  gTankRegistryDirty = true;
   
   return &rec;
 }
@@ -7189,6 +7374,465 @@ static float convertVoltageToLevel(const char *clientUid, uint8_t tankNumber, fl
   return (voltage / 10.0f) * 100.0f;
 }
 
+// ============================================================================
+// Tank Registry Persistence (LittleFS JSON)
+// ============================================================================
+
+static void saveTankRegistry() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS || gTankRecordCount == 0) {
+      return;
+    }
+    
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+      const TankRecord &rec = gTankRecords[i];
+      if (rec.clientUid[0] == '\0') continue;
+      JsonObject obj = arr.add<JsonObject>();
+      obj["c"] = rec.clientUid;
+      obj["k"] = rec.tankNumber;
+      obj["s"] = rec.site;
+      obj["n"] = rec.label;
+      if (rec.contents[0] != '\0') obj["cn"] = rec.contents;
+      if (rec.objectType[0] != '\0') obj["ot"] = rec.objectType;
+      if (rec.sensorType[0] != '\0') obj["st"] = rec.sensorType;
+      if (rec.measurementUnit[0] != '\0') obj["mu"] = rec.measurementUnit;
+      obj["l"] = rec.levelInches;
+      if (rec.sensorMa >= 4.0f) obj["ma"] = rec.sensorMa;
+      if (rec.sensorVoltage > 0.0f) obj["vt"] = rec.sensorVoltage;
+      obj["a"] = rec.alarmActive;
+      if (rec.alarmType[0] != '\0') obj["at"] = rec.alarmType;
+      obj["u"] = rec.lastUpdateEpoch;
+      if (rec.previousLevelEpoch > 0.0) {
+        obj["pl"] = rec.previousLevelInches;
+        obj["pe"] = rec.previousLevelEpoch;
+      }
+    }
+    
+    // Serialize to buffer and write to file
+    size_t jsonLen = measureJson(doc);
+    char *buf = (char *)malloc(jsonLen + 1);
+    if (!buf) {
+      Serial.println(F("ERROR: Cannot allocate tank registry save buffer"));
+      return;
+    }
+    serializeJson(doc, buf, jsonLen + 1);
+    
+    if (posix_write_file("/fs" TANK_REGISTRY_PATH, buf, jsonLen)) {
+      Serial.print(F("Tank registry saved: "));
+      Serial.print(gTankRecordCount);
+      Serial.println(F(" records"));
+    }
+    free(buf);
+  #endif
+#endif
+}
+
+static void loadTankRegistry() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return;
+    
+    if (!posix_file_exists("/fs" TANK_REGISTRY_PATH)) {
+      Serial.println(F("No tank registry file found - starting fresh"));
+      return;
+    }
+    
+    // Read file into buffer
+    FILE *fp = fopen("/fs" TANK_REGISTRY_PATH, "r");
+    if (!fp) {
+      posix_log_error("fopen", "/fs" TANK_REGISTRY_PATH);
+      return;
+    }
+    long fileSize = posix_file_size(fp);
+    if (fileSize <= 0 || fileSize > 32768) {
+      fclose(fp);
+      Serial.println(F("Tank registry file size invalid"));
+      return;
+    }
+    fseek(fp, 0, SEEK_SET);
+    char *buf = (char *)malloc(fileSize + 1);
+    if (!buf) {
+      fclose(fp);
+      Serial.println(F("ERROR: Cannot allocate tank registry load buffer"));
+      return;
+    }
+    size_t bytesRead = fread(buf, 1, fileSize, fp);
+    fclose(fp);
+    buf[bytesRead] = '\0';
+    
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, buf);
+    free(buf);
+    if (err) {
+      Serial.print(F("ERROR: Tank registry parse failed: "));
+      Serial.println(err.c_str());
+      return;
+    }
+    
+    gTankRecordCount = 0;
+    initTankHashTable();
+    
+    JsonArray arr = doc.as<JsonArray>();
+    for (JsonObject obj : arr) {
+      if (gTankRecordCount >= MAX_TANK_RECORDS) break;
+      
+      TankRecord &rec = gTankRecords[gTankRecordCount];
+      memset(&rec, 0, sizeof(TankRecord));
+      strlcpy(rec.clientUid, obj["c"] | "", sizeof(rec.clientUid));
+      rec.tankNumber = obj["k"] | 0;
+      strlcpy(rec.site, obj["s"] | "", sizeof(rec.site));
+      strlcpy(rec.label, obj["n"] | "", sizeof(rec.label));
+      strlcpy(rec.contents, obj["cn"] | "", sizeof(rec.contents));
+      strlcpy(rec.objectType, obj["ot"] | "", sizeof(rec.objectType));
+      strlcpy(rec.sensorType, obj["st"] | "", sizeof(rec.sensorType));
+      strlcpy(rec.measurementUnit, obj["mu"] | "", sizeof(rec.measurementUnit));
+      rec.levelInches = obj["l"] | 0.0f;
+      rec.sensorMa = obj["ma"] | 0.0f;
+      rec.sensorVoltage = obj["vt"] | 0.0f;
+      rec.alarmActive = obj["a"] | false;
+      strlcpy(rec.alarmType, obj["at"] | "", sizeof(rec.alarmType));
+      rec.lastUpdateEpoch = obj["u"] | 0.0;
+      rec.previousLevelInches = obj["pl"] | 0.0f;
+      rec.previousLevelEpoch = obj["pe"] | 0.0;
+      rec.lastSmsAlertEpoch = 0.0;
+      rec.smsAlertsInLastHour = 0;
+      
+      insertTankIntoHash(gTankRecordCount);
+      gTankRecordCount++;
+    }
+    
+    Serial.print(F("Tank registry loaded: "));
+    Serial.print(gTankRecordCount);
+    Serial.println(F(" records"));
+  #endif
+#endif
+}
+
+// ============================================================================
+// Client Metadata Persistence (LittleFS JSON)
+// ============================================================================
+
+static void saveClientMetadataCache() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS || gClientMetadataCount == 0) {
+      return;
+    }
+    
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    for (uint8_t i = 0; i < gClientMetadataCount; ++i) {
+      const ClientMetadata &meta = gClientMetadata[i];
+      if (meta.clientUid[0] == '\0') continue;
+      JsonObject obj = arr.add<JsonObject>();
+      obj["c"] = meta.clientUid;
+      if (meta.vinVoltage > 0.0f) {
+        obj["v"] = meta.vinVoltage;
+        obj["ve"] = meta.vinVoltageEpoch;
+      }
+      if (meta.latitude != 0.0f || meta.longitude != 0.0f) {
+        obj["lat"] = meta.latitude;
+        obj["lon"] = meta.longitude;
+        obj["le"] = meta.locationEpoch;
+      }
+      if (meta.nwsGridValid) {
+        obj["go"] = meta.nwsGridOffice;
+        obj["gx"] = meta.nwsGridX;
+        obj["gy"] = meta.nwsGridY;
+      }
+      if (meta.firmwareVersion[0] != '\0') {
+        obj["fv"] = meta.firmwareVersion;
+      }
+      // Note: cachedTemperatureF and staleAlertSent are runtime-only, not persisted
+    }
+    
+    size_t jsonLen = measureJson(doc);
+    char *buf = (char *)malloc(jsonLen + 1);
+    if (!buf) {
+      Serial.println(F("ERROR: Cannot allocate metadata save buffer"));
+      return;
+    }
+    serializeJson(doc, buf, jsonLen + 1);
+    
+    if (posix_write_file("/fs" CLIENT_METADATA_CACHE_PATH, buf, jsonLen)) {
+      Serial.print(F("Client metadata saved: "));
+      Serial.print(gClientMetadataCount);
+      Serial.println(F(" entries"));
+    }
+    free(buf);
+  #endif
+#endif
+}
+
+static void loadClientMetadataCache() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return;
+    
+    if (!posix_file_exists("/fs" CLIENT_METADATA_CACHE_PATH)) {
+      Serial.println(F("No client metadata cache found - starting fresh"));
+      return;
+    }
+    
+    FILE *fp = fopen("/fs" CLIENT_METADATA_CACHE_PATH, "r");
+    if (!fp) {
+      posix_log_error("fopen", "/fs" CLIENT_METADATA_CACHE_PATH);
+      return;
+    }
+    long fileSize = posix_file_size(fp);
+    if (fileSize <= 0 || fileSize > 16384) {
+      fclose(fp);
+      Serial.println(F("Client metadata file size invalid"));
+      return;
+    }
+    fseek(fp, 0, SEEK_SET);
+    char *buf = (char *)malloc(fileSize + 1);
+    if (!buf) {
+      fclose(fp);
+      Serial.println(F("ERROR: Cannot allocate metadata load buffer"));
+      return;
+    }
+    size_t bytesRead = fread(buf, 1, fileSize, fp);
+    fclose(fp);
+    buf[bytesRead] = '\0';
+    
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, buf);
+    free(buf);
+    if (err) {
+      Serial.print(F("ERROR: Client metadata parse failed: "));
+      Serial.println(err.c_str());
+      return;
+    }
+    
+    gClientMetadataCount = 0;
+    
+    JsonArray arr = doc.as<JsonArray>();
+    for (JsonObject obj : arr) {
+      if (gClientMetadataCount >= MAX_CLIENT_METADATA) break;
+      
+      ClientMetadata &meta = gClientMetadata[gClientMetadataCount++];
+      memset(&meta, 0, sizeof(ClientMetadata));
+      strlcpy(meta.clientUid, obj["c"] | "", sizeof(meta.clientUid));
+      meta.vinVoltage = obj["v"] | 0.0f;
+      meta.vinVoltageEpoch = obj["ve"] | 0.0;
+      meta.latitude = obj["lat"] | 0.0f;
+      meta.longitude = obj["lon"] | 0.0f;
+      meta.locationEpoch = obj["le"] | 0.0;
+      strlcpy(meta.nwsGridOffice, obj["go"] | "", sizeof(meta.nwsGridOffice));
+      meta.nwsGridX = obj["gx"] | 0;
+      meta.nwsGridY = obj["gy"] | 0;
+      meta.nwsGridValid = (meta.nwsGridOffice[0] != '\0');
+      strlcpy(meta.firmwareVersion, obj["fv"] | "", sizeof(meta.firmwareVersion));
+      meta.cachedTemperatureF = TEMPERATURE_UNAVAILABLE;
+      meta.staleAlertSent = false;
+    }
+    
+    Serial.print(F("Client metadata loaded: "));
+    Serial.print(gClientMetadataCount);
+    Serial.println(F(" entries"));
+  #endif
+#endif
+}
+
+// ============================================================================
+// Stale Client Alerting
+// ============================================================================
+
+static void checkStaleClients() {
+  double now = currentEpoch();
+  if (now <= 0.0) return;  // No time sync yet
+  
+  for (uint8_t i = 0; i < gClientMetadataCount; ++i) {
+    ClientMetadata &meta = gClientMetadata[i];
+    if (meta.clientUid[0] == '\0') continue;
+    
+    // Find the most recent update epoch across all tanks for this client
+    double latestUpdate = 0.0;
+    const char *siteName = "";
+    for (uint8_t t = 0; t < gTankRecordCount; ++t) {
+      if (strcmp(gTankRecords[t].clientUid, meta.clientUid) == 0) {
+        if (gTankRecords[t].lastUpdateEpoch > latestUpdate) {
+          latestUpdate = gTankRecords[t].lastUpdateEpoch;
+          siteName = gTankRecords[t].site;
+        }
+      }
+    }
+    
+    if (latestUpdate <= 0.0) continue;  // Never reported - skip
+    
+    double offlineSeconds = now - latestUpdate;
+    
+    if (offlineSeconds >= STALE_CLIENT_THRESHOLD_SECONDS) {
+      if (!meta.staleAlertSent) {
+        // Send stale client SMS alert
+        char message[160];
+        double hours = offlineSeconds / 3600.0;
+        snprintf(message, sizeof(message),
+                 "Client stale: %s (%s) - no data for %.1f hours.",
+                 siteName, meta.clientUid, hours);
+        sendSmsAlert(message);
+        addServerSerialLog(message, "warn", "stale");
+        Serial.print(F("Stale alert sent for client: "));
+        Serial.println(meta.clientUid);
+        meta.staleAlertSent = true;
+      }
+    } else {
+      // Client is reporting again - reset stale alert flag
+      if (meta.staleAlertSent) {
+        meta.staleAlertSent = false;
+        Serial.print(F("Stale alert cleared for client: "));
+        Serial.println(meta.clientUid);
+      }
+    }
+  }
+}
+
+// ============================================================================
+// Config ACK Handler
+// ============================================================================
+
+static void handleConfigAck(JsonDocument &doc, double epoch) {
+  const char *clientUid = doc["c"] | doc["client"] | "";
+  if (!clientUid || strlen(clientUid) == 0) return;
+  
+  const char *version = doc["cv"] | doc["configVersion"] | "";
+  const char *status = doc["st"] | doc["status"] | "unknown";
+  
+  ClientConfigSnapshot *snap = findClientConfigSnapshot(clientUid);
+  if (!snap) {
+    Serial.print(F("Config ACK from unknown client: "));
+    Serial.println(clientUid);
+    return;
+  }
+  
+  // Update ACK tracking fields
+  snap->lastAckEpoch = (epoch > 0.0) ? epoch : currentEpoch();
+  strlcpy(snap->lastAckStatus, status, sizeof(snap->lastAckStatus));
+  
+  // If config version matches, clear pending flag
+  if (version[0] != '\0' && strcmp(version, snap->configVersion) == 0) {
+    snap->pendingDispatch = false;
+  }
+  
+  Serial.print(F("Config ACK received from "));
+  Serial.print(clientUid);
+  Serial.print(F(": status="));
+  Serial.print(status);
+  if (version[0] != '\0') {
+    Serial.print(F(", version="));
+    Serial.print(version);
+  }
+  Serial.println();
+  
+  addServerSerialLog("Config ACK received", "info", "config");
+  saveClientConfigSnapshots();
+}
+
+// ============================================================================
+// Client Removal (DELETE /api/client)
+// ============================================================================
+
+static void handleClientDeleteRequest(EthernetClient &client, const String &body) {
+  DynamicJsonDocument doc(512);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+  
+  const char *pin = doc["pin"] | "";
+  if (!pinMatches(pin)) {
+    respondStatus(client, 401, F("Invalid PIN"));
+    return;
+  }
+  
+  const char *clientUid = doc["client"] | "";
+  if (!clientUid || strlen(clientUid) == 0) {
+    respondStatus(client, 400, F("Missing client UID"));
+    return;
+  }
+  
+  bool removedAny = false;
+  
+  // Remove tank records for this client
+  uint8_t writeIdx = 0;
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    if (strcmp(gTankRecords[i].clientUid, clientUid) != 0) {
+      if (writeIdx != i) {
+        memcpy(&gTankRecords[writeIdx], &gTankRecords[i], sizeof(TankRecord));
+      }
+      writeIdx++;
+    } else {
+      removedAny = true;
+    }
+  }
+  if (writeIdx != gTankRecordCount) {
+    gTankRecordCount = writeIdx;
+    rebuildTankHashTable();
+    gTankRegistryDirty = true;
+  }
+  
+  // Remove client metadata
+  for (uint8_t i = 0; i < gClientMetadataCount; ++i) {
+    if (strcmp(gClientMetadata[i].clientUid, clientUid) == 0) {
+      // Shift remaining entries down
+      for (uint8_t j = i; j < gClientMetadataCount - 1; ++j) {
+        memcpy(&gClientMetadata[j], &gClientMetadata[j + 1], sizeof(ClientMetadata));
+      }
+      gClientMetadataCount--;
+      gClientMetadataDirty = true;
+      removedAny = true;
+      break;
+    }
+  }
+  
+  // Remove client config snapshot
+  for (uint8_t i = 0; i < gClientConfigCount; ++i) {
+    if (strcmp(gClientConfigs[i].uid, clientUid) == 0) {
+      for (uint8_t j = i; j < gClientConfigCount - 1; ++j) {
+        memcpy(&gClientConfigs[j], &gClientConfigs[j + 1], sizeof(ClientConfigSnapshot));
+      }
+      gClientConfigCount--;
+      saveClientConfigSnapshots();
+      removedAny = true;
+      break;
+    }
+  }
+  
+  // Remove client serial buffer
+  for (uint8_t i = 0; i < gClientSerialBufferCount; ++i) {
+    if (strcmp(gClientSerialBuffers[i].clientUid, clientUid) == 0) {
+      for (uint8_t j = i; j < gClientSerialBufferCount - 1; ++j) {
+        memcpy(&gClientSerialBuffers[j], &gClientSerialBuffers[j + 1], sizeof(ClientSerialBuffer));
+      }
+      gClientSerialBufferCount--;
+      break;
+    }
+  }
+  
+  if (removedAny) {
+    char logMsg[80];
+    snprintf(logMsg, sizeof(logMsg), "Client removed: %s", clientUid);
+    addServerSerialLog(logMsg, "warn", "admin");
+    Serial.print(F("Client removed: "));
+    Serial.println(clientUid);
+    
+    // Force immediate persistence save
+    saveTankRegistry();
+    saveClientMetadataCache();
+    gTankRegistryDirty = false;
+    gClientMetadataDirty = false;
+    
+    respondStatus(client, 200, F("Client removed"));
+  } else {
+    respondStatus(client, 404, F("Client not found"));
+  }
+}
+
 static void loadClientConfigSnapshots() {
   gClientConfigCount = 0;
 #ifdef FILESYSTEM_AVAILABLE
@@ -7245,6 +7889,31 @@ static void loadClientConfigSnapshots() {
       } else {
         snap.site[0] = '\0';
       }
+      
+      // Parse extended fields (pendingDispatch, configVersion, lastAckEpoch, lastAckStatus)
+      // These are appended as additional tab-separated fields after the payload
+      int sep2 = json.indexOf('\t');
+      if (sep2 > 0) {
+        // Trim payload to remove extended fields
+        snap.payload[sep2] = '\0';
+        String extended = json.substring(sep2 + 1);
+        // Format: pendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus
+        int s1 = extended.indexOf('\t');
+        if (s1 >= 0) {
+          snap.pendingDispatch = (extended.substring(0, s1) == "1");
+          String rest = extended.substring(s1 + 1);
+          int s2 = rest.indexOf('\t');
+          if (s2 >= 0) {
+            strlcpy(snap.configVersion, rest.substring(0, s2).c_str(), sizeof(snap.configVersion));
+            String rest2 = rest.substring(s2 + 1);
+            int s3 = rest2.indexOf('\t');
+            if (s3 >= 0) {
+              snap.lastAckEpoch = rest2.substring(0, s3).toDouble();
+              strlcpy(snap.lastAckStatus, rest2.substring(s3 + 1).c_str(), sizeof(snap.lastAckStatus));
+            }
+          }
+        }
+      }
     }
 
     fclose(file);
@@ -7290,6 +7959,28 @@ static void loadClientConfigSnapshots() {
       } else {
         snap.site[0] = '\0';
       }
+      
+      // Parse extended fields (pendingDispatch, configVersion, lastAckEpoch, lastAckStatus)
+      int sep2 = json.indexOf('\t');
+      if (sep2 > 0) {
+        snap.payload[sep2] = '\0';
+        String extended = json.substring(sep2 + 1);
+        int s1 = extended.indexOf('\t');
+        if (s1 >= 0) {
+          snap.pendingDispatch = (extended.substring(0, s1) == "1");
+          String rest = extended.substring(s1 + 1);
+          int s2 = rest.indexOf('\t');
+          if (s2 >= 0) {
+            strlcpy(snap.configVersion, rest.substring(0, s2).c_str(), sizeof(snap.configVersion));
+            String rest2 = rest.substring(s2 + 1);
+            int s3 = rest2.indexOf('\t');
+            if (s3 >= 0) {
+              snap.lastAckEpoch = rest2.substring(0, s3).toDouble();
+              strlcpy(snap.lastAckStatus, rest2.substring(s3 + 1).c_str(), sizeof(snap.lastAckStatus));
+            }
+          }
+        }
+      }
     }
 
     file.close();
@@ -7310,7 +8001,14 @@ static void saveClientConfigSnapshots() {
     }
 
     for (uint8_t i = 0; i < gClientConfigCount; ++i) {
-      if (fprintf(file, "%s\t%s\n", gClientConfigs[i].uid, gClientConfigs[i].payload) < 0) {
+      // Format: uid\tpayload\tpendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus
+      if (fprintf(file, "%s\t%s\t%d\t%s\t%.0f\t%s\n",
+                  gClientConfigs[i].uid,
+                  gClientConfigs[i].payload,
+                  gClientConfigs[i].pendingDispatch ? 1 : 0,
+                  gClientConfigs[i].configVersion,
+                  gClientConfigs[i].lastAckEpoch,
+                  gClientConfigs[i].lastAckStatus) < 0) {
         Serial.println(F("Failed to write client config cache"));
         fclose(file);
         remove("/fs/client_config_cache.txt");
@@ -7326,9 +8024,18 @@ static void saveClientConfigSnapshots() {
     }
 
     for (uint8_t i = 0; i < gClientConfigCount; ++i) {
+      // Format: uid\tpayload\tpendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus
       file.print(gClientConfigs[i].uid);
       file.print('\t');
-      file.println(gClientConfigs[i].payload);
+      file.print(gClientConfigs[i].payload);
+      file.print('\t');
+      file.print(gClientConfigs[i].pendingDispatch ? 1 : 0);
+      file.print('\t');
+      file.print(gClientConfigs[i].configVersion);
+      file.print('\t');
+      file.print((unsigned long)gClientConfigs[i].lastAckEpoch);
+      file.print('\t');
+      file.println(gClientConfigs[i].lastAckStatus);
     }
 
     file.close();
@@ -7356,7 +8063,25 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
   ClientConfigSnapshot *snapshot = findClientConfigSnapshot(clientUid);
   if (!snapshot) {
     if (gClientConfigCount >= MAX_CLIENT_CONFIG_SNAPSHOTS) {
-      return;
+      // Evict oldest non-pending config snapshot
+      uint8_t evictIdx = 0xFF;
+      for (uint8_t i = 0; i < gClientConfigCount; ++i) {
+        if (!gClientConfigs[i].pendingDispatch) {
+          evictIdx = i;
+          break;
+        }
+      }
+      if (evictIdx == 0xFF) evictIdx = 0;  // If all pending, evict first
+      
+      Serial.print(F("WARNING: Config cache full - evicting: "));
+      Serial.println(gClientConfigs[evictIdx].uid);
+      addServerSerialLog("Config snapshot evicted (capacity full)", "warn", "config");
+      
+      // Shift entries down to remove evicted slot
+      for (uint8_t j = evictIdx; j < gClientConfigCount - 1; ++j) {
+        memcpy(&gClientConfigs[j], &gClientConfigs[j + 1], sizeof(ClientConfigSnapshot));
+      }
+      gClientConfigCount--;
     }
     snapshot = &gClientConfigs[gClientConfigCount++];
     memset(snapshot, 0, sizeof(ClientConfigSnapshot));

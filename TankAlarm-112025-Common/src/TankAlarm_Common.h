@@ -14,7 +14,7 @@
 // Firmware Version
 // ============================================================================
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.1.0"
 #endif
 
 #ifndef FIRMWARE_BUILD_DATE
@@ -48,6 +48,20 @@
 // ============================================================================
 #ifndef MAX_TANK_RECORDS
 #define MAX_TANK_RECORDS 64
+#endif
+
+// ============================================================================
+// Hardware Configuration
+// ============================================================================
+#ifndef MAX_RELAYS
+#define MAX_RELAYS 4  // Arduino Opta has 4 relay outputs (D0-D3)
+#endif
+
+// ============================================================================
+// Serial Buffer Configuration
+// ============================================================================
+#ifndef CLIENT_SERIAL_BUFFER_SIZE
+#define CLIENT_SERIAL_BUFFER_SIZE 50  // Buffer up to 50 log messages per client
 #endif
 
 // ============================================================================
@@ -119,6 +133,16 @@
 
 #ifndef CONFIG_INBOX_FILE
 #define CONFIG_INBOX_FILE "config.qi"           // Client receives config from server
+#endif
+
+// --- Config acknowledgment notefiles ---
+// Client sends ACK after applying config; Notehub Route delivers to server
+#ifndef CONFIG_ACK_OUTBOX_FILE
+#define CONFIG_ACK_OUTBOX_FILE "config_ack.qo"  // Client sends config ACK
+#endif
+
+#ifndef CONFIG_ACK_INBOX_FILE
+#define CONFIG_ACK_INBOX_FILE "config_ack.qi"    // Server receives config ACK
 #endif
 
 // --- Command notefile: Server outbound (consolidated) ---

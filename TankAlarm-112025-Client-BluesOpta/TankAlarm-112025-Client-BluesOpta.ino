@@ -1,6 +1,6 @@
 /*
   Tank Alarm Client 112025 - Arduino Opta + Blues Notecard
-  Version: 1.0.0
+  Version: 1.1.0
 
   Hardware:
   - Arduino Opta Lite (STM32H747XI dual-core)
@@ -109,14 +109,8 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define DEFAULT_PRODUCT_UID "com.senax.tankalarm112025"
 #endif
 
-// Power saving configuration for solar-powered installations
-#ifndef SOLAR_OUTBOUND_INTERVAL_MINUTES
-#define SOLAR_OUTBOUND_INTERVAL_MINUTES 360  // Sync every 6 hours for solar installations
-#endif
-
-#ifndef SOLAR_INBOUND_INTERVAL_MINUTES
-#define SOLAR_INBOUND_INTERVAL_MINUTES 60    // Check for inbound every hour for solar installations
-#endif
+// SOLAR_OUTBOUND_INTERVAL_MINUTES and SOLAR_INBOUND_INTERVAL_MINUTES
+// are defined in TankAlarm_Config.h (via TankAlarm_Common.h)
 
 #ifndef CLIENT_CONFIG_PATH
 #define CLIENT_CONFIG_PATH "/client_config.json"
@@ -136,8 +130,8 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define DAILY_FILE     DAILY_OUTBOX_FILE       // "daily.qo"
 #define UNLOAD_FILE    UNLOAD_OUTBOX_FILE      // "unload.qo"
 
-// Config: client reads config.qi (inbound), sends acks via config.qo (outbound)
-// CONFIG_INBOX_FILE and CONFIG_OUTBOX_FILE are already correct from common header
+// Config: client reads config.qi (inbound), sends acks via config_ack.qo (outbound)
+// CONFIG_INBOX_FILE, CONFIG_ACK_OUTBOX_FILE are defined in TankAlarm_Common.h
 
 // Relay: client reads relay.qi (inbound commands from server)
 // RELAY_CONTROL_FILE is already correct from common header ("relay.qi")
@@ -150,9 +144,7 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define LOCATION_RESPONSE_FILE LOCATION_RESPONSE_OUTBOX_FILE  // "location_response.qo"
 // LOCATION_REQUEST_FILE is already correct ("location_request.qi")
 
-#ifndef CLIENT_SERIAL_BUFFER_SIZE
-#define CLIENT_SERIAL_BUFFER_SIZE 50  // Buffer up to 50 log messages
-#endif
+// CLIENT_SERIAL_BUFFER_SIZE is defined in TankAlarm_Common.h
 
 #ifndef NOTE_BUFFER_PATH
 #define NOTE_BUFFER_PATH "/pending_notes.log"
@@ -174,21 +166,11 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define MAX_TANKS 8
 #endif
 
-#ifndef DEFAULT_SAMPLE_SECONDS
-#define DEFAULT_SAMPLE_SECONDS 1800
-#endif
-
-#ifndef DEFAULT_LEVEL_CHANGE_THRESHOLD_INCHES
-#define DEFAULT_LEVEL_CHANGE_THRESHOLD_INCHES 0.0f
-#endif
-
-#ifndef DEFAULT_REPORT_HOUR
-#define DEFAULT_REPORT_HOUR 5
-#endif
-
-#ifndef DEFAULT_REPORT_MINUTE
-#define DEFAULT_REPORT_MINUTE 0
-#endif
+// DEFAULT_SAMPLE_INTERVAL_SEC, DEFAULT_LEVEL_CHANGE_THRESHOLD,
+// DEFAULT_REPORT_HOUR, DEFAULT_REPORT_MINUTE are defined in TankAlarm_Config.h
+// Aliases for backward compatibility within this file:
+#define DEFAULT_SAMPLE_SECONDS          DEFAULT_SAMPLE_INTERVAL_SEC
+#define DEFAULT_LEVEL_CHANGE_THRESHOLD_INCHES DEFAULT_LEVEL_CHANGE_THRESHOLD
 
 #ifndef CURRENT_LOOP_I2C_ADDRESS
 #define CURRENT_LOOP_I2C_ADDRESS 0x64
@@ -603,7 +585,7 @@ static bool gNotecardAvailable = true;
 static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
 
 // Relay control state
-#define MAX_RELAYS 4
+// MAX_RELAYS is defined in TankAlarm_Common.h
 static bool gRelayState[MAX_RELAYS] = {false, false, false, false};
 static unsigned long gLastRelayCheckMillis = 0;
 
