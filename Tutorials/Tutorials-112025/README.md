@@ -8,7 +8,7 @@
 
 This directory contains comprehensive, step-by-step tutorials for deploying and managing the TankAlarm 112025 tank monitoring system. All tutorials follow a consistent SparkFun-style format with clear instructions, troubleshooting sections, and helpful diagrams.
 
-**Tutorial Count:** 13 comprehensive guides covering installation, configuration, operations, and advanced features.
+**Tutorial Count:** 15 comprehensive guides covering installation, configuration, communication, operations, and advanced features.
 
 ---
 
@@ -32,6 +32,46 @@ Perfect for:
 - Verifying data flow
 
 **Time:** 30 minutes setup + 30 minutes for first data
+
+---
+
+## 🔗 Communication & Routes (Set Up Before Devices!)
+
+### [Notehub Routes Setup](NOTEHUB_ROUTES_SETUP.md) ⭐
+
+*Configure the Notehub Routes that connect your devices*
+
+**Covers:**
+- How Blues Notecard routing works (.qo → Route → .qi)
+- Creating the 5 Notehub Routes (ClientToServer, ServerToClient, ServerToViewer, SMS, Email)
+- The Route Relay pattern explained
+- Dynamic URL routing with JSONata for command.qo
+- Verification checklist for each route
+- Troubleshooting common route errors
+- Data usage and cost estimates
+
+**Prerequisites:**
+- Notehub account with project created
+- At least one device provisioned
+
+**Time:** 30 minutes
+
+---
+
+### [Firmware Communication Guide](FIRMWARE_COMMUNICATION_GUIDE.md)
+
+*Understand how Client, Server, and Viewer firmware communicate*
+
+**Covers:**
+- Notefile naming convention (.qo outbound, .qi inbound)
+- Complete notefile definition table
+- How command.qo consolidates server→client messaging
+- Client sending patterns (publishNote, triggerRemoteRelays)
+- Server sending patterns (sendRelayCommand, sendConfigViaNotecard)
+- Server polling patterns (processNotefile)
+- Migration from old fleet:/device: patterns
+
+**Time:** 15 minutes to read
 
 ---
 

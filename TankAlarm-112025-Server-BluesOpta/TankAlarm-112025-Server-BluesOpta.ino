@@ -150,7 +150,7 @@
 #endif
 
 #ifndef VIEWER_SUMMARY_FILE
-#define VIEWER_SUMMARY_FILE "viewer_summary.qo"
+#define VIEWER_SUMMARY_FILE VIEWER_SUMMARY_OUTBOX_FILE  // "viewer_summary.qo" — server sends outbound
 #endif
 
 #ifndef VIEWER_SUMMARY_INTERVAL_SECONDS
@@ -177,24 +177,36 @@
 #define MAX_CLIENT_SERIAL_LOGS 10  // Track serial logs for up to 10 clients
 #endif
 
+// ============================================================================
+// Server Notefile Names — Override common header for server perspective
+// Server reads inbound .qi files (from clients via Route) and sends .qo outbound.
+// Blues Notecard rule: note.add ONLY accepts .qo/.qos/.db/.dbs/.dbx
+//                     note.get reads from .qi/.qis/.db/.dbx
+// Cross-device delivery is handled by Notehub Routes — no device: prefix needed.
+// ============================================================================
+
+// Inbound data notefiles (client → route → server .qi)
+// TELEMETRY_INBOX_FILE, ALARM_INBOX_FILE, DAILY_INBOX_FILE, UNLOAD_INBOX_FILE
+// are defined in TankAlarm_Common.h and correct for server (reads .qi)
+
 #ifndef SERIAL_LOG_FILE
-#define SERIAL_LOG_FILE "serial_log.qi"  // Client serial logs sent to server
+#define SERIAL_LOG_FILE SERIAL_LOG_INBOX_FILE   // "serial_log.qi" — server receives logs
 #endif
 
 #ifndef SERIAL_REQUEST_FILE
-#define SERIAL_REQUEST_FILE "serial_request.qi"  // Server requests for client logs
+#define SERIAL_REQUEST_FILE "serial_request.qi"  // Placeholder — server sends via command.qo, not this
 #endif
 
 #ifndef SERIAL_ACK_FILE
-#define SERIAL_ACK_FILE "serial_ack.qi"  // Client acknowledgments for log requests
+#define SERIAL_ACK_FILE SERIAL_ACK_INBOX_FILE   // "serial_ack.qi" — server receives acks
 #endif
 
 #ifndef LOCATION_REQUEST_FILE
-#define LOCATION_REQUEST_FILE "location_request.qi"  // Server requests for client GPS location
+#define LOCATION_REQUEST_FILE "location_request.qi"  // Placeholder — server sends via command.qo
 #endif
 
 #ifndef LOCATION_RESPONSE_FILE
-#define LOCATION_RESPONSE_FILE "location_response.qi"  // Client GPS location responses (inbound to server)
+#define LOCATION_RESPONSE_FILE LOCATION_RESPONSE_INBOX_FILE  // "location_response.qi" — server receives
 #endif
 
 #ifndef SERIAL_DEFAULT_MAX_ENTRIES
@@ -1949,10 +1961,9 @@ static bool sendLocationRequest(const char *clientUid) {
     return false;
   }
 
-  // Send to the specific client device
-  char targetFile[80];
-  snprintf(targetFile, sizeof(targetFile), "device:%s:%s", clientUid, LOCATION_REQUEST_FILE);
-  JAddStringToObject(req, "file", targetFile);
+  // Use command.qo — Notehub Route reads _target and _type to deliver
+  // as location_request.qi on the target client device
+  JAddStringToObject(req, "file", COMMAND_OUTBOX_FILE);
   JAddBoolToObject(req, "sync", true);
 
   J *body = JCreateObject();
@@ -1961,6 +1972,9 @@ static bool sendLocationRequest(const char *clientUid) {
     return false;
   }
 
+  // Route Relay metadata
+  JAddStringToObject(body, "_target", clientUid);
+  JAddStringToObject(body, "_type", "location_request");
   JAddStringToObject(body, "request", "get_location");
   JAddNumberToObject(body, "timestamp", currentEpoch());
   JAddItemToObject(req, "body", body);
@@ -2011,9 +2025,9 @@ static SerialRequestResult requestClientSerialLogs(const char *clientUid, String
     return SerialRequestResult::NotecardFailure;
   }
 
-  char targetFile[80];
-  snprintf(targetFile, sizeof(targetFile), "device:%s:%s", clientUid, SERIAL_REQUEST_FILE);
-  JAddStringToObject(req, "file", targetFile);
+  // Use command.qo — Notehub Route reads _target and _type to deliver
+  // as serial_request.qi on the target client device
+  JAddStringToObject(req, "file", COMMAND_OUTBOX_FILE);
   JAddBoolToObject(req, "sync", true);
 
   J *body = JCreateObject();
@@ -2022,6 +2036,9 @@ static SerialRequestResult requestClientSerialLogs(const char *clientUid, String
     return SerialRequestResult::NotecardFailure;
   }
 
+  // Route Relay metadata
+  JAddStringToObject(body, "_target", clientUid);
+  JAddStringToObject(body, "_type", "serial_request");
   JAddStringToObject(body, "request", "send_logs");
   JAddNumberToObject(body, "timestamp", now);
   JAddItemToObject(req, "body", body);
@@ -5721,10 +5738,9 @@ static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state
     return false;
   }
 
-  // Use device-specific targeting: send directly to client's relay.qi inbox
-  char targetFile[80];
-  snprintf(targetFile, sizeof(targetFile), "device:%s:relay.qi", clientUid);
-  JAddStringToObject(req, "file", targetFile);
+  // Use command.qo — Notehub Route reads _target and _type to deliver
+  // as relay.qi on the target client device
+  JAddStringToObject(req, "file", COMMAND_OUTBOX_FILE);
   JAddBoolToObject(req, "sync", true);
 
   J *body = JCreateObject();
@@ -5732,6 +5748,9 @@ static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state
     return false;
   }
 
+  // Route Relay metadata
+  JAddStringToObject(body, "_target", clientUid);
+  JAddStringToObject(body, "_type", "relay");
   JAddNumberToObject(body, "relay", relayNum);
   JAddBoolToObject(body, "state", state);
   JAddStringToObject(body, "source", source);
@@ -5764,10 +5783,9 @@ static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
     return false;
   }
 
-  // Use device-specific targeting: send directly to client's relay.qi inbox
-  char targetFile[80];
-  snprintf(targetFile, sizeof(targetFile), "device:%s:relay.qi", clientUid);
-  JAddStringToObject(req, "file", targetFile);
+  // Use command.qo — Notehub Route reads _target and _type to deliver
+  // as relay.qi on the target client device
+  JAddStringToObject(req, "file", COMMAND_OUTBOX_FILE);
   JAddBoolToObject(req, "sync", true);
 
   J *body = JCreateObject();
@@ -5775,6 +5793,9 @@ static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
     return false;
   }
 
+  // Route Relay metadata
+  JAddStringToObject(body, "_target", clientUid);
+  JAddStringToObject(body, "_type", "relay");
   // Use relay_reset_tank command format that the client already supports
   JAddNumberToObject(body, "relay_reset_tank", tankIdx);
   JAddStringToObject(body, "source", "server-dashboard");
@@ -5957,10 +5978,9 @@ static bool sendConfigViaNotecard(const char *clientUid, const char *jsonPayload
     return false;
   }
 
-  // Target the client's inbound config queue
-  char targetFile[80];
-  snprintf(targetFile, sizeof(targetFile), "device:%s:config.qi", clientUid);
-  JAddStringToObject(req, "file", targetFile);
+  // Use command.qo — Notehub Route reads _target and _type to deliver
+  // as config.qi on the target client device
+  JAddStringToObject(req, "file", COMMAND_OUTBOX_FILE);
   JAddBoolToObject(req, "sync", true);
 
   J *body = JParse(jsonPayload);
@@ -5969,6 +5989,9 @@ static bool sendConfigViaNotecard(const char *clientUid, const char *jsonPayload
     Serial.println(F("ERROR: Failed to parse config JSON for Notecard send"));
     return false;
   }
+  // Inject Route Relay metadata into the config payload
+  JAddStringToObject(body, "_target", clientUid);
+  JAddStringToObject(body, "_type", "config");
   JAddItemToObject(req, "body", body);
 
   // Use requestAndResponse to capture detailed Notecard error messages
@@ -6037,10 +6060,11 @@ static void dispatchPendingConfigs() {
 }
 
 static void pollNotecard() {
-  processNotefile(TELEMETRY_FILE, handleTelemetry);
-  processNotefile(ALARM_FILE, handleAlarm);
-  processNotefile(DAILY_FILE, handleDaily);
-  processNotefile(UNLOAD_FILE, handleUnload);
+  // Server reads inbound .qi notefiles delivered by ClientToServerRelay Route
+  processNotefile(TELEMETRY_INBOX_FILE, handleTelemetry);
+  processNotefile(ALARM_INBOX_FILE, handleAlarm);
+  processNotefile(DAILY_INBOX_FILE, handleDaily);
+  processNotefile(UNLOAD_INBOX_FILE, handleUnload);
   processNotefile(SERIAL_LOG_FILE, handleSerialLog);
   processNotefile(SERIAL_ACK_FILE, handleSerialAck);
   processNotefile(LOCATION_RESPONSE_FILE, handleLocationResponse);

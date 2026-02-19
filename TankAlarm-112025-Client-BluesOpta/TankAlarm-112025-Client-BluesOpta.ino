@@ -122,49 +122,33 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define CLIENT_CONFIG_PATH "/client_config.json"
 #endif
 
-#ifndef TELEMETRY_FILE
-#define TELEMETRY_FILE "telemetry.qi"
-#endif
+// ============================================================================
+// Client Notefile Names — Outbound (.qo) and Inbound (.qi)
+// These override the common header where client perspective differs.
+// Blues Notecard rule: note.add ONLY accepts .qo/.qos/.db/.dbs/.dbx
+//                     note.get reads from .qi/.qis/.db/.dbx
+// Cross-device delivery is handled by Notehub Routes (no fleet:/device: prefixes).
+// ============================================================================
 
-#ifndef ALARM_FILE
-#define ALARM_FILE "alarm.qi"
-#endif
+// Outbound data notefiles (client → Notehub → routed to server)
+#define TELEMETRY_FILE TELEMETRY_OUTBOX_FILE   // "telemetry.qo"
+#define ALARM_FILE     ALARM_OUTBOX_FILE       // "alarm.qo"
+#define DAILY_FILE     DAILY_OUTBOX_FILE       // "daily.qo"
+#define UNLOAD_FILE    UNLOAD_OUTBOX_FILE      // "unload.qo"
 
-#ifndef DAILY_FILE
-#define DAILY_FILE "daily.qi"
-#endif
+// Config: client reads config.qi (inbound), sends acks via config.qo (outbound)
+// CONFIG_INBOX_FILE and CONFIG_OUTBOX_FILE are already correct from common header
 
-#ifndef UNLOAD_FILE
-#define UNLOAD_FILE "unload.qi"
-#endif
+// Relay: client reads relay.qi (inbound commands from server)
+// RELAY_CONTROL_FILE is already correct from common header ("relay.qi")
 
-#ifndef CONFIG_INBOX_FILE
-#define CONFIG_INBOX_FILE "config.qi"
-#endif
+// Serial logs: client sends logs outbound, receives requests inbound
+#define SERIAL_LOG_FILE SERIAL_LOG_OUTBOX_FILE  // "serial_log.qo"
+// SERIAL_REQUEST_FILE is already correct ("serial_request.qi")
 
-#ifndef CONFIG_OUTBOX_FILE
-#define CONFIG_OUTBOX_FILE "config.qo"
-#endif
-
-#ifndef RELAY_CONTROL_FILE
-#define RELAY_CONTROL_FILE "relay.qi"
-#endif
-
-#ifndef SERIAL_LOG_FILE
-#define SERIAL_LOG_FILE "serial_log.qi"  // Send serial logs to server
-#endif
-
-#ifndef SERIAL_REQUEST_FILE
-#define SERIAL_REQUEST_FILE "serial_request.qi"  // Receive serial log requests
-#endif
-
-#ifndef LOCATION_REQUEST_FILE
-#define LOCATION_REQUEST_FILE "location_request.qi"  // Server requests GPS location
-#endif
-
-#ifndef LOCATION_RESPONSE_FILE
-#define LOCATION_RESPONSE_FILE "location_response.qi"  // Client sends GPS location response (routed to server fleet)
-#endif
+// Location: client receives requests inbound, sends responses outbound
+#define LOCATION_RESPONSE_FILE LOCATION_RESPONSE_OUTBOX_FILE  // "location_response.qo"
+// LOCATION_REQUEST_FILE is already correct ("location_request.qi")
 
 #ifndef CLIENT_SERIAL_BUFFER_SIZE
 #define CLIENT_SERIAL_BUFFER_SIZE 50  // Buffer up to 50 log messages
@@ -4478,10 +4462,9 @@ static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankInd
 }
 
 static void publishNote(const char *fileName, const JsonDocument &doc, bool syncNow) {
-  // Build target file string and serialized payload once for both live send and buffering
-  char targetFile[80];
-  const char *fleetName = (strlen(gConfig.serverFleet) > 0) ? gConfig.serverFleet : "tankalarm-server";
-  snprintf(targetFile, sizeof(targetFile), "fleet:%s:%s", fleetName, fileName);
+  // Build serialized payload once for both live send and buffering
+  // fileName is already a plain .qo notefile name (e.g., "telemetry.qo")
+  // Cross-device routing is handled by Notehub Routes — no fleet: prefix needed
 
   char buffer[1024];
   size_t len = serializeJson(doc, buffer, sizeof(buffer));
@@ -4491,18 +4474,18 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
   buffer[len] = '\0';
 
   if (!gNotecardAvailable) {
-    bufferNoteForRetry(targetFile, buffer, syncNow);
+    bufferNoteForRetry(fileName, buffer, syncNow);
     return;
   }
 
   J *req = notecard.newRequest("note.add");
   if (!req) {
     gNotecardFailureCount++;
-    bufferNoteForRetry(targetFile, buffer, syncNow);
+    bufferNoteForRetry(fileName, buffer, syncNow);
     return;
   }
 
-  JAddStringToObject(req, "file", targetFile);
+  JAddStringToObject(req, "file", fileName);
   if (syncNow) {
     JAddBoolToObject(req, "sync", true);
   }
@@ -4510,7 +4493,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
   J *body = JParse(buffer);
   if (!body) {
     JDelete(req);
-    bufferNoteForRetry(targetFile, buffer, syncNow);
+    bufferNoteForRetry(fileName, buffer, syncNow);
     return;
   }
 
@@ -4522,7 +4505,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
     flushBufferedNotes();
   } else {
     gNotecardFailureCount++;
-    bufferNoteForRetry(targetFile, buffer, syncNow);
+    bufferNoteForRetry(fileName, buffer, syncNow);
   }
 }
 
@@ -5026,10 +5009,8 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
         continue;
       }
 
-      // Use device-specific targeting: send directly to target client's relay.qi inbox
-      char targetFile[80];
-      snprintf(targetFile, sizeof(targetFile), "device:%s:relay.qi", targetClient);
-      JAddStringToObject(req, "file", targetFile);
+      // Use command.qo with Route Relay — Notehub Route delivers to target client's relay.qi
+      JAddStringToObject(req, "file", COMMAND_OUTBOX_FILE);
       JAddBoolToObject(req, "sync", true);
 
       J *body = JCreateObject();
@@ -5037,6 +5018,9 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
         continue;
       }
 
+      // Route Relay metadata: target device and command type
+      JAddStringToObject(body, "_target", targetClient);
+      JAddStringToObject(body, "_type", "relay");
       JAddNumberToObject(body, "relay", relayNum);
       JAddBoolToObject(body, "state", activate);
       JAddStringToObject(body, "source", "client-alarm");
@@ -5295,11 +5279,8 @@ static void sendSerialLogs() {
     return;
   }
 
-  // Route serial logs to server fleet
-  char targetFile[80];
-  const char *fleetName = (strlen(gConfig.serverFleet) > 0) ? gConfig.serverFleet : "tankalarm-server";
-  snprintf(targetFile, sizeof(targetFile), "fleet:%s:%s", fleetName, SERIAL_LOG_FILE);
-  JAddStringToObject(req, "file", targetFile);
+  // Send serial logs as plain .qo — Notehub Route delivers to server
+  JAddStringToObject(req, "file", SERIAL_LOG_FILE);
   JAddBoolToObject(req, "sync", true);
 
   J *body = JCreateObject();
@@ -5386,14 +5367,10 @@ static void pollForLocationRequests() {
     float latitude = 0.0f, longitude = 0.0f;
     bool hasLocation = fetchNotecardLocation(latitude, longitude);
     
-    // Send location response (fleet-targeted to server)
+    // Send location response — plain .qo, Notehub Route delivers to server
     J *respReq = notecard.newRequest("note.add");
     if (respReq) {
-      // Route to server fleet
-      char targetFile[80];
-      const char *fleetName = (strlen(gConfig.serverFleet) > 0) ? gConfig.serverFleet : "tankalarm-server";
-      snprintf(targetFile, sizeof(targetFile), "fleet:%s:%s", fleetName, LOCATION_RESPONSE_FILE);
-      JAddStringToObject(respReq, "file", targetFile);
+      JAddStringToObject(respReq, "file", LOCATION_RESPONSE_FILE);
       JAddBoolToObject(respReq, "sync", true);
       
       J *respBody = JCreateObject();

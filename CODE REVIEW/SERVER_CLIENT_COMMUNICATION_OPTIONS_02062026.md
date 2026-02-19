@@ -21,6 +21,7 @@
 11. [Notecard web.* API Reference Notes](#11-notecard-web-api-reference-notes)
 12. [Data Usage & Rate Limit Analysis](#12-data-usage--rate-limit-analysis)
 13. [Recommendations](#13-recommendations)
+14. [Technical Feasibility Research (Answers to Specific Questions)](#14-technical-feasibility-research-answers-to-specific-questions)
 
 ---
 
@@ -971,3 +972,46 @@ Authorization: Bearer <Personal_Access_Token>
 
 *Document generated during architecture review session, February 2026.*  
 *To be revisited when making the final communication architecture decision.*
+
+## 14. Technical Feasibility Research (Answers to Specific Questions)
+
+This section details the findings from the research investigation into native Blues Wireless features as requested.
+
+### 14.1 Can we use Environment Variables for Bidirectional Communication?
+**Short Answer:** No, not practically for device-to-server communication.
+- **Directionality:** Environment variables flow efficiently from **Cloud → Device**.
+- **The Limitation:** The `env.set` command on a Notecard sets a *local* override. It does **not** push that value back to the Fleet or Project level in Notehub.
+- **Workaround:** A device *could* use the Notehub API (via `web.put`) to update a device-level environment variable in the cloud, but this is slow, data-intensive, and rate-limited.
+- **Recommendation:** Use Env Vars only for **Server → Client Configuration** (e.g., setting tank depth, alarm thresholds). Do not use them for status reporting.
+
+### 14.2 Can we hit the Notehub API directly without 100 routes?
+**Short Answer:** Yes. This is the **"Universal Proxy"** solution (implemented in Option B).
+- **Mechanism:** Create **one** single Proxy Route in Notehub pointing to `https://api.notefile.net`.
+- **Dynamic Usage:** The Notecard's `web.post` command accepts a `name` argument. This argument is appended to the Route's base URL.
+- **Example:**
+  ```json
+  {
+    "req": "web.post",
+    "route": "notehub_api", 
+    "name": "/v1/projects/.../devices/.../signal", 
+    "body": {...}
+  }
+  ```
+- **Result:** The Notecard can access **any** endpoint in the massive Notehub API using just one configured Route.
+
+### 14.3 How to handle Dynamic Fleets & UIDs?
+**Short Answer:** Use the Notehub API to Discover Devices.
+- **Problem:** Hardcoding DeviceUIDs (e.g., `dev:123...`) in firmware is brittle.
+- **Solution:** The Server Opta can use the **Universal Proxy** to query the fleet:
+  1. **Get Project Fleets:** `GET /v1/projects/{pid}/fleets` (Find the 'TankSensors' fleet UID)
+  2. **Get Fleet Members:** `GET /v1/projects/{pid}/fleets/{fleetUID}/devices`
+- **Outcome:** The Server retrieves a list of all active Client DeviceUIDs dynamically. It can then iterate through this list to send commands or poll status.
+
+### 14.4 Are there native D2D features? (Signals)
+**Short Answer:** Yes, the **Signal** API is designed for this.
+- **Feature:** Notehub has a specialized `signal` mechanism that bypasses the database (Notefiles) for lower latency.
+- **Sending:** The Server uses the **Universal Proxy** to `POST /v1/projects/{pid}/devices/{uid}/signal`.
+- **Receiving:** The Client must be in `hub.set mode:continuous` (or `sync:true`) to receive signals instantly.
+- **Handling:** Signals do not create `.qo` files. They are delivered directly to the Notecard, which can trigger an interrupt (`ATTN` pin) or be read via `hub.signal`.
+- **Latency:** ~1-2 seconds (vs ~15-60s for standard Notes).
+- **Use Case:** Emergency Valve Shutoff, Immediate Alarm Acknowledgment.

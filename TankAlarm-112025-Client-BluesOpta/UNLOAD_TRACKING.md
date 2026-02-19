@@ -105,7 +105,7 @@ Returns the unload event log (up to 50 most recent events):
 
 ## Notecard Message Format
 
-The client sends unload events via the `unload.qi` notefile:
+The client sends unload events via the `unload.qo` notefile (delivered as `unload.qi` on the server via the ClientToServerRelay route):
 
 ```json
 {

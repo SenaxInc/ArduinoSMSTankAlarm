@@ -457,10 +457,14 @@ Watch serial monitor for first data transmission:
   Tank A: 87.3 inches (72.8%)
   Tank B: 45.1 inches (37.6%)
   Tank C: 112.5 inches (93.8%)
-[12:30:46] Sending telemetry to fleet.tankalarm-server:telemetry.qi
+[12:30:46] Sending telemetry to telemetry.qo
 [12:30:48] Telemetry sent successfully
 Next sample in 1800 seconds
 ```
+
+> **Note:** Telemetry is sent via `telemetry.qo` (outbound queue). Notehub Routes
+> handle delivery to the server device. See
+> [NOTEHUB_ROUTES_SETUP.md](NOTEHUB_ROUTES_SETUP.md) for Route configuration.
 
 ---
 
@@ -693,7 +697,8 @@ Expected response shows firmware version.
 4. **Notecard offline**: Check cellular connection
 
 **Verification:**
-Check server's serial console for "Config sent to device:..." message.
+Check server's serial console for "Config sent via command.qo" message.
+A Notehub Route relays this to the target client (see [NOTEHUB_ROUTES_SETUP.md](NOTEHUB_ROUTES_SETUP.md)).
 
 ### Cellular Connectivity
 
@@ -790,8 +795,8 @@ Two-level monitoring (high/low switches).
 
 **Via Serial Console:**
 ```cpp
-// Query current config
-{"req":"note.get", "file":"config.qi"}
+// Query current config (delivered by Notehub Route)
+{"req":"note.get", "file":"data.qi"}
 
 // Direct config edit (advanced)
 // Edit /client_config.json via LittleFS
@@ -937,9 +942,9 @@ Force immediate sync:
 {"req":"hub.sync"}
 ```
 
-View configuration:
+View configuration (delivered by Notehub Route):
 ```cpp
-{"req":"note.get", "file":"config.qi"}
+{"req":"note.get", "file":"data.qi"}
 ```
 
 ---

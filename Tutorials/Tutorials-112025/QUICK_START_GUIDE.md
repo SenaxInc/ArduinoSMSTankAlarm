@@ -432,8 +432,8 @@ Next sample: 1800 seconds
 2. Open your product
 3. Click **Events** tab
 4. You should see:
-   - **From client**: `fleet.tankalarm-server:telemetry.qi`
-   - **From server**: `device:<uid>:config.qi`
+   - **From client**: `telemetry.qo` — the client's outbound telemetry Notefile
+   - **From server**: `command.qo` with a `_target` field — a Notehub Route delivers this to the target client's `config.qi`
 
 **Example Telemetry Event:**
 ```json
@@ -452,6 +452,8 @@ Next sample: 1800 seconds
   "signal": 85
 }
 ```
+
+> ⚠️ **Important**: For telemetry and configuration to flow between devices, you must configure **Notehub Routes**. The server receives client telemetry via a Route from `telemetry.qo`, and client configurations are delivered via a Route from the server's `command.qo`. See the [Notehub Routes Setup Guide](NOTEHUB_ROUTES_SETUP.md) for step-by-step instructions.
 
 **✓ Checkpoint**: Notehub shows telemetry events flowing from client to server.
 

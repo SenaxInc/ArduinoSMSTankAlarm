@@ -76,9 +76,11 @@ Before making changes:
      ...
    };
    
-   // Config update uses device-specific targeting
-   char targetFile[80];
-   snprintf(targetFile, sizeof(targetFile), "device:%s:config.qi", clientUid);
+   // Config update uses consolidated command.qo outbox
+   // ServerToClientRelay route reads _target and _type to deliver as config.qi
+   JAddStringToObject(req, "file", "command.qo");
+   JAddStringToObject(body, "_target", clientUid);
+   JAddStringToObject(body, "_type", "config");
    ```
 
 4. **Compile and upload:**
@@ -113,9 +115,9 @@ For each client device:
      ...
    };
    
-   // Notes are sent with fleet targeting
-   char targetFile[80];
-   snprintf(targetFile, sizeof(targetFile), "fleet.%s:%s", gConfig.serverFleet, fileName);
+   // Notes are sent to standard .qo outbox files
+   // ClientToServerRelay route delivers as .qi on server
+   JAddStringToObject(req, "file", "telemetry.qo");
    ```
 
 3. **Compile and upload:**
@@ -162,7 +164,7 @@ For each client:
    - Wait for client to take samples (~30 minutes with default 1800s interval unless you lowered it)
    - In Notehub, navigate to **Events**
    - Filter by client device
-   - Look for notes with format: `fleet.tankalarm-server:telemetry.qi`
+   - Look for `telemetry.qo` events from the client
    - On server device events, verify `telemetry.qi` notes are arriving
 
 2. **Check Server Web Dashboard:**
@@ -179,7 +181,7 @@ For each client:
    - Make a minor config change via server UI
    - Send to client
    - In Notehub, filter by server device
-   - Look for note with format: `device:<client-uid>:config.qi`
+   - Look for `command.qo` event with `_target` and `_type: "config"` in the body
    - Client serial console should show config received
 
 ## Step 8: Clean Up Old Routes (Optional)
@@ -227,7 +229,7 @@ Once verified working:
 
 **Check:**
 - Client UID is correct in server UI
-- Format in Notehub shows `device:<uid>:config.qi`
+- Notehub Events show `command.qo` from server with correct `_target` and `_type: "config"`
 - Client is online and syncing with Notehub
 
 **Fix:**

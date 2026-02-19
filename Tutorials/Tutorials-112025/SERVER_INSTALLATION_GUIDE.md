@@ -319,10 +319,15 @@ Fleets enable device-to-device routing without manual route configuration:
 ### Fleet Architecture
 
 ```
-Clients → send to → fleet.tankalarm-server (Server receives)
-Server  → send to → device:<uid> (Specific client receives)
-Server  → send to → fleet.tankalarm-clients (All clients receive)
+Clients → note.add to → telemetry.qo / alarm.qo (outbound to Notehub)
+Notehub Route → relays to → Server's data.qi (inbound on server)
+Server  → note.add to → command.qo with {"_target":"<uid>", "_type":"config"}
+Notehub Route → relays to → Client's data.qi (inbound on client)
 ```
+
+> **Important:** Cross-device delivery requires Notehub Routes. Colons and
+> fleet/device prefixes are **not** valid in notefile names. See
+> [NOTEHUB_ROUTES_SETUP.md](NOTEHUB_ROUTES_SETUP.md) for setup instructions.
 
 ### Provision Your Server Notecard
 
@@ -1314,8 +1319,8 @@ GET http://server-ip/api/dfu/status
 // Check connectivity
 {"req":"hub.sync.status"}
 
-// View inbound notes
-{"req":"note.get", "file":"telemetry.qi"}
+// View inbound notes (delivered by Notehub Route)
+{"req":"note.get", "file":"data.qi"}
 
 // Force sync
 {"req":"hub.sync"}

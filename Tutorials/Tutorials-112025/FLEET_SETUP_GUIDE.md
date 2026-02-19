@@ -6,7 +6,7 @@
 
 ## Introduction
 
-The TankAlarm 112025 system uses **fleet-based device-to-device communication** via Blues Notehub, eliminating the need for manual route configuration. This guide walks you through deploying a complete fleet of client devices that automatically communicate with a central server.
+The TankAlarm 112025 system uses **fleet-organized devices** with **Notehub Route Relay** for device-to-device communication. Devices send to plain `.qo` notefiles (no colons, no fleet prefixes), and Notehub Routes handle cross-device delivery. This guide walks you through deploying a complete fleet of client devices that communicate with a central server via Routes.
 
 ### What You'll Learn
 
@@ -39,10 +39,10 @@ This guide covers:
 │         └──────── notes ───────────┘                 │
 └─────────────────────────────────────────────────────┘
 
-Fleet-Based Routing:
-• Clients send to: fleet.tankalarm-server (all servers receive)
-• Server sends to: device:<uid> (specific client receives)
-• Server broadcasts: fleet.tankalarm-clients (all clients receive)
+Route Relay Pattern:
+• Clients send to: telemetry.qo → ClientToServerRelay route → server
+• Server sends to: command.qo + _target UID → ServerToClientRelay route → client
+• Server broadcasts: command.qo + _target="*" → route delivers to all clients
 ```
 
 ### Prerequisites
@@ -129,7 +129,7 @@ For those who want to get started immediately:
 
 💡 **Pro Tip:** Start with empty sensor list for truly new sites. Click "+ Add Sensor" only for sensors you've physically connected.
 
-**Done!** No manual routes needed. Devices communicate automatically via fleet addressing.
+**Done!** Two Notehub Routes (ClientToServerRelay + ServerToClientRelay) handle all device-to-device communication automatically.
 
 ---
 
@@ -139,10 +139,10 @@ For those who want to get started immediately:
 
 Fleets are **logical groups of devices** in Blues Notehub that enable:
 
-- **Device-to-device messaging** without manual routes
-- **Broadcast capabilities** (one-to-many communication)
-- **Simplified scaling** (add devices without reconfiguration)
-- **Automatic routing** based on fleet membership
+- **Device organization** (clients vs. servers)
+- **Route targeting** (Notehub Routes use fleet membership to select destinations)
+- **Simplified scaling** (add devices to a fleet without reconfiguring Routes)
+- **Broadcast capabilities** (Routes can target all devices in a fleet)
 
 ### How Fleet Routing Works
 
@@ -151,17 +151,17 @@ Fleets are **logical groups of devices** in Blues Notehub that enable:
 When a client sends telemetry:
 
 ```cpp
-// Client code
+// Client code — plain .qo file, no fleet prefix or colons
 J *req = notecard.newRequest("note.add");
-JAddStringToObject(req, "file", "fleet.tankalarm-server:telemetry.qi");
+JAddStringToObject(req, "file", "telemetry.qo");
 JAddItemToObject(req, "body", telemetryData);
 notecard.sendRequest(req);
 ```
 
 **What happens:**
-1. Client sends note to fleet file: `fleet.tankalarm-server:telemetry.qi`
-2. Notehub routes to all devices in `tankalarm-server` fleet
-3. Server Notecard receives note in inbound queue
+1. Client sends note to `telemetry.qo` (plain outbound notefile — no colons allowed)
+2. Notehub syncs the note, triggering the **ClientToServerRelay** route
+3. Route delivers the note as `telemetry.qi` on the server Notecard
 4. Server reads note via `note.get` and processes data
 
 #### Server to Specific Client
@@ -169,37 +169,39 @@ notecard.sendRequest(req);
 When server configures a client:
 
 ```cpp
-// Server code
-char notefile[64];
-sprintf(notefile, "device:%s:config.qi", clientUID);
-
+// Server code — single command.qo with _target for routing
 J *req = notecard.newRequest("note.add");
-JAddStringToObject(req, "file", notefile);
-JAddItemToObject(req, "body", configData);
+JAddStringToObject(req, "file", "command.qo");
+JAddStringToObject(configData, "_target", clientUID);  // device UID for routing
+JAddStringToObject(configData, "_type", "config");      // command type
+JAddItemToObject(req, "body", configData);               // config payload
 notecard.sendRequest(req);
 ```
 
 **What happens:**
-1. Server sends note to device-specific file: `device:dev:123456:config.qi`
-2. Notehub routes directly to that specific client
-3. Client receives configuration and applies settings
+1. Server sends note to `command.qo` with `_target` = client UID in the body
+2. Notehub syncs the note, triggering the **ServerToClientRelay** route
+3. Route reads `_target` and `_type`, delivers as `command.qi` on the target client
+4. Client reads `command.qi` via `note.get` and applies settings
 
 #### Server Broadcast to All Clients
 
 For fleet-wide updates:
 
 ```cpp
-// Server code (broadcast)
+// Server code (broadcast) — command.qo with _target="*" for all clients
 J *req = notecard.newRequest("note.add");
-JAddStringToObject(req, "file", "fleet.tankalarm-clients:broadcast.qi");
+JAddStringToObject(req, "file", "command.qo");
+JAddStringToObject(broadcastData, "_target", "*");       // "*" = all clients
+JAddStringToObject(broadcastData, "_type", "broadcast");  // command type
 JAddItemToObject(req, "body", broadcastData);
 notecard.sendRequest(req);
 ```
 
 **What happens:**
-1. Server sends to fleet file: `fleet.tankalarm-clients:broadcast.qi`
-2. Notehub delivers to ALL clients in that fleet
-3. Each client processes the broadcast message
+1. Server sends to `command.qo` with `_target` = `"*"` (wildcard = all clients)
+2. **ServerToClientRelay** route delivers as `command.qi` on every client in the fleet
+3. Each client reads `command.qi` and processes the broadcast message
 
 ---
 
@@ -688,12 +690,12 @@ Each region operates independently with its own fleet.
    - Server → ensure exact match in dropdown
 
 2. **Check Client Polling:**
-   - Client should query for `config.qi`
+   - Client should query for `command.qi` (delivered by ServerToClientRelay route)
    - Verify in client firmware: `note.get`
 
 3. **Monitor Notehub Events:**
-   - Watch for `device:<uid>:config.qi` note
-   - Verify delivery status
+   - Watch for `command.qo` note with matching `_target` UID in the body
+   - Verify the ServerToClientRelay route delivery status
 
 4. **Client Serial Monitor:**
    - Should show "Configuration updated"
@@ -870,25 +872,26 @@ For high-availability deployments:
 Primary Server: Fleet "tankalarm-server-primary"
 Backup Server: Fleet "tankalarm-server-backup"
 
-Clients: Configured to send to both fleets
+Clients: Send telemetry.qo once — Routes handle delivery to both servers
 ```
 
 **Implementation:**
 ```cpp
-// Client sends to both servers
-notecard.newRequest("note.add");
-JAddStringToObject(req, "file", "fleet.tankalarm-server-primary:telemetry.qi");
-// ... send telemetry ...
+// Client sends telemetry ONCE — no fleet prefix, no colons
+J *req = notecard.newRequest("note.add");
+JAddStringToObject(req, "file", "telemetry.qo");
+JAddItemToObject(req, "body", telemetryData);
+notecard.sendRequest(req);
 
-notecard.newRequest("note.add");
-JAddStringToObject(req, "file", "fleet.tankalarm-server-backup:telemetry.qi");
-// ... send same telemetry ...
+// Two Notehub Routes handle redundancy:
+// 1. ClientToServerRelay-Primary → delivers telemetry.qi to primary server
+// 2. ClientToServerRelay-Backup  → delivers telemetry.qi to backup server
 ```
 
 **Considerations:**
-- Doubles cellular data usage
-- Both servers receive all data
-- Failover requires manual action (switch primary)
+- Client code is simple (single `telemetry.qo` write)
+- Redundancy is configured entirely in Notehub Routes
+- Failover: disable one route, enable the other
 
 ### Custom Routing
 
@@ -995,17 +998,17 @@ For advanced scenarios beyond standard fleets:
 
 **Check inbound queue:**
 ```cpp
-{"req":"note.get", "file":"config.qi", "delete":true}
+{"req":"note.get", "file":"command.qi", "delete":true}
 ```
 
-**Send note to fleet:**
+**Send telemetry (client → server via Route):**
 ```cpp
-{"req":"note.add", "file":"fleet.tankalarm-server:telemetry.qi", "body":{...}}
+{"req":"note.add", "file":"telemetry.qo", "body":{...}}
 ```
 
-**Send note to specific device:**
+**Send command to specific client (server → client via Route):**
 ```cpp
-{"req":"note.add", "file":"device:dev:123456:config.qi", "body":{...}}
+{"req":"note.add", "file":"command.qo", "body":{"_target":"dev:123456", "_type":"config", ...}}
 ```
 
 ---

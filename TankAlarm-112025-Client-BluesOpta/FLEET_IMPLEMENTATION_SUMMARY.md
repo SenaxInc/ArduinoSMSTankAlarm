@@ -23,16 +23,15 @@ The Tank Alarm system has been updated to use **Blues Notehub fleet-based device
 
 **Note Publishing:**
 - Old: `note.add` to local `.qo` file, relies on Notehub routes to forward
-- New: `note.add` with fleet targeting `fleet.<serverFleet>:<filename>`
+- New: `note.add` to standard `.qo` outbox files; ClientToServerRelay route delivers as `.qi` on the server
   ```cpp
-  snprintf(targetFile, sizeof(targetFile), "fleet.%s:%s", gConfig.serverFleet, fileName);
-  JAddStringToObject(req, "file", targetFile);
+  JAddStringToObject(req, "file", "telemetry.qo");
   ```
 
-**Notefiles Changed:**
-- `telemetry.qo` → `telemetry.qi` (direct to server inbox)
-- `alarm.qo` → `alarm.qi` (direct to server inbox)
-- `daily.qo` → `daily.qi` (direct to server inbox)
+**Notefiles Used (outbound from client):**
+- `telemetry.qo` (delivered as `telemetry.qi` on server via route)
+- `alarm.qo` (delivered as `alarm.qi` on server via route)
+- `daily.qo` (delivered as `daily.qi` on server via route)
 
 **Hub Configuration:**
 - Removed: `route` parameter from `hub.set` request
@@ -46,10 +45,11 @@ The Tank Alarm system has been updated to use **Blues Notehub fleet-based device
 
 **Config Distribution:**
 - Old: `note.add` to `config.qo` with `device` parameter, relies on routes
-- New: `note.add` with device-specific targeting
+- New: `note.add` to consolidated `command.qo` outbox with `_target` and `_type` in body; ServerToClientRelay route delivers as the correct `.qi` on the target client
   ```cpp
-  snprintf(targetFile, sizeof(targetFile), "device:%s:config.qi", clientUid);
-  JAddStringToObject(req, "file", targetFile);
+  JAddStringToObject(req, "file", "command.qo");
+  JAddStringToObject(body, "_target", clientUid);
+  JAddStringToObject(body, "_type", "config");
   ```
 
 **Web UI Changes:**
@@ -93,12 +93,12 @@ The Tank Alarm system has been updated to use **Blues Notehub fleet-based device
 └────┬────┘                        └────┬─────┘                      └───┬────┘
      │                                  │                                 │
      │ note.add                         │                                 │
-     │ file: "fleet.tankalarm-server:   │                                 │
-     │       telemetry.qi"              │                                 │
-     ├─────────────────────────────────>│                                 │
+     │ file: "telemetry.qo"             │                                 │
      │                                  │                                 │
-     │                                  │ Delivers to all devices         │
-     │                                  │ in "tankalarm-server" fleet     │
+     ├─────────────────────────────────────>│                                 │
+     │                                  │                                 │
+     │                                  │ ClientToServerRelay route       │
+     │                                  │ delivers as telemetry.qi        │
      │                                  ├────────────────────────────────>│
      │                                  │                                 │
      │                                  │                note.get         │
@@ -116,11 +116,12 @@ The Tank Alarm system has been updated to use **Blues Notehub fleet-based device
 └───┬────┘                      └────┬─────┘                        └────┬────┘
     │                                │                                   │
     │ note.add                       │                                   │
-    │ file: "device:<client-uid>:    │                                   │
-    │       config.qi"               │                                   │
+    │ file: "command.qo"             │                                   │
+    │ body: {_target, _type}         │                                   │
     ├───────────────────────────────>│                                   │
     │                                │                                   │
-    │                                │ Delivers to specific device       │
+    │                                │ ServerToClientRelay route         │
+    │                                │ reads _target, delivers config.qi │
     │                                ├──────────────────────────────────>│
     │                                │                                   │
     │                                │              note.get             │

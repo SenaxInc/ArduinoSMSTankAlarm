@@ -26,14 +26,14 @@ This simplified setup guide uses **fleet-based device-to-device communication**,
 ## How It Works
 
 ### Client → Server Communication
-- Clients send notes using fleet-based targeting: `fleet.tankalarm-server:telemetry.qi`
-- Blues Notehub automatically delivers to all devices in the `tankalarm-server` fleet
-- No manual routes required
+- Clients send notes to standard `.qo` outbox files (e.g., `telemetry.qo`)
+- ClientToServerRelay route in Notehub delivers them as `.qi` inbox files on the server
+- No manual routes required — a single Notehub Route handles all client-to-server notefiles
 
 ### Server → Client Communication  
-- Server sends config updates using device-specific targeting: `device:<client-uid>:config.qi`
-- Blues Notehub delivers directly to the specific client device
-- No manual routes required
+- Server sends commands to consolidated `command.qo` outbox with `_target` (device UID) and `_type` (command type) in the body
+- ServerToClientRelay route in Notehub reads these fields and delivers to the correct `.qi` file on the target client
+- No manual routes required — a single Notehub Route handles all server-to-client commands
 
 ## Configuration
 
@@ -140,10 +140,10 @@ The server configuration file (`/server_config.json` on LittleFS) includes:
 
 | Communication Path | Notefile Format | Description |
 |-------------------|----------------|-------------|
-| Client → Server (telemetry) | `fleet.tankalarm-server:telemetry.qi` | Tank level readings |
-| Client → Server (alarm) | `fleet.tankalarm-server:alarm.qi` | Alarm state changes |
-| Client → Server (daily) | `fleet.tankalarm-server:daily.qi` | Daily summary reports |
-| Server → Client (config) | `device:<client-uid>:config.qi` | Configuration updates |
+| Client → Server (telemetry) | `telemetry.qo` → ClientToServerRelay → `telemetry.qi` | Tank level readings |
+| Client → Server (alarm) | `alarm.qo` → ClientToServerRelay → `alarm.qi` | Alarm state changes |
+| Client → Server (daily) | `daily.qo` → ClientToServerRelay → `daily.qi` | Daily summary reports |
+| Server → Client (config) | `command.qo` (`_type: "config"`) → ServerToClientRelay → `config.qi` | Configuration updates |
 | Server → Viewer (summary) | `viewer_summary.qo` (route to viewer fleet `viewer_summary.qi`) | 6-hour fleet snapshot |
 | Server → SMS Gateway | `sms.qo` | SMS alert requests |
 | Server → Email Gateway | `email.qo` | Email report requests |
@@ -223,10 +223,11 @@ To broadcast config to all clients (use with caution):
 
 ```cpp
 // In server code, modify dispatchClientConfig:
-char targetFile[80];
-snprintf(targetFile, sizeof(targetFile), "fleet.%s:config.qi", gConfig.clientFleet);
-JAddStringToObject(req, "file", targetFile);
-// Remove device-specific targeting
+// Send to command.qo with a broadcast _target
+JAddStringToObject(req, "file", "command.qo");
+JAddStringToObject(body, "_target", "*");  // broadcast to all clients
+JAddStringToObject(body, "_type", "config");
+// ServerToClientRelay route delivers as config.qi to all clients
 ```
 
 ## SMS and Email Integration

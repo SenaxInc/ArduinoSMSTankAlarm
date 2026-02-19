@@ -620,15 +620,15 @@ Action: Check charging system and loads
 ### Data Sent to Server
 The client sends three types of notes via Blues Notehub:
 
-1. **Telemetry** (`telemetry.qi` to server fleet)
+1. **Telemetry** (`telemetry.qo`, delivered as `telemetry.qi` on server via ClientToServerRelay route)
    - Sent on level change or alarm
    - Contains all tank levels and status
    
-2. **Alarms** (`alarm.qi` to server fleet)
+2. **Alarms** (`alarm.qo`, delivered as `alarm.qi` on server via ClientToServerRelay route)
    - Immediate notification of threshold breach
    - Includes tank ID, name, level, and threshold
    
-3. **Daily Reports** (`daily.qi` to server fleet)
+3. **Daily Reports** (`daily.qo`, delivered as `daily.qi` on server via ClientToServerRelay route)
    - Once per day summary
    - All tanks included
 

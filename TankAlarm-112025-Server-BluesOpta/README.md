@@ -209,9 +209,10 @@ The server generates daily reports:
 
 ### Notes Sent to Clients
 
-1. **Configuration** (`config.qi`)
+1. **Configuration** (via `command.qo`)
    - Pushed from web interface
-   - Device-specific targeting: `device:<uid>:config.qi`
+   - Sent to `command.qo` with `_target` (device UID) and `_type: "config"` in body
+   - ServerToClientRelay route delivers as `config.qi` on the target client
    - Contains updated settings for client
 
 2. **SMS Requests** (`sms.qo`)

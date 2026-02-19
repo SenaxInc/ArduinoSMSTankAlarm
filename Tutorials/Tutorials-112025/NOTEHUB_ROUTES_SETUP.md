@@ -1,0 +1,454 @@
+# Notehub Routes Setup Guide — TankAlarm 112025
+
+## Introduction
+
+Welcome! In this tutorial you'll set up the **Notehub Routes** that allow your TankAlarm devices to talk to each other through the Blues cloud. By the end, your Clients, Server, and Viewer nodes will all be communicating reliably — no SSL certificates needed on your Opta hardware.
+
+### What You'll Learn
+
+- How Blues Notecard notefile routing works
+- How to create the 5 Notehub Routes that power TankAlarm
+- How to verify each route is working
+- How to troubleshoot common issues
+
+### What You'll Need
+
+| Item | Notes |
+|------|-------|
+| Notehub account | Free at [notehub.io](https://notehub.io) |
+| TankAlarm project | Already created in Notehub |
+| Notehub API token | Personal Access Token (for route authentication) |
+| All devices provisioned | Client, Server, and Viewer Notecards already connected to Notehub |
+
+> **Time to complete:** ~30 minutes
+
+---
+
+## Background: How Blues Notecard Routing Works
+
+Before we set up routes, let's understand the key rules of Blues Notecard communication:
+
+### Notefile Naming Rules
+
+| Extension | Direction | API | Example |
+|-----------|-----------|-----|---------|
+| `.qo` | **Outbound** (device → Notehub) | `note.add` | `telemetry.qo` |
+| `.qi` | **Inbound** (Notehub → device) | `note.get` | `config.qi` |
+
+**Critical rules:**
+- `note.add` **only** accepts `.qo`, `.qos`, `.db`, `.dbs`, or `.dbx` as the `file` parameter
+- `note.get` reads from `.qi`, `.qis`, `.db`, or `.dbx` files
+- **Colons (`:`) are never allowed** in notefile names — they will cause firmware errors
+- A device cannot directly write to another device's `.qi` file — that's what Routes are for!
+
+### The Route Relay Pattern
+
+Since devices can't write directly to each other, we use **Notehub Routes** as the relay:
+
+```
+┌─────────┐   note.add     ┌──────────┐   Route (HTTP)   ┌──────────┐   note.get
+│  Client  │ ──────────────>│  Notehub │ ────────────────>│  Notehub │ ──────────>│  Server  │
+│  Device  │  telemetry.qo  │  Cloud   │  Device API POST │  Cloud   │  telemetry.qi
+└─────────┘                 └──────────┘                  └──────────┘
+```
+
+1. The **Client** calls `note.add` with `file: "telemetry.qo"`
+2. The note syncs to **Notehub** cloud
+3. A **Route** catches the event and uses the Notehub Device API to add a `.qi` note to the **Server** device
+4. The **Server** calls `note.get` with `file: "telemetry.qi"` and reads the data
+
+This is the "Route Relay" pattern — and it's the foundation of TankAlarm's communication.
+
+---
+
+## Architecture Overview
+
+TankAlarm uses **5 routes** total:
+
+| # | Route Name | Purpose | Trigger | Target |
+|---|-----------|---------|---------|--------|
+| 1 | **ClientToServerRelay** | Delivers client telemetry/alarms to server | `*.qo` from client devices | Server device `.qi` inbox |
+| 2 | **ServerToClientRelay** | Delivers server commands to clients | `command.qo` from server device | Target client's `.qi` inbox |
+| 3 | **ServerToViewerRelay** | Delivers viewer summary to viewer devices | `viewer_summary.qo` from server | Viewer device `.qi` inbox |
+| 4 | **SMSRoute** | Sends SMS alerts | `sms.qo` from server device | Twilio or Blues SMS |
+| 5 | **EmailRoute** | Sends email reports | `email.qo` from server device | SMTP or Blues Email |
+
+### Notefile Flow Diagram
+
+```
+CLIENT DEVICE                    NOTEHUB                         SERVER DEVICE
+─────────────                    ───────                         ─────────────
+telemetry.qo  ──> Route #1 ──>  telemetry.qi  ──> note.get
+alarm.qo      ──> Route #1 ──>  alarm.qi      ──> note.get
+daily.qo      ──> Route #1 ──>  daily.qi      ──> note.get
+unload.qo     ──> Route #1 ──>  unload.qi     ──> note.get
+serial_log.qo ──> Route #1 ──>  serial_log.qi ──> note.get
+location_response.qo ─> #1 ──>  location_response.qi ──> note.get
+
+                                 command.qo    <── note.add (server)
+                                     │
+                                     └──> Route #2 reads body._target and body._type
+                                          │
+CLIENT DEVICE                             │
+─────────────                             ▼
+config.qi          <──────────────  Delivers to target client
+relay.qi           <──────────────  based on _type field
+serial_request.qi  <──────────────
+location_request.qi <─────────────
+
+VIEWER DEVICE                    NOTEHUB                         SERVER DEVICE
+─────────────                    ───────                         ─────────────
+viewer_summary.qi <── Route #3   viewer_summary.qo <── note.add (server)
+
+                                 sms.qo   ──> Route #4 ──> Twilio SMS
+                                 email.qo ──> Route #5 ──> SMTP Email
+```
+
+---
+
+## Step 1: Create a Notehub API Token
+
+Routes #1, #2, and #3 use the Notehub Device API to add notes to specific devices. This requires authentication.
+
+1. Log in to [notehub.io](https://notehub.io)
+2. Click your **profile icon** (top right) → **Account Settings**
+3. Click **API Tokens** in the left sidebar
+4. Click **Generate new token**
+5. Name it: `TankAlarm Route Relay`
+6. Copy the token — you'll need it for the routes below
+
+> **⚡ Tip:** Store this token securely. You can always regenerate it, but all routes using the old token will break.
+
+---
+
+## Step 2: Note Your Device UIDs
+
+You'll need the Notecard device UIDs for your Server and Viewer devices. Find them in Notehub:
+
+1. Go to your **TankAlarm project** in Notehub
+2. Click **Devices** in the left sidebar
+3. Note the **Device UID** for each device (format: `dev:XXXXXXXXXXXX`)
+
+Write them down:
+
+| Role | Device UID | Fleet |
+|------|-----------|-------|
+| Server | `dev:_____________` | (your server fleet) |
+| Viewer | `dev:_____________` | (your viewer fleet) |
+| Client 1 | `dev:_____________` | (your client fleet) |
+| Client 2 | `dev:_____________` | (your client fleet) |
+
+---
+
+## Step 3: Create Route #1 — ClientToServerRelay
+
+This route catches all `.qo` events from client devices and delivers them as `.qi` notes to the server.
+
+### 3a. Navigate to Routes
+
+1. In your Notehub project, click **Routes** in the left sidebar
+2. Click **Create Route**
+3. Select **General HTTP/HTTPS Request/Response**
+
+### 3b. Configure the Route
+
+| Setting | Value |
+|---------|-------|
+| **Route Name** | `ClientToServerRelay` |
+| **URL** | `https://api.notefile.net/v1/projects/YOUR_PROJECT_UID/devices/YOUR_SERVER_DEVICE_UID/notes/{{notefile_base}}.qi` |
+| **HTTP Method** | `POST` |
+| **HTTP Headers** | `Authorization: Bearer YOUR_API_TOKEN` |
+|                  | `Content-Type: application/json` |
+
+Replace the placeholders:
+- `YOUR_PROJECT_UID` → Your Notehub project UID (found in project settings, format: `app:XXXX`)
+- `YOUR_SERVER_DEVICE_UID` → The server's device UID (e.g., `dev:123456789012`)
+- `YOUR_API_TOKEN` → The API token from Step 1
+
+### 3c. Configure the Request Body
+
+Set the **Body** to use a JSONata transform:
+
+```jsonata
+{
+    "body": body
+}
+```
+
+This passes the entire event body through to the server's `.qi` notefile.
+
+### 3d. Configure Event Filters
+
+| Setting | Value |
+|---------|-------|
+| **Fleets** | Select your **client fleet** only |
+| **Notefiles** | `telemetry.qo`, `alarm.qo`, `daily.qo`, `unload.qo`, `serial_log.qo`, `location_response.qo`, `config.qo` |
+
+> **⚡ Tip:** The `{{notefile_base}}` template variable extracts the base name without the extension. So `telemetry.qo` becomes `telemetry`, and the URL appends `.qi` — resulting in the note being added to `telemetry.qi` on the server.
+
+### 3e. Save and Test
+
+1. Click **Save Route**
+2. Send a test telemetry note from a client device
+3. Check the **Route Logs** to verify delivery
+4. Check the server's **Events** page to see the `.qi` note appear
+
+---
+
+## Step 4: Create Route #2 — ServerToClientRelay
+
+This is the most sophisticated route. The server sends ALL commands through a single `command.qo` notefile, and the route reads metadata in the body to determine which client and which `.qi` file to deliver to.
+
+### 4a. Create the Route
+
+1. Click **Routes** → **Create Route** → **General HTTP/HTTPS Request/Response**
+
+| Setting | Value |
+|---------|-------|
+| **Route Name** | `ServerToClientRelay` |
+| **URL** | See JSONata below |
+| **HTTP Method** | `POST` |
+| **HTTP Headers** | `Authorization: Bearer YOUR_API_TOKEN` |
+|                  | `Content-Type: application/json` |
+
+### 4b. Configure the Dynamic URL
+
+The URL must be **dynamic** because each command targets a different client device and notefile. Use a **JSONata expression** for the URL:
+
+```jsonata
+"https://api.notefile.net/v1/projects/" & $PROJECTUID & "/devices/" & body._target & "/notes/" & (
+    body._type = "config" ? "config.qi" :
+    body._type = "relay" ? "relay.qi" :
+    body._type = "serial_request" ? "serial_request.qi" :
+    body._type = "location_request" ? "location_request.qi" :
+    "command.qi"
+)
+```
+
+> **Note:** Replace `$PROJECTUID` with your actual project UID string, e.g., `"app:XXXXXXXXXXXX"`.
+
+### 4c. Configure the Request Body
+
+Use JSONata to strip the routing metadata and pass only the command payload:
+
+```jsonata
+{
+    "body": $merge([body, {"_target": $nothing, "_type": $nothing}])
+}
+```
+
+This removes `_target` and `_type` from the body before delivering to the client — the client doesn't need to see routing metadata.
+
+### 4d. Configure Event Filters
+
+| Setting | Value |
+|---------|-------|
+| **Fleets** | Select your **server fleet** only |
+| **Notefiles** | `command.qo` |
+
+### 4e. Save and Test
+
+1. Click **Save Route**
+2. From the server dashboard, send a config update to a client
+3. Check **Route Logs** — you should see the dynamic URL targeting the correct client device
+4. On the client, verify the `config.qi` note arrived
+
+---
+
+## Step 5: Create Route #3 — ServerToViewerRelay
+
+This route delivers the viewer summary from the server to all viewer devices.
+
+### 5a. Create the Route
+
+| Setting | Value |
+|---------|-------|
+| **Route Name** | `ServerToViewerRelay` |
+| **URL** | `https://api.notefile.net/v1/projects/YOUR_PROJECT_UID/devices/YOUR_VIEWER_DEVICE_UID/notes/viewer_summary.qi` |
+| **HTTP Method** | `POST` |
+| **HTTP Headers** | `Authorization: Bearer YOUR_API_TOKEN` |
+|                  | `Content-Type: application/json` |
+
+### 5b. Request Body
+
+```jsonata
+{
+    "body": body
+}
+```
+
+### 5c. Event Filters
+
+| Setting | Value |
+|---------|-------|
+| **Fleets** | Select your **server fleet** only |
+| **Notefiles** | `viewer_summary.qo` |
+
+### 5d. Multiple Viewers
+
+If you have multiple viewer devices, you have two options:
+
+**Option A: One route per viewer** — Duplicate this route for each viewer device UID.
+
+**Option B: Use a JSONata transform with multiple API calls** — Create a single route that fans out to multiple viewers using Notehub's transform capabilities.
+
+For most deployments, Option A is simpler and recommended.
+
+---
+
+## Step 6: Create Route #4 — SMS Alerts (Optional)
+
+If you're using SMS alerts, create a route for the `sms.qo` notefile. This connects to your SMS provider (Twilio, Blues SMS, etc.).
+
+### For Twilio:
+
+| Setting | Value |
+|---------|-------|
+| **Route Name** | `SMSRoute` |
+| **Route Type** | **Twilio SMS** |
+| **Account SID** | Your Twilio Account SID |
+| **Auth Token** | Your Twilio Auth Token |
+| **From Number** | Your Twilio phone number |
+| **Notefiles** | `sms.qo` |
+
+### For Blues SMS (Notehub built-in):
+
+Notehub has built-in SMS support — check the [Blues documentation](https://dev.blues.io) for details.
+
+---
+
+## Step 7: Create Route #5 — Email Reports (Optional)
+
+| Setting | Value |
+|---------|-------|
+| **Route Name** | `EmailRoute` |
+| **Route Type** | **SMTP Email** or **General HTTP** to your email service |
+| **Notefiles** | `email.qo` |
+
+Configure according to your email provider's requirements.
+
+---
+
+## Verification Checklist
+
+After setting up all routes, verify each one works:
+
+### Route #1: ClientToServerRelay
+- [ ] Client sends telemetry → Server receives `telemetry.qi`
+- [ ] Client sends alarm → Server receives `alarm.qi`
+- [ ] Client sends daily report → Server receives `daily.qi`
+- [ ] Route logs show 200 OK responses
+
+### Route #2: ServerToClientRelay
+- [ ] Server sends config → Client receives `config.qi`
+- [ ] Server sends relay command → Client receives `relay.qi`
+- [ ] Server sends serial request → Client receives `serial_request.qi`
+- [ ] Server sends location request → Client receives `location_request.qi`
+- [ ] Dynamic URL correctly targets different client devices
+
+### Route #3: ServerToViewerRelay
+- [ ] Server publishes viewer summary → Viewer receives `viewer_summary.qi`
+- [ ] Viewer dashboard updates with new tank data
+
+### Route #4–5: SMS and Email
+- [ ] SMS alerts arrive at configured phone numbers
+- [ ] Email reports arrive at configured addresses
+
+---
+
+## Troubleshooting
+
+### "Route returned 4xx error"
+
+| Error Code | Meaning | Fix |
+|-----------|---------|-----|
+| 401 | Unauthorized | Check your API token is correct and not expired |
+| 404 | Device not found | Verify the device UID is correct and the device exists in the project |
+| 400 | Bad request | Check the request body format — must be valid JSON with a `body` field |
+
+### "Notes not appearing on target device"
+
+1. **Check Route Logs** in Notehub — do you see the route firing?
+2. **Check fleet assignment** — is the source device in the correct fleet for the route filter?
+3. **Check notefile filter** — does the route's notefile filter match the exact `.qo` filename?
+4. **Check the target device** — is it set to `continuous` or `periodic` mode? The device must sync to receive notes.
+
+### "notefile names may not include a : character"
+
+This error means your firmware still has old `device:uid:file.qi` or `fleet:name:file.qi` patterns. Update to the latest firmware — see the [Firmware Update Guide](FIRMWARE_UPDATE_GUIDE.md).
+
+### "note.add file must be .qo, .qos, .db, .dbs, or .dbx"
+
+Your firmware is trying to `note.add` with a `.qi` filename. Only `.qo` extensions work for outbound notes. Check that your notefile `#define` values use `.qo` for outbound files.
+
+---
+
+## Understanding the command.qo Pattern
+
+The server uses a **single consolidated outbox** (`command.qo`) for all outbound commands. Each note includes routing metadata in the body:
+
+```json
+{
+    "_target": "dev:123456789012",
+    "_type": "config",
+    "site": "North Tank Farm",
+    "sampleSeconds": 1800,
+    "tanks": [...]
+}
+```
+
+| Field | Purpose | Values |
+|-------|---------|--------|
+| `_target` | Device UID of the target client | `dev:XXXXXXXXXXXX` |
+| `_type` | Command type — determines which `.qi` file to deliver to | `config`, `relay`, `serial_request`, `location_request` |
+
+The ServerToClientRelay Route reads these fields to construct the correct API URL.
+
+### Why a single command.qo?
+
+- **Fewer routes** — one route handles all server→client communication
+- **Simpler firmware** — server always writes to the same notefile
+- **Easier debugging** — all commands are visible in one place in Notehub
+
+---
+
+## Environment Variables (Alternative for Fleet-Wide Config)
+
+For fleet-wide settings that don't need per-device targeting, Blues provides **Environment Variables**:
+
+1. In Notehub, go to your **project** → **Environment**
+2. Set variables like:
+   - `_poll_rate` = `1800` (seconds between readings)
+   - `_alarm_high` = `120` (inches)
+   - `_alarm_low` = `6` (inches)
+
+Devices read these with `env.get` — no routes needed. Use this for simple settings that apply to all devices in a fleet.
+
+---
+
+## Cost and Data Usage
+
+| Route | Events/Day (typical) | Data per Event | Daily Total |
+|-------|---------------------|---------------|-------------|
+| ClientToServerRelay | 48 per client (1/30min) | ~200 bytes | ~9.6 KB/client |
+| ServerToClientRelay | 1-5 (config/relay) | ~500 bytes | ~2.5 KB |
+| ServerToViewerRelay | 4 (every 6 hours) | ~2 KB | ~8 KB |
+| SMS | 0-10 (alarm dependent) | ~160 bytes | ~1.6 KB |
+| Email | 1 (daily report) | ~2 KB | ~2 KB |
+
+**Total:** ~25 KB/day per client node. Well within Blues free tier (5,000 events/month).
+
+---
+
+## Next Steps
+
+- [Client Installation Guide](CLIENT_INSTALLATION_GUIDE.md) — Set up your field sensor nodes
+- [Server Installation Guide](SERVER_INSTALLATION_GUIDE.md) — Set up your central server
+- [Fleet Setup Guide](FLEET_SETUP_GUIDE.md) — Configure fleets and device groups
+- [Dashboard Guide](DASHBOARD_GUIDE.md) — Use the web dashboard
+- [Troubleshooting Guide](TROUBLESHOOTING_GUIDE.md) — Common issues and fixes
+
+---
+
+*TankAlarm 112025 — Firmware v1.0.0+*
+*Route Relay Architecture — No SSL certificates required on device hardware*

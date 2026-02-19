@@ -113,10 +113,12 @@ curl -X POST http://<server-ip>/api/relay \
 
 ### Relay Command Message
 
-Commands are sent via Blues Notecard to `device:<clientUID>:relay.qi`:
+Commands are sent via Blues Notecard to `command.qo` with `_target` (client UID) and `_type: "relay"` in the body. The ServerToClientRelay route in Notehub delivers the command as `relay.qi` on the target client:
 
 ```json
 {
+  "_target": "dev:864475044012345",
+  "_type": "relay",
   "relay": 1,
   "state": true,
   "source": "server",
@@ -232,7 +234,7 @@ Commands are sent via Blues Notecard to `device:<clientUID>:relay.qi`:
 
 ## Security Considerations
 
-- Relay commands use device-specific targeting (device:UID:relay.qi)
+- Relay commands use the consolidated `command.qo` outbox with `_target` and `_type: "relay"` in the body
 - Client UIDs are HTML-escaped in the web UI to prevent XSS
 - Only authenticated users with server access can control relays
 - Consider physical security for devices controlling critical equipment

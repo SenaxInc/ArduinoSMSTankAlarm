@@ -47,7 +47,7 @@
 #endif
 
 #ifndef VIEWER_SUMMARY_FILE
-#define VIEWER_SUMMARY_FILE "viewer_summary.qi"
+#define VIEWER_SUMMARY_FILE VIEWER_SUMMARY_INBOX_FILE  // "viewer_summary.qi" — viewer reads inbound
 #endif
 
 #ifndef VIEWER_CONFIG_PATH

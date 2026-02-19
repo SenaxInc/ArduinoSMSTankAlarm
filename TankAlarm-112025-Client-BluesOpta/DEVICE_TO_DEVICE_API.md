@@ -12,26 +12,24 @@ This implementation eliminates the need for manually configured routes in Blues 
 3. Server polls `telemetry.qi` for incoming data
 4. **Problem**: Requires manual route setup in Notehub web interface for each note file type
 
-### Fleet-Based API Approach (NEW)
-1. Client and server Notecards are organized into **Fleets** in Notehub
-2. Client sends notes to **fleet-scoped notefile** using special syntax
-3. Notes automatically delivered to all devices in target fleet
-4. **Benefit**: No manual route configuration needed - just fleet membership
+### Route Relay Approach (NEW)
+1. Client and server Notecards are organized into the same project in Notehub
+2. Client sends notes to standard `.qo` outbox notefiles
+3. Notehub Routes (ClientToServerRelay, ServerToClientRelay) deliver notes to the correct device
+4. **Benefit**: No colon-based notefile syntax — uses standard `.qo` files with route-based delivery
 
 ## Implementation Strategy
 
-### Method 1: Fleet-to-Fleet Communication (Recommended)
+### Method 1: Client-to-Server via Route Relay (Recommended)
 
-Blues Notecard supports sending notes to a fleet using the format: `<fleet>:<notefile>`.
+Client sends notes to standard `.qo` outbox files. The ClientToServerRelay route in Notehub delivers them as `.qi` inbox files on the server.
 
-**Client sends to server fleet:**
+**Client sends telemetry:**
 ```cpp
-// Instead of:
-// note.add to "telemetry.qo" with route configuration
-
-// Use fleet targeting:
+// Client sends to standard .qo outbox file
+// ClientToServerRelay route delivers as telemetry.qi on server
 J *req = notecard.newRequest("note.add");
-JAddStringToObject(req, "file", "fleet.server:telemetry.qi");
+JAddStringToObject(req, "file", "telemetry.qo");
 JAddItemToObject(req, "body", body);
 notecard.sendRequest(req);
 ```
@@ -45,29 +43,28 @@ JAddBoolToObject(req, "delete", true);
 J *rsp = notecard.requestAndResponse(req);
 ```
 
-### Method 2: Device-Specific Targeting
+### Method 2: Server-to-Client via Consolidated Command Outbox
 
-For server-to-client config updates, target specific device UID:
+For server-to-client updates (config, relay commands), the server sends to a single `command.qo` outbox with `_target` (device UID) and `_type` (command type) in the body. The ServerToClientRelay route in Notehub reads these fields and delivers the note to the correct `.qi` file on the target client.
 
 ```cpp
-// Server sends config to specific client device
+// Server sends config to specific client device via command.qo
 J *req = notecard.newRequest("note.add");
-char targetFile[80];
-snprintf(targetFile, sizeof(targetFile), "device:%s:config.qi", clientDeviceUID);
-JAddStringToObject(req, "file", targetFile);
+JAddStringToObject(req, "file", "command.qo");
+JAddStringToObject(configBody, "_target", clientDeviceUID);
+JAddStringToObject(configBody, "_type", "config");
 JAddItemToObject(req, "body", configBody);
 notecard.sendRequest(req);
 ```
 
-### Method 3: Project-Wide Notefiles
+### Method 3: Device Identification in Note Body
 
-Use project-level notefiles that all devices can access:
+Include the device UID in the note body so the server knows the source:
 
 ```cpp
-// Client publishes to project-level notefile
+// Client publishes to standard .qo outbox with device UID in body
 J *req = notecard.newRequest("note.add");
-JAddStringToObject(req, "file", "project:telemetry");
-// Add device UID in body so server knows source
+JAddStringToObject(req, "file", "telemetry.qo");
 J *body = JCreateObject();
 JAddStringToObject(body, "device", gDeviceUID);
 // ... add other data ...
@@ -93,21 +90,21 @@ notecard.sendRequest(req);
 ### In Device Configuration:
 
 **Client devices:**
-- Store the server fleet name (e.g., "tankalarm-server") in configuration
-- Use `fleet.tankalarm-server:<filename>` syntax when publishing
+- Send notes to standard `.qo` outbox notefiles (e.g., `telemetry.qo`)
+- ClientToServerRelay route in Notehub delivers them to the server as `.qi` files
 
 **Server device:**
-- Poll local notefiles (`.qi` files) - Notehub automatically delivers
-- Store client fleet name for broadcasting config updates
+- Poll local notefiles (`.qi` files) - Notehub routes deliver automatically
+- Send commands via `command.qo` with `_target` and `_type` in body
 
 ## Notefile Naming Convention
 
-| Communication | Old Route-Based | New Fleet-Based |
-|---------------|-----------------|-----------------|
-| Client → Server telemetry | `telemetry.qo` → route → server `telemetry.qi` | `fleet.tankalarm-server:telemetry.qi` |
-| Client → Server alarm | `alarm.qo` → route → server `alarm.qi` | `fleet.tankalarm-server:alarm.qi` |
-| Client → Server daily | `daily.qo` → route → server `daily.qi` | `fleet.tankalarm-server:daily.qi` |
-| Server → Client config | `config.qo` → route → client `config.qi` | `device:<uid>:config.qi` or `fleet.tankalarm-clients:config.qi` |
+| Communication | Old Route-Based | New Route Relay |
+|---------------|-----------------|------------------|
+| Client → Server telemetry | `telemetry.qo` → route → server `telemetry.qi` | `telemetry.qo` → ClientToServerRelay → server `telemetry.qi` |
+| Client → Server alarm | `alarm.qo` → route → server `alarm.qi` | `alarm.qo` → ClientToServerRelay → server `alarm.qi` |
+| Client → Server daily | `daily.qo` → route → server `daily.qi` | `daily.qo` → ClientToServerRelay → server `daily.qi` |
+| Server → Client config | `config.qo` → route → client `config.qi` | `command.qo` (with `_target`/`_type`) → ServerToClientRelay → client `config.qi` |
 
 ## Benefits
 
