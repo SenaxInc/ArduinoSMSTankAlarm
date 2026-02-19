@@ -211,17 +211,13 @@
 #define SERIAL_LOG_FILE SERIAL_LOG_INBOX_FILE   // "serial_log.qi" — server receives logs
 #endif
 
-#ifndef SERIAL_REQUEST_FILE
-#define SERIAL_REQUEST_FILE "serial_request.qi"  // Placeholder — server sends via command.qo, not this
-#endif
+// SERIAL_REQUEST_FILE and LOCATION_REQUEST_FILE removed — server sends via command.qo
 
 #ifndef SERIAL_ACK_FILE
 #define SERIAL_ACK_FILE SERIAL_ACK_INBOX_FILE   // "serial_ack.qi" — server receives acks
 #endif
 
-#ifndef LOCATION_REQUEST_FILE
-#define LOCATION_REQUEST_FILE "location_request.qi"  // Placeholder — server sends via command.qo
-#endif
+// LOCATION_REQUEST_FILE removed — server sends via command.qo
 
 #ifndef LOCATION_RESPONSE_FILE
 #define LOCATION_RESPONSE_FILE LOCATION_RESPONSE_INBOX_FILE  // "location_response.qi" — server receives
@@ -289,7 +285,7 @@ static IPAddress gStaticIp(192, 168, 1, 200);
 static IPAddress gStaticGateway(192, 168, 1, 1);
 static IPAddress gStaticSubnet(255, 255, 255, 0);
 static IPAddress gStaticDns(8, 8, 8, 8);
-static const char DEFAULT_ADMIN_PIN[] = "1234";
+static const char DEFAULT_ADMIN_PIN[] = "";  // Empty: force user to set PIN on first use
 
 struct ServerConfig {
   char serverName[32];
@@ -1578,7 +1574,7 @@ static void handleRefreshPost(EthernetClient &client, const String &body) {
   char clientUid[64] = {0};
   const char *pinValue = nullptr;
   if (body.length() > 0) {
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     if (deserializeJson(doc, body) == DeserializationError::Ok) {
       const char *uid = doc["client"] | "";
       if (uid && *uid) {
@@ -1789,9 +1785,15 @@ static void handleSerialLogsDownload(EthernetClient &client, const String &query
 }
 
 static void handleSerialRequestPost(EthernetClient &client, const String &body) {
-  StaticJsonDocument<256> doc;
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, "Invalid JSON");
+    return;
+  }
+
+  // Require PIN authentication for serial log requests
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
     return;
   }
 
@@ -2317,11 +2319,11 @@ void loop() {
     gLastDfuCheckMillis = now;
     if (!gDfuInProgress) {
       checkForFirmwareUpdate();
-      // Auto-enable DFU if update is available (can be disabled for manual control)
-      // Comment out next 3 lines to require manual enableDfuMode() call via web API
-      if (gDfuUpdateAvailable) {
-        enableDfuMode();
-      }
+      // NOTE: Auto-DFU disabled for safety — firmware updates should be applied
+      // deliberately via the web UI or API. Uncomment below to auto-apply.
+      // if (gDfuUpdateAvailable) {
+      //   enableDfuMode();
+      // }
     }
   }
   
@@ -2477,7 +2479,7 @@ static bool loadConfig(ServerConfig &cfg) {
     buffer[bytesRead] = '\0';
     fclose(file);
     
-    DynamicJsonDocument doc(fileSize + 256);
+    JsonDocument doc;  // ArduinoJson v7: auto-sizing
     DeserializationError err = deserializeJson(doc, buffer);
     free(buffer);
   #else
@@ -2490,7 +2492,7 @@ static bool loadConfig(ServerConfig &cfg) {
       return false;
     }
 
-    DynamicJsonDocument doc(file.size() + 256);
+    JsonDocument doc;  // ArduinoJson v7: auto-sizing
     DeserializationError err = deserializeJson(doc, file);
     file.close();
   #endif
@@ -2713,7 +2715,7 @@ static double loadServerHeartbeatEpoch() {
       return 0.0;
     }
 
-    DynamicJsonDocument doc(128);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, buffer);
     if (err) {
       return 0.0;
@@ -2730,7 +2732,7 @@ static double loadServerHeartbeatEpoch() {
       return 0.0;
     }
 
-    DynamicJsonDocument doc(file.size() + 64);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, file);
     file.close();
     if (err) {
@@ -4234,7 +4236,7 @@ static void loadHistorySettings() {
     }
     buffer[bytesRead] = '\0';
     
-    DynamicJsonDocument doc(fileSize + 128);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, buffer);
     free(buffer);
     
@@ -4245,7 +4247,7 @@ static void loadHistorySettings() {
     File f = LittleFS.open("/history_settings.json", "r");
     if (!f) return;
     
-    DynamicJsonDocument doc(f.size() + 128);
+    JsonDocument doc;
     if (deserializeJson(doc, f) == DeserializationError::Ok) {
       applyHistorySettingsFromJson(doc);
     }
@@ -4632,7 +4634,7 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
     return;
   }
   
-  StaticJsonDocument<128> doc;
+  JsonDocument doc;
   DeserializationError error = deserializeJson(doc, body);
 
   if (error) {
@@ -4964,6 +4966,7 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
   }
 
   if (contentLength > 0) {
+    body.reserve(contentLength);  // Pre-allocate to avoid O(n²) reallocation
     size_t readBytes = 0;
     while (readBytes < contentLength && client.connected()) {
       while (client.available() && readBytes < contentLength) {
@@ -5566,12 +5569,7 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
 }
 
 static void handleConfigPost(EthernetClient &client, const String &body) {
-  // Use larger buffer to match MAX_HTTP_BODY_BYTES (16KB) for complex configs
-  size_t capacity = body.length() + 1024;  // headroom for parsed structures
-  if (capacity < 2048) {
-    capacity = 2048;
-  }
-  DynamicJsonDocument doc(capacity);
+  JsonDocument doc;
 
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
@@ -5579,14 +5577,8 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
     return;
   }
 
-  if (!isValidPin(gConfig.configPin)) {
-    respondStatus(client, 403, F("Configure admin PIN before making changes"));
-    return;
-  }
-
   const char *pinValue = doc["pin"].as<const char *>();
-  if (!pinMatches(pinValue)) {
-    respondStatus(client, 403, F("Invalid PIN"));
+  if (!requireValidPin(client, pinValue)) {
     return;
   }
 
@@ -5683,7 +5675,7 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
 // POST /api/config/retry  { "pin": "1234" }                 → retry all pending
 // POST /api/config/retry  { "pin": "1234", "client": "uid" } → retry one client
 static void handleConfigRetryPost(EthernetClient &client, const String &body) {
-  StaticJsonDocument<256> doc;
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -5736,7 +5728,7 @@ static void handleConfigRetryPost(EthernetClient &client, const String &body) {
 }
 
 static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *message) {
-  StaticJsonDocument<128> resp;
+  JsonDocument resp;
   resp["pinConfigured"] = isValidPin(gConfig.configPin);
   String msg(message);
   resp["message"] = msg;
@@ -5747,7 +5739,7 @@ static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *m
 
 static void handlePinPost(EthernetClient &client, const String &body) {
   // Body is capped at 256 bytes upstream; a small static buffer is sufficient here
-  StaticJsonDocument<256> doc;
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
     respondStatus(client, 400, F("Invalid JSON"));
@@ -5771,8 +5763,7 @@ static void handlePinPost(EthernetClient &client, const String &body) {
     return;
   }
 
-  if (!pinMatches(currentPin)) {
-    respondStatus(client, 403, F("Invalid PIN"));
+  if (!requireValidPin(client, currentPin)) {
     return;
   }
 
@@ -5790,7 +5781,7 @@ static void handlePinPost(EthernetClient &client, const String &body) {
 }
 
 static void handleRelayPost(EthernetClient &client, const String &body) {
-  StaticJsonDocument<256> doc;
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -5912,7 +5903,7 @@ static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
 }
 
 static void handleRelayClearPost(EthernetClient &client, const String &body) {
-  StaticJsonDocument<256> doc;
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -5942,7 +5933,7 @@ static void handleRelayClearPost(EthernetClient &client, const String &body) {
 }
 
 static void handlePausePost(EthernetClient &client, const String &body) {
-  StaticJsonDocument<192> doc;
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -5969,7 +5960,7 @@ static void handlePausePost(EthernetClient &client, const String &body) {
 }
 
 static void handleFtpBackupPost(EthernetClient &client, const String &body) {
-  StaticJsonDocument<128> doc;
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -6008,7 +5999,7 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
 }
 
 static void handleFtpRestorePost(EthernetClient &client, const String &body) {
-  StaticJsonDocument<128> doc;
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
     return;
@@ -6206,7 +6197,7 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
     double epoch = JGetNumber(rsp, "time");
     if (json) {
       size_t jsonLen = strlen(json);
-      DynamicJsonDocument doc(jsonLen + 256);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, json);
       NoteFree(json);
       if (!err) {
@@ -7232,7 +7223,7 @@ static void handleClientConfigGet(EthernetClient &client, const String &query) {
     return;
   }
 
-  // Send the raw stored JSON directly to avoid DynamicJsonDocument size limits
+  // Send the raw stored JSON directly to avoid JsonDocument overhead
   // truncating nested fields (e.g. monitorType inside tanks array).
   String response = F("{\"config\":");
   response += snap->payload;
@@ -7281,7 +7272,7 @@ static float convertMaToLevelWithTemp(const char *clientUid, uint8_t tankNumber,
   }
   
   // Parse the config snapshot to find the tank settings
-  DynamicJsonDocument doc(strlen(snap->payload) + 256);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, snap->payload);
   if (err) {
     return ((mA - 4.0f) / 16.0f) * 100.0f;  // Fallback
@@ -7344,7 +7335,7 @@ static float convertVoltageToLevel(const char *clientUid, uint8_t tankNumber, fl
   }
   
   // Parse the config snapshot to find the tank settings
-  DynamicJsonDocument doc(strlen(snap->payload) + 256);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, snap->payload);
   if (err) {
     return (voltage / 10.0f) * 100.0f;  // Fallback
@@ -7753,7 +7744,7 @@ static void handleConfigAck(JsonDocument &doc, double epoch) {
 // ============================================================================
 
 static void handleClientDeleteRequest(EthernetClient &client, const String &body) {
-  DynamicJsonDocument doc(512);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
     respondStatus(client, 400, F("Invalid JSON"));
@@ -7761,8 +7752,7 @@ static void handleClientDeleteRequest(EthernetClient &client, const String &body
   }
   
   const char *pin = doc["pin"] | "";
-  if (!pinMatches(pin)) {
-    respondStatus(client, 401, F("Invalid PIN"));
+  if (!requireValidPin(client, pin)) {
     return;
   }
   
@@ -7898,7 +7888,7 @@ static void loadClientConfigSnapshots() {
       memcpy(snap.payload, json.c_str(), len);
       snap.payload[len] = '\0';
 
-      DynamicJsonDocument doc(strlen(snap.payload) + 256);
+      JsonDocument doc;
       if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
         const char *site = doc["site"] | "";
         strlcpy(snap.site, site, sizeof(snap.site));
@@ -7968,7 +7958,7 @@ static void loadClientConfigSnapshots() {
       memcpy(snap.payload, json.c_str(), len);
       snap.payload[len] = '\0';
 
-      DynamicJsonDocument doc(strlen(snap.payload) + 256);
+      JsonDocument doc;
       if (deserializeJson(doc, snap.payload) == DeserializationError::Ok) {
         const char *site = doc["site"] | "";
         strlcpy(snap.site, site, sizeof(snap.site));
@@ -8071,7 +8061,7 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
     return;
   }
 
-  DynamicJsonDocument doc(bufferLen + 256);
+  JsonDocument doc;
   if (deserializeJson(doc, buffer) != DeserializationError::Ok) {
     return;
   }
@@ -8612,8 +8602,7 @@ static bool saveContactsConfig(const JsonDocument &doc) {
 }
 
 static void handleContactsGet(EthernetClient &client) {
-  static const size_t CONTACTS_JSON_CAPACITY = 32768;
-  DynamicJsonDocument doc(CONTACTS_JSON_CAPACITY);
+  JsonDocument doc;
   bool loaded = loadContactsConfig(doc);
   
   // Use existing arrays if loaded, otherwise create empty ones
@@ -8678,9 +8667,15 @@ static void handleContactsPost(EthernetClient &client, const String &body) {
   if (capacity > 32768) {
     capacity = 32768;  // hard ceiling to avoid runaway allocation
   }
-  DynamicJsonDocument doc(capacity);
+  JsonDocument doc;
   if (deserializeJson(doc, body)) {
     respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  // Require PIN authentication
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
     return;
   }
   
@@ -8893,6 +8888,12 @@ static void handleEmailFormatPost(EthernetClient &client, const String &body) {
   
   if (error) {
     respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  // Require PIN authentication
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
     return;
   }
   
@@ -9895,14 +9896,16 @@ static void handleCalibrationGet(EthernetClient &client) {
 }
 
 static void handleCalibrationPost(EthernetClient &client, const String &body) {
-  size_t capacity = body.length() + 512;
-  if (capacity < 2048) {
-    capacity = 2048;
-  }
-  DynamicJsonDocument doc(capacity);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
     respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  // Require PIN authentication
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
     return;
   }
   
@@ -10017,6 +10020,12 @@ static void handleCalibrationDelete(EthernetClient &client, const String &body) 
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
     respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  // Require PIN authentication
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
     return;
   }
   
@@ -10270,6 +10279,12 @@ static void handleLocationRequestPost(EthernetClient &client, const String &body
 
   if (error) {
     respondStatus(client, 400, "Invalid JSON");
+    return;
+  }
+
+  // Require PIN authentication
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
     return;
   }
 

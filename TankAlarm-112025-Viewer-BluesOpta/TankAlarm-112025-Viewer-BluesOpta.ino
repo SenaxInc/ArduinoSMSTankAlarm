@@ -109,12 +109,7 @@ struct TankRecord {
 // Tank JSON: each tank object has up to 13 fields - use 16 for headroom
 static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(16)) + 1024;
 
-// Default network configuration - used if config file not found
-static byte gDefaultMacAddress[6] = { 0x02, 0x00, 0x01, 0x11, 0x20, 0x25 };
-static IPAddress gDefaultStaticIp(192, 168, 1, 210);
-static IPAddress gDefaultStaticGateway(192, 168, 1, 1);
-static IPAddress gDefaultStaticSubnet(255, 255, 255, 0);
-static IPAddress gDefaultStaticDns(8, 8, 8, 8);
+// Default network configuration lives in gConfig initializer below
 
 // Global configuration instance with defaults
 static ViewerConfig gConfig = {
@@ -156,7 +151,6 @@ static void initializeNotecard();
 static void initializeEthernet();
 static void handleWebRequests();
 static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge);
-static void respondHtml(EthernetClient &client, const char *body, size_t len);
 static void respondJson(EthernetClient &client, const String &body);
 static void respondStatus(EthernetClient &client, int status, const char *message);
 static void sendDashboard(EthernetClient &client);
@@ -192,7 +186,7 @@ void setup() {
   initializeEthernet();
   gWebServer.begin();
 
-#ifdef WATCHDOG_AVAILABLE
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     uint32_t timeoutMs = WATCHDOG_TIMEOUT_SECONDS * 1000;
     if (mbedWatchdog.start(timeoutMs)) {
@@ -216,13 +210,15 @@ void setup() {
 }
 
 void loop() {
-#ifdef WATCHDOG_AVAILABLE
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     mbedWatchdog.kick();
   #else
     IWatchdog.reload();
   #endif
 #endif
+
+  Ethernet.maintain();  // Renew DHCP lease if needed
 
   handleWebRequests();
   ensureTimeSync();
@@ -444,27 +440,6 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
   return true;
 }
 
-static void respondHtml(EthernetClient &client, const char *body, size_t len) {
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Content-Type: text/html; charset=utf-8"));
-  client.print(F("Content-Length: "));
-  client.println(len);
-  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
-  client.println();
-  
-  // Send in chunks to avoid memory issues with large strings
-  const size_t chunkSize = 512;
-  size_t remaining = len;
-  size_t offset = 0;
-  
-  while (remaining > 0) {
-    size_t toSend = (remaining < chunkSize) ? remaining : chunkSize;
-    client.write((const uint8_t *)body + offset, toSend);
-    offset += toSend;
-    remaining -= toSend;
-  }
-}
-
 static void respondJson(EthernetClient &client, const String &body) {
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: application/json"));
@@ -497,6 +472,8 @@ static void respondStatus(EthernetClient &client, int status, const char *messag
     case 200: client.println(F("OK")); break;
     case 400: client.println(F("Bad Request")); break;
     case 404: client.println(F("Not Found")); break;
+    case 413: client.println(F("Payload Too Large")); break;
+    case 500: client.println(F("Internal Server Error")); break;
     default: client.println(F("Error")); break;
   }
   client.println(F("Content-Type: text/plain"));

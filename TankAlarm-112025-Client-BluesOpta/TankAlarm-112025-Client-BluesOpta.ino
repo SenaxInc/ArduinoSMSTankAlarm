@@ -1002,11 +1002,11 @@ void loop() {
       gLastDfuCheckMillis = now;
       if (!gDfuInProgress && gNotecardAvailable) {
         checkForFirmwareUpdate();
-        // Auto-enable DFU if update is available (can be disabled for manual control)
-        // Comment out next 3 lines to require manual trigger
-        if (gDfuUpdateAvailable) {
-          enableDfuMode();
-        }
+        // NOTE: Auto-DFU disabled for safety — firmware updates should be applied
+        // deliberately via the server. Uncomment below to auto-apply.
+        // if (gDfuUpdateAvailable) {
+        //   enableDfuMode();
+        // }
       }
     }
   }
@@ -2138,6 +2138,33 @@ static void updateDailyScheduleIfNeeded() {
   }
 }
 
+static void sendConfigAck(bool success, const char *message) {
+  J *req = notecard.newRequest("note.add");
+  if (!req) {
+    return;
+  }
+  JAddStringToObject(req, "file", CONFIG_ACK_OUTBOX_FILE);
+  JAddBoolToObject(req, "sync", true);
+
+  J *body = JCreateObject();
+  if (!body) {
+    JDelete(req);
+    return;
+  }
+
+  JAddStringToObject(body, "client", gDeviceUID);
+  JAddBoolToObject(body, "success", success);
+  if (message) {
+    JAddStringToObject(body, "message", message);
+  }
+  JAddNumberToObject(body, "epoch", currentEpoch());
+  JAddItemToObject(req, "body", body);
+
+  notecard.sendRequest(req);
+  Serial.print(F("Config ACK sent: "));
+  Serial.println(success ? F("success") : F("failure"));
+}
+
 static void pollForConfigUpdates() {
   // Skip if notecard is known to be offline
   if (!gNotecardAvailable) {
@@ -2181,8 +2208,10 @@ static void pollForConfigUpdates() {
         NoteFree(json);
         if (!err) {
           applyConfigUpdate(doc);
+          sendConfigAck(true, "Config applied");
         } else {
           Serial.println(F("Config update invalid JSON"));
+          sendConfigAck(false, "Invalid JSON");
         }
       } else {
         NoteFree(json);
@@ -2245,10 +2274,10 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     strlcpy(gConfig.deviceLabel, doc["deviceLabel"].as<const char *>(), sizeof(gConfig.deviceLabel));
   }
   if (!doc["serverFleet"].isNull()) {
-   
+    strlcpy(gConfig.serverFleet, doc["serverFleet"].as<const char *>(), sizeof(gConfig.serverFleet));
+  }
   if (!doc["clientFleet"].isNull()) {
     strlcpy(gConfig.clientFleet, doc["clientFleet"].as<const char *>(), sizeof(gConfig.clientFleet));
-  } strlcpy(gConfig.serverFleet, doc["serverFleet"].as<const char *>(), sizeof(gConfig.serverFleet));
   }
   if (!doc["sampleSeconds"].isNull()) {
     gConfig.sampleSeconds = doc["sampleSeconds"].as<uint16_t>();
@@ -3387,12 +3416,32 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
 }
 
 static void activateLocalAlarm(uint8_t idx, bool active) {
-  // Use Opta's built-in relay outputs for local alarm indication
-  // Opta has 4 relay outputs - map tanks to relays (tank 0->relay 0, etc.)
-  int relayPin = getRelayPin(idx);
-  if (relayPin >= 0) {
-    pinMode(relayPin, OUTPUT);
-    digitalWrite(relayPin, active ? HIGH : LOW);
+  // Use Opta's built-in relay outputs for local alarm indication.
+  // If the tank has a configured relayMask, use that; otherwise fall back
+  // to mapping tank index directly to a relay (tank 0 -> relay 0, etc.)
+  uint8_t mask = 0;
+  if (idx < gConfig.monitorCount) {
+    mask = gConfig.monitors[idx].relayMask;
+  }
+
+  if (mask != 0) {
+    // Activate all relays specified in the bitmask
+    for (uint8_t r = 0; r < 4; ++r) {
+      if (mask & (1 << r)) {
+        int relayPin = getRelayPin(r);
+        if (relayPin >= 0) {
+          pinMode(relayPin, OUTPUT);
+          digitalWrite(relayPin, active ? HIGH : LOW);
+        }
+      }
+    }
+  } else {
+    // Legacy fallback: map tank index directly to relay (only works for tanks 0-3)
+    int relayPin = getRelayPin(idx);
+    if (relayPin >= 0) {
+      pinMode(relayPin, OUTPUT);
+      digitalWrite(relayPin, active ? HIGH : LOW);
+    }
   }
   
   if (active) {
@@ -4313,8 +4362,10 @@ static void sendDailyReport() {
   uint8_t part = 0;
   bool queuedAny = false;
 
-  // Read VIN voltage once for the daily report
-  float vinVoltage = readNotecardVinVoltage();
+  // Reuse cached battery voltage if available, otherwise read from Notecard
+  float vinVoltage = (gConfig.batteryMonitor.enabled && gBatteryData.valid && gBatteryData.voltage > 0.0f)
+                     ? gBatteryData.voltage
+                     : readNotecardVinVoltage();
 
   while (tankCursor < eligibleCount) {
     JsonDocument doc;
@@ -5267,6 +5318,7 @@ static void sendSerialLogs() {
 
   J *body = JCreateObject();
   if (!body) {
+    JDelete(req);
     return;
   }
 
@@ -5275,6 +5327,7 @@ static void sendSerialLogs() {
   J *logsArray = JCreateArray();
   if (!logsArray) {
     JDelete(body);
+    JDelete(req);
     return;
   }
 
