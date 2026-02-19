@@ -1,7 +1,7 @@
-# TankAlarm v1.0.1 - Industrial Tank Monitoring System
+# TankAlarm v1.1.0 - Industrial Tank Monitoring System
 
-**Release Date:** January 13, 2026  
-**Version:** 1.0.1  
+**Release Date:** February 19, 2026  
+**Version:** 1.1.0  
 **Platform:** Arduino Opta + Blues Wireless Notecard
 
 A production-ready industrial monitoring system for remote tank level monitoring, alarm management, and fleet coordination using cellular IoT connectivity.
@@ -74,7 +74,12 @@ The system consists of three components:
 - **Fleet Management** - Centralized control via Blues Notehub
 - **FTP Backup/Restore** - Configuration archiving
 - **Client Console** - Real-time serial log viewing for troubleshooting
-- **PIN Authentication** - Secure access to configuration endpoints
+- **PIN Authentication** - Secure access with constant-time comparison and rate limiting
+- **Configuration Import/Export** - JSON-based backup and templating
+- **Config Comparison** - Visual diff before deploying changes
+- **Unsaved Changes Warning** - Prevents accidental data loss
+- **Audit Log** - Track configuration changes with timestamps
+- **Contextual Tooltips** - Inline help for complex configuration options
 
 ### Viewer (Read-Only Display)
 - **Dashboard-Only** - No configuration access
@@ -197,7 +202,7 @@ The system consists of three components:
 ## 📊 Technical Specifications
 
 ### Client Specifications
-- **Lines of Code:** 3,551
+- **Lines of Code:** 5,488
 - **Memory Footprint:** ~150KB flash, ~30KB RAM
 - **Monitors per Device:** Up to 8
 - **Sample Interval:** Configurable (default: 30 minutes)
@@ -208,7 +213,7 @@ The system consists of three components:
 - **Power Requirements:** 12-24V DC, ~2W typical
 
 ### Server Specifications
-- **Lines of Code:** 9,225
+- **Lines of Code:** 10,328
 - **Memory Footprint:** ~300KB flash, ~100KB RAM
 - **Max Clients:** 32 (expandable)
 - **Max Tanks:** 64 total across all clients
@@ -219,7 +224,7 @@ The system consists of three components:
 - **Power Requirements:** 12-24V DC, ~3W typical
 
 ### Viewer Specifications
-- **Lines of Code:** 876
+- **Lines of Code:** 763
 - **Memory Footprint:** ~100KB flash, ~20KB RAM
 - **Web Server:** HTTP (port 80) - read-only
 - **Network:** Ethernet (10/100 Mbps)
@@ -271,6 +276,8 @@ CLIENT                      BLUES NOTEHUB              SERVER
 
 ### Authentication
 - **PIN-based Access Control** - Protect configuration endpoints
+- **Constant-Time PIN Comparison** - Prevents timing attack analysis
+- **Authentication Rate Limiting** - Exponential backoff with lockout after 5 failures
 - **Optional PIN** - Can be disabled for trusted networks
 - **Session-based** - PIN verified per-session
 
@@ -278,7 +285,9 @@ CLIENT                      BLUES NOTEHUB              SERVER
 - All POST endpoints validate JSON structure
 - Buffer overflow protection on string inputs
 - Range checking on numeric values
-- HTTP 400/401/500 status codes for error conditions
+- Client UID length validation with diagnostic logging
+- Hash table bounds checking to prevent out-of-bounds access
+- HTTP 400/401/429/500 status codes for error conditions
 
 ### Network Security
 - **HTTP Only** - Deploy on trusted local networks
@@ -302,8 +311,16 @@ CLIENT                      BLUES NOTEHUB              SERVER
 - **Device-to-Device API:** [TankAlarm-112025-Client-BluesOpta/DEVICE_TO_DEVICE_API.md](TankAlarm-112025-Client-BluesOpta/DEVICE_TO_DEVICE_API.md)
 - **Migration Guide:** [TankAlarm-112025-Client-BluesOpta/MIGRATION_GUIDE.md](TankAlarm-112025-Client-BluesOpta/MIGRATION_GUIDE.md)
 
-### Code Reviews & Architecture
+### Security & Architecture
+- **Security Fixes (Feb 2026):** [CODE REVIEW/SECURITY_FIXES_02062026.md](CODE%20REVIEW/SECURITY_FIXES_02062026.md)
+- **Communication Architecture:** [CODE REVIEW/COMMUNICATION_ARCHITECTURE_VERDICT_02192026.md](CODE%20REVIEW/COMMUNICATION_ARCHITECTURE_VERDICT_02192026.md)
+- **Data Usage Analysis:** [CODE REVIEW/DATA_USAGE_ANALYSIS_02192026.md](CODE%20REVIEW/DATA_USAGE_ANALYSIS_02192026.md)
+- **Common Header Audit:** [CODE REVIEW/COMMON_HEADER_AUDIT_02192026.md](CODE%20REVIEW/COMMON_HEADER_AUDIT_02192026.md)
+
+### Code Reviews & Release History
 - **v1.0 Release Summary:** [CODE REVIEW/V1.0_RELEASE_SUMMARY.md](CODE%20REVIEW/V1.0_RELEASE_SUMMARY.md)
+- **v1.0.1 Release Notes:** [CODE REVIEW/V1.0.1_RELEASE_NOTES.md](CODE%20REVIEW/V1.0.1_RELEASE_NOTES.md)
+- **Advanced Features (Feb 2026):** [CODE REVIEW/ADVANCED_FEATURES_IMPLEMENTATION_02052026.md](CODE%20REVIEW/ADVANCED_FEATURES_IMPLEMENTATION_02052026.md)
 - **Historical Data Architecture:** [TankAlarm-112025-Server-BluesOpta/HISTORICAL_DATA_ARCHITECTURE.md](TankAlarm-112025-Server-BluesOpta/HISTORICAL_DATA_ARCHITECTURE.md)
 - **Console Restrictions:** [TankAlarm-112025-Server-BluesOpta/CONSOLE_RESTRICTIONS.md](TankAlarm-112025-Server-BluesOpta/CONSOLE_RESTRICTIONS.md)
 
@@ -320,7 +337,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
   - [ ] Ethernet connectivity stable
   
 - [ ] **Software Validation**
-  - [ ] Firmware version 1.0.0 confirmed
+  - [ ] Firmware version 1.1.0 confirmed
   - [ ] All clients reporting to server
   - [ ] Alarms triggering correctly
   - [ ] SMS/email alerts delivering
@@ -340,7 +357,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
 
 ### Deployment Checklist
 
-1. Flash all devices with v1.0.0 firmware
+1. Flash all devices with v1.1.0 firmware
 2. Configure Blues Notehub fleet assignments
 3. Set server IP address and network configuration
 4. Configure SMS/email recipients
@@ -354,19 +371,16 @@ CLIENT                      BLUES NOTEHUB              SERVER
 
 ## 🔮 Roadmap
 
-### v1.1 (Planned)
-- [ ] HTTPS/TLS support
+### v1.2 (Planned)
 - [ ] Enhanced email formatting (HTML, attachments)
 - [ ] Historical data logging (30-day retention)
 - [ ] Graphical trend charts
-- [ ] MQTT integration
+- [ ] Common header consolidation (centralize duplicated constants)
+- [ ] Event-driven Notecard polling (`file.changes` + change trackers)
 
 ### v2.0 (Future)
-- [ ] User accounts and role-based access control
-- [ ] Mobile app (iOS/Android)
 - [ ] Advanced analytics and reporting
 - [ ] Predictive maintenance alerts
-- [ ] Multi-tenancy support
 
 ---
 
@@ -383,7 +397,7 @@ For technical support, bug reports, or feature requests, please open an issue on
 ### Common Resources
 - **Blues Wireless Documentation:** [dev.blues.io](https://dev.blues.io)
 - **Arduino Opta Documentation:** [docs.arduino.cc](https://docs.arduino.cc/hardware/opta)
-- **Bill of Materials:** [BillOfMaterials.md](BillOfMaterials.md)
+- **Bill of Materials:** [TankAlarm-112025-BillOfMaterials.md](TankAlarm-112025-BillOfMaterials.md)
 
 ---
 
@@ -398,12 +412,50 @@ ArduinoSMSTankAlarm/
 ├── CODE REVIEW/                          # Code reviews & documentation
 ├── RecycleBin/                           # Archived versions
 ├── Tutorials/                            # Getting started guides
-├── BillOfMaterials.md                    # Hardware BOM
+├── TankAlarm-112025-BillOfMaterials.md    # Hardware BOM
 └── README.md                             # This file
 ```
 
 ---
 
+---
+
+## 📋 Changelog
+
+### v1.1.0 (February 19, 2026)
+- **Security:** Constant-time PIN comparison to prevent timing attacks
+- **Security:** Authentication rate limiting with exponential backoff and lockout
+- **Security:** Hash table bounds checking to prevent out-of-bounds memory access
+- **Security:** Client UID length validation with diagnostic logging
+- **Security:** Buffer boundary fix for FTP response parsing
+- **Server Console:** Configuration import/export (JSON backup & templating)
+- **Server Console:** Unsaved changes warning with browser prompt
+- **Server Console:** Configuration comparison with visual diff before deploy
+- **Server Console:** Audit log tracking last 50 configuration changes
+- **Server Console:** Contextual tooltips for complex configuration fields
+- **Architecture:** Communication architecture review and documentation
+- **Architecture:** Data usage analysis for standard vs. proxy patterns
+- **Architecture:** Common header audit identifying constants to centralize
+- **UI:** Centralized CSS with browser caching for faster page loads
+- **Stability:** JavaScript null-safety hardening across dashboard pages
+- **Stability:** UTF-8 BOM and struct compilation fixes
+
+### v1.0.1 (January 13, 2026)
+- Centralized CSS into single cached stylesheet
+- UI header standardization (Action Bar layout)
+- JavaScript null-safety hardening
+- Compilation fixes (UTF-8 BOM, struct definitions)
+
+### v1.0.0 (December 2025)
+- Initial production release
+- Client, Server, and Viewer firmware
+- Blues Wireless fleet-based routing
+- Web dashboard with SMS/email alerts
+- LittleFS persistent storage
+- Remote client configuration
+
+---
+
 **Built with ❤️ for industrial IoT applications**
 
-*Last Updated: January 13, 2026*
+*Last Updated: February 19, 2026*
