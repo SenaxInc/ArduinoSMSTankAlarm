@@ -183,18 +183,18 @@ This route catches all `.qo` events from client devices and delivers them as `.q
 |---------|-------|
 | **Route Name** | `ClientToServerRelay` |
 | **URL** | `https://api.notefile.net/v1/projects/YOUR_PROJECT_UID/devices/YOUR_SERVER_DEVICE_UID/notes/{{notefile_base}}.qi` |
-| **HTTP Method** | `POST` |
-| **HTTP Headers** | `Authorization: Bearer YOUR_API_TOKEN` |
-|                  | `Content-Type: application/json` |
+| **Additional Headers** | Header Name: `Authorization`   Header Value: `Bearer YOUR_API_TOKEN` |
 
 Replace the placeholders:
 - `YOUR_PROJECT_UID` → Your Notehub project UID (found in project settings, format: `app:XXXX`)
 - `YOUR_SERVER_DEVICE_UID` → The server's device UID (e.g., `dev:123456789012`)
 - `YOUR_API_TOKEN` → The API token from Step 1
 
-### 3c. Configure the Request Body
+> **Headers Tip:** Leave the Headers dropdown set to **Additional Headers**. The default `Content-Type: application/json` is sent automatically — you only need to add the `Authorization` header.
 
-Set the **Body** to use a JSONata transform:
+### 3c. Configure the Data Transform
+
+In the **Data** section, select **JSONata Expression** from the **Transform Data** dropdown, then enter:
 
 ```jsonata
 {
@@ -235,30 +235,31 @@ This is the most sophisticated route. The server sends ALL commands through a si
 | Setting | Value |
 |---------|-------|
 | **Route Name** | `ServerToClientRelay` |
-| **URL** | See JSONata below |
-| **HTTP Method** | `POST` |
-| **HTTP Headers** | `Authorization: Bearer YOUR_API_TOKEN` |
-|                  | `Content-Type: application/json` |
+| **URL** | See dynamic URL below |
+| **Additional Headers** | Header Name: `Authorization`   Header Value: `Bearer YOUR_API_TOKEN` |
 
 ### 4b. Configure the Dynamic URL
 
-The URL must be **dynamic** because each command targets a different client device and notefile. Use a **JSONata expression** for the URL:
+The URL must be **dynamic** because each command targets a different client device and notefile. Notehub supports **placeholder variables** in the URL field — these are evaluated at route time using data from the event.
 
-```jsonata
-"https://api.notefile.net/v1/projects/" & $PROJECTUID & "/devices/" & body._target & "/notes/" & (
-    body._type = "config" ? "config.qi" :
-    body._type = "relay" ? "relay.qi" :
-    body._type = "serial_request" ? "serial_request.qi" :
-    body._type = "location_request" ? "location_request.qi" :
-    "command.qi"
-)
+Paste this into the **URL** field:
+
+```
+https://api.notefile.net/v1/projects/YOUR_PROJECT_UID/devices/[.body._target]/notes/[.body._type].qi
 ```
 
-> **Note:** Replace `$PROJECTUID` with your actual project UID string, e.g., `"app:XXXXXXXXXXXX"`.
+Replace `YOUR_PROJECT_UID` with your actual project UID (e.g., `app:XXXXXXXXXXXX`).
 
-### 4c. Configure the Request Body
+**How it works:** The server firmware sets `_target` (device UID) and `_type` (command type) in every `command.qo` note. Notehub substitutes `[.body._target]` with the target device UID and `[.body._type]` with the command type, producing URLs like:
+- `…/devices/dev:123456/notes/config.qi`
+- `…/devices/dev:789012/notes/relay.qi`
+- `…/devices/dev:123456/notes/serial_request.qi`
 
-Use JSONata to strip the routing metadata and pass only the command payload:
+> **Placeholder syntax:** `[.body.fieldname]` reads a field from the event body. See the [Blues placeholder docs](https://dev.blues.io/notehub/notehub-walkthrough/#using-placeholder-variable-substitution-interpolation) for details.
+
+### 4c. Configure the Data Transform
+
+In the **Data** section, select **JSONata Expression** from the **Transform Data** dropdown. Use JSONata to strip the routing metadata and pass only the command payload:
 
 ```jsonata
 {
@@ -294,11 +295,11 @@ This route delivers the viewer summary from the server to all viewer devices.
 |---------|-------|
 | **Route Name** | `ServerToViewerRelay` |
 | **URL** | `https://api.notefile.net/v1/projects/YOUR_PROJECT_UID/devices/YOUR_VIEWER_DEVICE_UID/notes/viewer_summary.qi` |
-| **HTTP Method** | `POST` |
-| **HTTP Headers** | `Authorization: Bearer YOUR_API_TOKEN` |
-|                  | `Content-Type: application/json` |
+| **Additional Headers** | Header Name: `Authorization`   Header Value: `Bearer YOUR_API_TOKEN` |
 
-### 5b. Request Body
+### 5b. Data Transform
+
+In the **Data** section, select **JSONata Expression** from the **Transform Data** dropdown, then enter:
 
 ```jsonata
 {
