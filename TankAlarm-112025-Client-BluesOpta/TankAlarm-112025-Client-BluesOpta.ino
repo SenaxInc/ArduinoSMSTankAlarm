@@ -95,13 +95,6 @@ static inline bool isStorageAvailable() {
   #define DEBUG_PRINTF(x, y)
 #endif
 
-// POSIX file helpers - use tankalarm_ prefixed versions from shared library
-#if defined(POSIX_FILE_IO_AVAILABLE)
-static inline long posix_file_size(FILE *fp) { return tankalarm_posix_file_size(fp); }
-static inline bool posix_file_exists(const char *path) { return tankalarm_posix_file_exists(path); }
-static inline void posix_log_error(const char *op, const char *path) { tankalarm_posix_log_error(op, path); }
-#endif
-
 // Wrapper for shared library roundTo function
 static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(val, decimals); }
 
@@ -567,7 +560,6 @@ static double gNextDailyReportEpoch = 0.0;
 
 // DFU (Device Firmware Update) state tracking
 static unsigned long gLastDfuCheckMillis = 0;
-#define DFU_CHECK_INTERVAL_MS 3600000UL  // Check for firmware updates every hour
 static bool gDfuUpdateAvailable = false;
 static char gDfuVersion[32] = {0};
 static bool gDfuInProgress = false;
@@ -692,6 +684,7 @@ static void checkForFirmwareUpdate();
 static void enableDfuMode();
 static void pollForConfigUpdates();
 static void applyConfigUpdate(const JsonDocument &doc);
+static void sendConfigAck(bool success, const char *message, const char *configVersion);
 static void persistConfigIfDirty();
 static void sampleTanks();
 static float readTankSensor(uint8_t idx);
@@ -724,6 +717,7 @@ static void addSerialLog(const char *message);
 static void pollForSerialRequests();
 static void pollForLocationRequests();
 static void sendSerialLogs();
+static void sendSerialAck(const char *status);
 static void evaluateUnload(uint8_t idx);
 static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, double peakEpoch);
 static void sendSolarAlarm(SolarAlertType alertType);
@@ -770,7 +764,7 @@ void setup() {
   ensureTimeSync();
   scheduleNextDailyReport();
 
-#ifdef WATCHDOG_AVAILABLE
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
   // Initialize watchdog timer
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     // Mbed OS Watchdog
@@ -873,7 +867,7 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-#ifdef WATCHDOG_AVAILABLE
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
   // Reset watchdog timer to prevent system reset
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     mbedWatchdog.kick();
@@ -1038,7 +1032,7 @@ void loop() {
     while (remaining > 0) {
       unsigned long chunk = (remaining > maxChunk) ? maxChunk : remaining;
       rtos::ThisThread::sleep_for(std::chrono::milliseconds(chunk));
-      #ifdef WATCHDOG_AVAILABLE
+      #ifdef TANKALARM_WATCHDOG_AVAILABLE
         mbedWatchdog.kick();
       #endif
       remaining -= chunk;
@@ -1223,6 +1217,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   memset(&cfg, 0, sizeof(ClientConfig));
   strlcpy(cfg.siteName, "Opta Tank Site", sizeof(cfg.siteName));
   strlcpy(cfg.deviceLabel, "Client-112025", sizeof(cfg.deviceLabel));
+  strlcpy(cfg.clientFleet, "tankalarm-clients", sizeof(cfg.clientFleet));
   strlcpy(cfg.serverFleet, "tankalarm-server", sizeof(cfg.serverFleet));
   strlcpy(cfg.dailyEmail, "reports@example.com", sizeof(cfg.dailyEmail));
   cfg.sampleSeconds = DEFAULT_SAMPLE_SECONDS;
@@ -1960,13 +1955,15 @@ static void initializeNotecard() {
   configureNotecardHubMode();
 
   req = notecard.newRequest("card.uuid");
-  J *rsp = notecard.requestAndResponse(req);
-  if (rsp) {
-    const char *uid = JGetString(rsp, "uuid");
-    if (uid) {
-      strlcpy(gDeviceUID, uid, sizeof(gDeviceUID));
+  if (req) {
+    J *rsp = notecard.requestAndResponse(req);
+    if (rsp) {
+      const char *uid = JGetString(rsp, "uuid");
+      if (uid) {
+        strlcpy(gDeviceUID, uid, sizeof(gDeviceUID));
+      }
+      notecard.deleteResponse(rsp);
     }
-    notecard.deleteResponse(rsp);
   }
 
   if (gDeviceUID[0] == '\0') {
@@ -2171,7 +2168,7 @@ static void updateDailyScheduleIfNeeded() {
   }
 }
 
-static void sendConfigAck(bool success, const char *message) {
+static void sendConfigAck(bool success, const char *message, const char *configVersion) {
   J *req = notecard.newRequest("note.add");
   if (!req) {
     return;
@@ -2186,7 +2183,10 @@ static void sendConfigAck(bool success, const char *message) {
   }
 
   JAddStringToObject(body, "client", gDeviceUID);
-  JAddBoolToObject(body, "success", success);
+  JAddStringToObject(body, "status", success ? "applied" : "failed");
+  if (configVersion && configVersion[0] != '\0') {
+    JAddStringToObject(body, "cv", configVersion);
+  }
   if (message) {
     JAddStringToObject(body, "message", message);
   }
@@ -2195,7 +2195,7 @@ static void sendConfigAck(bool success, const char *message) {
 
   notecard.sendRequest(req);
   Serial.print(F("Config ACK sent: "));
-  Serial.println(success ? F("success") : F("failure"));
+  Serial.println(success ? F("applied") : F("failed"));
 }
 
 static void pollForConfigUpdates() {
@@ -2240,11 +2240,13 @@ static void pollForConfigUpdates() {
         DeserializationError err = deserializeJson(doc, json);
         NoteFree(json);
         if (!err) {
+          // Extract config version hash for ACK tracking (injected by server)
+          const char *cv = doc["_cv"] | "";
           applyConfigUpdate(doc);
-          sendConfigAck(true, "Config applied");
+          sendConfigAck(true, "Config applied", cv);
         } else {
           Serial.println(F("Config update invalid JSON"));
-          sendConfigAck(false, "Invalid JSON");
+          sendConfigAck(false, "Invalid JSON", nullptr);
         }
       } else {
         NoteFree(json);
@@ -2954,7 +2956,7 @@ static float readTankSensor(uint8_t idx) {
           lastState = currentState;
           delay(1);
           
-#ifdef WATCHDOG_AVAILABLE
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
           #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
             mbedWatchdog.kick();
           #else
@@ -3051,7 +3053,7 @@ static float readTankSensor(uint8_t idx) {
           delay(1);
           iterationCount++;
           
-#ifdef WATCHDOG_AVAILABLE
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
           #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
             mbedWatchdog.kick();
           #else
@@ -3128,7 +3130,7 @@ static float readTankSensor(uint8_t idx) {
           delay(1);
           iterationCount++;
           
-#ifdef WATCHDOG_AVAILABLE
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
           #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
             mbedWatchdog.kick();
           #else
@@ -5054,7 +5056,7 @@ static void processRelayCommand(const JsonDocument &doc) {
   setRelayState(relayNum, state);
 
   // Handle timed auto-off if duration specified
-  // Note: Custom duration is not implemented in v1.0.0 - use relay modes instead:
+  // Note: Custom duration is not currently implemented - use relay modes instead:
   //   - RELAY_MODE_MOMENTARY: 30-minute auto-off
   //   - RELAY_MODE_UNTIL_CLEAR: Stays on until alarm clears
   //   - RELAY_MODE_MANUAL_RESET: Stays on until server reset
@@ -5088,18 +5090,20 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
         continue;
       }
 
-      // Use command.qo with Route Relay — Notehub Route delivers to target client's relay.qi
-      JAddStringToObject(req, "file", COMMAND_OUTBOX_FILE);
+      // Use relay_forward.qo — Route #1 delivers to server as relay_forward.qi,
+      // then server re-issues via command.qo → Route #2 → target client relay.qi
+      JAddStringToObject(req, "file", RELAY_FORWARD_OUTBOX_FILE);
       JAddBoolToObject(req, "sync", true);
 
       J *body = JCreateObject();
       if (!body) {
+        JDelete(req);
         continue;
       }
 
-      // Route Relay metadata: target device and command type
-      JAddStringToObject(body, "_target", targetClient);
-      JAddStringToObject(body, "_type", "relay");
+      // Relay forwarding payload: server reads these fields and re-issues the command
+      JAddStringToObject(body, "target", targetClient);
+      JAddStringToObject(body, "client", gDeviceUID);
       JAddNumberToObject(body, "relay", relayNum);
       JAddBoolToObject(body, "state", activate);
       JAddStringToObject(body, "source", "client-alarm");
@@ -5339,10 +5343,38 @@ static void pollForSerialRequests() {
     if (request && strcmp(request, "send_logs") == 0) {
       DEBUG_PRINTLN(F("Serial log request received from server"));
       addSerialLog("Serial log request received");
+      sendSerialAck("processing");
       sendSerialLogs();
+      sendSerialAck("complete");
     }
 
     notecard.deleteResponse(rsp);
+  }
+}
+
+static void sendSerialAck(const char *status) {
+  J *req = notecard.newRequest("note.add");
+  if (!req) {
+    return;
+  }
+
+  JAddStringToObject(req, "file", SERIAL_ACK_OUTBOX_FILE);
+  JAddBoolToObject(req, "sync", true);
+
+  J *body = JCreateObject();
+  if (!body) {
+    JDelete(req);
+    return;
+  }
+
+  JAddStringToObject(body, "client", gDeviceUID);
+  JAddStringToObject(body, "status", status);
+  JAddItemToObject(req, "body", body);
+
+  bool queued = notecard.sendRequest(req);
+  if (queued) {
+    DEBUG_PRINT(F("Sent serial ack: "));
+    DEBUG_PRINTLN(status);
   }
 }
 
@@ -5377,11 +5409,12 @@ static void sendSerialLogs() {
     return;
   }
 
-  // Add logs from oldest to newest (circular buffer)
+  // Add most recent logs from circular buffer (limit to 20)
   uint8_t startIdx = (gSerialLog.count < CLIENT_SERIAL_BUFFER_SIZE) ? 0 : gSerialLog.writeIndex;
   uint8_t sentCount = 0;
+  uint8_t startOffset = (gSerialLog.count > 20) ? (gSerialLog.count - 20) : 0;
   
-  for (uint8_t i = 0; i < gSerialLog.count && sentCount < 20; ++i) {  // Limit to 20 most recent logs
+  for (uint8_t i = startOffset; i < gSerialLog.count && sentCount < 20; ++i) {  // Limit to 20 most recent logs
     uint8_t idx = (startIdx + i) % CLIENT_SERIAL_BUFFER_SIZE;
     SerialLogEntry &entry = gSerialLog.entries[idx];
     

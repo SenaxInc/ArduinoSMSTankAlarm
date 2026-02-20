@@ -216,85 +216,15 @@ inline void initBatteryConfig(BatteryConfig* config, BatteryType type) {
 }
 
 /**
- * Get the Notecard voltage mode string for configuring thresholds.
- * Format: "usb:V1;high:V2;normal:V3;low:V4;dead:0"
- * 
- * @param config Battery configuration
- * @param buffer Output buffer for mode string
- * @param bufferSize Size of output buffer
- * @return true if successful
- */
-inline bool getBatteryVoltageMode(const BatteryConfig* config, char* buffer, size_t bufferSize) {
-  if (!config || !buffer || bufferSize < 64) return false;
-  
-  // Create custom voltage thresholds string
-  // Format matches card.voltage "mode" parameter
-  snprintf(buffer, bufferSize, 
-           "usb:%.1f;high:%.1f;normal:%.1f;low:%.1f;dead:0",
-           config->highVoltage + 0.5f,  // USB detection above high
-           config->highVoltage,
-           config->normalVoltage,
-           config->criticalVoltage);
-  
-  return true;
-}
-
-/**
- * Get human-readable battery state description.
- * 
- * @param voltage Current voltage
- * @param config Battery configuration
- * @return State description string
+ * Get human-readable battery state description based on voltage thresholds.
  */
 inline const char* getBatteryStateDescription(float voltage, const BatteryConfig* config) {
   if (!config) return "unknown";
-  
   if (voltage >= config->highVoltage) return "charging/high";
   if (voltage >= config->normalVoltage) return "good";
   if (voltage >= config->lowVoltage) return "low";
   if (voltage >= config->criticalVoltage) return "critical";
   return "dead";
-}
-
-/**
- * Get estimated State of Charge (SOC) percentage for lead-acid battery.
- * Uses lookup table interpolation for 12V lead-acid at rest.
- * Note: This is approximate - actual SOC depends on load, temperature, age.
- * 
- * @param voltage Battery voltage (resting, no load)
- * @return Estimated SOC percentage (0-100)
- */
-inline uint8_t estimateLeadAcidSOC(float voltage) {
-  // Lookup table: voltage -> SOC% for 12V lead-acid at 25°C
-  if (voltage >= 12.70f) return 100;
-  if (voltage >= 12.50f) return 90;
-  if (voltage >= 12.42f) return 80;
-  if (voltage >= 12.32f) return 70;
-  if (voltage >= 12.20f) return 60;
-  if (voltage >= 12.06f) return 50;
-  if (voltage >= 11.90f) return 40;
-  if (voltage >= 11.75f) return 30;
-  if (voltage >= 11.58f) return 20;
-  if (voltage >= 11.31f) return 10;
-  return 0;  // Below 11.31V = discharged
-}
-
-/**
- * Get estimated State of Charge (SOC) percentage for LiFePO4 battery.
- * 
- * @param voltage Battery voltage (4S configuration)
- * @return Estimated SOC percentage (0-100)
- */
-inline uint8_t estimateLiFePO4SOC(float voltage) {
-  // LiFePO4 has very flat discharge curve, SOC estimation less accurate
-  if (voltage >= 14.40f) return 100;
-  if (voltage >= 13.60f) return 90;
-  if (voltage >= 13.40f) return 70;
-  if (voltage >= 13.30f) return 50;
-  if (voltage >= 13.20f) return 30;
-  if (voltage >= 13.00f) return 20;
-  if (voltage >= 12.00f) return 10;
-  return 0;
 }
 
 #endif // TANKALARM_BATTERY_H

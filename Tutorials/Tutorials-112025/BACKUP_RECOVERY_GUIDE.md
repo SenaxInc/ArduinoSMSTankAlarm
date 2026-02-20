@@ -36,7 +36,6 @@ A comprehensive backup strategy ensures your TankAlarm deployment can recover qu
 - Device registrations and fleet memberships
 - Event history
 - Route configurations
-- Environment variables
 
 ### Recovery Scenarios
 
@@ -105,7 +104,6 @@ This guide prepares you for:
 **Persisted Data:**
 - Device registrations (Notecard serial numbers)
 - Fleet memberships
-- Environment variables
 - Event history (retention policy dependent)
 
 **Characteristics:**

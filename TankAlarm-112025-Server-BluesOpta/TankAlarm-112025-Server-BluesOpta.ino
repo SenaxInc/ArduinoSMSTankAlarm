@@ -217,6 +217,10 @@
 #define SERIAL_ACK_FILE SERIAL_ACK_INBOX_FILE   // "serial_ack.qi" — server receives acks
 #endif
 
+#ifndef RELAY_FORWARD_FILE
+#define RELAY_FORWARD_FILE RELAY_FORWARD_INBOX_FILE  // "relay_forward.qi" — server receives relay forward requests
+#endif
+
 // LOCATION_REQUEST_FILE removed — server sends via command.qo
 
 #ifndef LOCATION_RESPONSE_FILE
@@ -276,9 +280,6 @@
 
 // Temperature sentinel value (indicates no weather data available)
 #define TEMPERATURE_UNAVAILABLE -999.0f
-
-// ArduinoJson v7: JsonDocument auto-sizes, capacity constants not needed
-static const size_t CLIENT_JSON_CAPACITY = 32768;  // 32KB for full fleet data
 
 static byte gMacAddress[6] = { 0 }; // Initialize to 0, will be read from hardware or set if needed
 static IPAddress gStaticIp(192, 168, 1, 200);
@@ -769,7 +770,6 @@ static bool gServerDownChecked = false;
 
 // DFU (Device Firmware Update) state tracking
 static unsigned long gLastDfuCheckMillis = 0;
-#define DFU_CHECK_INTERVAL_MS 3600000UL  // Check for firmware updates every hour
 static bool gDfuUpdateAvailable = false;
 static char gDfuVersion[32] = {0};
 static bool gDfuInProgress = false;
@@ -1515,6 +1515,7 @@ static void handleAlarm(JsonDocument &doc, double epoch);
 static void handleDaily(JsonDocument &doc, double epoch);
 static void handleSerialLog(JsonDocument &doc, double epoch);
 static void handleSerialAck(JsonDocument &doc, double epoch);
+static void handleRelayForward(JsonDocument &doc, double epoch);
 static void handleLocationResponse(JsonDocument &doc, double epoch);
 static bool sendLocationRequest(const char *clientUid);
 static void addServerSerialLog(const char *message, const char *level = "info", const char *source = "server");
@@ -1531,14 +1532,12 @@ static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
 static bool sendConfigViaNotecard(const char *clientUid, const char *jsonPayload);
 static void dispatchPendingConfigs();
 static void handleConfigRetryPost(EthernetClient &client, const String &body);
-static float convertMaToLevel(const char *clientUid, uint8_t tankNumber, float mA);
 static float convertMaToLevelWithTemp(const char *clientUid, uint8_t tankNumber, float mA, float currentTempF);
 static float convertVoltageToLevel(const char *clientUid, uint8_t tankNumber, float voltage);
 static ClientMetadata *findClientMetadata(const char *clientUid);
 static ClientMetadata *findOrCreateClientMetadata(const char *clientUid);
 static bool checkSmsRateLimit(TankRecord *rec);
 static void publishViewerSummary();
-static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
 // Persistence: tank registry and client metadata
 static void saveTankRegistry();
 static void loadTankRegistry();
@@ -1933,6 +1932,46 @@ static void handleSerialAck(JsonDocument &doc, double epoch) {
 }
 
 // ============================================================================
+// Relay Forward Handling (client-to-server-to-client)
+// ============================================================================
+// When a client alarm triggers relays on another client, the request is sent
+// via relay_forward.qo → Route #1 → server relay_forward.qi. The server then
+// re-issues the command via command.qo → Route #2 → target client relay.qi.
+
+static void handleRelayForward(JsonDocument &doc, double epoch) {
+  const char *targetClient = doc["target"] | "";
+  const char *sourceClient = doc["client"] | "";
+
+  if (!targetClient || strlen(targetClient) == 0) {
+    Serial.println(F("Relay forward: missing target"));
+    return;
+  }
+
+  uint8_t relayNum = doc["relay"] | 0;
+  if (relayNum < 1 || relayNum > MAX_RELAYS) {
+    Serial.print(F("Relay forward: invalid relay number "));
+    Serial.println(relayNum);
+    return;
+  }
+
+  bool state = doc["state"] | false;
+  const char *source = doc["source"] | "client-alarm";
+
+  Serial.print(F("Relay forward from "));
+  Serial.print(sourceClient[0] ? sourceClient : "unknown");
+  Serial.print(F(" -> "));
+  Serial.print(targetClient);
+  Serial.print(F(": Relay "));
+  Serial.print(relayNum);
+  Serial.print(F(" -> "));
+  Serial.println(state ? "ON" : "OFF");
+
+  if (!sendRelayCommand(targetClient, relayNum, state, source)) {
+    Serial.println(F("Failed to forward relay command"));
+  }
+}
+
+// ============================================================================
 // Location Request/Response Handling
 // ============================================================================
 // Server can request GPS location from clients for NWS weather lookups
@@ -2147,7 +2186,7 @@ void setup() {
     }
   }
 
-#ifdef WATCHDOG_AVAILABLE
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
   // Initialize watchdog timer
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     uint32_t timeoutMs = WATCHDOG_TIMEOUT_SECONDS * 1000;
@@ -2186,7 +2225,7 @@ void setup() {
 }
 
 void loop() {
-#ifdef WATCHDOG_AVAILABLE
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
   // Reset watchdog timer to prevent system reset
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     mbedWatchdog.kick();
@@ -3355,11 +3394,7 @@ static float nwsFetchAverageTemperature(ClientMetadata *meta, double timestamp) 
   // Determine if temperatures are in Celsius (they usually are from NWS)
   bool isCelsius = (tempUom && strstr(tempUom, "degC") != nullptr);
   
-  // Calculate time window for averaging (past NWS_AVG_HOURS hours from timestamp)
-  double windowStart = timestamp - (NWS_AVG_HOURS * 3600.0);
-  double windowEnd = timestamp;
-  
-  // Average temperatures within the window
+  // Average the first NWS_AVG_HOURS temperature values (recent near-term conditions)
   float tempSum = 0.0f;
   int tempCount = 0;
   
@@ -3634,7 +3669,7 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
 // - Rotate FTP credentials regularly and use strong passwords
 // - Monitor FTP server logs for unauthorized access attempts
 //
-// FUTURE ENHANCEMENT: Migrate to SFTP/FTPS or HTTPS-based backup (planned for v1.1+)
+// FUTURE ENHANCEMENT: Migrate to SFTP/FTPS or HTTPS-based backup (planned for future release)
 // See README.md roadmap for timeline on secure transport implementation.
 static FtpResult performFtpBackupDetailed() {
   FtpResult result;
@@ -3645,7 +3680,7 @@ static FtpResult performFtpBackupDetailed() {
   }
 
   // Kick watchdog before detailed operation
-  #ifdef WATCHDOG_AVAILABLE
+  #ifdef TANKALARM_WATCHDOG_AVAILABLE
     #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
       mbedWatchdog.kick();
     #else
@@ -3662,7 +3697,7 @@ static FtpResult performFtpBackupDetailed() {
 
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
     // Keep watchdog alive during file processing
-    #ifdef WATCHDOG_AVAILABLE
+    #ifdef TANKALARM_WATCHDOG_AVAILABLE
       #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
         mbedWatchdog.kick();
       #else
@@ -3701,7 +3736,7 @@ static FtpResult performFtpBackupDetailed() {
   ftpQuit(session);
   
   // Final watchdog kick after operation
-  #ifdef WATCHDOG_AVAILABLE
+  #ifdef TANKALARM_WATCHDOG_AVAILABLE
     #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
       mbedWatchdog.kick();
     #else
@@ -3735,7 +3770,7 @@ static bool performFtpBackup(char *errorOut, size_t errorSize) {
 // - Rotate FTP credentials regularly and use strong passwords
 // - Monitor FTP server logs for unauthorized access attempts
 //
-// FUTURE ENHANCEMENT: Migrate to SFTP/FTPS or HTTPS-based backup (planned for v1.1+)
+// FUTURE ENHANCEMENT: Migrate to SFTP/FTPS or HTTPS-based backup (planned for future release)
 // See README.md roadmap for timeline on secure transport implementation.
 static FtpResult performFtpRestoreDetailed() {
   FtpResult result;
@@ -3746,7 +3781,7 @@ static FtpResult performFtpRestoreDetailed() {
   }
 
   // Kick watchdog before detailed operation
-  #ifdef WATCHDOG_AVAILABLE
+  #ifdef TANKALARM_WATCHDOG_AVAILABLE
     #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
       mbedWatchdog.kick();
     #else
@@ -3763,7 +3798,7 @@ static FtpResult performFtpRestoreDetailed() {
 
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
     // Keep watchdog alive during file processing
-    #ifdef WATCHDOG_AVAILABLE
+    #ifdef TANKALARM_WATCHDOG_AVAILABLE
       #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
         mbedWatchdog.kick();
       #else
@@ -3802,7 +3837,7 @@ static FtpResult performFtpRestoreDetailed() {
   ftpQuit(session);
 
   // Final watchdog kick after operation
-  #ifdef WATCHDOG_AVAILABLE
+  #ifdef TANKALARM_WATCHDOG_AVAILABLE
     #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
       mbedWatchdog.kick();
     #else
@@ -4289,13 +4324,15 @@ static void initializeNotecard() {
   }
 
   req = notecard.newRequest("card.uuid");
-  J *rsp = notecard.requestAndResponse(req);
-  if (rsp) {
-    const char *uid = JGetString(rsp, "uuid");
-    if (uid) {
-      strlcpy(gServerUid, uid, sizeof(gServerUid));
+  if (req) {
+    J *rsp = notecard.requestAndResponse(req);
+    if (rsp) {
+      const char *uid = JGetString(rsp, "uuid");
+      if (uid) {
+        strlcpy(gServerUid, uid, sizeof(gServerUid));
+      }
+      notecard.deleteResponse(rsp);
     }
-    notecard.deleteResponse(rsp);
   }
 
   Serial.print(F("Server Notecard UID: " ));
@@ -4476,20 +4513,9 @@ static void enableDfuMode() {
   // No need to return from this function - reset is imminent
 }
 
-static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds) {
-  if (epoch <= 0.0 || intervalSeconds == 0) {
-    return 0.0;
-  }
-  double aligned = floor(epoch / 86400.0) * 86400.0 + (double)baseHour * 3600.0;
-  while (aligned <= epoch) {
-    aligned += (double)intervalSeconds;
-  }
-  return aligned;
-}
-
 static void scheduleNextViewerSummary() {
   double epoch = currentEpoch();
-  gNextViewerSummaryEpoch = computeNextAlignedEpoch(epoch, VIEWER_SUMMARY_BASE_HOUR, VIEWER_SUMMARY_INTERVAL_SECONDS);
+  gNextViewerSummaryEpoch = tankalarm_computeNextAlignedEpoch(epoch, VIEWER_SUMMARY_BASE_HOUR, VIEWER_SUMMARY_INTERVAL_SECONDS);
 }
 
 static void initializeEthernet() {
@@ -5269,7 +5295,7 @@ static void sendTankJson(EthernetClient &client) {
 
   // Detect if we ran out of memory while building the document
   if (doc.overflowed()) {
-    Serial.println(F("[ERROR] Tank JSON document overflowed - increase TANK_JSON_CAPACITY"));
+    Serial.println(F("[ERROR] Tank JSON document overflowed - too many tank records for available memory"));
     respondStatus(client, 500, F("Tank data too large"));
     return;
   }
@@ -5551,7 +5577,7 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
 
   // Detect if we ran out of memory while building the document
   if (doc.overflowed()) {
-    Serial.println(F("[ERROR] Client data JSON document overflowed - increase CLIENT_JSON_CAPACITY"));
+    Serial.println(F("[ERROR] Client data JSON document overflowed"));
     respondStatus(client, 500, F("Client data too large"));
     return;
   }
@@ -6070,6 +6096,11 @@ static bool sendConfigViaNotecard(const char *clientUid, const char *jsonPayload
   // Inject Route Relay metadata into the config payload
   JAddStringToObject(body, "_target", clientUid);
   JAddStringToObject(body, "_type", "config");
+  // Inject config version hash so client can echo it back in ACK
+  ClientConfigSnapshot *snap = findClientConfigSnapshot(clientUid);
+  if (snap && snap->configVersion[0] != '\0') {
+    JAddStringToObject(body, "_cv", snap->configVersion);
+  }
   JAddItemToObject(req, "body", body);
 
   // Use requestAndResponse to capture detailed Notecard error messages
@@ -6143,7 +6174,7 @@ static void dispatchPendingConfigs() {
     Serial.println(gClientConfigs[i].uid);
 
     if (sendConfigViaNotecard(gClientConfigs[i].uid, gClientConfigs[i].payload)) {
-      gClientConfigs[i].pendingDispatch = false;
+      // pendingDispatch stays true until config ACK received from client
       Serial.print(F("SUCCESS: Dispatched pending config for "));
       Serial.println(gClientConfigs[i].uid);
     }
@@ -6158,6 +6189,7 @@ static void pollNotecard() {
   processNotefile(UNLOAD_INBOX_FILE, handleUnload);
   processNotefile(SERIAL_LOG_FILE, handleSerialLog);
   processNotefile(SERIAL_ACK_FILE, handleSerialAck);
+  processNotefile(RELAY_FORWARD_FILE, handleRelayForward);
   processNotefile(LOCATION_RESPONSE_FILE, handleLocationResponse);
   processNotefile(CONFIG_ACK_INBOX_FILE, handleConfigAck);
 }
@@ -7099,7 +7131,7 @@ static void sendDailyEmail() {
   JAddBoolToObject(req, "sync", true);
   J *body = JParse(buffer);
   if (!body) {
-    notecard.deleteResponse(req);  // Free the request to prevent memory leak
+    JDelete(req);  // Free the request to prevent memory leak
     Serial.println(F("Daily email JSON parse failed"));
     return;
   }
@@ -7174,7 +7206,7 @@ static void publishViewerSummary() {
   JAddBoolToObject(req, "sync", true);
   J *body = JParse(json.c_str());
   if (!body) {
-    notecard.deleteResponse(req);  // Free the request to prevent memory leak
+    JDelete(req);  // Free the request to prevent memory leak
     Serial.println(F("Viewer summary JSON parse failed"));
     return;
   }
@@ -7220,14 +7252,6 @@ static void handleClientConfigGet(EthernetClient &client, const String &query) {
   response += snap->payload;
   response += '}';
   respondJson(client, response);
-}
-
-// Convert raw 4-20mA reading to level/value using sensor config from client config snapshot
-// If learned calibration is available, uses the calibration data instead of theoretical calculation
-// Temperature compensation is applied if available and current temperature is known
-// Returns the computed level, or 0.0 if config not found or invalid mA
-static float convertMaToLevel(const char *clientUid, uint8_t tankNumber, float mA) {
-  return convertMaToLevelWithTemp(clientUid, tankNumber, mA, TEMPERATURE_UNAVAILABLE);
 }
 
 // Convert raw 4-20mA reading to level with optional temperature compensation
@@ -8113,7 +8137,7 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
 static void sendHistoryJson(EthernetClient &client) {
   // Build JSON response with historical tank data for charting
   // Structure: { tanks: [...], alarms: [...], voltage: [], settings: {}, comparison: null }
-  static const size_t HISTORY_JSON_CAPACITY = 65536;  // 64KB for historical data
+  // Historical data may reach ~64KB; ArduinoJson v7 auto-sizes
   JsonDocument doc;
   // doc.isNull() removed; in ArduinoJson 7 it returns true for new/empty docs
   
@@ -8246,8 +8270,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     return;
   }
   
-  // Build comparison JSON
-  static const size_t COMPARE_JSON_CAPACITY = 32768;
+  // Build comparison JSON (~32KB; ArduinoJson v7 auto-sizes)
   JsonDocument doc;
   // doc.isNull() removed; in ArduinoJson 7 it returns true for new/empty docs
   
@@ -8357,8 +8380,7 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
     tankNum = atoi(tankParam.substring(colonPos + 1).c_str());
   }
   
-  // Build YoY comparison JSON
-  static const size_t YOY_JSON_CAPACITY = 24576;
+  // Build YoY comparison JSON (~24KB; ArduinoJson v7 auto-sizes)
   JsonDocument doc;
   // doc.isNull() removed; in ArduinoJson 7 it returns true for new/empty docs
   
@@ -9677,8 +9699,7 @@ static void saveCalibrationData() {
 
 static void handleCalibrationGet(EthernetClient &client) {
   // Size: calibrations(20 x ~200 bytes) + logs(50 x ~200 bytes) + overhead
-  // ~4000 + ~10000 + 512 = ~15KB, using 24KB for generous margin
-  static const size_t CALIBRATION_JSON_CAPACITY = 24576;  // 24KB
+  // ~4000 + ~10000 + 512 = ~15KB; ArduinoJson v7 auto-sizes
   JsonDocument doc;
   
   // Add calibration status for each tank

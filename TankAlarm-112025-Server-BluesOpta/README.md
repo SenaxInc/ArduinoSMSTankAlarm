@@ -46,9 +46,10 @@ The TankAlarm 112025 Server receives tank level data from multiple clients, disp
 ### 3. Blues Notehub Setup
 1. Create account at [notehub.io](https://notehub.io)
 2. Create a product for your tank alarm system
-3. Create two fleets:
+3. Create three fleets:
    - `tankalarm-server` - For the server device
    - `tankalarm-clients` - For all client devices
+   - `tankalarm-viewer` - For viewer device(s)
 4. Assign server Notecard to server fleet
 5. Assign client Notecards to client fleet
 6. Claim all Notecards into the product

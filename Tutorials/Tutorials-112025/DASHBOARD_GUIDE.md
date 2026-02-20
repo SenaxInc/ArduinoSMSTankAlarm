@@ -289,7 +289,7 @@ Select Client: [  North Farm Tank-01  ▼ ]
 │                                              │
 │  Device UID:    dev:864475044012345          │
 │  Last Seen:     10:30:15 AM (2 min ago)      │
-│  Firmware:      v1.0.0                       │
+│  Firmware:      v1.1.0                       │
 └──────────────────────────────────────────────┘
 ```
 
@@ -672,9 +672,9 @@ Configure in tank settings:
 - Tracks alarm state
 - **Use for:** Pump control, automated valves
 
-### Advanced: Device-to-Device Relay
+### Advanced: Cross-Client Relay Forwarding
 
-Control one client's relay from another client's alarm:
+Control one client's relay from another client's alarm (server-mediated):
 
 **In Client A config:**
 ```json
@@ -690,8 +690,9 @@ Control one client's relay from another client's alarm:
 
 **Behavior:**
 - Client A's Tank A goes into high alarm
-- Client A sends relay command to Client B
-- Client B activates relay D0
+- Client A sends `relay_forward.qo` to server
+- Server receives via Route #1, re-dispatches via `command.qo` to Client B
+- Client B receives `relay.qi` and activates relay D0
 - Enables cascade control across sites
 
 **Example Use Cases:**

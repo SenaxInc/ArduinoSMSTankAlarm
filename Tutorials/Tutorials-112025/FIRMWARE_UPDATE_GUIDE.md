@@ -161,7 +161,7 @@ Upload to one device via USB and verify it boots correctly before deploying via 
 ### Firmware Upload Tips
 
 **Naming Convention:**
-- Use descriptive filenames: `TankAlarm-Client-v1.0.1-2026-01-07.bin`
+- Use descriptive filenames: `TankAlarm-Client-v1.1.0-2026-02-20.bin`
 - Include component type (Client/Server/Viewer)
 - Include version and date for tracking
 
@@ -308,7 +308,7 @@ After the update completes, verify the new firmware is running:
 Connect via USB and check startup messages:
 
 ```
-Tank Alarm Client 112025 v1.0.1 (Jan 7 2026)
+Tank Alarm Client 112025 v1.1.0 (Feb 20 2026)
 ```
 
 #### Method 2: Server Web Dashboard
@@ -317,22 +317,19 @@ For Server components, check the footer or system info page:
 
 ```html
 <footer>
-  TankAlarm Server v1.0.1 | Built: Jan 7 2026
+  TankAlarm Server v1.1.0 | Built: Feb 20 2026
 </footer>
 ```
 
-#### Method 3: Notehub Events
+#### Method 3: Serial Monitor FIRMWARE_VERSION
 
-Check for an `_env.set` event containing the new version:
+The firmware version is compiled into each binary. Check the serial output at startup:
 
-```json
-{
-  "event": "_env.set",
-  "body": {
-    "firmware_version": "1.0.1"
-  }
-}
 ```
+Firmware Version: 1.1.0
+```
+
+> **Note:** The firmware version is embedded at compile time via `FIRMWARE_VERSION` in `TankAlarm_Common.h` — it is not set via Notehub environment variables.
 
 ### Post-Update Health Checks
 
@@ -518,7 +515,7 @@ Blues Notecard DFU includes built-in security features:
 
 2. **Version Control**
    - Commit code before compiling release binary
-   - Tag releases in Git: `git tag v1.0.1`
+   - Tag releases in Git: `git tag v1.1.0`
    - Keep binary archives with matching Git commits
 
 3. **Staged Deployment**
@@ -612,8 +609,10 @@ Force immediate download:
 
 ### Check Current Firmware Version
 
-```cpp
-{"req":"env.get", "name":"firmware_version"}
+Check serial monitor output at startup — the firmware version is compiled in:
+
+```
+Firmware Version: 1.1.0
 ```
 
 ### Server API Endpoints

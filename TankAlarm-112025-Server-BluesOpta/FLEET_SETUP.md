@@ -9,11 +9,13 @@ This simplified setup guide uses **fleet-based device-to-device communication**,
 1. Log in to https://notehub.io
 2. Navigate to your project
 3. Go to **Fleets** → **Create Fleet**
-4. Create two fleets:
-   - **Fleet name:** `tankalarm-server`  
+4. Create three fleets:
+   - **Fleet name:** `tankalarm-server`
      **Description:** Base station server
-   - **Fleet name:** `tankalarm-clients`  
+   - **Fleet name:** `tankalarm-clients`
      **Description:** Field monitoring devices
+   - **Fleet name:** `tankalarm-viewer`
+     **Description:** Read-only kiosk display
 
 ### 2. Assign Devices to Fleets
 

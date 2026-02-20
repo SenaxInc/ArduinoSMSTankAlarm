@@ -77,39 +77,4 @@ static inline double tankalarm_computeNextAlignedEpoch(double epoch, uint8_t bas
   return aligned;
 }
 
-/**
- * Check if epoch timestamp is valid (non-zero and reasonable)
- * @param epoch Unix epoch timestamp
- * @return true if timestamp appears valid
- */
-static inline bool tankalarm_isValidEpoch(double epoch) {
-  // Valid range: after 2020 and before 2100
-  return (epoch > 1577836800.0 && epoch < 4102444800.0);
-}
-
-// ============================================================================
-// String Utilities
-// ============================================================================
-
-/**
- * Safe string comparison with null handling
- * @param a First string (may be null)
- * @param b Second string (may be null)
- * @return true if strings are equal (both null counts as equal)
- */
-static inline bool tankalarm_streq(const char *a, const char *b) {
-  if (a == b) return true;
-  if (!a || !b) return false;
-  return strcmp(a, b) == 0;
-}
-
-/**
- * Check if string is empty or null
- * @param s String to check
- * @return true if null or empty string
- */
-static inline bool tankalarm_isEmptyString(const char *s) {
-  return (!s || s[0] == '\0');
-}
-
 #endif // TANKALARM_UTILS_H

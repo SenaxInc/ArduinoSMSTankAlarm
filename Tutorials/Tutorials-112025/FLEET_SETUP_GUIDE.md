@@ -129,7 +129,7 @@ For those who want to get started immediately:
 
 💡 **Pro Tip:** Start with empty sensor list for truly new sites. Click "+ Add Sensor" only for sensors you've physically connected.
 
-**Done!** Two Notehub Routes (ClientToServerRelay + ServerToClientRelay) handle all device-to-device communication automatically.
+**Done!** Two primary Notehub Routes (ClientToServerRelay + ServerToClientRelay) plus ServerToViewerRelay handle all device-to-device communication automatically. See [NOTEHUB_ROUTES_SETUP.md](NOTEHUB_ROUTES_SETUP.md) for all 5 routes.
 
 ---
 
@@ -181,8 +181,8 @@ notecard.sendRequest(req);
 **What happens:**
 1. Server sends note to `command.qo` with `_target` = client UID in the body
 2. Notehub syncs the note, triggering the **ServerToClientRelay** route
-3. Route reads `_target` and `_type`, delivers as `command.qi` on the target client
-4. Client reads `command.qi` via `note.get` and applies settings
+3. Route reads `_target` and `_type`, delivers to the appropriate `.qi` file on the target client (e.g., `config.qi`, `relay.qi`)
+4. Client reads the specific `.qi` file via `note.get` and applies settings
 
 #### Server Broadcast to All Clients
 
@@ -200,8 +200,8 @@ notecard.sendRequest(req);
 
 **What happens:**
 1. Server sends to `command.qo` with `_target` = `"*"` (wildcard = all clients)
-2. **ServerToClientRelay** route delivers as `command.qi` on every client in the fleet
-3. Each client reads `command.qi` and processes the broadcast message
+2. **ServerToClientRelay** route delivers to the appropriate `.qi` file on every client in the fleet
+3. Each client reads the specific `.qi` file and processes the broadcast message
 
 ---
 
@@ -237,6 +237,14 @@ notecard.sendRequest(req);
    - **Name**: `tankalarm-clients`
    - **Description**: `Field monitoring devices`
    - **Purpose**: Target for server configuration updates
+3. Click **Create**
+
+**Viewer Fleet:**
+1. Click **Create Fleet** again
+2. Enter:
+   - **Name**: `tankalarm-viewer`
+   - **Description**: `Read-only kiosk display devices`
+   - **Purpose**: Target for viewer summary data
 3. Click **Create**
 
 **Fleet Naming Best Practices:**
@@ -492,10 +500,10 @@ Examples:
    ```
 3. All clients receive and apply change
 
-**Method 3: Notehub Environment Variables**
-1. Set global variable in Notehub
-2. Clients query on boot
-3. Apply universal settings
+**Method 3: Server-Pushed Configuration (Recommended)**
+1. Configure update via server web dashboard
+2. Server sends via `command.qo` with `_type: "config"`
+3. Client receives as `config.qi` and applies settings
 
 #### Configuration Backup
 
@@ -690,7 +698,7 @@ Each region operates independently with its own fleet.
    - Server → ensure exact match in dropdown
 
 2. **Check Client Polling:**
-   - Client should query for `command.qi` (delivered by ServerToClientRelay route)
+   - Client should query for specific `.qi` files (e.g., `config.qi`, `relay.qi`) delivered by ServerToClientRelay route
    - Verify in client firmware: `note.get`
 
 3. **Monitor Notehub Events:**
@@ -998,7 +1006,7 @@ For advanced scenarios beyond standard fleets:
 
 **Check inbound queue:**
 ```cpp
-{"req":"note.get", "file":"command.qi", "delete":true}
+{"req":"note.get", "file":"config.qi", "delete":true}
 ```
 
 **Send telemetry (client → server via Route):**

@@ -705,18 +705,18 @@ These tutorials are maintained alongside firmware releases:
 
 | Tutorial | Version | Last Updated | Firmware Compatibility |
 |----------|---------|--------------|------------------------|
-| Quick Start | 1.0 | Jan 2026 | v1.0.0+ |
-| Client Installation | 1.0 | Jan 2026 | v1.0.0+ |
-| Server Installation | 1.0 | Jan 2026 | v1.0.0+ |
-| Fleet Setup | 1.0 | Jan 2026 | v1.0.0+ |
-| Firmware Update | 1.0 | Jan 2026 | v1.0.0+ |
-| Sensor Calibration | 1.0 | Jan 2026 | v1.0.0+ |
-| Relay Control | 1.0 | Jan 2026 | v1.0.0+ |
-| Unload Tracking | 1.0 | Jan 2026 | v1.0.0+ |
-| Backup and Recovery | 1.0 | Jan 2026 | v1.0.0+ |
-| Troubleshooting | 1.0 | Jan 2026 | v1.0.0+ |
-| Dashboard | 1.0 | Jan 2026 | v1.0.0+ |
-| Advanced Configuration | 1.0 | Jan 2026 | v1.0.0+ |
+| Quick Start | 1.1 | Feb 2026 | v1.1.0+ |
+| Client Installation | 1.1 | Feb 2026 | v1.1.0+ |
+| Server Installation | 1.1 | Feb 2026 | v1.1.0+ |
+| Fleet Setup | 1.1 | Feb 2026 | v1.1.0+ |
+| Firmware Update | 1.1 | Feb 2026 | v1.1.0+ |
+| Sensor Calibration | 1.1 | Feb 2026 | v1.1.0+ |
+| Relay Control | 1.1 | Feb 2026 | v1.1.0+ |
+| Unload Tracking | 1.1 | Feb 2026 | v1.1.0+ |
+| Backup and Recovery | 1.1 | Feb 2026 | v1.1.0+ |
+| Troubleshooting | 1.1 | Feb 2026 | v1.1.0+ |
+| Dashboard | 1.1 | Feb 2026 | v1.1.0+ |
+| Advanced Configuration | 1.1 | Feb 2026 | v1.1.0+ |
 
 ---
 

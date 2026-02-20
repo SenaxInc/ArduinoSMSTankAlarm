@@ -586,7 +586,7 @@ char jsonBuffer[10000];           // 10 KB always allocated
 String largeString = "";          // Grows unpredictably
 
 // GOOD: Dynamic allocation as needed
-DynamicJsonDocument doc(2048);    // Only when needed
+JsonDocument doc;                     // Only when needed
 doc.garbageCollect();             // Free when done
 ```
 
@@ -623,7 +623,7 @@ parseJSON(contents);
 
 // GOOD: Stream processing
 File f = LittleFS.open("/history/data.json", "r");
-StaticJsonDocument<512> filter;
+JsonDocument filter;
 filter["timestamp"] = true;
 filter["level"] = true;
 
@@ -832,7 +832,7 @@ notecard.sendNote(tankBlevel);
 notecard.sendNote(tankClevel);
 
 // Batch into single note:
-JsonObject payload = doc.createNestedObject("tanks");
+JsonObject payload = doc["tanks"].to<JsonObject>();
 payload["A"] = tankAlevel;
 payload["B"] = tankBlevel;
 payload["C"] = tankClevel;

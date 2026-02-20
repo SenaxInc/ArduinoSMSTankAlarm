@@ -127,10 +127,7 @@
 #endif
 
 // --- Config notefiles ---
-#ifndef CONFIG_OUTBOX_FILE
-#define CONFIG_OUTBOX_FILE "config.qo"          // Client sends config acknowledgments
-#endif
-
+// Client receives config from server (via command.qo → Route #2 → config.qi)
 #ifndef CONFIG_INBOX_FILE
 #define CONFIG_INBOX_FILE "config.qi"           // Client receives config from server
 #endif
@@ -156,6 +153,18 @@
 #define COMMAND_OUTBOX_FILE "command.qo"
 #endif
 
+// --- Relay forwarding (client-to-server-to-client) ---
+// When a client alarm triggers remote relays on another client, the request
+// goes through the server: Client → relay_forward.qo → Route #1 → Server
+// relay_forward.qi → Server re-issues via command.qo → Route #2 → target client relay.qi
+#ifndef RELAY_FORWARD_OUTBOX_FILE
+#define RELAY_FORWARD_OUTBOX_FILE "relay_forward.qo"  // Client sends relay forward request
+#endif
+
+#ifndef RELAY_FORWARD_INBOX_FILE
+#define RELAY_FORWARD_INBOX_FILE "relay_forward.qi"   // Server receives relay forward request
+#endif
+
 // --- Relay control ---
 #ifndef RELAY_CONTROL_FILE
 #define RELAY_CONTROL_FILE "relay.qi"           // Client receives relay commands
@@ -172,6 +181,10 @@
 
 #ifndef SERIAL_REQUEST_FILE
 #define SERIAL_REQUEST_FILE "serial_request.qi" // Client receives request for logs
+#endif
+
+#ifndef SERIAL_ACK_OUTBOX_FILE
+#define SERIAL_ACK_OUTBOX_FILE "serial_ack.qo"  // Client sends serial request ack
 #endif
 
 #ifndef SERIAL_ACK_INBOX_FILE
@@ -201,12 +214,8 @@
 #endif
 
 // ============================================================================
-// Time Synchronization
+// DFU (Device Firmware Update) Check Interval
 // ============================================================================
-#ifndef TIME_SYNC_INTERVAL_MS
-#define TIME_SYNC_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)  // 6 hours
-#endif
-
 #ifndef DFU_CHECK_INTERVAL_MS
 #define DFU_CHECK_INTERVAL_MS (60UL * 60UL * 1000UL)  // 1 hour
 #endif

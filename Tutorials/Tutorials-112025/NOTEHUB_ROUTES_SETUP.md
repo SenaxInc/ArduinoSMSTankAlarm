@@ -1,4 +1,4 @@
-# Notehub Routes Setup Guide — TankAlarm 112025
+# Notehub Routes Setup Guide — TankAlarm 112025 v1.1.0
 
 ## Introduction
 
@@ -67,7 +67,7 @@ TankAlarm uses **5 routes** total:
 
 | # | Route Name | Purpose | Trigger | Target |
 |---|-----------|---------|---------|--------|
-| 1 | **ClientToServerRelay** | Delivers client telemetry/alarms to server | `*.qo` from client devices | Server device `.qi` inbox |
+| 1 | **ClientToServerRelay** | Delivers client telemetry/alarms to server | 9 specific client `.qo` notefiles | Server device `.qi` inbox |
 | 2 | **ServerToClientRelay** | Delivers server commands to clients | `command.qo` from server device | Target client's `.qi` inbox |
 | 3 | **ServerToViewerRelay** | Delivers viewer summary to viewer devices | `viewer_summary.qo` from server | Viewer device `.qi` inbox |
 | 4 | **SMSRoute** | Sends SMS alerts | `sms.qo` from server device | Twilio or Blues SMS |
@@ -83,9 +83,18 @@ alarm.qo      ──> Route #1 ──>  alarm.qi      ──> note.get
 daily.qo      ──> Route #1 ──>  daily.qi      ──> note.get
 unload.qo     ──> Route #1 ──>  unload.qi     ──> note.get
 serial_log.qo ──> Route #1 ──>  serial_log.qi ──> note.get
+serial_ack.qo ──> Route #1 ──>  serial_ack.qi ──> note.get
+config_ack.qo ──> Route #1 ──>  config_ack.qi ──> note.get
 location_response.qo ─> #1 ──>  location_response.qi ──> note.get
-
-                                 command.qo    <── note.add (server)
+relay_forward.qo ──> #1 ──────> relay_forward.qi ──> handleRelayForward()
+                                                        │
+                                                        ▼
+                                 command.qo    <── note.add (server re-issues)
+                                     │               ▲
+                                     │               │
+                                     │         Also used directly for:
+                                     │         config, serial_request,
+                                     │         location_request, relay
                                      │
                                      └──> Route #2 reads body._target and body._type
                                           │
@@ -103,6 +112,22 @@ viewer_summary.qi <── Route #3   viewer_summary.qo <── note.add (server)
                                  sms.qo   ──> Route #4 ──> Twilio SMS
                                  email.qo ──> Route #5 ──> SMTP Email
 ```
+
+### Relay Forwarding Flow (Client → Server → Client)
+
+When a client alarm triggers relays on a remote client, the command flows through the server:
+
+```
+CLIENT A (alarm)                 SERVER                          CLIENT B (target)
+────────────────                 ──────                          ────────────────
+alarm triggers            relay_forward.qi                       relay.qi
+relay_forward.qo ──>      handleRelayForward()                   pollForRelayCommands()
+  Route #1          ──>     reads target, relay, state    ──>     activates relay
+                            re-issues via command.qo
+                              Route #2 delivers
+```
+
+This ensures the server has full visibility into all relay commands and can log/audit them.
 
 ---
 
@@ -133,10 +158,12 @@ Write them down:
 
 | Role | Device UID | Fleet |
 |------|-----------|-------|
-| Server | `dev:_____________` | (your server fleet) |
-| Viewer | `dev:_____________` | (your viewer fleet) |
-| Client 1 | `dev:_____________` | (your client fleet) |
-| Client 2 | `dev:_____________` | (your client fleet) |
+| Server | `dev:_____________` | `tankalarm-server` |
+| Viewer | `dev:_____________` | `tankalarm-viewer` |
+| Client 1 | `dev:_____________` | `tankalarm-clients` (or your client fleet) |
+| Client 2 | `dev:_____________` | `tankalarm-clients` (or your client fleet) |
+
+> **⚡ Note:** The viewer firmware automatically joins the `tankalarm-viewer` fleet via `hub.set`. Make sure this fleet exists in your Notehub project before provisioning viewer devices.
 
 ---
 
@@ -182,9 +209,11 @@ This passes the entire event body through to the server's `.qi` notefile.
 | Setting | Value |
 |---------|-------|
 | **Fleets** | Select your **client fleet** only |
-| **Notefiles** | `telemetry.qo`, `alarm.qo`, `daily.qo`, `unload.qo`, `serial_log.qo`, `location_response.qo`, `config.qo` |
+| **Notefiles** | `telemetry.qo`, `alarm.qo`, `daily.qo`, `unload.qo`, `serial_log.qo`, `serial_ack.qo`, `config_ack.qo`, `location_response.qo`, `relay_forward.qo` |
 
 > **⚡ Tip:** The `{{notefile_base}}` template variable extracts the base name without the extension. So `telemetry.qo` becomes `telemetry`, and the URL appends `.qi` — resulting in the note being added to `telemetry.qi` on the server.
+
+> **⚡ Important:** Do not include `config.qo` — it does not exist. Config is delivered to clients via `command.qo` with `_type: config`, and clients acknowledge via `config_ack.qo`.
 
 ### 3e. Save and Test
 
@@ -286,13 +315,13 @@ This route delivers the viewer summary from the server to all viewer devices.
 
 ### 5d. Multiple Viewers
 
-If you have multiple viewer devices, you have two options:
+If you have multiple viewer devices, you need **one route per viewer** — duplicate this route for each viewer device UID, changing only the `YOUR_VIEWER_DEVICE_UID` in the URL.
 
-**Option A: One route per viewer** — Duplicate this route for each viewer device UID.
+> **Why not fleet-level delivery?** The Notehub Device API (`/v1/projects/{project}/devices/{device}/notes/{notefile}`) requires a specific device UID. There is no fleet-level broadcast endpoint. Each viewer needs its own route.
 
-**Option B: Use a JSONata transform with multiple API calls** — Create a single route that fans out to multiple viewers using Notehub's transform capabilities.
+For most deployments (1–2 viewers), this is simple to manage. If you have many viewers, consider scripting route creation via the [Notehub API](https://dev.blues.io/api-reference/notehub-api/).
 
-For most deployments, Option A is simpler and recommended.
+> **Fleet membership still matters:** All viewers should join the `tankalarm-viewer` fleet (the firmware does this automatically). This enables fleet-scoped DFU updates, device grouping in the Notehub UI, and future fleet-level features.
 
 ---
 
@@ -337,6 +366,12 @@ After setting up all routes, verify each one works:
 - [ ] Client sends telemetry → Server receives `telemetry.qi`
 - [ ] Client sends alarm → Server receives `alarm.qi`
 - [ ] Client sends daily report → Server receives `daily.qi`
+- [ ] Client sends unload event → Server receives `unload.qi`
+- [ ] Client sends config ACK → Server receives `config_ack.qi`
+- [ ] Client sends serial logs → Server receives `serial_log.qi`
+- [ ] Client sends serial ACK → Server receives `serial_ack.qi`
+- [ ] Client sends location response → Server receives `location_response.qi`
+- [ ] Client sends relay forward → Server receives `relay_forward.qi`
 - [ ] Route logs show 200 OK responses
 
 ### Route #2: ServerToClientRelay
@@ -345,6 +380,7 @@ After setting up all routes, verify each one works:
 - [ ] Server sends serial request → Client receives `serial_request.qi`
 - [ ] Server sends location request → Client receives `location_request.qi`
 - [ ] Dynamic URL correctly targets different client devices
+- [ ] Relay forward: Client A alarm → server `relay_forward.qi` → server re-issues via `command.qo` → Client B receives `relay.qi`
 
 ### Route #3: ServerToViewerRelay
 - [ ] Server publishes viewer summary → Viewer receives `viewer_summary.qi`
@@ -409,20 +445,45 @@ The ServerToClientRelay Route reads these fields to construct the correct API UR
 - **Fewer routes** — one route handles all server→client communication
 - **Simpler firmware** — server always writes to the same notefile
 - **Easier debugging** — all commands are visible in one place in Notehub
+- **Relay forwarding** — when a client alarm triggers relays on another client, the request flows through the server via `relay_forward.qo` → Route #1 → `relay_forward.qi` (server) → `handleRelayForward()` re-issues via `command.qo` → Route #2 → target client `relay.qi`. This gives the server full visibility and audit capability.
 
----
+### Serial Request/ACK Handshake
 
-## Environment Variables (Alternative for Fleet-Wide Config)
+When the server requests serial logs from a client:
 
-For fleet-wide settings that don't need per-device targeting, Blues provides **Environment Variables**:
+1. Server sends `serial_request` via `command.qo` → Route #2 → client `serial_request.qi`
+2. Client receives request → sends `serial_ack.qo` with `{"status": "processing"}` → Route #1 → server `serial_ack.qi`
+3. Client uploads logs via `serial_log.qo` → Route #1 → server `serial_log.qi`
+4. Client sends `serial_ack.qo` with `{"status": "complete"}` → Route #1 → server `serial_ack.qi`
 
-1. In Notehub, go to your **project** → **Environment**
-2. Set variables like:
-   - `_poll_rate` = `1800` (seconds between readings)
-   - `_alarm_high` = `120` (inches)
-   - `_alarm_low` = `6` (inches)
+The server dashboard displays the ACK status in real time, providing feedback on whether the client has received and processed the request.
 
-Devices read these with `env.get` — no routes needed. Use this for simple settings that apply to all devices in a fleet.
+### Config ACK Protocol
+
+When the server pushes config to a client, a version-tracked ACK handshake ensures delivery:
+
+1. Server generates a config version hash (e.g., `"A3F2B1C0"`) and injects it as `_cv` in the config payload
+2. Server sends config via `command.qo` → Route #2 → client `config.qi`
+3. Client applies config → sends `config_ack.qo` with `{"client": "dev:...", "status": "applied", "cv": "A3F2B1C0"}` → Route #1 → server `config_ack.qi`
+4. Server matches `cv` against the stored version — if they match, `pendingDispatch` is cleared and retries stop
+
+If the ACK version doesn't match (e.g., client applied an older config), the server continues retrying until the correct version is acknowledged.
+
+### Fleet Architecture
+
+TankAlarm uses three fleets:
+
+| Fleet | Devices | hub.set Fleet |
+|-------|---------|---------------|
+| `tankalarm-server` | Server nodes | Set in server's `hub.set` (configurable) |
+| `tankalarm-clients` | Client nodes | Set via config push from server |
+| `tankalarm-viewer` | Viewer nodes | Hardcoded in viewer's `hub.set` |
+
+Fleet membership is used for:
+- **Route source filtering** — Routes #1 and #2 fire only for events from specific fleets
+- **DFU targeting** — firmware updates can be deployed per-fleet
+- **Device management** — Notehub UI groups devices by fleet
+- **Route #3 scoping** — the server fleet filter ensures only server-originated viewer summaries are routed
 
 ---
 
@@ -430,13 +491,13 @@ Devices read these with `env.get` — no routes needed. Use this for simple sett
 
 | Route | Events/Day (typical) | Data per Event | Daily Total |
 |-------|---------------------|---------------|-------------|
-| ClientToServerRelay | 48 per client (1/30min) | ~200 bytes | ~9.6 KB/client |
-| ServerToClientRelay | 1-5 (config/relay) | ~500 bytes | ~2.5 KB |
+| ClientToServerRelay | ~50–60 per client (telemetry @ 1/30min + alarms, daily, unloads, config ACKs, serial, location) | ~200–500 bytes | ~15 KB/client |
+| ServerToClientRelay | 1–5 (config/relay/serial request/location request) | ~500 bytes | ~2.5 KB |
 | ServerToViewerRelay | 4 (every 6 hours) | ~2 KB | ~8 KB |
-| SMS | 0-10 (alarm dependent) | ~160 bytes | ~1.6 KB |
+| SMS | 0–10 (alarm dependent) | ~160 bytes | ~1.6 KB |
 | Email | 1 (daily report) | ~2 KB | ~2 KB |
 
-**Total:** ~25 KB/day per client node. Well within Blues free tier (5,000 events/month).
+**Total:** ~30 KB/day per client node. Well within Blues free tier (5,000 events/month).
 
 ---
 
@@ -450,5 +511,5 @@ Devices read these with `env.get` — no routes needed. Use this for simple sett
 
 ---
 
-*TankAlarm 112025 — Firmware v1.0.0+*
+*TankAlarm 112025 — Firmware v1.1.0+*
 *Route Relay Architecture — No SSL certificates required on device hardware*

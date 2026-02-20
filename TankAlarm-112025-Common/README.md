@@ -70,18 +70,11 @@ Utility functions:
 - `strlcpy()` - Safe string copy (for platforms without it)
 - `tankalarm_roundTo()` - Round float to decimal places
 - `tankalarm_computeNextAlignedEpoch()` - Schedule aligned tasks
-- `tankalarm_isValidEpoch()` - Validate epoch timestamp
-- `tankalarm_streq()` - Null-safe string comparison
-- `tankalarm_isEmptyString()` - Check for null/empty string
 
 ### TankAlarm_Notecard.h
 Notecard helper functions:
 - `tankalarm_ensureTimeSync()` - Sync time from Notecard
 - `tankalarm_currentEpoch()` - Get current epoch from last sync
-- `tankalarm_setNotecardI2CSpeed()` - Configure I2C speed
-- `tankalarm_getNotecardUUID()` - Get device UUID
-- `tankalarm_configureHub()` - Configure hub.set
-- `tankalarm_getNotecardStatus()` - Get connectivity status
 
 ### TankAlarm_Solar.h
 SunSaver MPPT solar charger monitoring via Modbus RTU over RS-485:
@@ -105,9 +98,7 @@ Battery voltage monitoring via Notecard card.voltage API (no additional hardware
 - `BatteryData` - Voltage, trends (daily/weekly/monthly), mode, SOC, health status
 - `BatteryConfig` - Thresholds, poll interval, alert enable, analysis window
 - `initBatteryConfig()` - Initialize config with defaults for battery type
-- `getBatteryVoltageMode()` - Convert Notecard mode to string
 - `getBatteryStateDescription()` - User-friendly battery state description
-- `estimateLeadAcidSOC()` / `estimateLiFePO4SOC()` - State of charge from voltage
 
 **Features:**
 - Trend analysis with configurable window (default 7 days)
@@ -142,17 +133,9 @@ void setup() {
   Wire.setClock(NOTECARD_I2C_FREQUENCY);
   
   notecard.begin(NOTECARD_I2C_ADDRESS);
-  tankalarm_setNotecardI2CSpeed(notecard, NOTECARD_I2C_FREQUENCY);
   
   // Sync time
   tankalarm_ensureTimeSync(notecard, gLastSyncedEpoch, gLastSyncMillis, true);
-  
-  // Get device UUID
-  char uuid[48];
-  if (tankalarm_getNotecardUUID(notecard, uuid, sizeof(uuid))) {
-    Serial.print("Device UUID: ");
-    Serial.println(uuid);
-  }
   
   // Start watchdog
   #ifdef TANKALARM_WATCHDOG_AVAILABLE

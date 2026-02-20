@@ -1,7 +1,7 @@
 # TankAlarm 112025 Client - Wiring Diagram & Hardware Connection Guide
 
-**Version:** 1.0.0  
-**Last Updated:** February 6, 2026  
+**Version:** 1.1.0  
+**Last Updated:** February 20, 2026  
 **Platform:** Arduino Opta Lite + Blues Wireless for Opta + Opta Ext A0602
 
 ---
@@ -686,4 +686,4 @@ All I2C devices share the same bus (SDA/SCL):
 
 ---
 
-*Document generated from firmware source code analysis — TankAlarm-112025-Client-BluesOpta v1.0.0*
+*Document generated from firmware source code analysis — TankAlarm-112025-Client-BluesOpta v1.1.0*

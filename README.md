@@ -178,9 +178,10 @@ The system consists of three components:
 
 1. Create account at [notehub.io](https://notehub.io)
 2. Create a new product for your TankAlarm system
-3. Create two fleets:
+3. Create three fleets:
    - `tankalarm-server` - For server device(s)
    - `tankalarm-clients` - For all client devices
+   - `tankalarm-viewer` - For viewer device(s)
 4. Claim all Notecards into the product
 5. Assign each Notecard to the appropriate fleet
 

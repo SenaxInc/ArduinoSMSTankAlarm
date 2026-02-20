@@ -79,10 +79,20 @@ The server adds `_target` (device UID) and `_type` (command type) fields to the 
 | `SERIAL_LOG_OUTBOX_FILE` | `"serial_log.qo"` | Client → Server |
 | `SERIAL_LOG_INBOX_FILE` | `"serial_log.qi"` | Server reads |
 | `SERIAL_REQUEST_FILE` | `"serial_request.qi"` | Client reads |
+| `SERIAL_ACK_OUTBOX_FILE` | `"serial_ack.qo"` | Client → Server |
 | `SERIAL_ACK_INBOX_FILE` | `"serial_ack.qi"` | Server reads |
 | `LOCATION_RESPONSE_OUTBOX_FILE` | `"location_response.qo"` | Client → Server |
 | `LOCATION_RESPONSE_INBOX_FILE` | `"location_response.qi"` | Server reads |
 | `LOCATION_REQUEST_FILE` | `"location_request.qi"` | Client reads |
+
+### Relay Forwarding & Config Acknowledgment Notefiles
+
+| Constant | Value | Direction |
+|----------|-------|-----------|
+| `RELAY_FORWARD_OUTBOX_FILE` | `"relay_forward.qo"` | Client → Server |
+| `RELAY_FORWARD_INBOX_FILE` | `"relay_forward.qi"` | Server reads |
+| `CONFIG_ACK_OUTBOX_FILE` | `"config_ack.qo"` | Client → Server |
+| `CONFIG_ACK_INBOX_FILE` | `"config_ack.qi"` | Server reads |
 
 ### Viewer Summary
 
@@ -123,19 +133,21 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
 }
 ```
 
-### Client-to-Client Relay Commands
+### Client-to-Client Relay Forwarding (Server-Mediated)
 
-When a client needs to trigger relays on another client (alarm-driven), it uses `command.qo`:
+When a client alarm triggers relays on another client, it sends a `relay_forward.qo` note. The server receives this via Route #1, then re-dispatches to the target client via `command.qo` → Route #2:
 
 ```cpp
-JAddStringToObject(req, "file", COMMAND_OUTBOX_FILE);  // "command.qo"
-JAddStringToObject(body, "_target", targetClientUid);
-JAddStringToObject(body, "_type", "relay");
+// Client sends relay forward request to server
+JAddStringToObject(req, "file", RELAY_FORWARD_OUTBOX_FILE);  // "relay_forward.qo"
+JAddStringToObject(body, "target", targetClientUid);   // Target client UID
+JAddStringToObject(body, "client", gDeviceUID);        // Source client UID
 JAddNumberToObject(body, "relay", relayNum);
 JAddBoolToObject(body, "state", true);
+JAddStringToObject(body, "source", "client-alarm");
 ```
 
-The Notehub Route (ServerToClientRelay) catches this and delivers to the target client's `relay.qi`.
+The flow is: Client → `relay_forward.qo` → Route #1 → Server `relay_forward.qi` → Server `handleRelayForward()` → `command.qo` → Route #2 → Target client `relay.qi`.
 
 ---
 

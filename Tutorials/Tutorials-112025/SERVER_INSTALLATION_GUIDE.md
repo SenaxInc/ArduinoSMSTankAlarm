@@ -301,10 +301,10 @@ Example: `com.senax.tankalarm:production`
 
 ### Create Fleets
 
-Fleets enable device-to-device routing without manual route configuration:
+Fleets organize devices for route-based communication. You must also configure Notehub Routes — see [NOTEHUB_ROUTES_SETUP.md](NOTEHUB_ROUTES_SETUP.md).
 
 1. In your product, navigate to **Fleets** tab
-2. Create **two fleets**:
+2. Create **three fleets**:
 
 **Fleet 1: Server Fleet**
 - **Name**: `tankalarm-server`
@@ -316,13 +316,18 @@ Fleets enable device-to-device routing without manual route configuration:
 - **Description**: `Field monitoring devices`
 - **Purpose**: Target for server configuration broadcasts
 
+**Fleet 3: Viewer Fleet**
+- **Name**: `tankalarm-viewer`
+- **Description**: `Read-only kiosk display devices`
+- **Purpose**: Target for viewer summary data
+
 ### Fleet Architecture
 
 ```
 Clients → note.add to → telemetry.qo / alarm.qo (outbound to Notehub)
-Notehub Route → relays to → Server's data.qi (inbound on server)
+Notehub Route → relays to → Server's telemetry.qi / alarm.qi (inbound on server)
 Server  → note.add to → command.qo with {"_target":"<uid>", "_type":"config"}
-Notehub Route → relays to → Client's data.qi (inbound on client)
+Notehub Route → relays to → Client's config.qi / relay.qi (inbound on client)
 ```
 
 > **Important:** Cross-device delivery requires Notehub Routes. Colons and
@@ -522,7 +527,7 @@ Done compiling
 ### Expected Serial Output
 
 ```
-TankAlarm 112025 Server - Blues Opta v1.0.0 (Jan 7 2026)
+TankAlarm 112025 Server - Blues Opta v1.1.0 (Feb 20 2026)
 Initializing...
 LittleFS initialized (524288 bytes free)
 Loading configuration from /server_config.json
@@ -1320,7 +1325,7 @@ GET http://server-ip/api/dfu/status
 {"req":"hub.sync.status"}
 
 // View inbound notes (delivered by Notehub Route)
-{"req":"note.get", "file":"data.qi"}
+{"req":"note.get", "file":"telemetry.qi"}
 
 // Force sync
 {"req":"hub.sync"}

@@ -1283,7 +1283,7 @@ Set to **115200** baud in Arduino IDE serial monitor
 
 ```
 [Startup Messages]
-TankAlarm Client v1.0.0
+TankAlarm Client v1.1.0
 Initializing Notecard...
 Notecard: CONNECTED
 Product UID: com.company.tankalarm:production

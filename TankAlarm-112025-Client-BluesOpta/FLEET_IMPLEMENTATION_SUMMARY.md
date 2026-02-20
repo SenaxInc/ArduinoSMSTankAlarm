@@ -75,7 +75,7 @@ The Tank Alarm system has been updated to use **Blues Notehub fleet-based device
 ### New Method (Fleet-Based)
 1. Create product in Notehub
 2. Claim devices to product
-3. **Create two fleets** (tankalarm-server, tankalarm-clients)
+3. **Create three fleets** (tankalarm-server, tankalarm-clients, tankalarm-viewer)
 4. **Assign devices to fleets**
 5. Flash firmware
 6. Configure clients

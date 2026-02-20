@@ -51,7 +51,7 @@ This quick start guide gets you from zero to a working tank monitoring system as
 - [ ] Create Notehub account
 - [ ] Create product
 - [ ] Save product UID
-- [ ] Create two fleets: `tankalarm-server` and `tankalarm-clients`
+- [ ] Create three fleets: `tankalarm-server`, `tankalarm-clients`, and `tankalarm-viewer`
 
 ### Phase 2: Server Setup (10 minutes)
 
@@ -110,7 +110,13 @@ This quick start guide gets you from zero to a working tank monitoring system as
 3. Description: `Client devices`
 4. Click **Create**
 
-**✓ Checkpoint**: You should see two fleets listed in the Fleets tab.
+**Viewer Fleet:**
+1. Click **Create Fleet** again
+2. Name: `tankalarm-viewer`
+3. Description: `Read-only kiosk viewer devices`
+4. Click **Create**
+
+**✓ Checkpoint**: You should see three fleets listed in the Fleets tab.
 
 ---
 
@@ -647,10 +653,10 @@ You now have a working tank monitoring system. Here's what to do next:
 - Track delivery volumes
 - See UNLOAD_TRACKING_GUIDE.md
 
-**Device-to-Device:**
-- Direct client-to-client messaging
-- Distributed logic
-- See DEVICE_TO_DEVICE_API.md
+**Relay Forwarding:**
+- Server-mediated cross-client relay control
+- Client alarm → relay_forward.qo → server → command.qo → target client
+- See [RELAY_CONTROL_GUIDE.md](RELAY_CONTROL_GUIDE.md)
 
 ### 5. Monitoring and Maintenance
 
@@ -863,10 +869,11 @@ A: Yes! Modify `html_content.h` in server firmware. See SERVER_INSTALLATION_GUID
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | Jan 2026 | Initial release for firmware v1.0.0 |
+| 1.1 | Feb 2026 | Updated for firmware v1.1.0: fleet architecture, relay forwarding, config ACK |
 
 ---
 
-*Quick Start Guide v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Firmware 1.0.0+*
+*Quick Start Guide v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Firmware 1.1.0+*
 
 **Ready to expand your deployment?** See the [Fleet Setup Guide](FLEET_SETUP_GUIDE.md) for multi-site installations.

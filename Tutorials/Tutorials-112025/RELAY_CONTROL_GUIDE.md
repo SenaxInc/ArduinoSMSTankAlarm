@@ -435,9 +435,9 @@ For each tank, set:
    - Is `relayMask` non-zero?
    - Does alarm type match `relayOnHigh` or `relayOnLow`?
 3. **If conditions met**:
-   - Client sends relay command to target device
-   - Message routed via Notehub
-   - Target device receives and activates relays
+   - Client sends `relay_forward.qo` to server
+   - Server receives via Route #1 and re-dispatches via `command.qo`
+   - Target device receives `relay.qi` and activates relays
 4. **Alarm clears**:
    - Relays can auto-deactivate (if configured)
    - Or remain active until manual intervention
@@ -462,7 +462,7 @@ Sequence:
   8. (Optional) Relay D0 opens → Pump stops
 ```
 
-### Mode 3: Device-to-Device Coordination
+### Mode 3: Server-Mediated Cross-Client Relay Forwarding
 
 **Purpose**: Complex multi-site automation
 

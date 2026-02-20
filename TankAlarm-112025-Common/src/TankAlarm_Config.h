@@ -22,11 +22,6 @@
 // Format: com.company.product:project
 // Example: #define DEFAULT_PRODUCT_UID "com.senax.tankalarm112025"
 
-// Default server fleet name (can be overridden in JSON config)
-#ifndef DEFAULT_SERVER_FLEET
-#define DEFAULT_SERVER_FLEET "tankalarm-server"
-#endif
-
 // ============================================================================
 // Default Sampling Configuration
 // ============================================================================
@@ -57,30 +52,12 @@
 #endif
 
 // ============================================================================
-// Power Management Defaults
-// ============================================================================
-
-// Default power source (false = grid power, true = solar)
-#ifndef DEFAULT_SOLAR_POWERED
-#define DEFAULT_SOLAR_POWERED false
-#endif
-
-// Default MPPT monitoring (false = disabled)
-#ifndef DEFAULT_MPPT_ENABLED
-#define DEFAULT_MPPT_ENABLED false
-#endif
-
-// ============================================================================
 // Inbound Polling Intervals
 // ============================================================================
 
 // Solar-powered devices check for updates less frequently to save power
 #ifndef SOLAR_INBOUND_INTERVAL_MINUTES
 #define SOLAR_INBOUND_INTERVAL_MINUTES 60  // 1 hour for solar
-#endif
-
-#ifndef GRID_INBOUND_INTERVAL_MINUTES
-#define GRID_INBOUND_INTERVAL_MINUTES 10   // 10 minutes for grid power
 #endif
 
 // Solar-powered devices sync outbound less frequently to save power

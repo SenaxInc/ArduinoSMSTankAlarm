@@ -106,9 +106,6 @@ struct TankRecord {
   float vinVoltage;  // Blues Notecard VIN voltage
 };
 
-// Tank JSON: each tank object has up to 13 fields - use 16 for headroom
-static const size_t TANK_JSON_CAPACITY = JSON_ARRAY_SIZE(MAX_TANK_RECORDS) + (MAX_TANK_RECORDS * JSON_OBJECT_SIZE(16)) + 1024;
-
 // Default network configuration lives in gConfig initializer below
 
 // Global configuration instance with defaults
@@ -253,6 +250,8 @@ static void initializeNotecard() {
     // Use configurable product UID (allows fleet-specific deployments without recompilation)
     JAddStringToObject(req, "product", gConfig.productUid);
     JAddStringToObject(req, "mode", "continuous");
+    // Join the viewer fleet for fleet-scoped DFU, route filtering, and device management
+    JAddStringToObject(req, "fleet", "tankalarm-viewer");
     notecard.sendRequest(req);
   }
   
@@ -260,13 +259,15 @@ static void initializeNotecard() {
   Serial.println(gConfig.productUid);
 
   req = notecard.newRequest("card.uuid");
-  J *rsp = notecard.requestAndResponse(req);
-  if (rsp) {
-    const char *uid = JGetString(rsp, "uuid");
-    if (uid) {
-      strlcpy(gViewerUid, uid, sizeof(gViewerUid));
+  if (req) {
+    J *rsp = notecard.requestAndResponse(req);
+    if (rsp) {
+      const char *uid = JGetString(rsp, "uuid");
+      if (uid) {
+        strlcpy(gViewerUid, uid, sizeof(gViewerUid));
+      }
+      notecard.deleteResponse(rsp);
     }
-    notecard.deleteResponse(rsp);
   }
 
   Serial.print(F("Viewer Notecard UID: "));
@@ -508,12 +509,12 @@ static void sendDashboard(EthernetClient &client) {
 }
 
 static void sendTankJson(EthernetClient &client) {
-  std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(TANK_JSON_CAPACITY + 256));
+  std::unique_ptr<JsonDocument> docPtr(new JsonDocument());
   if (!docPtr) {
     respondStatus(client, 500, "Out of Memory");
     return;
   }
-  DynamicJsonDocument &doc = *docPtr;
+  JsonDocument &doc = *docPtr;
 
   doc["vn"] = VIEWER_NAME;
   doc["vi"] = gViewerUid;
@@ -528,9 +529,9 @@ static void sendTankJson(EthernetClient &client) {
   doc["rc"] = gTankRecordCount;
   doc["ls"] = gLastSyncedEpoch;
 
-  JsonArray arr = doc.createNestedArray("tanks");
+  JsonArray arr = doc["tanks"].to<JsonArray>();
   for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    JsonObject obj = arr.createNestedObject();
+    JsonObject obj = arr.add<JsonObject>();
     obj["c"] = gTankRecords[i].clientUid;
     obj["s"] = gTankRecords[i].site;
     obj["n"] = gTankRecords[i].label;
@@ -571,9 +572,9 @@ static void fetchViewerSummary() {
     char *json = JConvertToJSONString(body);
     double epoch = JGetNumber(rsp, "time");
     if (json) {
-      std::unique_ptr<DynamicJsonDocument> docPtr(new DynamicJsonDocument(TANK_JSON_CAPACITY + 1024));
+      std::unique_ptr<JsonDocument> docPtr(new JsonDocument());
       if (docPtr) {
-        DynamicJsonDocument &doc = *docPtr;
+        JsonDocument &doc = *docPtr;
         DeserializationError err = deserializeJson(doc, json);
         NoteFree(json);
         if (!err) {
@@ -704,7 +705,7 @@ static void checkForFirmwareUpdate() {
     gDfuUpdateAvailable = true;
     strlcpy(gDfuVersion, body, sizeof(gDfuVersion));
 
-#if DFU_AUTO_ENABLE
+#ifdef DFU_AUTO_ENABLE
     Serial.println(F("Auto-enabling DFU..."));
     enableDfuMode();
 #else

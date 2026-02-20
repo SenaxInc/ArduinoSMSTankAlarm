@@ -294,7 +294,7 @@ Example Product UID: `com.senax.tankalarm:production`
 Fleets organize devices for routing:
 
 1. In your product, go to **Fleets** tab
-2. Create **two fleets**:
+2. Create **three fleets**:
 
 **Fleet 1: Clients**
 - Name: `tankalarm-clients`
@@ -303,6 +303,10 @@ Fleets organize devices for routing:
 **Fleet 2: Server**
 - Name: `tankalarm-server`  
 - Description: `Central data aggregation server`
+
+**Fleet 3: Viewer**
+- Name: `tankalarm-viewer`
+- Description: `Read-only kiosk display devices`
 
 ### Provision Your Notecard
 
@@ -402,7 +406,7 @@ Done compiling
 ### Expected Serial Output
 
 ```
-TankAlarm 112025 Client - Blues Opta v1.0.0 (Jan 7 2026)
+TankAlarm 112025 Client - Blues Opta v1.1.0 (Feb 20 2026)
 Initializing...
 LittleFS initialized (524288 bytes free)
 Loading configuration from /client_config.json
@@ -796,7 +800,7 @@ Two-level monitoring (high/low switches).
 **Via Serial Console:**
 ```cpp
 // Query current config (delivered by Notehub Route)
-{"req":"note.get", "file":"data.qi"}
+{"req":"note.get", "file":"config.qi"}
 
 // Direct config edit (advanced)
 // Edit /client_config.json via LittleFS
@@ -917,8 +921,7 @@ If main loop hangs, Opta automatically resets.
 - [TankAlarm Server Installation](../TankAlarm-112025-Server-BluesOpta/INSTALLATION.md)
 - [Fleet Setup Guide](../TankAlarm-112025-Server-BluesOpta/FLEET_SETUP.md)
 - [Firmware Update Guide](../FIRMWARE_UPDATE_GUIDE.md)
-- [Device-to-Device API](DEVICE_TO_DEVICE_API.md)
-- [Relay Control Guide](RELAY_CONTROL.md)
+- [Relay Control Guide](RELAY_CONTROL_GUIDE.md)
 - [Migration from 092025](MIGRATION_GUIDE.md)
 
 ### Getting Help
@@ -944,7 +947,7 @@ Force immediate sync:
 
 View configuration (delivered by Notehub Route):
 ```cpp
-{"req":"note.get", "file":"data.qi"}
+{"req":"note.get", "file":"config.qi"}
 ```
 
 ---
@@ -955,12 +958,12 @@ After successful installation:
 
 1. **[Install Server](../TankAlarm-112025-Server-BluesOpta/INSTALLATION.md)** - Set up central aggregation
 2. **[Configure Fleet](../TankAlarm-112025-Server-BluesOpta/FLEET_SETUP.md)** - Organize devices in Notehub
-3. **[Connect Sensors](DEVICE_TO_DEVICE_API.md)** - Wire and calibrate tank sensors
+3. **[Connect Sensors](SENSOR_CALIBRATION_GUIDE.md)** - Wire and calibrate tank sensors
 4. **[Test Alarms](README.md)** - Verify high/low alerts work
 5. **[Schedule Reports](README.md)** - Set up daily email summaries
 6. **[Deploy to Field](README.md)** - Install at remote sites
 
 ---
 
-*Installation Guide v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Client Firmware 1.0.0+*
+*Installation Guide v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Client Firmware 1.1.0+*
