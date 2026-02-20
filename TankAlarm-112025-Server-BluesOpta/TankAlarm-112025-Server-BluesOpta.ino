@@ -797,21 +797,10 @@ static inline long posix_file_size(FILE *fp) { return tankalarm_posix_file_size(
 static inline bool posix_file_exists(const char *path) { return tankalarm_posix_file_exists(path); }
 static inline void posix_log_error(const char *op, const char *path) { tankalarm_posix_log_error(op, path); }
 
-// POSIX-compliant safe file write with error handling
+// POSIX-compliant safe file write — delegates to atomic write-to-temp-then-rename
+// to prevent data loss on power failure during save operations.
 static bool posix_write_file(const char *path, const char *data, size_t len) {
-  FILE *fp = fopen(path, "w");
-  if (!fp) {
-    posix_log_error("fopen", path);
-    return false;
-  }
-  size_t written = fwrite(data, 1, len, fp);
-  int writeErr = ferror(fp);
-  fclose(fp);
-  if (writeErr || written != len) {
-    posix_log_error("fwrite", path);
-    return false;
-  }
-  return true;
+  return tankalarm_posix_write_file_atomic(path, data, len);
 }
 
 // POSIX-compliant safe file read with error handling
@@ -2372,6 +2361,56 @@ void loop() {
   }
 }
 
+/**
+ * Recover from interrupted atomic writes at boot.
+ * Called once during initializeStorage() after filesystem mount.
+ *
+ * If a .tmp file exists but the target does NOT, the rename failed
+ * after a write completed — complete the rename now.
+ * If BOTH exist, the original is still valid — delete stale .tmp.
+ */
+#ifdef POSIX_FILE_IO_AVAILABLE
+static void recoverOrphanedTmpFiles() {
+  static const char * const criticalFiles[] = {
+    "/fs/server_config.json",
+    "/fs/contacts_config.json",
+    "/fs/tank_registry.json",
+    "/fs/client_metadata.json",
+    "/fs/client_config_cache.txt",
+    "/fs/calibration_data.txt",
+    "/fs/email_format.json",
+    "/fs/history_settings.json",
+    "/fs/server_heartbeat.json",
+    nullptr
+  };
+
+  for (int i = 0; criticalFiles[i] != nullptr; ++i) {
+    char tmpPath[256];
+    snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", criticalFiles[i]);
+
+    if (tankalarm_posix_file_exists(tmpPath)) {
+      if (!tankalarm_posix_file_exists(criticalFiles[i])) {
+        // Target missing + tmp exists → rename was interrupted; complete it
+        if (rename(tmpPath, criticalFiles[i]) == 0) {
+          Serial.print(F("Recovered config from .tmp: "));
+          Serial.println(criticalFiles[i]);
+        } else {
+          Serial.print(F("ERROR: Could not recover: "));
+          Serial.println(criticalFiles[i]);
+        }
+      } else {
+        // Both exist → original is valid; clean up stale tmp
+        remove(tmpPath);
+        #ifdef DEBUG_MODE
+        Serial.print(F("Cleaned stale .tmp: "));
+        Serial.println(tmpPath);
+        #endif
+      }
+    }
+  }
+}
+#endif // POSIX_FILE_IO_AVAILABLE
+
 static void initializeStorage() {
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -2397,6 +2436,8 @@ static void initializeStorage() {
     }
     if (mbedFS) {
       Serial.println(F("Mbed OS LittleFileSystem initialized"));
+      // Recover from any interrupted atomic writes (power loss during rename)
+      recoverOrphanedTmpFiles();
     }
   #else
     // STM32duino LittleFS
@@ -2657,43 +2698,31 @@ static bool saveConfig(const ServerConfig &cfg) {
   dns.add(gStaticDns[3]);
 
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    // Mbed OS file operations
-    FILE *file = fopen("/fs/server_config.json", "w");
-    if (!file) {
-      Serial.println(F("Failed to open server config for write"));
-      return false;
-    }
-    
-    // Serialize to buffer first, then write
+    // Mbed OS — atomic write-to-temp-then-rename
     String jsonStr;
     size_t len = serializeJson(doc, jsonStr);
     if (len == 0) {
-      fclose(file);
       Serial.println(F("Failed to serialize server config"));
       return false;
     }
-    
-    size_t written = fwrite(jsonStr.c_str(), 1, jsonStr.length(), file);
-    fclose(file);
-    if (written != jsonStr.length()) {
-      Serial.println(F("Failed to write server config (incomplete)"));
+    if (!tankalarm_posix_write_file_atomic("/fs/server_config.json",
+                                            jsonStr.c_str(), jsonStr.length())) {
+      Serial.println(F("Failed to write server config"));
       return false;
     }
     return true;
   #else
-    File file = LittleFS.open(SERVER_CONFIG_PATH, "w");
-    if (!file) {
-      Serial.println(F("Failed to open server config for write"));
-      return false;
-    }
-
-    if (serializeJson(doc, file) == 0) {
-      file.close();
+    String jsonStr;
+    size_t len = serializeJson(doc, jsonStr);
+    if (len == 0) {
       Serial.println(F("Failed to serialize server config"));
       return false;
     }
-
-    file.close();
+    if (!tankalarm_littlefs_write_file_atomic(SERVER_CONFIG_PATH,
+            (const uint8_t *)jsonStr.c_str(), jsonStr.length())) {
+      Serial.println(F("Failed to write server config"));
+      return false;
+    }
     return true;
   #endif
 #else
@@ -2760,34 +2789,21 @@ static bool saveServerHeartbeatEpoch(double epoch) {
       return false;
     }
 
-    FILE *file = fopen("/fs/server_heartbeat.json", "w");
-    if (!file) {
-      return false;
-    }
-
     String jsonStr;
     size_t len = serializeJson(doc, jsonStr);
     if (len == 0) {
-      fclose(file);
       return false;
     }
-
-    size_t written = fwrite(jsonStr.c_str(), 1, jsonStr.length(), file);
-    fclose(file);
-    return written == jsonStr.length();
+    return tankalarm_posix_write_file_atomic("/fs/server_heartbeat.json",
+                                              jsonStr.c_str(), jsonStr.length());
   #else
-    File file = LittleFS.open(SERVER_HEARTBEAT_PATH, "w");
-    if (!file) {
+    String jsonStr;
+    size_t len = serializeJson(doc, jsonStr);
+    if (len == 0) {
       return false;
     }
-
-    if (serializeJson(doc, file) == 0) {
-      file.close();
-      return false;
-    }
-
-    file.close();
-    return true;
+    return tankalarm_littlefs_write_file_atomic(SERVER_HEARTBEAT_PATH,
+            (const uint8_t *)jsonStr.c_str(), jsonStr.length());
   #endif
 #else
   return false;
@@ -2892,21 +2908,9 @@ static bool writeBufferToFile(const char *relativePath, const uint8_t *data, siz
   buildLocalPath(relativePath, fullPath, sizeof(fullPath));
 
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  FILE *file = fopen(fullPath, "wb");
-  if (!file) {
-    return false;
-  }
-  size_t written = fwrite(data, 1, len, file);
-  fclose(file);
-  return written == len;
+  return tankalarm_posix_write_file_atomic(fullPath, (const char *)data, len);
 #else
-  File file = LittleFS.open(fullPath, "w");
-  if (!file) {
-    return false;
-  }
-  size_t written = file.write(data, len);
-  file.close();
-  return written == len;
+  return tankalarm_littlefs_write_file_atomic(fullPath, data, len);
 #endif
 #endif
 }
@@ -3534,23 +3538,9 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
     return true;
   }
 
-  // Open cache file for writing (truncate)
-#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  FILE *cacheFile = fopen("/fs/client_config_cache.txt", "w");
-  if (!cacheFile) {
-      snprintf(error, errorSize, "Failed to open cache file");
-      return false;
-  }
-#else
-  if (LittleFS.exists(CLIENT_CONFIG_CACHE_PATH)) {
-      LittleFS.remove(CLIENT_CONFIG_CACHE_PATH);
-  }
-  File cacheFile = LittleFS.open(CLIENT_CONFIG_CACHE_PATH, "w");
-  if (!cacheFile) {
-      snprintf(error, errorSize, "Failed to open cache file");
-      return false;
-  }
-#endif
+  // Accumulate cache content into a String, then write atomically
+  String cacheContent;
+  cacheContent.reserve(2048);
 
   // Parse manifest lines: uid \t site
   char *lineStart = manifest;
@@ -3598,14 +3588,10 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
             while(cEnd >= cStart && isspace(*cEnd)) *cEnd-- = 0;
             
             if (strlen(cStart) > 0) {
-#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-                fprintf(cacheFile, "%s\t%s\n", uid, cStart);
-#else
-                cacheFile.print(uid);
-                cacheFile.print('\t');
-                cacheFile.print(cStart);
-                cacheFile.print('\n');
-#endif
+                cacheContent += uid;
+                cacheContent += '\t';
+                cacheContent += cStart;
+                cacheContent += '\n';
                 restoredFiles++;
                 Serial.print(F("FTP restore client config: "));
                 Serial.println(remotePath);
@@ -3618,10 +3604,19 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
     lineStart = lineEnd + 1;
   }
   
+  // Write accumulated cache content atomically
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  fclose(cacheFile);
+  if (!tankalarm_posix_write_file_atomic("/fs/client_config_cache.txt",
+                                          cacheContent.c_str(), cacheContent.length())) {
+    snprintf(error, errorSize, "Failed to write cache file");
+    return false;
+  }
 #else
-  cacheFile.close();
+  if (!tankalarm_littlefs_write_file_atomic(CLIENT_CONFIG_CACHE_PATH,
+          (const uint8_t *)cacheContent.c_str(), cacheContent.length())) {
+    snprintf(error, errorSize, "Failed to write cache file");
+    return false;
+  }
 #endif
   return true;
 }
@@ -4168,25 +4163,21 @@ static void saveHistorySettings() {
     String output;
     serializeJson(doc, output);
     
-    FILE *file = fopen("/fs/history_settings.json", "w");
-    if (file) {
-      size_t expected = output.length();
-      size_t written = fwrite(output.c_str(), 1, expected, file);
-      fclose(file);
-      if (written != expected) {
-        // Remove potentially corrupted partial file
-        remove("/fs/history_settings.json");
-      }
+    if (!tankalarm_posix_write_file_atomic("/fs/history_settings.json",
+                                            output.c_str(), output.length())) {
+      Serial.println(F("Failed to write history settings"));
     }
   #else
-    File f = LittleFS.open("/history_settings.json", "w");
-    if (!f) return;
-    
     JsonDocument doc;
     populateHistorySettingsJson(doc);
     
-    serializeJson(doc, f);
-    f.close();
+    String output;
+    serializeJson(doc, output);
+    
+    if (!tankalarm_littlefs_write_file_atomic("/history_settings.json",
+            (const uint8_t *)output.c_str(), output.length())) {
+      Serial.println(F("Failed to write history settings"));
+    }
   #endif
 #endif
 }
@@ -8001,50 +7992,56 @@ static void saveClientConfigSnapshots() {
       return;
     }
     
-    FILE *file = fopen("/fs/client_config_cache.txt", "w");
-    if (!file) {
+    // Accumulate output into a buffer first, then write atomically.
+    // Each line: uid(32) + tab + payload(~512) + tab + flag(1) + tab
+    //            + version(16) + tab + epoch(12) + tab + status(16) + newline
+    // ≈ 600 bytes per entry. Reserve generously.
+    const size_t bufSize = (size_t)gClientConfigCount * 640 + 64;
+    char *buf = (char *)malloc(bufSize);
+    if (!buf) {
+      Serial.println(F("ERROR: Cannot allocate config cache buffer"));
       return;
     }
 
+    size_t pos = 0;
     for (uint8_t i = 0; i < gClientConfigCount; ++i) {
       // Format: uid\tpayload\tpendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus
-      if (fprintf(file, "%s\t%s\t%d\t%s\t%.0f\t%s\n",
-                  gClientConfigs[i].uid,
-                  gClientConfigs[i].payload,
-                  gClientConfigs[i].pendingDispatch ? 1 : 0,
-                  gClientConfigs[i].configVersion,
-                  gClientConfigs[i].lastAckEpoch,
-                  gClientConfigs[i].lastAckStatus) < 0) {
-        Serial.println(F("Failed to write client config cache"));
-        fclose(file);
-        remove("/fs/client_config_cache.txt");
-        return;
+      int n = snprintf(buf + pos, bufSize - pos, "%s\t%s\t%d\t%s\t%.0f\t%s\n",
+                       gClientConfigs[i].uid,
+                       gClientConfigs[i].payload,
+                       gClientConfigs[i].pendingDispatch ? 1 : 0,
+                       gClientConfigs[i].configVersion,
+                       gClientConfigs[i].lastAckEpoch,
+                       gClientConfigs[i].lastAckStatus);
+      if (n < 0 || pos + (size_t)n >= bufSize) {
+        Serial.println(F("Config cache buffer overflow"));
+        break;
       }
+      pos += (size_t)n;
     }
 
-    fclose(file);
+    if (!tankalarm_posix_write_file_atomic("/fs/client_config_cache.txt", buf, pos)) {
+      Serial.println(F("Failed to write client config cache"));
+    }
+    free(buf);
   #else
-    File file = LittleFS.open(CLIENT_CONFIG_CACHE_PATH, "w");
-    if (!file) {
-      return;
-    }
-
+    // LittleFS branch: accumulate into String, then atomic write
+    String output;
+    output.reserve(gClientConfigCount * 640);
     for (uint8_t i = 0; i < gClientConfigCount; ++i) {
       // Format: uid\tpayload\tpendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus
-      file.print(gClientConfigs[i].uid);
-      file.print('\t');
-      file.print(gClientConfigs[i].payload);
-      file.print('\t');
-      file.print(gClientConfigs[i].pendingDispatch ? 1 : 0);
-      file.print('\t');
-      file.print(gClientConfigs[i].configVersion);
-      file.print('\t');
-      file.print((unsigned long)gClientConfigs[i].lastAckEpoch);
-      file.print('\t');
-      file.println(gClientConfigs[i].lastAckStatus);
+      char line[640];
+      snprintf(line, sizeof(line), "%s\t%s\t%d\t%s\t%lu\t%s\n",
+               gClientConfigs[i].uid,
+               gClientConfigs[i].payload,
+               gClientConfigs[i].pendingDispatch ? 1 : 0,
+               gClientConfigs[i].configVersion,
+               (unsigned long)gClientConfigs[i].lastAckEpoch,
+               gClientConfigs[i].lastAckStatus);
+      output += line;
     }
-
-    file.close();
+    tankalarm_littlefs_write_file_atomic(CLIENT_CONFIG_CACHE_PATH,
+            (const uint8_t *)output.c_str(), output.length());
   #endif
 #endif
 }
@@ -8580,21 +8577,11 @@ static bool saveContactsConfig(const JsonDocument &doc) {
 
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     if (!mbedFS) return false;
-    FILE *file = fopen("/fs/contacts_config.json", "w");
-    if (!file) {
-      return false;
-    }
-    size_t written = fwrite(output.c_str(), 1, output.length(), file);
-    fclose(file);
-    return written == output.length();
+    return tankalarm_posix_write_file_atomic("/fs/contacts_config.json",
+                                              output.c_str(), output.length());
   #else
-    File file = LittleFS.open(CONTACTS_CONFIG_PATH, "w");
-    if (!file) {
-      return false;
-    }
-    size_t written = file.print(output);
-    file.close();
-    return written == output.length();
+    return tankalarm_littlefs_write_file_atomic(CONTACTS_CONFIG_PATH,
+            (const uint8_t *)output.c_str(), output.length());
   #endif
 #else
   return false;
@@ -8821,22 +8808,14 @@ static bool saveEmailFormat(const JsonDocument &doc) {
   String output;
   serializeJson(doc, output);
   
-  FILE *file = fopen("/fs/email_format.json", "w");
-  if (!file) {
-    return false;
-  }
-  size_t expected = output.length();
-  size_t written = fwrite(output.c_str(), 1, expected, file);
-  fclose(file);
-  return written == expected;
+  return tankalarm_posix_write_file_atomic("/fs/email_format.json",
+                                            output.c_str(), output.length());
 #else
-  File file = LittleFS.open(EMAIL_FORMAT_PATH, "w");
-  if (!file) {
-    return false;
-  }
-  serializeJson(doc, file);
-  file.close();
-  return true;
+  String output;
+  serializeJson(doc, output);
+  
+  return tankalarm_littlefs_write_file_atomic(EMAIL_FORMAT_PATH,
+          (const uint8_t *)output.c_str(), output.length());
 #endif
 }
 
@@ -9660,50 +9639,38 @@ static void loadCalibrationData() {
 static void saveCalibrationData() {
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    FILE *file = fopen("/fs/calibration_data.txt", "w");
-    if (!file) return;
-    
+    // Accumulate into String, then atomic write (~80 bytes/line)
+    String output;
+    output.reserve(gTankCalibrationCount * 100);
     for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
       TankCalibration &cal = gTankCalibrations[i];
       // Format: uid\ttank\tslope\toffset\trSquared\tentryCount\thasLearned\tlastEpoch\ttempCoef\thasTempComp\ttempEntryCount
-      fprintf(file, "%s\t%d\t%.6f\t%.2f\t%.4f\t%d\t%d\t%.0f\t%.6f\t%d\t%d\n",
-              cal.clientUid, cal.tankNumber, cal.learnedSlope, cal.learnedOffset,
-              cal.rSquared, cal.entryCount, cal.hasLearnedCalibration ? 1 : 0,
-              cal.lastCalibrationEpoch, cal.learnedTempCoef, 
-              cal.hasTempCompensation ? 1 : 0, cal.tempEntryCount);
+      char line[128];
+      snprintf(line, sizeof(line), "%s\t%d\t%.6f\t%.2f\t%.4f\t%d\t%d\t%.0f\t%.6f\t%d\t%d\n",
+               cal.clientUid, cal.tankNumber, cal.learnedSlope, cal.learnedOffset,
+               cal.rSquared, cal.entryCount, cal.hasLearnedCalibration ? 1 : 0,
+               cal.lastCalibrationEpoch, cal.learnedTempCoef,
+               cal.hasTempCompensation ? 1 : 0, cal.tempEntryCount);
+      output += line;
     }
-    
-    fclose(file);
+    tankalarm_posix_write_file_atomic("/fs/calibration_data.txt",
+                                      output.c_str(), output.length());
   #else
-    File file = LittleFS.open("/calibration_data.txt", "w");
-    if (!file) return;
-    
+    // LittleFS branch: accumulate into String, then atomic write
+    String output;
+    output.reserve(gTankCalibrationCount * 100);
     for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
       TankCalibration &cal = gTankCalibrations[i];
-      file.print(cal.clientUid);
-      file.print('\t');
-      file.print(cal.tankNumber);
-      file.print('\t');
-      file.print(cal.learnedSlope, 6);
-      file.print('\t');
-      file.print(cal.learnedOffset, 2);
-      file.print('\t');
-      file.print(cal.rSquared, 4);
-      file.print('\t');
-      file.print(cal.entryCount);
-      file.print('\t');
-      file.print(cal.hasLearnedCalibration ? 1 : 0);
-      file.print('\t');
-      file.print(cal.lastCalibrationEpoch, 0);
-      file.print('\t');
-      file.print(cal.learnedTempCoef, 6);
-      file.print('\t');
-      file.print(cal.hasTempCompensation ? 1 : 0);
-      file.print('\t');
-      file.println(cal.tempEntryCount);
+      char line[128];
+      snprintf(line, sizeof(line), "%s\t%d\t%.6f\t%.2f\t%.4f\t%d\t%d\t%.0f\t%.6f\t%d\t%d\n",
+               cal.clientUid, cal.tankNumber, cal.learnedSlope, cal.learnedOffset,
+               cal.rSquared, cal.entryCount, cal.hasLearnedCalibration ? 1 : 0,
+               cal.lastCalibrationEpoch, cal.learnedTempCoef,
+               cal.hasTempCompensation ? 1 : 0, cal.tempEntryCount);
+      output += line;
     }
-    
-    file.close();
+    tankalarm_littlefs_write_file_atomic("/calibration_data.txt",
+            (const uint8_t *)output.c_str(), output.length());
   #endif
 #endif
 }
@@ -10113,14 +10080,18 @@ static void handleCalibrationDelete(EthernetClient &client, const String &body) 
       fclose(file);
     }
     
-    // Rewrite the file without the deleted entries
+    // Rewrite the file without the deleted entries — atomic write
     if (removedCount > 0) {
-      file = fopen("/fs/calibration_log.txt", "w");
-      if (file) {
-        for (size_t i = 0; i < keepEntries.size(); i++) {
-          fprintf(file, "%s\n", keepEntries[i].c_str());
-        }
-        fclose(file);
+      String output;
+      output.reserve(keepEntries.size() * 128);
+      for (size_t i = 0; i < keepEntries.size(); i++) {
+        output += keepEntries[i];
+        output += '\n';
+      }
+      if (!tankalarm_posix_write_file_atomic("/fs/calibration_log.txt",
+                                              output.c_str(), output.length())) {
+        Serial.println(F("Failed to rewrite calibration log"));
+      } else {
         Serial.print(F("Removed "));
         Serial.print(removedCount);
         Serial.println(F(" calibration log entries"));
@@ -10162,12 +10133,17 @@ static void handleCalibrationDelete(EthernetClient &client, const String &body) 
       }
       
       if (removedCount > 0) {
-        File outFile = LittleFS.open(CALIBRATION_LOG_PATH, "w");
-        if (outFile) {
-          for (size_t i = 0; i < keepEntries.size(); i++) {
-            outFile.println(keepEntries[i]);
-          }
-          outFile.close();
+        // Accumulate into String, then atomic write
+        String output;
+        output.reserve(keepEntries.size() * 128);
+        for (size_t i = 0; i < keepEntries.size(); i++) {
+          output += keepEntries[i];
+          output += '\n';
+        }
+        if (!tankalarm_littlefs_write_file_atomic(CALIBRATION_LOG_PATH,
+                (const uint8_t *)output.c_str(), output.length())) {
+          Serial.println(F("Failed to rewrite calibration log"));
+        } else {
           Serial.print(F("Removed "));
           Serial.print(removedCount);
           Serial.println(F(" calibration log entries"));

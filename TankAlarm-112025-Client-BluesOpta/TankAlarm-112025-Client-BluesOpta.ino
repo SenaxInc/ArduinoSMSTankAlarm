@@ -1112,6 +1112,49 @@ static float getMonitorHeight(const MonitorConfig &cfg) {
   return 0.0f;
 }
 
+/**
+ * Recover from interrupted atomic writes at boot.
+ * Called once during initializeStorage() after filesystem mount.
+ *
+ * If a .tmp file exists but the target does NOT, the rename failed
+ * after a write completed — complete the rename now.
+ * If BOTH exist, the original is still valid — delete stale .tmp.
+ */
+#ifdef POSIX_FILE_IO_AVAILABLE
+static void recoverOrphanedTmpFiles() {
+  static const char * const criticalFiles[] = {
+    "/fs/client_config.json",
+    "/fs/pending_notes.log",
+    nullptr
+  };
+
+  for (int i = 0; criticalFiles[i] != nullptr; ++i) {
+    char tmpPath[256];
+    snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", criticalFiles[i]);
+
+    if (tankalarm_posix_file_exists(tmpPath)) {
+      if (!tankalarm_posix_file_exists(criticalFiles[i])) {
+        // Target missing + tmp exists → rename was interrupted; complete it
+        if (rename(tmpPath, criticalFiles[i]) == 0) {
+          Serial.print(F("Recovered config from .tmp: "));
+          Serial.println(criticalFiles[i]);
+        } else {
+          Serial.print(F("ERROR: Could not recover: "));
+          Serial.println(criticalFiles[i]);
+        }
+      } else {
+        // Both exist → original is valid; clean up stale tmp
+        remove(tmpPath);
+        #ifdef DEBUG_MODE
+        Serial.print(F("Cleaned stale .tmp: "));
+        Serial.println(tmpPath);
+        #endif
+      }
+    }
+  }
+}
+#endif // POSIX_FILE_IO_AVAILABLE
+
 static void initializeStorage() {
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -1139,6 +1182,8 @@ static void initializeStorage() {
     }
     gStorageAvailable = true;
     Serial.println(F("Mbed OS LittleFileSystem initialized"));
+    // Recover from any interrupted atomic writes (power loss during rename)
+    recoverOrphanedTmpFiles();
   #else
     // STM32duino LittleFS
     if (!LittleFS.begin()) {
@@ -1736,43 +1781,31 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   }
 
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    // Mbed OS file operations
-    FILE *file = fopen("/fs/client_config.json", "w");
-    if (!file) {
-      Serial.println(F("Failed to open config for writing"));
-      return false;
-    }
-    
-    // Serialize to buffer first, then write
+    // Mbed OS — atomic write-to-temp-then-rename
     String jsonStr;
     size_t len = serializeJson(doc, jsonStr);
     if (len == 0) {
-      fclose(file);
       Serial.println(F("Failed to serialize config"));
       return false;
     }
-    
-    size_t written = fwrite(jsonStr.c_str(), 1, jsonStr.length(), file);
-    fclose(file);
-    if (written != jsonStr.length()) {
-      Serial.println(F("Failed to write config (incomplete)"));
+    if (!tankalarm_posix_write_file_atomic("/fs/client_config.json",
+                                            jsonStr.c_str(), jsonStr.length())) {
+      Serial.println(F("Failed to write config"));
       return false;
     }
     return true;
   #else
-    File file = LittleFS.open(CLIENT_CONFIG_PATH, "w");
-    if (!file) {
-      Serial.println(F("Failed to open config for writing"));
-      return false;
-    }
-
-    if (serializeJson(doc, file) == 0) {
-      file.close();
+    String jsonStr;
+    size_t len = serializeJson(doc, jsonStr);
+    if (len == 0) {
       Serial.println(F("Failed to serialize config"));
       return false;
     }
-
-    file.close();
+    if (!tankalarm_littlefs_write_file_atomic(CLIENT_CONFIG_PATH,
+            (const uint8_t *)jsonStr.c_str(), jsonStr.length())) {
+      Serial.println(F("Failed to write config"));
+      return false;
+    }
     return true;
   #endif
 #else
@@ -4656,9 +4689,13 @@ static void flushBufferedNotes() {
     fclose(tmp);
     
     if (wroteFailures) {
-      remove("/fs/pending_notes.log");
-      rename("/fs/pending_notes.tmp", "/fs/pending_notes.log");
+      // Atomic rename — LittleFS handles overwrite; do NOT remove() first
+      if (rename("/fs/pending_notes.tmp", "/fs/pending_notes.log") != 0) {
+        Serial.println(F("WARNING: note buffer rename failed"));
+        // tmp file preserved for recovery; original .log may still exist
+      }
     } else {
+      // All notes sent successfully — remove both files
       remove("/fs/pending_notes.log");
       remove("/fs/pending_notes.tmp");
     }
@@ -4725,8 +4762,10 @@ static void flushBufferedNotes() {
     tmp.close();
 
     if (wroteFailures) {
-      LittleFS.remove(NOTE_BUFFER_PATH);
-      LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
+      // Atomic rename — LittleFS handles overwrite; do NOT remove() first
+      if (!LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH)) {
+        Serial.println(F("WARNING: note buffer rename failed"));
+      }
     } else {
       LittleFS.remove(NOTE_BUFFER_PATH);
       LittleFS.remove(NOTE_BUFFER_TEMP_PATH);
@@ -4801,9 +4840,13 @@ static void pruneNoteBufferIfNeeded() {
       Serial.println(F("Failed to copy note buffer"));
       return;
     }
-    remove("/fs/pending_notes.log");
-    rename("/fs/pending_notes.tmp", "/fs/pending_notes.log");
-    Serial.println(F("Note buffer pruned"));
+    // Atomic rename — LittleFS handles overwrite; do NOT remove() first
+    if (rename("/fs/pending_notes.tmp", "/fs/pending_notes.log") != 0) {
+      Serial.println(F("WARNING: note prune rename failed"));
+      // tmp preserved for recovery; original was not removed
+    } else {
+      Serial.println(F("Note buffer pruned"));
+    }
   #else
     if (!LittleFS.exists(NOTE_BUFFER_PATH)) {
       return;
@@ -4848,9 +4891,12 @@ static void pruneNoteBufferIfNeeded() {
 
     file.close();
     tmp.close();
-    LittleFS.remove(NOTE_BUFFER_PATH);
-    LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH);
-    Serial.println(F("Note buffer pruned"));
+    // Atomic rename — LittleFS handles overwrite; do NOT remove() first
+    if (!LittleFS.rename(NOTE_BUFFER_TEMP_PATH, NOTE_BUFFER_PATH)) {
+      Serial.println(F("WARNING: note prune rename failed"));
+    } else {
+      Serial.println(F("Note buffer pruned"));
+    }
   #endif
 #endif
 }

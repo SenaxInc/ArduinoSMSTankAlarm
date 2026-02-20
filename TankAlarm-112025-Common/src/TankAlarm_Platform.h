@@ -147,6 +147,125 @@ static inline void tankalarm_posix_log_error(const char *operation, const char *
 #endif
 }
 
+/**
+ * Atomic file write using write-to-temp-then-rename pattern.
+ * Prevents data loss if power fails during a save operation.
+ *
+ * On LittleFS (Mbed OS), rename() atomically replaces the target file.
+ * If power fails during fwrite(), the original file is untouched.
+ * If power fails during rename(), LittleFS recovers to old or new state.
+ *
+ * Binary-safe: opens temp file in "wb" mode.  Text callers can pass
+ * string bytes directly — the only difference on this platform is that
+ * no newline translation occurs (LittleFS has none anyway).
+ *
+ * @param path   Target file path (e.g., "/fs/server_config.json")
+ * @param data   Data buffer to write (text or binary)
+ * @param len    Number of bytes to write
+ * @return true on success, false on any error (original file preserved)
+ */
+static inline bool tankalarm_posix_write_file_atomic(const char *path,
+                                                      const char *data,
+                                                      size_t len)
+{
+    // Build temp path: append ".tmp" suffix
+    size_t pathLen = strlen(path);
+    if (pathLen == 0 || pathLen > 250) {  // 250 + 4 (.tmp) + 1 (null) = 255
+        Serial.println(F("atomic write: path too long or empty"));
+        return false;
+    }
+    char tmpPath[256];
+    memcpy(tmpPath, path, pathLen);
+    memcpy(tmpPath + pathLen, ".tmp", 5);  // includes null terminator
+
+    // Step 1: Write data to temporary file
+    FILE *fp = fopen(tmpPath, "wb");
+    if (!fp) {
+        tankalarm_posix_log_error("atomic:fopen", tmpPath);
+        Serial.print(F("atomic write failed (fopen): "));
+        Serial.println(path);
+        return false;
+    }
+
+    size_t written = fwrite(data, 1, len, fp);
+    int writeErr = ferror(fp);
+
+    // fclose() on Mbed OS flushes all buffers and syncs to storage.
+    // No separate fsync() needed on this platform.
+    fclose(fp);
+
+    if (writeErr || written != len) {
+        tankalarm_posix_log_error("atomic:fwrite", tmpPath);
+        Serial.print(F("atomic write failed (fwrite): "));
+        Serial.println(path);
+        remove(tmpPath);  // Clean up partial temp file to free flash space
+        return false;
+    }
+
+    // Step 2: Atomic rename — replaces target in one operation.
+    // LittleFS rename() atomically handles overwriting an existing target.
+    // Do NOT call remove(path) first — that creates a data-loss window.
+    if (rename(tmpPath, path) != 0) {
+        tankalarm_posix_log_error("atomic:rename", path);
+        Serial.print(F("atomic write failed (rename): "));
+        Serial.println(path);
+        // Leave tmpPath on disk — recovery code can complete the rename on boot.
+        return false;
+    }
+
+    return true;
+}
+
 #endif // TANKALARM_POSIX_FILE_IO_AVAILABLE
+
+// ============================================================================
+// LittleFS Atomic File Write (non-POSIX STM32duino builds)
+// ============================================================================
+#if defined(TANKALARM_FILESYSTEM_AVAILABLE) && !defined(TANKALARM_POSIX_FILE_IO_AVAILABLE)
+
+/**
+ * Atomic file write for Arduino LittleFS (STM32duino).
+ * Same write-to-temp-then-rename pattern as the POSIX version.
+ *
+ * @param path   Target file path (e.g., "/client_config.json")
+ * @param data   Data buffer to write
+ * @param len    Number of bytes to write
+ * @return true on success, false on any error (original file preserved)
+ */
+static bool tankalarm_littlefs_write_file_atomic(const char *path,
+                                                  const uint8_t *data,
+                                                  size_t len)
+{
+    String tmpPath = String(path) + ".tmp";
+
+    File tmp = LittleFS.open(tmpPath.c_str(), "w");
+    if (!tmp) {
+        Serial.print(F("atomic write failed (open): "));
+        Serial.println(path);
+        return false;
+    }
+
+    size_t written = tmp.write(data, len);
+    tmp.close();
+
+    if (written != len) {
+        Serial.print(F("atomic write failed (write): "));
+        Serial.println(path);
+        LittleFS.remove(tmpPath.c_str());
+        return false;
+    }
+
+    // LittleFS.rename() atomically overwrites existing target on STM32.
+    // Do NOT call LittleFS.remove(path) first.
+    if (!LittleFS.rename(tmpPath.c_str(), path)) {
+        Serial.print(F("atomic write failed (rename): "));
+        Serial.println(path);
+        return false;
+    }
+
+    return true;
+}
+
+#endif // TANKALARM_FILESYSTEM_AVAILABLE && !TANKALARM_POSIX_FILE_IO_AVAILABLE
 
 #endif // TANKALARM_PLATFORM_H
