@@ -786,7 +786,7 @@ if (abs(sensor1 - sensor2) < 2.0) {  // Within 2 inches
 - [Sensor Calibration Guide](SENSOR_CALIBRATION_GUIDE.md) - Ensure accurate readings
 - [Advanced Configuration Guide](ADVANCED_CONFIGURATION_GUIDE.md) - Complex setups
 - [Dashboard Guide](DASHBOARD_GUIDE.md) - Viewing unload history
-- [API Guide](INTEGRATION_API_GUIDE.md) - Automated data export
+- [Dashboard Guide](DASHBOARD_GUIDE.md) - Viewing data on the server web UI
 
 ### External References
 
@@ -795,5 +795,5 @@ if (abs(sensor1 - sensor2) < 2.0) {  // Within 2 inches
 
 ---
 
-*Unload Tracking Guide v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Firmware 1.0.0+*
+*Unload Tracking Guide v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Firmware 1.1.1+*

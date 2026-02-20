@@ -456,9 +456,9 @@ CONFIG:{
 **2. Restore Network Configuration**
 
 ```cpp
-// server_config.h
+// ServerConfig.h (optional — create in server sketch folder)
 
-const char* SERVER_PRODUCT_UID = "com.company.tankalarm:production";
+#define DEFAULT_SERVER_PRODUCT_UID "com.company.tankalarm:production"
 
 // Static IP (if used)
 #define USE_STATIC_IP true
@@ -943,5 +943,5 @@ After change complete:
 
 ---
 
-*Backup and Recovery Guide v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Firmware 1.0.0+*
+*Backup and Recovery Guide v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Firmware 1.1.1+*

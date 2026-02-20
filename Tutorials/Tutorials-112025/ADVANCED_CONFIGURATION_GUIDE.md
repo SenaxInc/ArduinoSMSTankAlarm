@@ -357,56 +357,49 @@ Normal mode: Sample every 30 min
 **Default Settings:**
 
 ```cpp
-// In TankAlarm-112025-Common/Watchdog.h
+// In TankAlarm-112025-Common/src/TankAlarm_Common.h
+#define WATCHDOG_TIMEOUT_SECONDS 30  // 30-second hardware watchdog
 
-#define WATCHDOG_ENABLED true
-#define WATCHDOG_TIMEOUT_MS 60000  // 60 seconds
-#define WATCHDOG_EARLY_WARNING_MS 50000  // 50 sec warning
+// In TankAlarm-112025-Common/src/TankAlarm_Platform.h
+// TANKALARM_WATCHDOG_AVAILABLE is auto-detected based on platform:
+//   - Arduino Opta / Mbed OS: uses mbed::Watchdog (MbedWatchdogHelper class)
+//   - STM32 (non-Mbed): uses IWatchdog library
 ```
 
-**Advanced Tuning:**
+**Customizing Timeout:**
 
-```json
-{
-  "watchdog": {
-    "enabled": true,
-    "timeoutSeconds": 120,        // 2 min for slower operations
-    "earlyWarningSeconds": 100,   // Warning before timeout
-    "resetOnHang": true,          // Auto-reset if hung
-    "maxConsecutiveResets": 3,    // Prevent boot loop
-    "notifyOnReset": true         // Send SMS if watchdog triggered
-  }
-}
-```
-
-**Monitoring:**
+To override the default 30-second timeout, define `WATCHDOG_TIMEOUT_SECONDS` before including the common header:
 
 ```cpp
-// In loop()
-void loop() {
-  watchdog.feed();  // Reset timer
-  
-  // Long operation
-  if (doSlowTask()) {
-    watchdog.feed();  // Feed again mid-task
-  }
-  
-  // Check for warnings
-  if (watchdog.nearTimeout()) {
-    Serial.println("WARNING: Watchdog approaching timeout!");
-    skipNonCriticalTasks();
-  }
-}
+// In your .ino file (before #include "TankAlarm_Common.h")
+#define WATCHDOG_TIMEOUT_SECONDS 60  // Override: 60 seconds
+```
+
+**Platform-Agnostic Macros:**
+
+The firmware provides macros that work on both Mbed and STM32 platforms:
+
+```cpp
+// In loop() — the firmware calls these automatically
+TANKALARM_WATCHDOG_KICK(mbedWatchdog);   // Reset the watchdog timer
+TANKALARM_WATCHDOG_START(mbedWatchdog, timeoutMs);  // Start watchdog
+```
+
+**Actual usage in firmware:**
+
+```cpp
+// In loop() and during long operations (FTP transfers, etc.)
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  mbedWatchdog.kick();  // Reset timer during lengthy operations
+#endif
 ```
 
 **Diagnostic Logging:**
 
 ```
-[10:30:00] Watchdog fed (45s remaining)
-[10:30:55] WARNING: Watchdog approaching timeout
+[10:30:00] Watchdog started (30000ms timeout)
 [10:31:00] ERROR: Watchdog timeout! Resetting...
 [10:31:05] System restarted (watchdog reset)
-[10:31:05] Sent SMS: "Device reset due to hang"
 ```
 
 ### Task Scheduling Optimization
@@ -1134,5 +1127,5 @@ diff intended.json actual.json
 
 ---
 
-*Advanced Configuration Guide v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Firmware 1.0.0+*
+*Advanced Configuration Guide v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Firmware 1.1.1+*

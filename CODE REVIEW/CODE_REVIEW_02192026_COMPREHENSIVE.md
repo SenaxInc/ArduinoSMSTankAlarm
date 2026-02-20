@@ -3,7 +3,7 @@
 **Reviewer:** GitHub Copilot (GPT-5.3-Codex)  
 **Repository:** SenaxInc/ArduinoSMSTankAlarm  
 **Scope:** Active 112025 code paths (`Server`, `Client`, `Viewer`, `Common`)  
-**Version Reviewed:** 1.1.0
+**Version Reviewed:** 1.1.1
 
 ---
 

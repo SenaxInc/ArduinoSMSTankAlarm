@@ -165,20 +165,16 @@ Copy the entire `TankAlarm-112025-Common/` folder to your Arduino libraries fold
 
 #### 2.4 Configure Server Firmware
 
-Find and edit these lines in `server_config.h`:
+Optionally create a `ServerConfig.h` file in the server sketch folder to set a compile-time Product UID default:
 
 ```cpp
 // === REQUIRED: Product UID ===
-const char* SERVER_PRODUCT_UID = "com.company.tankalarm:quickstart";  // ← YOUR PRODUCT UID
-
-// === OPTIONAL: Network Settings ===
-// For quick start, leave DHCP enabled (default)
-#define USE_STATIC_IP false
+#define DEFAULT_SERVER_PRODUCT_UID "com.company.tankalarm:quickstart"  // ← YOUR PRODUCT UID
 ```
 
-**That's it!** Everything else uses safe defaults.
+> If you skip this step, you can set the Product UID later through the web dashboard at **Server Settings** → **Blues Notehub** → **Product UID**.
 
-> 💡 **Tip**: You can also configure or change the Product UID later through the web dashboard at **Server Settings** → **Blues Notehub** → **Product UID**. This is useful if you need to move the device to a different Notehub project without reflashing.
+> ⚙️ **Optional network settings** can also be placed in `ServerConfig.h`. For quick start, leave DHCP enabled (default).
 
 > ⚠️ **Important**: The Product UID must be **identical** on both the server and all client devices. When using the Config Generator to create client configurations, the Product UID is automatically filled in from the server settings to ensure they match.
 
@@ -230,17 +226,16 @@ Notecard: Blues Notecarrier-F connected to Opta expansion port
 
 #### 3.2 Configure Client Firmware
 
-Edit `config_template.h` (or create `config.h` from template):
+The default Product UID is defined in the `.ino` file. Find and update it:
 
 ```cpp
 // === REQUIRED: Product UID ===
-#define PRODUCT_UID "com.company.tankalarm:quickstart"  // ← SAME as server
-
-// === REQUIRED: Server Fleet ===
-#define SERVER_FLEET "tankalarm-server"  // ← Must match Notehub fleet name
+#define DEFAULT_PRODUCT_UID "com.company.tankalarm:quickstart"  // ← SAME as server
 ```
 
-> ⚠️ **Critical**: The `PRODUCT_UID` must be **exactly the same** as the server's Product UID. If they don't match, the client and server will not be able to communicate. You can verify the server's Product UID in the web dashboard under **Server Settings** → **Blues Notehub**.
+> ⚠️ **Critical**: The `DEFAULT_PRODUCT_UID` must be **exactly the same** as the server's Product UID. If they don't match, the client and server will not be able to communicate. You can verify the server's Product UID in the web dashboard under **Server Settings** → **Blues Notehub**.
+
+> 💡 **Note**: The server fleet name (`tankalarm-server`) is configured at runtime via the server dashboard — no compile-time define is needed.
 
 **Note**: Tank configurations will be done via the server dashboard later.
 
@@ -535,7 +530,7 @@ Next sample: 1800 seconds
 
 **Solutions:**
 - Verify Product UID matches server
-- Check SERVER_FLEET = "tankalarm-server"
+- Verify device is assigned to `tankalarm-clients` fleet in Notehub
 - Force sample: press client reset button
 - Check Notehub Events for telemetry
 
@@ -738,12 +733,11 @@ Email: None (configure via dashboard)
 Project Root:
   ├── TankAlarm-112025-Client-BluesOpta/
   │   ├── TankAlarm-112025-Client-BluesOpta.ino (main sketch)
-  │   ├── config_template.h (settings template)
   │   └── ... (other files)
   │
   ├── TankAlarm-112025-Server-BluesOpta/
   │   ├── TankAlarm-112025-Server-BluesOpta.ino (main sketch)
-  │   ├── server_config.h (settings)
+  │   ├── ServerConfig.h (optional: compile-time defaults)
   │   └── ... (other files)
   │
   └── Tutorials/ (documentation)
@@ -869,11 +863,11 @@ A: Yes! Modify `html_content.h` in server firmware. See SERVER_INSTALLATION_GUID
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | Jan 2026 | Initial release for firmware v1.0.0 |
-| 1.1 | Feb 2026 | Updated for firmware v1.1.0: fleet architecture, relay forwarding, config ACK |
+| 1.1 | Feb 2026 | Updated for firmware v1.1.1: fleet architecture, relay forwarding, config ACK |
 
 ---
 
 *Quick Start Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Firmware 1.1.0+*
+*Compatible with TankAlarm Firmware 1.1.1+*
 
 **Ready to expand your deployment?** See the [Fleet Setup Guide](FLEET_SETUP_GUIDE.md) for multi-site installations.

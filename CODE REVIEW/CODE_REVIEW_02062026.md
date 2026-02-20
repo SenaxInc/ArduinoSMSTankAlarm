@@ -2,7 +2,7 @@
 
 **Reviewer:** GitHub Copilot (AI Agent)  
 **Repository:** SenaxInc/ArduinoSMSTankAlarm  
-**Version:** 1.0.1  
+**Version:** 1.1.1  
 **Scope:** Complete security and quality review of Client, Server, and Viewer components
 
 ---

@@ -233,7 +233,7 @@ The Blues Notecard DFU (Device Firmware Update) has been fully implemented for b
 
 Version is defined in `TankAlarm-112025-Common/src/TankAlarm_Common.h`:
 ```cpp
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.1.1"
 #define FIRMWARE_BUILD_DATE __DATE__
 ```
 
@@ -282,10 +282,10 @@ if (now - gLastDfuCheckMillis > DFU_CHECK_INTERVAL_MS) {
 Returns:
 ```json
 {
-  "currentVersion": "1.0.0",
+  "currentVersion": "1.1.1",
   "buildDate": "Jan  7 2026",
   "updateAvailable": true,
-  "availableVersion": "1.1.0",
+  "availableVersion": "1.1.1",
   "dfuInProgress": false
 }
 ```
@@ -329,7 +329,7 @@ The `.bin` file will be in your sketch folder.
 3. Click **Upload Firmware**
 4. Fill in the form:
    - **Type**: `stm32` (for Arduino Opta)
-   - **Version**: `1.1.0` (must match FIRMWARE_VERSION)
+   - **Version**: `1.1.1` (must match FIRMWARE_VERSION)
    - **Target**: Choose specific devices, fleets, or products
    - **Binary**: Upload your `.bin` file
 5. Click **Upload**
@@ -361,8 +361,8 @@ The `.bin` file will be in your sketch folder.
 **Via Serial Monitor:**
 ```
 ========================================
-FIRMWARE UPDATE AVAILABLE: v1.1.0
-Current version: 1.0.0
+FIRMWARE UPDATE AVAILABLE: v1.1.1
+Current version: 1.1.1
 Device will auto-update on next check
 ========================================
 ```

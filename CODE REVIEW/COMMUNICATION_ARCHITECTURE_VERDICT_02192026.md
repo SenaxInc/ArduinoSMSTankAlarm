@@ -556,7 +556,7 @@ The system supports multiple sensor types via the Opta's I/O and optional expans
 | `LittleFS` library | Built-in | Persistent storage on STM32 internal flash (Server node) |
 | `IWatchdog` library | Built-in | Hardware watchdog timer (30-second timeout) |
 
-**Firmware version:** `1.0.0` (defined in `TankAlarm_Common.h`)
+**Firmware version:** `1.1.1` (defined in `TankAlarm_Common.h`)
 
 #### Notecard Firmware
 

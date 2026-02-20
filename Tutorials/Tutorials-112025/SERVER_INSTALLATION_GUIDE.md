@@ -406,20 +406,22 @@ For permanent installations, configure a static IP:
 
 ### Update Product UID
 
-Before compiling, configure your Product UID:
+Before compiling, configure your Product UID. You can either:
 
-1. Open the main `.ino` file
-2. Find this line near the top:
+**Option A: Create `ServerConfig.h`** (recommended for fleet deployments):
+1. Create a new file named `ServerConfig.h` in the server sketch folder
+2. Add your Product UID:
    ```cpp
-   #define SERVER_PRODUCT_UID "com.your-company.your-product:your-project"
+   #define DEFAULT_SERVER_PRODUCT_UID "com.senax.tankalarm:production"
    ```
-3. Replace with **your Product UID** from Notehub:
-   ```cpp
-   #define SERVER_PRODUCT_UID "com.senax.tankalarm:production"
-   ```
-4. Save the file (Ctrl+S)
+3. Save the file
 
-**Critical**: Product UID must match exactly or Notecard communication will fail!
+**Option B: Set via web dashboard** (no recompile needed):
+1. Flash with defaults (Product UID left empty)
+2. Access the dashboard at `http://<server-ip>/`
+3. Go to **Server Settings** → **Blues Notehub** → **Product UID**
+
+**Critical**: Product UID must match exactly across all devices or Notecard communication will fail!
 
 ### Review Configuration Options
 
@@ -432,12 +434,12 @@ Optional customizations:
 // Dashboard auto-refresh interval (seconds)
 #define WEB_REFRESH_SECONDS 21600  // 6 hours
 
-// Watchdog timeout (seconds)
-#define WATCHDOG_TIMEOUT_SECONDS 600  // 10 minutes
-
-// Fleet names (must match Notehub)
-#define DEFAULT_CLIENT_FLEET "tankalarm-clients"
+// Watchdog timeout (seconds) — defined in TankAlarm_Common.h
+// Default: 30 seconds. Override before including common header if needed.
+// #define WATCHDOG_TIMEOUT_SECONDS 30
 ```
+
+> **Note**: Fleet names (`tankalarm-clients`, `tankalarm-server`, `tankalarm-viewer`) are configured at runtime via the web dashboard and Notehub — no compile-time defines are needed.
 
 ### Select Board and Port
 
@@ -527,7 +529,7 @@ Done compiling
 ### Expected Serial Output
 
 ```
-TankAlarm 112025 Server - Blues Opta v1.1.0 (Feb 20 2026)
+TankAlarm 112025 Server - Blues Opta v1.1.1 (Feb 20 2026)
 Initializing...
 LittleFS initialized (524288 bytes free)
 Loading configuration from /server_config.json
@@ -1292,7 +1294,7 @@ See [Firmware Update Guide](FIRMWARE_UPDATE_GUIDE.md) for details.
 - [Fleet Setup Guide](FLEET_SETUP_GUIDE.md)
 - [Firmware Update Guide](FIRMWARE_UPDATE_GUIDE.md)
 - [Quick Start Guide](QUICK_START_GUIDE.md)
-- [Historical Data Architecture](../TankAlarm-112025-Server-BluesOpta/HISTORICAL_DATA_ARCHITECTURE.md)
+- [Historical Data Architecture](../../TankAlarm-112025-Server-BluesOpta/HISTORICAL_DATA_ARCHITECTURE.md)
 
 ### Getting Help
 
@@ -1346,5 +1348,5 @@ After successful installation:
 
 ---
 
-*Server Installation Guide v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Server Firmware 1.0.0+*
+*Server Installation Guide v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Server Firmware 1.1.1+*

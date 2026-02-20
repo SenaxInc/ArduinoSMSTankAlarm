@@ -603,12 +603,11 @@ Total: 13 comprehensive guides (~111,500 words)
 Project Root/
 ├── TankAlarm-112025-Client-BluesOpta/
 │   ├── TankAlarm-112025-Client-BluesOpta.ino
-│   ├── config_template.h
 │   └── ... (supporting files)
 │
 ├── TankAlarm-112025-Server-BluesOpta/
 │   ├── TankAlarm-112025-Server-BluesOpta.ino
-│   ├── server_config.h
+│   ├── ServerConfig.h (optional: compile-time defaults)
 │   └── ... (supporting files)
 │
 └── TankAlarm-112025-Common/
@@ -671,7 +670,7 @@ Project Root/
 
 - Blues Notehub account (free tier available)
 - Product created in Notehub
-- Fleets configured (tankalarm-server, tankalarm-clients)
+- Fleets configured (tankalarm-server, tankalarm-clients, tankalarm-viewer)
 
 ---
 
@@ -705,18 +704,18 @@ These tutorials are maintained alongside firmware releases:
 
 | Tutorial | Version | Last Updated | Firmware Compatibility |
 |----------|---------|--------------|------------------------|
-| Quick Start | 1.1 | Feb 2026 | v1.1.0+ |
-| Client Installation | 1.1 | Feb 2026 | v1.1.0+ |
-| Server Installation | 1.1 | Feb 2026 | v1.1.0+ |
-| Fleet Setup | 1.1 | Feb 2026 | v1.1.0+ |
-| Firmware Update | 1.1 | Feb 2026 | v1.1.0+ |
-| Sensor Calibration | 1.1 | Feb 2026 | v1.1.0+ |
-| Relay Control | 1.1 | Feb 2026 | v1.1.0+ |
-| Unload Tracking | 1.1 | Feb 2026 | v1.1.0+ |
-| Backup and Recovery | 1.1 | Feb 2026 | v1.1.0+ |
-| Troubleshooting | 1.1 | Feb 2026 | v1.1.0+ |
-| Dashboard | 1.1 | Feb 2026 | v1.1.0+ |
-| Advanced Configuration | 1.1 | Feb 2026 | v1.1.0+ |
+| Quick Start | 1.1 | Feb 2026 | v1.1.1+ |
+| Client Installation | 1.1 | Feb 2026 | v1.1.1+ |
+| Server Installation | 1.1 | Feb 2026 | v1.1.1+ |
+| Fleet Setup | 1.1 | Feb 2026 | v1.1.1+ |
+| Firmware Update | 1.1 | Feb 2026 | v1.1.1+ |
+| Sensor Calibration | 1.1 | Feb 2026 | v1.1.1+ |
+| Relay Control | 1.1 | Feb 2026 | v1.1.1+ |
+| Unload Tracking | 1.1 | Feb 2026 | v1.1.1+ |
+| Backup and Recovery | 1.1 | Feb 2026 | v1.1.1+ |
+| Troubleshooting | 1.1 | Feb 2026 | v1.1.1+ |
+| Dashboard | 1.1 | Feb 2026 | v1.1.1+ |
+| Advanced Configuration | 1.1 | Feb 2026 | v1.1.1+ |
 
 ---
 
@@ -777,7 +776,7 @@ We welcome contributions to improve these tutorials:
 
 ## 📜 License
 
-This documentation and associated firmware are licensed under [LICENSE](../LICENSE).
+This documentation and associated firmware are licensed under [LICENSE](../../LICENSE).
 
 **Commercial Use:**  
 These tutorials and firmware are provided for both personal and commercial use. Attribution is appreciated but not required.
@@ -817,5 +816,5 @@ Head to the **[Quick Start Guide](QUICK_START_GUIDE.md)** and have your first sy
 
 ---
 
-*Tutorial Library v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Firmware 1.0.0+*
+*Tutorial Library v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Firmware 1.1.1+*

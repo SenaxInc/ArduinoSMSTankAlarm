@@ -72,12 +72,16 @@ For those who want to get started immediately:
 5. Create **Fleet 2**:
    - Name: `tankalarm-clients`
    - Description: `Field monitoring devices`
+6. Create **Fleet 3**:
+   - Name: `tankalarm-viewer`
+   - Description: `Read-only kiosk displays`
 
 ### 2. Assign Devices (2 minutes)
 
 1. Go to **Devices** tab
 2. Select your server Notecard → Assign to `tankalarm-server`
 3. Select each client Notecard → Assign to `tankalarm-clients`
+4. Select each viewer Notecard → Assign to `tankalarm-viewer`
 
 ### 3. Configure Clients (2 minutes per client)
 
@@ -268,7 +272,7 @@ notecard.sendRequest(req);
 5. Notecard activates and connects
 
 **Option B: Automatic Provisioning (via Firmware)**
-1. Set `SERVER_PRODUCT_UID` in server firmware
+1. Set `DEFAULT_SERVER_PRODUCT_UID` in server firmware (via `ServerConfig.h`)
 2. Upload firmware to server Opta
 3. Server Notecard self-provisions on first connection
 4. Manually assign to `tankalarm-server` fleet in Notehub
@@ -1021,5 +1025,5 @@ For advanced scenarios beyond standard fleets:
 
 ---
 
-*Fleet Setup Guide v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Firmware 1.0.0+*
+*Fleet Setup Guide v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Firmware 1.1.1+*

@@ -491,9 +491,12 @@ When Site A tank goes low:
 
 **Result:**
 - No direct wiring between sites needed
-- Commands routed through Blues Notehub
+- Client sends `relay_forward.qo` notefile via Notehub
+- Server receives `relay_forward.qi`, re-issues command to target client
 - Works across any distance with cellular coverage
 - Latency: typically 1-5 minutes
+
+> 📚 **Implementation detail**: The client's `triggerRemoteRelays()` function sends via the `relay_forward.qo` notefile with `target` (destination device UID), `client` (source), `relay`, and `state` fields. The server's `handleRelayForward()` parses these and dispatches via `sendRelayCommand()`. See the [Firmware Communication Guide](FIRMWARE_COMMUNICATION_GUIDE.md) for the full protocol.
 
 ---
 
@@ -980,5 +983,5 @@ Content-Type: application/json
 
 ---
 
-*Relay Control and Automation Guide v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Firmware 1.0.0+*
+*Relay Control and Automation Guide v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Firmware 1.1.1+*

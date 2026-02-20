@@ -1,7 +1,7 @@
-# TankAlarm v1.1.0 - Industrial Tank Monitoring System
+# TankAlarm v1.1.1 - Industrial Tank Monitoring System
 
-**Release Date:** February 19, 2026  
-**Version:** 1.1.0  
+**Release Date:** February 20, 2026  
+**Version:** 1.1.1  
 **Platform:** Arduino Opta + Blues Wireless Notecard
 
 A production-ready industrial monitoring system for remote tank level monitoring, alarm management, and fleet coordination using cellular IoT connectivity.
@@ -319,6 +319,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
 - **Common Header Audit:** [CODE REVIEW/COMMON_HEADER_AUDIT_02192026.md](CODE%20REVIEW/COMMON_HEADER_AUDIT_02192026.md)
 
 ### Code Reviews & Release History
+- **v1.1.1 Release Notes:** [CODE REVIEW/V1.1.1_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.1_RELEASE_NOTES.md)
 - **v1.0 Release Summary:** [CODE REVIEW/V1.0_RELEASE_SUMMARY.md](CODE%20REVIEW/V1.0_RELEASE_SUMMARY.md)
 - **v1.0.1 Release Notes:** [CODE REVIEW/V1.0.1_RELEASE_NOTES.md](CODE%20REVIEW/V1.0.1_RELEASE_NOTES.md)
 - **Advanced Features (Feb 2026):** [CODE REVIEW/ADVANCED_FEATURES_IMPLEMENTATION_02052026.md](CODE%20REVIEW/ADVANCED_FEATURES_IMPLEMENTATION_02052026.md)
@@ -338,7 +339,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
   - [ ] Ethernet connectivity stable
   
 - [ ] **Software Validation**
-  - [ ] Firmware version 1.1.0 confirmed
+  - [ ] Firmware version 1.1.1 confirmed
   - [ ] All clients reporting to server
   - [ ] Alarms triggering correctly
   - [ ] SMS/email alerts delivering
@@ -358,7 +359,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
 
 ### Deployment Checklist
 
-1. Flash all devices with v1.1.0 firmware
+1. Flash all devices with v1.1.1 firmware
 2. Configure Blues Notehub fleet assignments
 3. Set server IP address and network configuration
 4. Configure SMS/email recipients
@@ -423,6 +424,18 @@ ArduinoSMSTankAlarm/
 
 ## 📋 Changelog
 
+### v1.1.1 (February 20, 2026)
+- **Viewer Fleet:** Viewer devices now join dedicated `tankalarm-viewer` fleet for fleet-scoped DFU and routing
+- **Relay Forwarding:** New `relay_forward.qo`/`.qi` protocol for client-to-client relay commands via server
+- **Serial ACKs:** Client emits `serial_ack.qo` processing/complete status during serial log requests
+- **Config ACK Enhancements:** Config version hash (`cv`) tracked through dispatch → ACK cycle
+- **ArduinoJson v7:** Full migration to auto-sizing `JsonDocument` in Server and Viewer (removed all capacity constants)
+- **Notecard Hardening:** NULL-safe `card.uuid` handling across all three sketches
+- **Watchdog Fix:** Corrected macro name to `TANKALARM_WATCHDOG_AVAILABLE` across all components
+- **Memory Safety:** Use `JDelete` for unsent request cleanup; fix relay body allocation leak
+- **Dead Code Removal:** ~300 lines of unused helpers removed from Common headers
+- **Documentation:** 14 tutorial guides updated for three-fleet architecture
+
 ### v1.1.0 (February 19, 2026)
 - **Security:** Constant-time PIN comparison to prevent timing attacks
 - **Security:** Authentication rate limiting with exponential backoff and lockout
@@ -459,4 +472,4 @@ ArduinoSMSTankAlarm/
 
 **Built with ❤️ for industrial IoT applications**
 
-*Last Updated: February 19, 2026*
+*Last Updated: February 20, 2026*

@@ -4,7 +4,7 @@
 **Repository:** SenaxInc/ArduinoSMSTankAlarm  
 **Branch:** master  
 **Scope:** Full audit of active 112025 codebase — Server, Client, Viewer, and Common library  
-**Version Reviewed:** 1.1.0  
+**Version Reviewed:** 1.1.1  
 **Prior Reviews Referenced:** CODE_REVIEW_02192026_COMPREHENSIVE, CODE_REVIEW_02062026, CODE_REVIEW_SUMMARY_02202026
 
 ---

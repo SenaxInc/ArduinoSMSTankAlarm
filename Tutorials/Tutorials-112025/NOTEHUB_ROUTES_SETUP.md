@@ -1,4 +1,4 @@
-# Notehub Routes Setup Guide — TankAlarm 112025 v1.1.0
+# Notehub Routes Setup Guide — TankAlarm 112025 v1.1.1
 
 ## Introduction
 
@@ -511,5 +511,5 @@ Fleet membership is used for:
 
 ---
 
-*TankAlarm 112025 — Firmware v1.1.0+*
+*TankAlarm 112025 — Firmware v1.1.1+*
 *Route Relay Architecture — No SSL certificates required on device hardware*

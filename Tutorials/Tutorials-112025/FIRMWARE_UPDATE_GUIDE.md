@@ -34,7 +34,7 @@ With DFU, you can deploy firmware updates to your entire fleet without physical 
 Before starting, familiarize yourself with these concepts:
 
 - [Blues Notecard Quickstart](https://dev.blues.io/quickstart/) - Understanding the Blues ecosystem
-- [Arduino Compilation Guide](CODE%20REVIEW/ARDUINO_COMPILATION_GUIDE.md) - How to compile your firmware
+- [Arduino Compilation Guide](../../CODE%20REVIEW/ARDUINO_COMPILATION_GUIDE.md) - How to compile your firmware
 - [Blues Notehub Basics](https://dev.blues.io/guides-and-tutorials/notecard-guides/understanding-notehub/) - Navigating the Notehub interface
 
 ---
@@ -83,7 +83,7 @@ During the update process, devices transition through these states:
 Before compiling, update the version number in `TankAlarm-112025-Common/src/TankAlarm_Common.h`:
 
 ```cpp
-#define FIRMWARE_VERSION "1.0.1"
+#define FIRMWARE_VERSION "1.1.1"
 #define FIRMWARE_BUILD_DATE __DATE__
 ```
 
@@ -93,7 +93,7 @@ Before compiling, update the version number in `TankAlarm-112025-Common/src/Tank
 - Increment MINOR for new features
 - Increment PATCH for bug fixes
 
-Example progression: `1.0.0` → `1.0.1` → `1.1.0` → `2.0.0`
+Example progression: `1.0.0` → `1.0.1` → `1.1.0` → `1.1.1` → `2.0.0`
 
 ### Compile the Firmware
 
@@ -150,7 +150,7 @@ Upload to one device via USB and verify it boots correctly before deploying via 
    | Field | Example | Notes |
    |-------|---------|-------|
    | **Firmware Type** | `host` | Always use `host` for Arduino Opta firmware |
-   | **Version** | `1.0.1` | Must match `FIRMWARE_VERSION` in your code |
+   | **Version** | `1.1.1` | Must match `FIRMWARE_VERSION` in your code |
    | **Description** | `Bug fixes for sensor timeout` | Optional but recommended |
    | **Target** | `Product` | Update all devices, or select specific ones |
    | **File** | `TankAlarm-...-Client.ino.bin` | Your compiled binary |
@@ -161,7 +161,7 @@ Upload to one device via USB and verify it boots correctly before deploying via 
 ### Firmware Upload Tips
 
 **Naming Convention:**
-- Use descriptive filenames: `TankAlarm-Client-v1.1.0-2026-02-20.bin`
+- Use descriptive filenames: `TankAlarm-Client-v1.1.1-2026-02-20.bin`
 - Include component type (Client/Server/Viewer)
 - Include version and date for tracking
 
@@ -241,9 +241,9 @@ Connect to the device via USB and open serial monitor (115200 baud):
 
 ```
 Checking for firmware update...
-Firmware update available: 1.0.1
+Firmware update available: 1.1.1
 Auto-enabling DFU...
-Enabling DFU mode for version: 1.0.1
+Enabling DFU mode for version: 1.1.1
 DFU mode enabled. Device will reset after download.
 ```
 
@@ -260,7 +260,7 @@ Response:
 ```json
 {
   "available": true,
-  "version": "1.0.1",
+  "version": "1.1.1",
   "inProgress": false
 }
 ```
@@ -308,7 +308,7 @@ After the update completes, verify the new firmware is running:
 Connect via USB and check startup messages:
 
 ```
-Tank Alarm Client 112025 v1.1.0 (Feb 20 2026)
+Tank Alarm Client 112025 v1.1.1 (Feb 20 2026)
 ```
 
 #### Method 2: Server Web Dashboard
@@ -317,7 +317,7 @@ For Server components, check the footer or system info page:
 
 ```html
 <footer>
-  TankAlarm Server v1.1.0 | Built: Feb 20 2026
+  TankAlarm Server v1.1.1 | Built: Feb 20 2026
 </footer>
 ```
 
@@ -326,7 +326,7 @@ For Server components, check the footer or system info page:
 The firmware version is compiled into each binary. Check the serial output at startup:
 
 ```
-Firmware Version: 1.1.0
+Firmware Version: 1.1.1
 ```
 
 > **Note:** The firmware version is embedded at compile time via `FIRMWARE_VERSION` in `TankAlarm_Common.h` — it is not set via Notehub environment variables.
@@ -474,7 +474,7 @@ When updating a system with Client, Server, and Viewer:
 
 **Coordination:**
 - Upload all three binaries to Notehub at once
-- Use different version numbers if needed (e.g., `1.0.1-client`, `1.0.1-server`)
+- Use different version numbers if needed (e.g., `1.1.1-client`, `1.1.1-server`)
 - Monitor Server update completion before starting Client updates
 
 ### Custom Update Intervals
@@ -515,7 +515,7 @@ Blues Notecard DFU includes built-in security features:
 
 2. **Version Control**
    - Commit code before compiling release binary
-   - Tag releases in Git: `git tag v1.1.0`
+   - Tag releases in Git: `git tag v1.1.1`
    - Keep binary archives with matching Git commits
 
 3. **Staged Deployment**
@@ -557,15 +557,15 @@ Blues Notecard DFU includes built-in security features:
 ### Related Documentation
 
 - [Blues Notecard DFU Documentation](https://dev.blues.io/guides-and-tutorials/notecard-guides/device-firmware-update-dfu/) - Official Blues DFU guide
-- [TankAlarm Security and Advanced Features](CODE%20REVIEW/SECURITY_AND_ADVANCED_FEATURES.md) - Full security documentation
-- [Arduino Compilation Guide](CODE%20REVIEW/ARDUINO_COMPILATION_GUIDE.md) - Detailed compilation instructions
+- [TankAlarm Security and Advanced Features](../../CODE%20REVIEW/SECURITY_AND_ADVANCED_FEATURES.md) - Full security documentation
+- [Arduino Compilation Guide](../../CODE%20REVIEW/ARDUINO_COMPILATION_GUIDE.md) - Detailed compilation instructions
 
 ### Source Code
 
-- [TankAlarm Client](TankAlarm-112025-Client-BluesOpta/) - Field monitoring firmware
-- [TankAlarm Server](TankAlarm-112025-Server-BluesOpta/) - Central server firmware
-- [TankAlarm Viewer](TankAlarm-112025-Viewer-BluesOpta/) - Kiosk display firmware
-- [TankAlarm Common](TankAlarm-112025-Common/) - Shared library and version constants
+- [TankAlarm Client](../../TankAlarm-112025-Client-BluesOpta/) - Field monitoring firmware
+- [TankAlarm Server](../../TankAlarm-112025-Server-BluesOpta/) - Central server firmware
+- [TankAlarm Viewer](../../TankAlarm-112025-Viewer-BluesOpta/) - Kiosk display firmware
+- [TankAlarm Common](../../TankAlarm-112025-Common/) - Shared library and version constants
 
 ### Support
 
@@ -594,7 +594,7 @@ Response when update available:
 ```json
 {
   "mode": "ready",
-  "body": "1.0.1",
+  "body": "1.1.1",
   "on": false
 }
 ```
@@ -612,7 +612,7 @@ Force immediate download:
 Check serial monitor output at startup — the firmware version is compiled in:
 
 ```
-Firmware Version: 1.1.0
+Firmware Version: 1.1.1
 ```
 
 ### Server API Endpoints
@@ -646,6 +646,6 @@ Happy updating! 🚀
 
 ---
 
-*Last Updated: January 7, 2026*  
-*Firmware Version: 1.0.0+*  
+*Last Updated: February 20, 2026*  
+*Firmware Version: 1.1.1+*  
 *Compatible with: TankAlarm-112025-Client, Server, and Viewer*

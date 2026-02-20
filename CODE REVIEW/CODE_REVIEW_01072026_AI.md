@@ -3,7 +3,7 @@
 **Date:** January 7, 2026
 **Reviewer:** GitHub Copilot
 **Subject:** Tank Alarm System - Client & Server Implementation (Blues Opta)
-**Version:** 1.0.0 (11/2025)
+**Version:** 1.1.1 (11/2025)
 
 ## 1. Executive Summary
 

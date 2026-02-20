@@ -338,11 +338,11 @@ Before compiling, update the Product UID to match your Notehub project:
 1. Open the main `.ino` file
 2. Find this line near the top:
    ```cpp
-   #define PRODUCT_UID "com.your-company.your-product:your-project"
+   #define DEFAULT_PRODUCT_UID "com.senax.tankalarm112025"
    ```
 3. Replace with **your Product UID** from Notehub:
    ```cpp
-   #define PRODUCT_UID "com.senax.tankalarm:production"
+   #define DEFAULT_PRODUCT_UID "com.your-company.your-product:your-project"
    ```
 4. Save the file (Ctrl+S)
 
@@ -406,7 +406,7 @@ Done compiling
 ### Expected Serial Output
 
 ```
-TankAlarm 112025 Client - Blues Opta v1.1.0 (Feb 20 2026)
+TankAlarm 112025 Client - Blues Opta v1.1.1 (Feb 20 2026)
 Initializing...
 LittleFS initialized (524288 bytes free)
 Loading configuration from /client_config.json
@@ -918,8 +918,8 @@ If main loop hangs, Opta automatically resets.
 
 ### Project Documentation
 
-- [TankAlarm Server Installation](../TankAlarm-112025-Server-BluesOpta/INSTALLATION.md)
-- [Fleet Setup Guide](../TankAlarm-112025-Server-BluesOpta/FLEET_SETUP.md)
+- [TankAlarm Server Installation](../../TankAlarm-112025-Server-BluesOpta/INSTALLATION.md)
+- [Fleet Setup Guide](../../TankAlarm-112025-Server-BluesOpta/FLEET_SETUP.md)
 - [Firmware Update Guide](../FIRMWARE_UPDATE_GUIDE.md)
 - [Relay Control Guide](RELAY_CONTROL_GUIDE.md)
 - [Migration from 092025](MIGRATION_GUIDE.md)
@@ -956,8 +956,8 @@ View configuration (delivered by Notehub Route):
 
 After successful installation:
 
-1. **[Install Server](../TankAlarm-112025-Server-BluesOpta/INSTALLATION.md)** - Set up central aggregation
-2. **[Configure Fleet](../TankAlarm-112025-Server-BluesOpta/FLEET_SETUP.md)** - Organize devices in Notehub
+1. **[Install Server](../../TankAlarm-112025-Server-BluesOpta/INSTALLATION.md)** - Set up central aggregation
+2. **[Configure Fleet](../../TankAlarm-112025-Server-BluesOpta/FLEET_SETUP.md)** - Organize devices in Notehub
 3. **[Connect Sensors](SENSOR_CALIBRATION_GUIDE.md)** - Wire and calibrate tank sensors
 4. **[Test Alarms](README.md)** - Verify high/low alerts work
 5. **[Schedule Reports](README.md)** - Set up daily email summaries
@@ -966,4 +966,4 @@ After successful installation:
 ---
 
 *Installation Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Client Firmware 1.1.0+*
+*Compatible with TankAlarm Client Firmware 1.1.1+*

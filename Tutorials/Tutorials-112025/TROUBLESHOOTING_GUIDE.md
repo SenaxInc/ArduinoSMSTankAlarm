@@ -322,6 +322,7 @@ card.wireless("+mode,auto,-apn,<your_apn>");
 **In Notehub:**
 - Client device in `tankalarm-clients` fleet?
 - Server device in `tankalarm-server` fleet?
+- Viewer device in `tankalarm-viewer` fleet?
 - Devices in same Product?
 
 **2. Check Routing**
@@ -431,7 +432,7 @@ Look for:
 
 **5. Check DHCP vs Static**
 
-**In firmware (`server_config.h`):**
+**In firmware (or `ServerConfig.h`):**
 ```cpp
 #define USE_STATIC_IP true  // or false
 IPAddress static_ip(192, 168, 1, 150);
@@ -1055,6 +1056,7 @@ Invalid JSON won't save:
 In Blues Notehub:
 - Is client in `tankalarm-clients` fleet?
 - Server in `tankalarm-server` fleet?
+- Viewer in `tankalarm-viewer` fleet?
 - Same Product UID?
 
 **2. Check Object Type**
@@ -1283,7 +1285,7 @@ Set to **115200** baud in Arduino IDE serial monitor
 
 ```
 [Startup Messages]
-TankAlarm Client v1.1.0
+TankAlarm Client v1.1.1
 Initializing Notecard...
 Notecard: CONNECTED
 Product UID: com.company.tankalarm:production
@@ -1544,5 +1546,5 @@ Gather this information:
 
 ---
 
-*Troubleshooting Guide v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Firmware 1.0.0+*
+*Troubleshooting Guide v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Firmware 1.1.1+*

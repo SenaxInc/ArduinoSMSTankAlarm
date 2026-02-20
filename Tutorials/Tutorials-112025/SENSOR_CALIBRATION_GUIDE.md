@@ -1002,5 +1002,5 @@ Supervisor: _____________________ Date: __________
 
 ---
 
-*Sensor Calibration Guide v1.0 | Last Updated: January 7, 2026*  
-*Compatible with TankAlarm Firmware 1.0.0+*
+*Sensor Calibration Guide v1.1 | Last Updated: February 20, 2026*  
+*Compatible with TankAlarm Firmware 1.1.1+*
