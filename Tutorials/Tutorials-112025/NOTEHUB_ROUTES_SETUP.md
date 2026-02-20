@@ -215,7 +215,16 @@ This passes the entire event body through to the server's `.qi` notefile.
 
 > **⚡ Important:** Do not include `config.qo` — it does not exist. Config is delivered to clients via `command.qo` with `_type: config`, and clients acknowledge via `config_ack.qo`.
 
-### 3e. Save and Test
+### 3e. Timeout and Retry Settings
+
+Before saving, configure these two settings (they apply to **all 5 TankAlarm routes**):
+
+- **Timeout:** Leave at the default (30 seconds). Routes #1–3 target `api.notefile.net` (Blues' own infrastructure) and respond in under a second. Routes #4–5 (Twilio/SMTP) are equally fast under normal conditions.
+- **Automatic reroute on failure:** **Enable this** (check the box). If a route fails transiently (e.g., a brief 5XX from the server), Notehub will retry at 5-second, 1-minute, and 5-minute intervals (3 retries max). This prevents lost telemetry, dropped config pushes, or missed alarm SMS due to momentary glitches. The retry overhead is negligible at TankAlarm's event volume.
+
+> **Note:** Automatic reroute only helps with transient failures (5XX, timeouts). It will **not** fix 4XX errors (bad API token, wrong device UID, malformed JSON) — those indicate a configuration problem. If you see 401 or 404 in Route Logs, fix the route settings rather than relying on retries.
+
+### 3f. Save and Test
 
 1. Click **Save Route**
 2. Send a test telemetry note from a client device
