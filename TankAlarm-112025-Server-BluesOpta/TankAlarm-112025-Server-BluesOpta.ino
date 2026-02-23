@@ -2329,9 +2329,9 @@ void loop() {
     }
   }
 
-  // Auto-retry pending config dispatches every 60 seconds
+  // Auto-retry pending config dispatches every 60 minutes
   static unsigned long gLastPendingDispatchMillis = 0;
-  if (!gPaused && (now - gLastPendingDispatchMillis > 60000UL)) {
+  if (!gPaused && (now - gLastPendingDispatchMillis > 3600000UL)) {
     gLastPendingDispatchMillis = now;
     dispatchPendingConfigs();
   }
