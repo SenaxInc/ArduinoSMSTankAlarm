@@ -6685,7 +6685,7 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
       ClientMetadata *alarmMeta = findOrCreateClientMetadata(clientUid);
       if (alarmMeta) alarmVin = alarmMeta->vinVoltage;
       recordTelemetrySnapshot(clientUid, alarmSiteName, tankNumber,
-                              rec->heightInches, level, alarmVin);
+                              rec->levelInches, level, alarmVin);
     }
   }
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
@@ -6951,7 +6951,7 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     // even when change-based telemetry is disabled (levelChangeThreshold = 0)
     if (newLevel > 0.0f) {
       recordTelemetrySnapshot(clientUid, siteName, tankNumber,
-                              rec->heightInches, newLevel, vinVoltage);
+                              rec->levelInches, newLevel, vinVoltage);
     }
   }
 }
@@ -8371,7 +8371,7 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
 
 
 
-static void sendHistoryJson(EthernetClient &client, const String &query = "") {
+static void sendHistoryJson(EthernetClient &client, const String &query) {
   // Build JSON response with historical tank data for charting
   // Supports query params: ?days=N (limit readings age), ?tank=CLIENT:NUM (single tank, full range)
   // When viewing all tanks, limit to 90 days to reduce payload; single tank gets full range
