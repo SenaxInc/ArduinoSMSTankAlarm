@@ -599,10 +599,53 @@ static HistorySettings gHistorySettings = {
   0      // totalRecordsPruned
 };
 
+// ============================================================================
+// LittleFS Daily Summary Storage (Warm Tier)
+// ============================================================================
+// Compact daily summaries persisted to flash. Survives reboots. ~32 bytes per
+// day per tank, stored as JSON in /fs/history/daily_YYYYMM.json files.
+// When FTP is available, monthly archives extend range beyond 3 months.
+// When FTP is NOT available, data is limited to hot tier + 3 months of dailies.
+#ifndef MAX_DAILY_SUMMARY_MONTHS
+#define MAX_DAILY_SUMMARY_MONTHS 3  // Keep 3 months of daily files on LittleFS
+#endif
+
+// Last daily rollup tracking (persistent across reboots via history settings)
+static uint32_t gLastDailyRollupDate = 0;  // YYYYMMDD of last completed rollup
+
+// FTP archive month cache — avoids re-downloading during a single web session
+struct FtpArchiveCache {
+  uint16_t cachedYear;
+  uint8_t cachedMonth;
+  bool valid;
+  // Cached summary data per tank
+  struct CachedTankSummary {
+    char clientUid[48];
+    uint8_t tankNumber;
+    float minLevel, maxLevel, avgLevel;
+    float avgVoltage;
+    uint16_t readings;
+  };
+  CachedTankSummary tanks[MAX_HISTORY_TANKS];
+  uint8_t tankCount;
+};
+static FtpArchiveCache gFtpArchiveCache = {0, 0, false, {}, 0};
+
 // Forward declarations for history functions
 static void logAlarmEvent(const char *clientUid, const char *siteName, uint8_t tankNumber, float level, bool isHigh);
 static void clearAlarmEvent(const char *clientUid, uint8_t tankNumber);
 static void recordTelemetrySnapshot(const char *clientUid, const char *siteName, uint8_t tankNumber, float heightInches, float level, float voltage);
+// Daily summary warm tier functions
+static void rollupDailySummaries();
+static bool saveDailySummaryFile(uint16_t year, uint8_t month);
+static bool loadDailySummaryMonth(uint16_t year, uint8_t month, JsonDocument &doc);
+static void pruneDailySummaryFiles();
+// Hot tier persistence (survive reboots)
+static void saveHotTierSnapshot();
+static void loadHotTierSnapshot();
+// FTP archive retrieval
+static bool loadFtpArchiveCached(uint16_t year, uint8_t month);
+static void populateStatsFromFtpCache(const char *clientUid, uint8_t tankNumber, JsonObject &statsObj);
 static TankHourlyHistory *findOrCreateTankHistory(const char *clientUid, uint8_t tankNumber);
 static void pruneHotTierIfNeeded();
 static bool archiveMonthToFtp(uint16_t year, uint8_t month);
@@ -1310,7 +1353,7 @@ funct)HTML" R"HTML(ion updateCalibrationTable(){const tbody = document.getElemen
 funct)HTML" R"HTML(ion updateCalibrationLog(){const tbody = document.getElementById('logTableBody');const filter = document.getElementById('logTankFilter').value;tbody.innerHTML = '';let filtered = calibrationLogs;if(filter){const [clientUid,tankNum] = filter.split(':');filtered = calibrationLogs.filter(log => log.clientUid === clientUid && log.tankNumber === parseInt(tankNum));}if(filtered.length === 0){tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);">No calibration entries found.</td></tr>';return;}filtered.sort((a,b)=> b.timestamp - a.timestamp);filtered.forEach(log =>{const tr = document.createElement('tr');const tankInfo = tanks.find(t => t.client === log.clientUid && t.tank === log.tankNumber);const tankName = tankInfo ? `${tankInfo.site}- ${tankInfo.label || 'Tank ' + log.tankNumber}`:`Tank ${log.tankNumber}`;const isValidReading = log.sensorReading >= 4 && log.sensorReading <= 20;const sensorDisplay = isValidReading ? log.sensorReading.toFixed(2)+ ' mA':(log.sensorReading ? `${log.sensorReading.toFixed(2)} mA (out of range)`:'-- (out of range)');const tempDisplay = log.temperatureF !== undefined && log.temperatureF !== null ? log.temperatureF.toFixed(1)+ '°F':'--';tr.innerHTML = ` <td>${formatEpoch(log.timestamp)}</td><td>${escapeHtml(tankName)}</td><td title="${isValidReading ? '':'Not used for calibration(outside 4-20mA range)'}">${sensorDisplay}</td><td>${formatLevel(log.verifiedLevelInches)}</td><td>${tempDisplay}</td><td>${escapeHtml(log.notes || '--')}</td> `;if(!isValidReading){tr.style.opacity = '0.6';}tbody.appendChild(tr);});}document.getElementById('calibrationForm').addEventListener('submit',async(e)=>{e.preventDefault();const tankKey = document.getElementById('tankSelect').value;if(!tankKey){showToast('Please select a tank',true);return;}const [clientUid,tankNumber] = tankKey.split(':');const levelFeet = parseInt(document.getElementById('levelFeet').value)|| 0;const levelInches = parseFloat(document.getElementById('levelInches').value)|| 0;const totalInches = levelFeet * 12 + levelInches;const timestampInput = document.getElementById('readingTimestamp').value;const note)HTML" R"HTML(s = document.getElementById('notes').value.trim();if(totalInches < 0){showToast('Invalid level value',true);return;}const tank = tanks.find(t => `${t.client}:${t.tank}` === tankKey);const payload ={clientUid:clientUid,tankNumber:parseInt(tankNumber),verifiedLevelInches:totalInches,notes:notes};if(tank && tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20){payload.sensorReading = tank.sensorMa;}if(timestampInput){payload.timestamp = Math.floor(new Date(timestampInput).getTime()/ 1000);}try{const response = await fetch('/api/calibration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to submit calibration');}showToast('Calibration reading submitted successfully');document.getElementById('calibrationForm').reset();loadCalibrationData();}catch(err){console.error('Error submitting calibration:',err);showToast(err.message || 'Failed to submit calibration',true);}});document.getElementById('logTankFilter').addEventListener('change',updateCalibrationLog);const now = new Date();now.setMinutes(now.getMinutes()- now.getTimezoneOffset());document.getElementById('readingTimestamp').value = now.toISOString().slice(0,16);loadTanks();loadCalibrationData();setInterval(loadCalibrationData,30000);funct)HTML" R"HTML(ion viewTankPoints(tankKey){document.getElementById('logTankFilter').value = tankKey;updateCalibrationLog();document.getElementById('logTableBody').closest('.card').scrollIntoView({behavior:'smooth',block:'start'});showToast('Showing data points for selected tank');}async funct)HTML" R"HTML(ion resetCalibration(clientUid,tankNumber){if(!confirm(`Reset calibration for tank ${tankNumber}? This will delete all calibration data for this tank.`)){return;}try{const response = await fetch('/api/calibration',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid,tankNumber:tankNumber})});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to reset calibration');}showToast('Calibration reset successfully');loadCalibrationData();}catch(err){console.error('Error resetting calibration:',err);showToast(err.message || 'Failed to reset calibration',true);}}})();})();
 </script></body></html>)HTML";
 
-static const char HISTORICAL_DATA_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Historical Data - Tank Alarm Server</title><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Fleet Summary</h2><div class="stats-grid"><div class="stat-box"><div class="stat-value" id="statTotalTanks">0</div><div class="stat-label">Total Tanks</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsToday">0</div><div class="stat-label">Alarms Today</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsWeek">0</div><div class="stat-label">Alarms This Week</div></div></div></div><div class="card"><h2>Level Trends</h2><div class="controls"><select id="siteFilter"><option value="all")HTML" R"HTML(>All Sites</option></select><select id="tankFilter"><option value="all">All Tanks</option></select><select id="rangeSelect"><option value="24h">Last 24 Hours</option><option value="7d">Last 7 Days</option><option value="30d" selected>Last 30 Days</option><option value="90d">Last 90 Days</option><option value="6mo">Last 6 Months</option><option value="1yr">Last Year</option><option value="2yr">Last 2 Years</option><option value="custom">Custom Range</option></select><input type="date" id="startDate" style="display:none;" onchange="renderLevelChart()"><input type="date" id="endDate" style="display:none;" onchange="renderLevelChart()"><button onclick="refreshData()">Refresh</button><button class="secondary" onclick="exportData()">Export CSV</button></div><div class="chart-container"><canvas id="levelChart"></canvas></div></div><div class="card"><h2>Alarm Frequency</h2><div class="chart-container"><canvas id="alarmChart"></canvas></div></div><div class="card"><h2>Sites &amp; Tanks</h2><p style="color:var(--muted);margin-bottom:16px;">Click on a site to expand and view individual tank details with mini sparklines.</p><div id="sitesContainer"></div></div><div class="card"><h2>VIN Voltage History</h2><p style="color:var(--muted);margin-bottom:16px;">Track power supply voltage trends to detect battery degradation or power issues early.</p><div class="chart-container"><canvas id="voltageChart"></canvas></div></div></main><div id="toast"></div><script>(() => {const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
+static const char HISTORICAL_DATA_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Historical Data - Tank Alarm Server</title><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Fleet Summary</h2><div class="stats-grid"><div class="stat-box"><div class="stat-value" id="statTotalTanks">0</div><div class="stat-label">Total Tanks</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsToday">0</div><div class="stat-label">Alarms Today</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsWeek">0</div><div class="stat-label">Alarms This Week</div></div></div><div id="dataSourceBanner" style="display:none;margin-top:12px;padding:8px 14px;border-radius:6px;font-size:0.85rem;background:#dbeafe;color:#1e40af;"></div></div><div class="card"><h2>Level Trends</h2><div class="controls"><select id="siteFilter"><option value="all")HTML" R"HTML(>All Sites</option></select><select id="tankFilter"><option value="all">All Tanks</option></select><select id="rangeSelect"><option value="24h">Last 24 Hours</option><option value="7d">Last 7 Days</option><option value="30d" selected>Last 30 Days</option><option value="90d">Last 90 Days</option><option value="6mo">Last 6 Months</option><option value="1yr">Last Year</option><option value="2yr">Last 2 Years</option><option value="custom">Custom Range</option></select><input type="date" id="startDate" style="display:none;" onchange="renderLevelChart()"><input type="date" id="endDate" style="display:none;" onchange="renderLevelChart()"><button onclick="refreshData()">Refresh</button><button class="secondary" onclick="exportData()">Export CSV</button></div><div class="chart-container"><canvas id="levelChart"></canvas></div></div><div class="card"><h2>Alarm Frequency</h2><div class="chart-container"><canvas id="alarmChart"></canvas></div></div><div class="card"><h2>Sites &amp; Tanks</h2><p style="color:var(--muted);margin-bottom:16px;">Click on a site to expand and view individual tank details with mini sparklines.</p><div id="sitesContainer"></div></div><div class="card"><h2>VIN Voltage History</h2><p style="color:var(--muted);margin-bottom:16px;">Track power supply voltage trends to detect battery degradation or power issues early.</p><div class="chart-container"><canvas id="voltageChart"></canvas></div></div></main><div id="toast"></div><script>(() => {const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
 const pause_state={paused:false,pin:token||null,pinConfigured:false};if(pause_els.btn)pause_els.btn.addEventListener('click',togglePauseFlow);if(pause_els.btn)pause_els.btn.addEventListener('mouseenter',()=>{if(pause_state.paused)pause_els.btn.textContent='Resume';});if(pause_els.btn)pause_els.btn.addEventListener('mouseleave',()=>{renderPauseBtn();});fetch('/api/clients?summary=1').then(r=>r.json()).then(d=>{if(d&&d.srv){pause_state.paused=!!d.srv.ps;pause_state.pinConfigured=!!d.srv.pc;renderPauseBtn();}}).catch(e=>console.error('Failed to load pause state',e));
 funct)HTML" R"HTML(ion showPauseToast(message,isError){if(!pause_els.toast)return;const t=pause_els.toast;t.textContent=message;t.style.background=isError?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion renderPauseBtn(){const btn=pause_els.btn;if(!btn)return;if(pause_state.paused){btn.classList.add('paused');btn.style.display='';btn.textContent='Unpause';btn.title='Resume data flow';}else{btn.classList.remove('paused');btn.style.display='none';}}
@@ -1326,7 +1369,7 @@ funct)HTML" R"HTML(ion renderAlarmChart(){const ctx=document.getElementById('ala
 funct)HTML" R"HTML(ion renderVoltageChart(){const ctx=document.getElementById('voltageChart').getContext('2d');if(voltageChart)voltageChart.destroy();const data=historicalData.voltage.map(v=>({x:new Date(v.timestamp*1000),y:v.voltage}));voltageChart=new Chart(ctx,{type:'line',data:{datasets:[{label:'VIN Voltage',data,borderColor:'#10b981',backgroundColor:'#10b98120',fill:true,tension:0.3,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false,scales:{x:{type:'time',time:{unit:'day'},grid:{color:'var(--chart-grid)'}},y:{min:10,max:14,title:{display:true,text:'Voltage (V)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{display:false}}}});}
 funct)HTML" R"HTML(ion createSparkline(container,data){const width=container.clientWidth||100;const height=40;const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;container.appendChild(canvas);const ctx=canvas.getContext('2d');if(!data||data.length<2)return;const values=data.map(d=>d.level);const min=Math.min(...values);const max=Math.max(...values);const range=max-min||1;ctx.strokeStyle='#2563eb';ctx.lineWidth=1.5;ctx.beginPath();data.forEach((d,i)=>{const x=i/(data.length-1)*width;const y=height-(d.level-min)/range*height;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();}
 funct)HTML" R"HTML(ion renderSites(){const container=document.getElementById('sitesContainer');container.innerHTML='';Object.keys(historicalData.sites).sort().forEach(siteName=>{const tanks=historicalData.sites[siteName];const alarmCount=historicalData.alarms.filter(a=>a.site===siteName).length;const siteCard=document.createElement('div');siteCard.className='site-card';siteCard.innerHTML=`<div class="site-header" onclick="this.nextElementSibling.classList.toggle('expanded')"><h3>${siteName}</h3><div class="site-stats"><span>${tanks.length} Tank${tanks.length!==1?'s':''}</span>${alarmCount>0?`<span class="alarm-badge">${alarmCount} Alarms</span>`:''}</div></div><div class="site-content"><div class="tank-grid"></div></div>`;const grid=siteCard.querySelector('.tank-grid');tanks.forEach(tank=>{const change=tank.change24h||0;const changeClass=change>=0?'positive':'negative';const changeSign=change>=0?'+':'';const tankCard=document.createElement('div');tankCard.className='tank-card';tankCard.innerHTML=`<div class="tank-header"><div><div class="tank-name">${tank.label}</div><div class="tank-level">${formatLevel(tank.currentLevel)}</div></div><div class="tank-change ${changeClass}">${changeSign}${change.toFixed(1)}" 24h</div></div><div class="sparkline"></div><div class="tank-footer"><span>Updated: ${formatEpoch(tank.readings[tank.readings.length-1]?.timestamp)}</span></div>`;grid.appendChild(tankCard);const sparklineEl=tankCard.querySelector('.sparkline');const last24h=tank.readings.slice(-24);setTimeout(()=>createSparkline(sparklineEl,last24h),0);});container.appendChild(siteCard);});}
-async funct)HTML" R"HTML(ion loadHistoricalData(){const tankIdx=document.getElementById('tankFilter').value;const range=document.getElementById('rangeSelect').value;let apiDays=90;if(tankIdx!=='all'){apiDays=0;}else{const rangeDays={'24h':7,'7d':7,'30d':30,'90d':90,'6mo':180,'1yr':365,'2yr':730};apiDays=rangeDays[range]||90;}const url=apiDays>0?'/api/history?days='+apiDays:'/api/history';try{const res=await fetch(url);if(!res.ok)throw new Error('Failed to load historical data');const data=await res.json();if(data.tanks&&data.tanks.length>0){historicalData=data;}else{initEmptyData();}updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}catch(err){console.warn('No historical data available:',err.message);initEmptyData();updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}}
+async funct)HTML" R"HTML(ion loadHistoricalData(){const tankIdx=document.getElementById('tankFilter').value;const range=document.getElementById('rangeSelect').value;let apiDays=90;if(tankIdx!=='all'){apiDays=0;}else{const rangeDays={'24h':7,'7d':7,'30d':30,'90d':90,'6mo':180,'1yr':365,'2yr':730};apiDays=rangeDays[range]||90;}const url=apiDays>0?'/api/history?days='+apiDays:'/api/history';try{const res=await fetch(url);if(!res.ok)throw new Error('Failed to load historical data');const data=await res.json();if(data.tanks&&data.tanks.length>0){historicalData=data;}else{initEmptyData();}if(data.dataInfo){const banner=document.getElementById('dataSourceBanner');if(banner){let msg='Data: RAM ('+data.settings.hotTierDays+'d)';if(data.dataInfo.warmTierAvailable)msg+=' + Flash ('+data.settings.warmTierMonths+'mo)';if(data.dataInfo.coldTierAvailable)msg+=' + FTP Archive';else msg+=' | Enable FTP for full archive';if(data.dataInfo.rangeNote)msg+=' — '+data.dataInfo.rangeNote;banner.textContent=msg;banner.style.display='';banner.style.background=data.dataInfo.coldTierAvailable?'#d1fae5':'#fef3c7';banner.style.color=data.dataInfo.coldTierAvailable?'#065f46':'#92400e';}}updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}catch(err){console.warn('No historical data available:',err.message);initEmptyData();updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}}
 window.refreshData=funct)HTML" R"HTML(ion(){loadHistoricalData();showToast('Data refreshed');};window.exportData=funct)HTML" R"HTML(ion(){const{tanks,cutoff,cutoffEnd}=getFilteredData();let csv='Site,Tank,Timestamp,Level (inches)\n';tanks.forEach(tank=>{tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).forEach(r=>{csv+=`"${tank.site}","${tank.label}",${new Date(r.timestamp*1000).toISOString()},${r.level.toFixed(2)}\n`;});});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='tank_history.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');};document.getElementById('siteFilter').addEventListener('change',renderLevelChart);document.getElementById('tankFilter').addEventListener('change',function(){loadHistoricalData();});document.getElementById('rangeSelect').addEventListener('change',function(){const sd=document.getElementById('startDate');const ed=document.getElementById('endDate');if(this.value==='custom'){sd.style.display='';ed.style.display='';if(!sd.value){const d=new Date();d.setDate(d.getDate()-7);sd.value=d.toISOString().split('T')[0];}if(!ed.value){ed.value=new Date().toISOString().split('T')[0];}}else{sd.style.display='none';ed.style.display='none';}loadHistoricalData();});loadHistoricalData();})();})();
 </script></body></html>)HTML";
 
@@ -2218,6 +2261,8 @@ void setup() {
   gLastHeartbeatFileEpoch = loadServerHeartbeatEpoch();
   loadCalibrationData();  // Load calibration learning data
   loadTankRegistry();     // Restore tank records from LittleFS
+  loadHistorySettings();  // Restore history tier settings from LittleFS
+  loadHotTierSnapshot();  // Restore hot tier ring buffer from LittleFS (survive reboot)
   loadClientMetadataCache();  // Restore client metadata from LittleFS
   printHardwareRequirements();
 
@@ -2386,7 +2431,16 @@ void loop() {
     // Prune hot tier data older than retention period
     pruneHotTierIfNeeded();
     
-    // Check if we need to archive last month to FTP
+    // Roll up yesterday's hot tier snapshots into LittleFS daily summaries (warm tier)
+    rollupDailySummaries();
+    
+    // Prune daily summary files older than retention period
+    pruneDailySummaryFiles();
+    
+    // Persist hot tier ring buffer to flash (survive reboot)
+    saveHotTierSnapshot();
+    
+    // Check if we need to archive last month to FTP (cold tier)
     if (gHistorySettings.ftpArchiveEnabled && gConfig.ftpEnabled) {
       time_t nowTime = (time_t)epoch;
       struct tm *nowTm = gmtime(&nowTime);
@@ -2401,6 +2455,9 @@ void loop() {
         archiveMonthToFtp(archiveYear, archiveMonth);
       }
     }
+    
+    // Persist history settings after maintenance
+    saveHistorySettings();
   }
   
   // Periodic firmware update check via Notecard DFU
@@ -4129,33 +4186,53 @@ static void pruneHotTierIfNeeded() {
   }
 }
 
-// Archive a month's data to FTP (warm tier)
+// Archive a specific month's data to FTP (cold tier)
+// Filters snapshots and alarms to only include data from the target month.
+// Idempotent: skips if already archived this month (based on lastFtpSyncEpoch).
 static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
   if (!gConfig.ftpEnabled) {
     return false;
   }
   
+  // Idempotency: skip if we already archived after the target month ended
+  // Calculate first epoch of the month AFTER the target month
+  struct tm targetEnd = {};
+  targetEnd.tm_year = year - 1900;
+  targetEnd.tm_mon = month;  // month is 1-based, so this is actually next month (0-based)
+  targetEnd.tm_mday = 1;
+  if (month == 12) {
+    targetEnd.tm_year++;
+    targetEnd.tm_mon = 0;
+  }
+  double nextMonthEpoch = (double)mktime(&targetEnd);
+  if (gHistorySettings.lastFtpSyncEpoch >= nextMonthEpoch) {
+    // Already archived for this month or later
+    return true;
+  }
+  
+  // Calculate epoch range for the target month
+  struct tm targetStart = {};
+  targetStart.tm_year = year - 1900;
+  targetStart.tm_mon = month - 1;  // 0-based
+  targetStart.tm_mday = 1;
+  double monthStartEpoch = (double)mktime(&targetStart);
+  double monthEndEpoch = nextMonthEpoch;
+  
   // Build JSON document with monthly summary
   JsonDocument doc;
   doc["year"] = year;
   doc["month"] = month;
-  doc["tanks"] = gTankHistoryCount;
   doc["generated"] = gLastSyncedEpoch > 0.0 ? gLastSyncedEpoch : 0.0;
   
   JsonArray tanksArray = doc["tankSummaries"].to<JsonArray>();
+  uint8_t tanksWithData = 0;
   
-  // For each tank, compute monthly summary from hourly data
+  // For each tank, compute monthly summary from hourly data filtered by month
   for (uint8_t i = 0; i < gTankHistoryCount; i++) {
     TankHourlyHistory &hist = gTankHistory[i];
     if (hist.snapshotCount == 0) continue;
     
-    JsonObject tankObj = tanksArray.add<JsonObject>();
-    tankObj["clientUid"] = hist.clientUid;
-    tankObj["site"] = hist.siteName;
-    tankObj["tank"] = hist.tankNumber;
-    tankObj["heightInches"] = hist.heightInches;
-    
-    // Calculate summary stats
+    // Calculate summary stats — only for snapshots within the target month
     float minLevel = 999999.0f;
     float maxLevel = -999999.0f;
     float sumLevel = 0.0f;
@@ -4166,6 +4243,9 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
       uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
       TelemetrySnapshot &snap = hist.snapshots[idx];
+      
+      // Filter: only include snapshots from the target month
+      if (snap.timestamp < monthStartEpoch || snap.timestamp >= monthEndEpoch) continue;
       
       if (snap.level < minLevel) minLevel = snap.level;
       if (snap.level > maxLevel) maxLevel = snap.level;
@@ -4178,17 +4258,40 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
       }
     }
     
+    // Only emit tank entry if it had data in the target month
+    if (count == 0) continue;
+    
+    JsonObject tankObj = tanksArray.add<JsonObject>();
+    tankObj["clientUid"] = hist.clientUid;
+    tankObj["site"] = hist.siteName;
+    tankObj["tank"] = hist.tankNumber;
+    tankObj["heightInches"] = hist.heightInches;
     tankObj["minLevel"] = roundTo(minLevel, 1);
     tankObj["maxLevel"] = roundTo(maxLevel, 1);
-    tankObj["avgLevel"] = count > 0 ? roundTo(sumLevel / count, 1) : 0.0f;
+    tankObj["avgLevel"] = roundTo(sumLevel / count, 1);
     tankObj["avgVoltage"] = voltageCount > 0 ? roundTo(sumVoltage / voltageCount, 2) : 0.0f;
     tankObj["readings"] = count;
+    tanksWithData++;
   }
   
-  // Add alarm summary
+  doc["tanks"] = tanksWithData;
+  
+  // No data for this month — nothing to archive
+  if (tanksWithData == 0) {
+    Serial.print(F("FTP archive skipped (no data): "));
+    Serial.print(year);
+    Serial.print(F("/"));
+    Serial.println(month);
+    return false;
+  }
+  
+  // Add alarm summary — only alarms from the target month
   JsonArray alarmsArray = doc["alarms"].to<JsonArray>();
   for (uint8_t i = 0; i < alarmLogCount; i++) {
     int idx = (alarmLogWriteIndex - alarmLogCount + i + MAX_ALARM_LOG_ENTRIES) % MAX_ALARM_LOG_ENTRIES;
+    // Filter: only include alarms from the target month
+    if (alarmLog[idx].timestamp < monthStartEpoch || alarmLog[idx].timestamp >= monthEndEpoch) continue;
+    
     JsonObject alarmObj = alarmsArray.add<JsonObject>();
     alarmObj["timestamp"] = alarmLog[idx].timestamp;
     alarmObj["site"] = alarmLog[idx].siteName;
@@ -4230,8 +4333,9 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
   ftpQuit(session);
   
   gHistorySettings.lastFtpSyncEpoch = gLastSyncedEpoch > 0.0 ? gLastSyncedEpoch : 0.0;
+  saveHistorySettings();
   
-  Serial.print(F("Archived history to FTP: "));
+  Serial.print(F("Archived month to FTP: "));
   Serial.println(remotePath);
   
   return true;
@@ -4376,6 +4480,475 @@ static void loadHistorySettings() {
     f.close();
   #endif
 #endif
+}
+
+// ============================================================================
+// LittleFS Daily Summary System (Warm Tier Implementation)
+// ============================================================================
+// Rolls up hot-tier snapshots into compact daily summaries stored on flash.
+// Files: /fs/history/daily_YYYYMM.json  (one per month)
+// Each file contains an array of per-tank daily summary objects.
+// Automatic pruning keeps only MAX_DAILY_SUMMARY_MONTHS on flash.
+
+// Helper: get YYYYMMDD integer from epoch
+static uint32_t epochToYYYYMMDD(double epoch) {
+  if (epoch <= 0.0) return 0;
+  time_t t = (time_t)epoch;
+  struct tm *tm = gmtime(&t);
+  if (!tm) return 0;
+  return (uint32_t)(tm->tm_year + 1900) * 10000 + (tm->tm_mon + 1) * 100 + tm->tm_mday;
+}
+
+// Roll up yesterday's hot-tier snapshots into a daily summary and persist to LittleFS
+static void rollupDailySummaries() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  if (!mbedFS) return;
+  
+  double now = 0.0;
+  if (gLastSyncedEpoch > 0.0) {
+    now = gLastSyncedEpoch + (double)(millis() - gLastSyncMillis) / 1000.0;
+  }
+  if (now <= 0.0) return;
+  
+  // Determine yesterday's date
+  double yesterdayEpoch = now - 86400.0;
+  uint32_t yesterdayDate = epochToYYYYMMDD(yesterdayEpoch);
+  if (yesterdayDate == 0 || yesterdayDate == gLastDailyRollupDate) return;
+  
+  uint16_t year = yesterdayDate / 10000;
+  uint8_t month = (yesterdayDate / 100) % 100;
+  
+  // Calculate epoch range for yesterday (00:00 - 23:59:59 UTC)
+  struct tm dayStart = {};
+  dayStart.tm_year = year - 1900;
+  dayStart.tm_mon = month - 1;
+  dayStart.tm_mday = yesterdayDate % 100;
+  time_t dayStartEpoch = mktime(&dayStart);
+  // Adjust for timezone (mktime uses local, we want UTC)
+  double dayBegin = (double)dayStartEpoch;
+  double dayEnd = dayBegin + 86400.0;
+  
+  // Load existing month file if present
+  JsonDocument monthDoc;
+  char filePath[64];
+  snprintf(filePath, sizeof(filePath), "/fs/history/daily_%04d%02d.json", year, month);
+  
+  FILE *existing = fopen(filePath, "r");
+  if (existing) {
+    fseek(existing, 0, SEEK_END);
+    long sz = ftell(existing);
+    fseek(existing, 0, SEEK_SET);
+    if (sz > 0 && sz < 8192) {
+      char *buf = (char *)malloc(sz + 1);
+      if (buf) {
+        fread(buf, 1, sz, existing);
+        buf[sz] = '\0';
+        deserializeJson(monthDoc, buf);
+        free(buf);
+      }
+    }
+    fclose(existing);
+  }
+  
+  // Ensure root is array
+  if (!monthDoc.is<JsonArray>()) {
+    monthDoc.to<JsonArray>();
+  }
+  JsonArray entries = monthDoc.as<JsonArray>();
+  
+  // For each tank in hot tier, compute yesterday's summary
+  uint8_t addedCount = 0;
+  for (uint8_t i = 0; i < gTankHistoryCount; i++) {
+    TankHourlyHistory &hist = gTankHistory[i];
+    if (hist.snapshotCount == 0) continue;
+    
+    float minLevel = 999999.0f, maxLevel = -999999.0f;
+    float sumLevel = 0.0f, sumVoltage = 0.0f;
+    float openingLevel = 0.0f, closingLevel = 0.0f;
+    double oldestTs = 1e18, newestTs = 0.0;
+    uint16_t count = 0, voltCount = 0;
+    uint8_t alarms = 0;
+    
+    for (uint16_t j = 0; j < hist.snapshotCount; j++) {
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      TelemetrySnapshot &snap = hist.snapshots[idx];
+      
+      if (snap.timestamp < dayBegin || snap.timestamp >= dayEnd) continue;
+      
+      if (snap.level < minLevel) minLevel = snap.level;
+      if (snap.level > maxLevel) maxLevel = snap.level;
+      sumLevel += snap.level;
+      count++;
+      
+      if (snap.timestamp < oldestTs) { oldestTs = snap.timestamp; openingLevel = snap.level; }
+      if (snap.timestamp > newestTs) { newestTs = snap.timestamp; closingLevel = snap.level; }
+      
+      if (snap.voltage > 0.0f) { sumVoltage += snap.voltage; voltCount++; }
+    }
+    
+    if (count == 0) continue;  // No data for this tank yesterday
+    
+    // Count alarms for this tank on this day
+    for (uint8_t a = 0; a < alarmLogCount; a++) {
+      int aIdx = (alarmLogWriteIndex - alarmLogCount + a + MAX_ALARM_LOG_ENTRIES) % MAX_ALARM_LOG_ENTRIES;
+      if (strcmp(alarmLog[aIdx].clientUid, hist.clientUid) == 0 &&
+          alarmLog[aIdx].tankNumber == hist.tankNumber &&
+          alarmLog[aIdx].timestamp >= dayBegin && alarmLog[aIdx].timestamp < dayEnd) {
+        alarms++;
+      }
+    }
+    
+    // Add to month document
+    JsonObject entry = entries.add<JsonObject>();
+    entry["d"] = yesterdayDate;
+    entry["c"] = hist.clientUid;
+    entry["k"] = hist.tankNumber;
+    entry["mn"] = roundTo(minLevel, 1);
+    entry["mx"] = roundTo(maxLevel, 1);
+    entry["av"] = roundTo(sumLevel / count, 1);
+    entry["op"] = roundTo(openingLevel, 1);
+    entry["cl"] = roundTo(closingLevel, 1);
+    entry["al"] = alarms;
+    entry["vt"] = voltCount > 0 ? roundTo(sumVoltage / voltCount, 2) : 0.0f;
+    entry["n"] = count;
+    addedCount++;
+  }
+  
+  if (addedCount == 0) {
+    gLastDailyRollupDate = yesterdayDate;
+    return;
+  }
+  
+  // Serialize and write to file
+  String output;
+  serializeJson(monthDoc, output);
+  
+  // Ensure directory exists
+  mkdir("/fs/history", 0777);
+  
+  if (tankalarm_posix_write_file_atomic(filePath, output.c_str(), output.length())) {
+    gLastDailyRollupDate = yesterdayDate;
+    Serial.print(F("Daily summary rollup: "));
+    Serial.print(addedCount);
+    Serial.print(F(" tanks for "));
+    Serial.println(yesterdayDate);
+  }
+  #endif
+#endif
+}
+
+// Load a month's daily summaries from LittleFS
+static bool loadDailySummaryMonth(uint16_t year, uint8_t month, JsonDocument &doc) {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  if (!mbedFS) return false;
+  
+  char filePath[64];
+  snprintf(filePath, sizeof(filePath), "/fs/history/daily_%04d%02d.json", year, month);
+  
+  FILE *f = fopen(filePath, "r");
+  if (!f) return false;
+  
+  fseek(f, 0, SEEK_END);
+  long sz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  
+  if (sz <= 0 || sz > 16384) {
+    fclose(f);
+    return false;
+  }
+  
+  char *buf = (char *)malloc(sz + 1);
+  if (!buf) { fclose(f); return false; }
+  
+  fread(buf, 1, sz, f);
+  fclose(f);
+  buf[sz] = '\0';
+  
+  DeserializationError err = deserializeJson(doc, buf);
+  free(buf);
+  return (err == DeserializationError::Ok);
+  #endif
+#endif
+  return false;
+}
+
+// Prune old daily summary files beyond MAX_DAILY_SUMMARY_MONTHS
+static void pruneDailySummaryFiles() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  if (!mbedFS) return;
+  
+  double now = 0.0;
+  if (gLastSyncedEpoch > 0.0) {
+    now = gLastSyncedEpoch + (double)(millis() - gLastSyncMillis) / 1000.0;
+  }
+  if (now <= 0.0) return;
+  
+  time_t nowTime = (time_t)now;
+  struct tm *nowTm = gmtime(&nowTime);
+  if (!nowTm) return;
+  
+  int curYear = nowTm->tm_year + 1900;
+  int curMonth = nowTm->tm_mon + 1;
+  
+  // Calculate oldest allowed month
+  int oldYear = curYear;
+  int oldMonth = curMonth - MAX_DAILY_SUMMARY_MONTHS;
+  while (oldMonth <= 0) { oldMonth += 12; oldYear--; }
+  
+  // Scan for and remove files older than retention
+  // Try a range of possible old files (24 months back)
+  for (int delta = MAX_DAILY_SUMMARY_MONTHS + 1; delta <= 24; delta++) {
+    int delYear = curYear;
+    int delMonth = curMonth - delta;
+    while (delMonth <= 0) { delMonth += 12; delYear--; }
+    
+    char filePath[64];
+    snprintf(filePath, sizeof(filePath), "/fs/history/daily_%04d%02d.json", delYear, delMonth);
+    
+    FILE *check = fopen(filePath, "r");
+    if (check) {
+      fclose(check);
+      remove(filePath);
+      Serial.print(F("Pruned old daily summary: "));
+      Serial.println(filePath);
+    }
+  }
+  #endif
+#endif
+}
+
+// ============================================================================
+// Hot Tier Persistence (survive reboots)
+// ============================================================================
+// Saves the current hot-tier ring buffer to LittleFS so trending data
+// survives power cycles. Written periodically and on graceful shutdown.
+
+static void saveHotTierSnapshot() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  if (!mbedFS || gTankHistoryCount == 0) return;
+  
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  
+  for (uint8_t i = 0; i < gTankHistoryCount; i++) {
+    TankHourlyHistory &hist = gTankHistory[i];
+    if (hist.snapshotCount == 0) continue;
+    
+    JsonObject tankObj = arr.add<JsonObject>();
+    tankObj["c"] = hist.clientUid;
+    tankObj["s"] = hist.siteName;
+    tankObj["k"] = hist.tankNumber;
+    tankObj["h"] = hist.heightInches;
+    
+    JsonArray snaps = tankObj["d"].to<JsonArray>();
+    // Write snapshots in chronological order
+    for (uint16_t j = 0; j < hist.snapshotCount; j++) {
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      TelemetrySnapshot &snap = hist.snapshots[idx];
+      JsonArray entry = snaps.add<JsonArray>();
+      entry.add(snap.timestamp);
+      entry.add(roundTo(snap.level, 2));
+      entry.add(roundTo(snap.voltage, 2));
+    }
+  }
+  
+  size_t jsonLen = measureJson(doc);
+  char *buf = (char *)malloc(jsonLen + 1);
+  if (!buf) return;
+  serializeJson(doc, buf, jsonLen + 1);
+  
+  mkdir("/fs/history", 0777);
+  if (tankalarm_posix_write_file_atomic("/fs/history/hot_tier.json", buf, jsonLen)) {
+    Serial.print(F("Hot tier saved: "));
+    Serial.print(gTankHistoryCount);
+    Serial.println(F(" tanks"));
+  }
+  free(buf);
+  #endif
+#endif
+}
+
+static void loadHotTierSnapshot() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  if (!mbedFS) return;
+  
+  FILE *f = fopen("/fs/history/hot_tier.json", "r");
+  if (!f) return;
+  
+  fseek(f, 0, SEEK_END);
+  long sz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  
+  // Hot tier JSON could be large with 90 snapshots × 20 tanks
+  if (sz <= 0 || sz > 65536) {
+    fclose(f);
+    return;
+  }
+  
+  char *buf = (char *)malloc(sz + 1);
+  if (!buf) { fclose(f); return; }
+  
+  fread(buf, 1, sz, f);
+  fclose(f);
+  buf[sz] = '\0';
+  
+  JsonDocument doc;
+  if (deserializeJson(doc, buf) != DeserializationError::Ok) {
+    free(buf);
+    return;
+  }
+  free(buf);
+  
+  JsonArray arr = doc.as<JsonArray>();
+  gTankHistoryCount = 0;
+  
+  for (JsonObject tankObj : arr) {
+    if (gTankHistoryCount >= MAX_HISTORY_TANKS) break;
+    
+    TankHourlyHistory &hist = gTankHistory[gTankHistoryCount];
+    strlcpy(hist.clientUid, tankObj["c"] | "", sizeof(hist.clientUid));
+    strlcpy(hist.siteName, tankObj["s"] | "", sizeof(hist.siteName));
+    hist.tankNumber = tankObj["k"] | 0;
+    hist.heightInches = tankObj["h"] | 120.0f;
+    hist.snapshotCount = 0;
+    hist.writeIndex = 0;
+    
+    JsonArray snaps = tankObj["d"].as<JsonArray>();
+    for (JsonArray entry : snaps) {
+      if (hist.snapshotCount >= MAX_HOURLY_HISTORY_PER_TANK) break;
+      
+      TelemetrySnapshot &snap = hist.snapshots[hist.writeIndex];
+      snap.timestamp = entry[0].as<double>();
+      snap.level = entry[1].as<float>();
+      snap.voltage = entry[2].as<float>();
+      
+      hist.writeIndex = (hist.writeIndex + 1) % MAX_HOURLY_HISTORY_PER_TANK;
+      hist.snapshotCount++;
+    }
+    
+    if (hist.clientUid[0] != '\0') {
+      gTankHistoryCount++;
+    }
+  }
+  
+  Serial.print(F("Hot tier restored: "));
+  Serial.print(gTankHistoryCount);
+  Serial.println(F(" tanks from flash"));
+  #endif
+#endif
+}
+
+// ============================================================================
+// FTP Archive Retrieval with Caching
+// ============================================================================
+// Loads a month from FTP and caches the result for repeated API access.
+// Cache is invalidated when a different month is requested.
+
+static bool loadFtpArchiveCached(uint16_t year, uint8_t month) {
+  // Return cached if matching
+  if (gFtpArchiveCache.valid && gFtpArchiveCache.cachedYear == year && gFtpArchiveCache.cachedMonth == month) {
+    return true;
+  }
+  
+  // Need FTP
+  if (!gConfig.ftpEnabled) return false;
+  
+  JsonDocument doc;
+  if (!loadArchivedMonth(year, month, doc)) {
+    return false;
+  }
+  
+  // Parse into cache
+  gFtpArchiveCache.cachedYear = year;
+  gFtpArchiveCache.cachedMonth = month;
+  gFtpArchiveCache.tankCount = 0;
+  
+  JsonArray summaries = doc["tankSummaries"].as<JsonArray>();
+  for (JsonObject tankObj : summaries) {
+    if (gFtpArchiveCache.tankCount >= MAX_HISTORY_TANKS) break;
+    
+    auto &cached = gFtpArchiveCache.tanks[gFtpArchiveCache.tankCount];
+    strlcpy(cached.clientUid, tankObj["clientUid"] | "", sizeof(cached.clientUid));
+    cached.tankNumber = tankObj["tank"] | 0;
+    cached.minLevel = tankObj["minLevel"] | 0.0f;
+    cached.maxLevel = tankObj["maxLevel"] | 0.0f;
+    cached.avgLevel = tankObj["avgLevel"] | 0.0f;
+    cached.avgVoltage = tankObj["avgVoltage"] | 0.0f;
+    cached.readings = tankObj["readings"] | 0;
+    gFtpArchiveCache.tankCount++;
+  }
+  
+  gFtpArchiveCache.valid = true;
+  Serial.print(F("FTP archive cached: "));
+  Serial.print(year);
+  Serial.print(F("/"));
+  Serial.println(month);
+  return true;
+}
+
+// Populate a JSON stats object from FTP cache for a specific tank
+static void populateStatsFromFtpCache(const char *clientUid, uint8_t tankNumber, JsonObject &statsObj) {
+  for (uint8_t i = 0; i < gFtpArchiveCache.tankCount; i++) {
+    auto &cached = gFtpArchiveCache.tanks[i];
+    if (strcmp(cached.clientUid, clientUid) == 0 && cached.tankNumber == tankNumber) {
+      statsObj["min"] = roundTo(cached.minLevel, 1);
+      statsObj["max"] = roundTo(cached.maxLevel, 1);
+      statsObj["avg"] = roundTo(cached.avgLevel, 1);
+      statsObj["readings"] = cached.readings;
+      statsObj["available"] = true;
+      statsObj["dataSource"] = "ftp";
+      return;
+    }
+  }
+  statsObj["available"] = false;
+  statsObj["message"] = "Tank not found in archive";
+}
+
+// Populate stats from LittleFS daily summaries for a specific tank+month
+static void populateStatsFromDailySummary(uint16_t year, uint8_t month,
+                                           const char *clientUid, uint8_t tankNumber,
+                                           JsonObject &statsObj) {
+  JsonDocument monthDoc;
+  if (!loadDailySummaryMonth(year, month, monthDoc)) {
+    statsObj["available"] = false;
+    statsObj["message"] = "No daily summary data on flash";
+    return;
+  }
+  
+  JsonArray entries = monthDoc.as<JsonArray>();
+  float minLevel = 999999.0f, maxLevel = -999999.0f, sumAvg = 0.0f;
+  uint16_t dayCount = 0;
+  
+  for (JsonObject entry : entries) {
+    const char *uid = entry["c"] | "";
+    uint8_t tank = entry["k"] | 0;
+    if (strcmp(uid, clientUid) != 0 || tank != tankNumber) continue;
+    
+    float mn = entry["mn"] | 0.0f;
+    float mx = entry["mx"] | 0.0f;
+    float av = entry["av"] | 0.0f;
+    if (mn < minLevel) minLevel = mn;
+    if (mx > maxLevel) maxLevel = mx;
+    sumAvg += av;
+    dayCount++;
+  }
+  
+  if (dayCount > 0) {
+    statsObj["min"] = roundTo(minLevel, 1);
+    statsObj["max"] = roundTo(maxLevel, 1);
+    statsObj["avg"] = roundTo(sumAvg / dayCount, 1);
+    statsObj["readings"] = dayCount;
+    statsObj["available"] = true;
+    statsObj["dataSource"] = "flash";
+  } else {
+    statsObj["available"] = false;
+    statsObj["message"] = "No data for this tank in daily summary";
+  }
 }
 
 static void printHardwareRequirements() {
@@ -8508,6 +9081,27 @@ static void sendHistoryJson(EthernetClient &client, const String &query) {
   settings["lastPrune"] = gHistorySettings.lastPruneEpoch;
   settings["totalPruned"] = gHistorySettings.totalRecordsPruned;
   
+  // Data source and tier availability metadata
+  JsonObject dataInfo = doc["dataInfo"].to<JsonObject>();
+  dataInfo["source"] = "hot";  // Primary data from RAM ring buffer
+  dataInfo["hotTierSnapshots"] = (gTankHistoryCount > 0 && gTankHistory[0].snapshotCount > 0);
+  dataInfo["warmTierAvailable"] = true;  // LittleFS daily summaries always available
+  dataInfo["coldTierAvailable"] = (gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled);
+  
+  // Indicate max available range without FTP
+  int maxHotDays = gHistorySettings.hotTierRetentionDays;
+  int maxWarmDays = gHistorySettings.warmTierRetentionMonths * 30;
+  dataInfo["maxRangeWithoutFtp"] = maxHotDays + maxWarmDays;
+  dataInfo["maxRangeLabel"] = (gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled)
+                               ? "Unlimited (FTP archive)" : "~" + String(maxHotDays + maxWarmDays) + " days";
+  
+  // If requesting more data than hot tier holds and FTP is not available,
+  // indicate limited data and suggest range reduction
+  if (maxDays > maxHotDays && !(gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled)) {
+    dataInfo["rangeNote"] = "Requested range exceeds hot tier. Daily summaries available for " +
+                            String(gHistorySettings.warmTierRetentionMonths) + " months. Enable FTP for full archive.";
+  }
+  
   // Serialize and send
   String jsonOut;
   serializeJson(doc, jsonOut);
@@ -8547,7 +9141,6 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   
   // Build comparison JSON (~32KB; ArduinoJson v7 auto-sizes)
   JsonDocument doc;
-  // doc.isNull() removed; in ArduinoJson 7 it returns true for new/empty docs
   
   doc["current"]["year"] = currYear;
   doc["current"]["month"] = currMonth;
@@ -8556,16 +9149,29 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   
   JsonArray comparisons = doc["tanks"].to<JsonArray>();
   
-  // Check if requested months are in hot tier (current month) or need FTP retrieval
+  // Determine current time for hot tier range check
   double nowEpoch = 0.0;
   if (gLastSyncedEpoch > 0.0) {
     nowEpoch = gLastSyncedEpoch + (double)(millis() - gLastSyncMillis) / 1000.0;
   }
-  
-  // Calculate if current period is in hot tier (stored in memory)
   time_t nowTime = (time_t)nowEpoch;
   struct tm *nowTm = gmtime(&nowTime);
   bool currInHotTier = (nowTm && nowTm->tm_year + 1900 == currYear && nowTm->tm_mon + 1 == currMonth);
+  bool prevInHotTier = (nowTm && nowTm->tm_year + 1900 == prevYear && nowTm->tm_mon + 1 == prevMonth);
+  
+  // Try to load previous month from warm tier (LittleFS) or cold tier (FTP)
+  bool prevFromWarm = false;
+  bool prevFromCold = false;
+  if (!prevInHotTier) {
+    // First try LittleFS daily summaries (warm tier)
+    JsonDocument warmDoc;
+    prevFromWarm = loadDailySummaryMonth(prevYear, prevMonth, warmDoc);
+    
+    // If warm tier not available, try FTP archive (cold tier)
+    if (!prevFromWarm && gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled) {
+      prevFromCold = loadFtpArchiveCached(prevYear, prevMonth);
+    }
+  }
   
   // For each tank in hot tier, calculate comparison
   for (uint8_t h = 0; h < gTankHistoryCount; h++) {
@@ -8585,7 +9191,6 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
         uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
         TelemetrySnapshot &snap = hist.snapshots[idx];
-        
         if (snap.level < currMin) currMin = snap.level;
         if (snap.level > currMax) currMax = snap.level;
         currSum += snap.level;
@@ -8599,23 +9204,72 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
       currStats["max"] = roundTo(currMax, 1);
       currStats["avg"] = roundTo(currSum / currCount, 1);
       currStats["readings"] = currCount;
+      currStats["available"] = true;
+      currStats["dataSource"] = "hot";
+    } else if (!currInHotTier) {
+      // Current month not in hot tier — try warm/cold
+      populateStatsFromDailySummary(currYear, currMonth, hist.clientUid, hist.tankNumber, currStats);
+      if (!currStats["available"].as<bool>() && gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled) {
+        if (loadFtpArchiveCached(currYear, currMonth)) {
+          populateStatsFromFtpCache(hist.clientUid, hist.tankNumber, currStats);
+        }
+      }
     } else {
       currStats["available"] = false;
-      currStats["message"] = "Current month data not in hot tier";
+      currStats["message"] = "No data for current month";
     }
     
-    // Previous period would need FTP retrieval
-    // For now, indicate if data needs to be fetched from archive
+    // Previous period stats from appropriate tier
     JsonObject prevStats = tankComp["previousStats"].to<JsonObject>();
-    prevStats["available"] = false;
-    prevStats["message"] = "Previous month requires FTP archive retrieval";
-    prevStats["archivePath"] = String("/history/") + prevYear + "/" + 
-                               (prevMonth < 10 ? "0" : "") + prevMonth + "/tanks.json";
+    if (prevInHotTier) {
+      // Rare case: previous month still in hot tier (if retention > 30 days)
+      float prevMin = 9999.0, prevMax = -9999.0, prevSum = 0.0;
+      int prevCount = 0;
+      for (uint16_t j = 0; j < hist.snapshotCount; j++) {
+        uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+        TelemetrySnapshot &snap = hist.snapshots[idx];
+        if (snap.level < prevMin) prevMin = snap.level;
+        if (snap.level > prevMax) prevMax = snap.level;
+        prevSum += snap.level;
+        prevCount++;
+      }
+      if (prevCount > 0) {
+        prevStats["min"] = roundTo(prevMin, 1);
+        prevStats["max"] = roundTo(prevMax, 1);
+        prevStats["avg"] = roundTo(prevSum / prevCount, 1);
+        prevStats["readings"] = prevCount;
+        prevStats["available"] = true;
+        prevStats["dataSource"] = "hot";
+      } else {
+        prevStats["available"] = false;
+        prevStats["message"] = "No data for previous month in hot tier";
+      }
+    } else if (prevFromWarm) {
+      populateStatsFromDailySummary(prevYear, prevMonth, hist.clientUid, hist.tankNumber, prevStats);
+    } else if (prevFromCold) {
+      populateStatsFromFtpCache(hist.clientUid, hist.tankNumber, prevStats);
+    } else {
+      prevStats["available"] = false;
+      if (gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled) {
+        prevStats["message"] = "Archive not found on FTP for this month";
+      } else {
+        prevStats["message"] = "FTP archive not enabled — previous month data unavailable";
+      }
+    }
     
-    // Calculate delta if both available
-    if (currCount > 0) {
+    // Calculate delta if both periods have data
+    bool currAvail = currStats["available"].as<bool>();
+    bool prevAvail = prevStats["available"].as<bool>();
+    if (currAvail && prevAvail) {
+      float cAvg = currStats["avg"].as<float>();
+      float pAvg = prevStats["avg"].as<float>();
+      tankComp["deltaAvg"] = roundTo(cAvg - pAvg, 1);
+      tankComp["deltaAvailable"] = true;
+    } else {
       tankComp["deltaAvailable"] = false;
-      tankComp["deltaMessage"] = "Comparison pending archive retrieval";
+      if (!prevAvail) {
+        tankComp["deltaMessage"] = "Previous month data not available for comparison";
+      }
     }
   }
   
@@ -8623,6 +9277,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   JsonObject archiveInfo = doc["archiveInfo"].to<JsonObject>();
   archiveInfo["ftpEnabled"] = gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled;
   archiveInfo["lastSync"] = gHistorySettings.lastFtpSyncEpoch;
+  archiveInfo["warmTierMonths"] = gHistorySettings.warmTierRetentionMonths;
   
   // Serialize and send
   String jsonOut;
@@ -8655,9 +9310,8 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
     tankNum = atoi(tankParam.substring(colonPos + 1).c_str());
   }
   
-  // Build YoY comparison JSON (~24KB; ArduinoJson v7 auto-sizes)
+  // Build YoY comparison JSON
   JsonDocument doc;
-  // doc.isNull() removed; in ArduinoJson 7 it returns true for new/empty docs
   
   // Get current year/month
   double nowEpoch = 0.0;
@@ -8693,7 +9347,6 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
         uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
         TelemetrySnapshot &snap = hist.snapshots[idx];
-        
         if (snap.level < yearMin) yearMin = snap.level;
         if (snap.level > yearMax) yearMax = snap.level;
         yearSum += snap.level;
@@ -8706,20 +9359,74 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
         currentYearStats["max"] = roundTo(yearMax, 1);
         currentYearStats["avg"] = roundTo(yearSum / yearCount, 1);
         currentYearStats["readings"] = yearCount;
+        currentYearStats["dataSource"] = "hot";
       }
       
-      // Previous years would need FTP retrieval
+      // Previous years — attempt warm tier (monthly aggregation) or cold tier (FTP)
       JsonArray prevYears = tankSum["previousYears"].to<JsonArray>();
       for (int y = 1; y <= yearsToCompare; y++) {
         int targetYear = currentYear - y;
         JsonObject yearInfo = prevYears.add<JsonObject>();
         yearInfo["year"] = targetYear;
-        yearInfo["available"] = false;
-        yearInfo["archivePath"] = String("/history/") + targetYear + "/annual_summary.json";
+        
+        // Aggregate all 12 months of the target year from warm/cold tiers
+        float yMin = 9999.0, yMax = -9999.0, ySum = 0.0;
+        int yDays = 0;
+        bool foundAnyMonth = false;
+        
+        for (int m = 1; m <= 12; m++) {
+          // Try warm tier first (LittleFS daily summaries)
+          JsonDocument mDoc;
+          if (loadDailySummaryMonth(targetYear, m, mDoc)) {
+            JsonArray entries = mDoc.as<JsonArray>();
+            for (JsonObject entry : entries) {
+              const char *uid = entry["c"] | "";
+              uint8_t tk = entry["k"] | 0;
+              if (strcmp(uid, hist.clientUid) != 0 || tk != hist.tankNumber) continue;
+              float mn = entry["mn"] | 0.0f;
+              float mx = entry["mx"] | 0.0f;
+              float av = entry["av"] | 0.0f;
+              if (mn < yMin) yMin = mn;
+              if (mx > yMax) yMax = mx;
+              ySum += av;
+              yDays++;
+              foundAnyMonth = true;
+            }
+          } else if (gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled) {
+            // Try cold tier (FTP archive)
+            if (loadFtpArchiveCached(targetYear, m)) {
+              for (uint8_t ci = 0; ci < gFtpArchiveCache.tankCount; ci++) {
+                auto &cached = gFtpArchiveCache.tanks[ci];
+                if (strcmp(cached.clientUid, hist.clientUid) != 0 || cached.tankNumber != hist.tankNumber) continue;
+                if (cached.minLevel < yMin) yMin = cached.minLevel;
+                if (cached.maxLevel > yMax) yMax = cached.maxLevel;
+                ySum += cached.avgLevel;
+                yDays++;
+                foundAnyMonth = true;
+              }
+            }
+          }
+        }
+        
+        if (foundAnyMonth && yDays > 0) {
+          yearInfo["available"] = true;
+          yearInfo["min"] = roundTo(yMin, 1);
+          yearInfo["max"] = roundTo(yMax, 1);
+          yearInfo["avg"] = roundTo(ySum / yDays, 1);
+          yearInfo["monthsWithData"] = yDays;
+          yearInfo["dataSource"] = "archive";
+        } else {
+          yearInfo["available"] = false;
+          if (!(gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled)) {
+            yearInfo["message"] = "FTP archive not enabled";
+          } else {
+            yearInfo["message"] = "No archived data found for this year";
+          }
+        }
       }
     }
   } else {
-    // Return detailed history for specific tank
+    // Return detailed monthly history for specific tank
     doc["tank"]["client"] = clientUid;
     doc["tank"]["tankNumber"] = tankNum;
     
@@ -8737,32 +9444,58 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       doc["tank"]["site"] = hist->siteName;
       doc["tank"]["found"] = true;
       
-      // Monthly breakdown for current year from hot tier
       JsonArray monthlyData = doc["tank"]["monthlyData"].to<JsonArray>();
       
-      // Aggregate by month (simplified - in reality would track per-month)
+      // Current month from hot tier
       JsonObject currMonthObj = monthlyData.add<JsonObject>();
       currMonthObj["year"] = currentYear;
       currMonthObj["month"] = currentMonth;
       
       float min = 9999.0, max = -9999.0, sum = 0.0;
       int count = 0;
-      
       for (uint16_t j = 0; j < hist->snapshotCount; j++) {
         uint16_t idx = (hist->writeIndex - hist->snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
         TelemetrySnapshot &snap = hist->snapshots[idx];
-        
         if (snap.level < min) min = snap.level;
         if (snap.level > max) max = snap.level;
         sum += snap.level;
         count++;
       }
-      
       if (count > 0) {
         currMonthObj["min"] = roundTo(min, 1);
         currMonthObj["max"] = roundTo(max, 1);
         currMonthObj["avg"] = roundTo(sum / count, 1);
         currMonthObj["readings"] = count;
+        currMonthObj["dataSource"] = "hot";
+      }
+      
+      // Previous months from warm/cold tiers (go back up to yearsToCompare*12 months)
+      int totalMonthsBack = yearsToCompare * 12;
+      int mYear = currentYear;
+      int mMonth = currentMonth - 1;  // Start from previous month
+      if (mMonth < 1) { mMonth = 12; mYear--; }
+      
+      for (int i = 0; i < totalMonthsBack && mYear >= 2020; i++) {
+        JsonObject mObj = monthlyData.add<JsonObject>();
+        mObj["year"] = mYear;
+        mObj["month"] = mMonth;
+        
+        // Try warm tier
+        populateStatsFromDailySummary(mYear, mMonth, clientUid.c_str(), tankNum, mObj);
+        
+        // If warm tier failed, try cold tier
+        if (!mObj["available"].as<bool>() && gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled) {
+          if (loadFtpArchiveCached(mYear, mMonth)) {
+            // Clear previous failed attempt fields
+            mObj.remove("available");
+            mObj.remove("message");
+            populateStatsFromFtpCache(clientUid.c_str(), tankNum, mObj);
+          }
+        }
+        
+        // Move to previous month
+        mMonth--;
+        if (mMonth < 1) { mMonth = 12; mYear--; }
       }
     } else {
       doc["tank"]["found"] = false;
@@ -8773,7 +9506,10 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   // Include archive availability info
   JsonObject archiveInfo = doc["archiveInfo"].to<JsonObject>();
   archiveInfo["ftpEnabled"] = gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled;
-  archiveInfo["note"] = "Previous year data requires FTP archive retrieval";
+  archiveInfo["warmTierMonths"] = gHistorySettings.warmTierRetentionMonths;
+  if (!(gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled)) {
+    archiveInfo["note"] = "Enable FTP for full historical archive access";
+  }
   
   // Serialize and send
   String jsonOut;
