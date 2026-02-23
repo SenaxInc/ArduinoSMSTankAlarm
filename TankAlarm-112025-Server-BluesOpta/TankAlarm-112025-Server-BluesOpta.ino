@@ -1469,7 +1469,7 @@ ctx.stroke();
 const grad=ctx.createLinearGradient(0,pad,0,height);grad.addColorStop(0,(color||'#2563eb')+'30');grad.addColorStop(1,(color||'#2563eb')+'05');ctx.lineTo(pad+drawW,height);ctx.lineTo(pad,height);ctx.closePath();ctx.fillStyle=grad;ctx.fill();
 const label=document.createElement('span');label.className='spark-label';const spanSec=readings.length>=2?(readings[readings.length-1].timestamp-readings[0].timestamp):0;const spanDays=Math.round(spanSec/86400);let spanText=spanDays>=60?Math.round(spanDays/30)+'mo':spanDays>=2?spanDays+'d':'<1d';label.textContent=readings.length+'pts / '+spanText;container.appendChild(label);}
 async function loadSparklineData(){
-try{const res=await fetch('/api/history?days=90');if(!res.ok)return;const data=await res.json();
+try{const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),10000);const res=await fetch('/api/history?days=90',{signal:ac.signal});clearTimeout(tid);if(!res.ok)return;const data=await res.json();
 if(!data.tanks||!data.tanks.length)return;
 const map={};data.tanks.forEach(t=>{const key=(t.client||'')+'|'+(t.tank||1);map[key]=t.readings||[];});
 state.sparkData=map;renderSparklines();}catch(e){console.warn('Sparkline data unavailable:',e.message);}}
@@ -1503,7 +1503,7 @@ async function clearRelays(clientUid,tankIdx){if(state.refreshing)return;if(stat
 window.clearRelays=clearRelays;
 function applyServerData(data){state.clients=data.cs||[];state.sites=buildSiteModel(state.clients);const srv=data.srv||{};state.paused=!!srv.ps;state.pinConfigured=!!srv.pc;state.uiRefreshS=DEFAULT_REFRESH_S;renderSites();renderPauseButton();updateStats();scheduleRefresh();if(Object.keys(state.sparkData).length){renderSparklines();}else{loadSparklineData();}if(!state.sparkTimer){state.sparkTimer=setInterval(loadSparklineData,300000);}}
 function scheduleRefresh(){if(state.timer)clearInterval(state.timer);state.timer=setInterval(refreshData,state.uiRefreshS*1000);}
-async function refreshData(){try{const res=await fetch('/api/clients?summary=1');if(!res.ok)throw new Error('HTTP '+res.status);applyServerData(await res.json());}catch(err){showToast(err.message||'Fleet refresh failed',true);if(els.siteContainer)els.siteContainer.innerHTML='<div class="no-data" style="color:#dc2626">Failed to load: '+escapeHtml(err.message||'Unknown error')+'<br><small>Retrying...</small></div>';if(!state.timer)setTimeout(refreshData,3000);}finally{hideLoading();}}
+async function refreshData(){try{const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),10000);const res=await fetch('/api/clients?summary=1',{signal:ac.signal,headers:{'Cache-Control':'no-cache'}});clearTimeout(tid);if(!res.ok)throw new Error('HTTP '+res.status);applyServerData(await res.json());}catch(err){const msg=err.name==='AbortError'?'Request timed out (server busy)':err.message||'Fleet refresh failed';showToast(msg,true);if(els.siteContainer)els.siteContainer.innerHTML='<div class="no-data" style="color:#dc2626">Failed to load: '+escapeHtml(msg)+'<br><small>Retrying in a few seconds...</small></div>';if(!state.timer)setTimeout(refreshData,5000);}finally{hideLoading();}}
 refreshData();})();
 </script></body></html>)HTML";
 
@@ -1523,7 +1523,7 @@ function lookupClient(uid){if(!state.data || !state.data.clients)return null;ret
 function updateClientDetails(uid){if(!uid){els.clientDetails.textContent='Select a client';return;}const client = lookupClient(uid);const detailParts = [];if(client){detailParts.push(`<strong>Site:</strong> ${escapeHtml(client.site || 'Unknown')}`);const dtLbl=client.label||(client.objectType==='tank'||!client.objectType?'Tank':'Sensor');detailParts.push(`<strong>Latest:</strong> ${escapeHtml(dtLbl)}${client.tank?' #'+escapeHtml(client.tank):''}at ${formatNumber(client.levelInches)}${client.measurementUnit||'in'}`);}else{detailParts.push('Client not in telemetry data');}detailParts.push(`<strong>UID:</strong><code>${uid}</code>`);detailParts.push(`<button type="button" class="secondary" style="padding:4px 12px;font-size:0.85rem;" onclick="window.location.href='/config-generator?uid=${encodeURIComponent(uid)}'">Edit Configuration</button>`);els.clientDetails.innerHTML = detailParts.join(' - ');}
 function normalizeApiData(data){var srv=data.srv||{};var result={server:{name:srv.n||'',smsPrimary:srv.sp||'',smsSecondary:srv.ss||'',productUid:srv.pu||'',pinConfigured:!!srv.pc,dailyEmail:srv.de||''},serverUid:data.si||'',nextDailyEmailEpoch:data.nde||0,clients:(data.cs||[]).map(function(c){return{client:c.c||'',site:c.s||'',label:c.n||'',tank:c.k||'',alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,levelInches:c.l,vinVoltage:c.v,firmwareVersion:c.fv||'',objectType:c.ot||'',measurementUnit:c.mu||'',tanks:(c.ts||[]).map(function(t){return{label:t.n||'',tank:t.k||'',levelInches:t.l,heightInches:t.h,alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,objectType:t.ot||'',measurementUnit:t.mu||''};})};}})};result.configs=(data.cfgs||[]).map(function(cfg){return{client:cfg.c||'',site:cfg.s||'',configJson:cfg.cj||''};});return result;}
 function applyServerData(data,preferredUid){try{state.data=normalizeApiData(data);if(preferredUid){state.selected=preferredUid;}renderTelemetry();renderNewSites();populateClientSelect();}catch(e){console.error('applyServerData error:',e);if(els.telemetryContainer)els.telemetryContainer.innerHTML='<div class="empty-state" style="color:var(--danger);">Render error: '+e.message+'</div>';}}
-async function refreshData(preferredUid){try{const query=preferredUid?'&client='+encodeURIComponent(preferredUid):'';const res=await fetch('/api/clients?summary=1'+query);if(!res.ok){throw new Error('Failed to fetch server data');}const data=await res.json();console.log('API response: cs=',data.cs?data.cs.length:0,'clients, cfgs=',data.cfgs?data.cfgs.length:0);applyServerData(data,preferredUid||state.selected);}catch(err){console.error('refreshData error:',err);showToast(err.message||'Initialization failed',true);if(els.telemetryContainer)els.telemetryContainer.innerHTML='<div class="empty-state" style="color:var(--danger);">'+escapeHtml(err.message||'Failed to load data')+'</div>';}}
+async function refreshData(preferredUid){try{const query=preferredUid?'&client='+encodeURIComponent(preferredUid):'';const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),10000);const res=await fetch('/api/clients?summary=1'+query,{signal:ac.signal,headers:{'Cache-Control':'no-cache'}});clearTimeout(tid);if(!res.ok){throw new Error('Failed to fetch server data');}const data=await res.json();console.log('API response: cs=',data.cs?data.cs.length:0,'clients, cfgs=',data.cfgs?data.cfgs.length:0);applyServerData(data,preferredUid||state.selected);}catch(err){const msg=err.name==='AbortError'?'Request timed out (server busy)':err.message||'Initialization failed';console.error('refreshData error:',err);showToast(msg,true);if(els.telemetryContainer)els.telemetryContainer.innerHTML='<div class="empty-state" style="color:var(--danger);">'+escapeHtml(msg)+'</div>';}}
 async function triggerManualRefresh(targetUid){const payload = targetUid ?{client:targetUid,pin:token}:{pin:token};try{const res = await fetch('/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text = await res.text();throw new Error(text || 'Refresh failed');}const data = await res.json();applyServerData(data,targetUid || state.selected);showToast(targetUid ? 'Selected site updated':'All sites updated');}catch(err){showToast(err.message || 'Refresh failed',true);}}
 async function requestLocation(clientUid){if(!clientUid){showToast('Select a client first.',true);return;}try{const res = await fetch('/api/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid})});if(!res.ok){const text = await res.text();throw new Error(text || 'Location request failed');}showToast('Location request sent - check back in a few minutes');await fetchLocationInfo(clientUid);}catch(err){showToast(err.message || 'Location request failed',true);}}
 async function fetchLocationInfo(clientUid){if(!clientUid || !els.locationInfo)return;try{const res = await fetch(`/api/location?client=${encodeURIComponent(clientUid)}`);if(!res.ok)return;const data = await res.json();if(data.hasLocation){const date = data.locationEpoch ? new Date(data.locationEpoch * 1000).toLocaleString():'Unknown';els.locationInfo.innerHTML = `<strong>&#x1F4CD; Cached Location:</strong> ${data.latitude.toFixed(4)}, ${data.longitude.toFixed(4)} <span style="color:var(--muted)">(as of ${date})</span>`;els.locationInfo.style.display = 'block';}else{els.locationInfo.innerHTML = '<strong>&#x1F4CD; Location:</strong> <span style="color:var(--muted)">Not yet received. Click "Request GPS Location" to fetch.</span>';els.locationInfo.style.display = 'block';}}catch(err){els.locationInfo.style.display = 'none';}}
@@ -4982,31 +4982,63 @@ static void initializeNotecard() {
       // Join the server fleet so fleet-targeted notes from clients are delivered
       const char *fleet = (gConfig.serverFleet[0] != '\0') ? gConfig.serverFleet : "tankalarm-server";
       JAddStringToObject(req, "fleet", fleet);
-      notecard.sendRequest(req);
-      Serial.print(F("Product UID: "));
-      Serial.println(gConfig.productUid);
-      Serial.print(F("Server Fleet: "));
-      Serial.println(fleet);
+      J *hubRsp = notecard.requestAndResponse(req);
+      if (hubRsp) {
+        const char *hubErr = JGetString(hubRsp, "err");
+        if (hubErr && hubErr[0] != '\0') {
+          Serial.print(F("WARNING: hub.set failed: "));
+          Serial.println(hubErr);
+        } else {
+          Serial.print(F("Product UID: "));
+          Serial.println(gConfig.productUid);
+          Serial.print(F("Server Fleet: "));
+          Serial.println(fleet);
+        }
+        notecard.deleteResponse(hubRsp);
+      } else {
+        Serial.println(F("WARNING: hub.set returned no response"));
+      }
     } else {
       notecard.deleteResponse(notecard.requestAndResponse(req));
       Serial.println(F("WARNING: Product UID not configured! Set it in Server Settings."));
     }
   }
 
-  req = notecard.newRequest("card.uuid");
+  // Retrieve the Notecard device UID via hub.get (returns "device" field)
+  req = notecard.newRequest("hub.get");
   if (req) {
     J *rsp = notecard.requestAndResponse(req);
     if (rsp) {
-      const char *uid = JGetString(rsp, "uuid");
-      if (uid) {
+      const char *err = JGetString(rsp, "err");
+      if (err && err[0] != '\0') {
+        Serial.print(F("WARNING: hub.get failed: "));
+        Serial.println(err);
+      }
+      const char *uid = JGetString(rsp, "device");
+      if (uid && uid[0] != '\0') {
         strlcpy(gServerUid, uid, sizeof(gServerUid));
       }
       notecard.deleteResponse(rsp);
     }
   }
 
-  Serial.print(F("Server Notecard UID: " ));
-  Serial.println(gServerUid);
+  // Fallback: try card.version if hub.get didn't return a device UID
+  if (gServerUid[0] == '\0') {
+    req = notecard.newRequest("card.version");
+    if (req) {
+      J *rsp = notecard.requestAndResponse(req);
+      if (rsp) {
+        const char *uid = JGetString(rsp, "device");
+        if (uid && uid[0] != '\0') {
+          strlcpy(gServerUid, uid, sizeof(gServerUid));
+        }
+        notecard.deleteResponse(rsp);
+      }
+    }
+  }
+
+  Serial.print(F("Server Notecard UID: "));
+  Serial.println(gServerUid[0] != '\0' ? gServerUid : "(not available)");
 }
 
 static void ensureTimeSync() {
