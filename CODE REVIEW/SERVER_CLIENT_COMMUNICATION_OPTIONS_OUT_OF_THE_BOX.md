@@ -27,7 +27,7 @@ Instead of creating one route for SMS, one for Email, and one for every device i
 ### 2.1 Configuration
 - **Route Name:** `NotehubAPI` (or `UniversalProxy`)
 - **Route URL:** `https://api.notefile.net/`
-- **Headers:** `Authorization: Bearer <access_token>` (Stored securely in Notehub environment variables, hidden from device firmware if desired, or passed by device).
+- **Headers:** `X-SESSION-TOKEN: <Personal Access Token>` (Stored securely in Notehub route settings, hidden from device firmware if desired. Use the raw PAT value only — do not include `Bearer `).
 
 ### 2.2 How it Works
 The Server Opta uses the Notecard's `web.post` (or `web.get`) command to hit any endpoint on the Notehub API.
@@ -141,7 +141,7 @@ This provides the "Best of Both Worlds": the cost-efficiency of batched notes fo
 
 #### A. Notehub Configuration (The "Universal Proxy")
 1.  **Create Proxy Route:** "NotehubAPI" pointing to `https://api.notefile.net`.
-2.  **Authentication:** Add Header `Authorization: Bearer <access_token>` (Generate a Programmatic Access Token in Notehub Settings).
+2.  **Authentication:** Add Header `X-SESSION-TOKEN: <Personal Access Token>` (Create a Personal Access Token in Notehub profile/API Access and paste the raw token only — no `Bearer ` prefix).
 3.  **Environment Variables:** Define standard vars at the **Fleet Level**:
     *   `_poll_rate`: 15 (minutes)
     *   `_alarm_high`: 90 (percent)
@@ -181,7 +181,7 @@ Use this checklist to migrate your system to the new "Hybrid Architecture".
     - [ ] Name: `UniversalProxy`
     - [ ] URL: `https://api.notefile.net/`
     - [ ] HTTP Method: `POST` (Handles both GET/POST requests from device)
-    - [ ] Header: `Authorization: Bearer <your-programmatic-access-token>` (Generate in Notehub Settings -> Developer)
+    - [ ] Header: `X-SESSION-TOKEN: <your-personal-access-token>` (Create in Notehub profile/API Access; paste raw token only, without `Bearer `)
 - [ ] **Configure Fleets**
     - [ ] Create Fleet: `tankalarm-clients` (Assign all Client Optas here)
     - [ ] Create Fleet: `tankalarm-server` (Assign Server Opta here)

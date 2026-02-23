@@ -87,7 +87,7 @@ note.add("telemetry.qo") ──► Client's telemetry.qo
    The server firmware explicitly uses HTTP port 80 for NWS API calls with the comment: `#define NWS_API_PORT 80  // Use HTTP for Arduino compatibility (HTTPS not easily supported)`. The `PortentaEthernet` library does not include a built-in SSL/TLS client.
 
 2. **The Notehub REST API (`api.notefile.net`) requires HTTPS (port 443).**  
-   There is no plain HTTP endpoint. All API calls require `Authorization: Bearer <token>` headers over TLS.
+   There is no plain HTTP endpoint. All API calls require `X-SESSION-TOKEN: <token>` headers over TLS.
 
 3. **Notecard `web.post`/`web.get` commands require a Proxy Route in Notehub.**  
    The `route` parameter is **required** (not optional) for all `web.*` requests. The Notecard cannot make arbitrary HTTP requests without a configured Proxy Route.
@@ -161,7 +161,7 @@ SERVER → EXTERNAL:
 - Type: HTTP Route targeting Notehub's own API
 - Trigger: Events from server device (`.qo` notefiles: config_dispatch, location_request, serial_request, relay_command)
 - Action: Read `_target` field from event body, POST to `https://api.notefile.net/v1/projects/{pid}/devices/{_target}/notes/{notefile}.qi`
-- Requires the Route to have a Notehub API Bearer token in its HTTP headers
+- Requires the Route to have a Notehub API X-SESSION-TOKEN in its HTTP headers
 - JSONata or JavaScript transform to extract `_target` and build the correct URL
 
 ### Firmware Changes Required
@@ -230,7 +230,7 @@ SERVER → EXTERNAL:
 **Single Proxy Route: "notehub-api"**
 - Type: Proxy  
 - URL: `https://api.notefile.net`
-- HTTP Headers: `Authorization: Bearer <Personal_Access_Token>`
+- HTTP Headers: `X-SESSION-TOKEN: <Personal_Access_Token>`
 - This single route enables ALL Notehub API calls from the server firmware
 
 ### Firmware Changes Required
@@ -310,7 +310,7 @@ SERVER → EXTERNAL:
 ### Pros
 - **Only 1 Proxy Route** in Notehub (plus SMS/Email routes = 3 total)
 - **All routing logic in firmware**: Easier to understand and debug from the Arduino side
-- **Bearer token stored in Notehub Route config**: More secure than embedding on device
+- **X-SESSION-TOKEN stored in Notehub Route config**: More secure than embedding on device
 - **Works without Ethernet internet**: Uses cellular connection through Notecard
 
 ### Cons
@@ -343,14 +343,14 @@ Keep the existing Arduino Opta server hardware. Add the **ArduinoBearSSL** libra
 SERVER → CLIENT (via Ethernet HTTPS):
   Arduino Opta ─Ethernet─► Internet ─HTTPS─► api.notefile.net
     POST /v1/projects/{pid}/devices/{clientUID}/notes/config.qi
-    Authorization: Bearer <PAT>
+    X-SESSION-TOKEN: <PAT>
     Body: {...config data...}
   ──► Target client's config.qi ──► Client reads via note.get
 
 CLIENT → SERVER (via Ethernet HTTPS polling):
   Arduino Opta ─Ethernet─► Internet ─HTTPS─► api.notefile.net
     GET /v1/projects/{pid}/events?since={cursor}
-    Authorization: Bearer <PAT>
+    X-SESSION-TOKEN: <PAT>
   ──► Returns JSON array of recent client events ──► Server processes them
 
 SERVER → EXTERNAL:
@@ -435,7 +435,7 @@ SERVER → EXTERNAL:
      sslClient.print(path);
      sslClient.println(" HTTP/1.1");
      sslClient.println("Host: api.notefile.net");
-     sslClient.print("Authorization: Bearer ");
+     sslClient.print("X-SESSION-TOKEN: ");
      sslClient.println(gConfig.notehubToken);
      sslClient.println("Content-Type: application/json");
      sslClient.print("Content-Length: ");
@@ -474,7 +474,7 @@ SERVER → EXTERNAL:
 - **No Notecard blocking**: HTTPS calls happen on Ethernet, Notecard remains free for syncing
 - **No 8KB response limit**: Ethernet can handle larger responses
 - **Faster API calls**: Ethernet is typically faster than cellular for HTTPS requests
-- **Bearer token on device**: Configurable via web UI, stored in LittleFS (could be a pro or con)
+- **X-SESSION-TOKEN on device**: Configurable via web UI, stored in LittleFS (could be a pro or con)
 
 ### Cons
 - **Requires ArduinoBearSSL library**: Additional dependency, ~30KB RAM for TLS session state
@@ -483,7 +483,7 @@ SERVER → EXTERNAL:
 - **Requires DNS**: Server must resolve `api.notefile.net` — needs properly configured DNS
 - **TLS handshake overhead**: Each HTTPS connection requires a TLS handshake (~1-3 seconds on embedded hardware)
 - **Memory pressure**: BearSSL adds ~30KB RAM usage for TLS state; the Opta has 1MB SRAM so this is manageable but not negligible
-- **Bearer token stored on device**: If the device is physically compromised, the token is exposed. The token grants access to ALL devices in the Notehub project.
+- **X-SESSION-TOKEN stored on device**: If the device is physically compromised, the token is exposed. The token grants access to ALL devices in the Notehub project.
 - **Certificate pinning challenges**: If Blues changes their TLS certificate provider, firmware updates are needed
 - **Still needs firmware rewrite**: Same scope as Option B for the communication logic
 - **Extensive firmware rewrite**: All send functions, polling, cursor management, rate limiting
@@ -772,7 +772,7 @@ Server→Client functions currently include a `_target` field in the note body c
 **Push QI Note to Device:**
 ```
 POST https://api.notefile.net/v1/projects/{projectUID}/devices/{deviceUID}/notes/{notefileID}
-Authorization: Bearer <Personal_Access_Token>
+X-SESSION-TOKEN: <Personal_Access_Token>
 Content-Type: application/json
 
 {"body": {"key": "value", ...}}
@@ -784,7 +784,7 @@ Content-Type: application/json
 **Get Events (read client telemetry):**
 ```
 GET https://api.notefile.net/v1/projects/{projectUID}/events
-Authorization: Bearer <Personal_Access_Token>
+X-SESSION-TOKEN: <Personal_Access_Token>
 ```
 Query parameters:
 - `since` — cursor for pagination (returns events after this point)
@@ -814,7 +814,7 @@ Response format:
 **Get Device Latest Events:**
 ```
 GET https://api.notefile.net/v1/projects/{projectUID}/devices/{deviceUID}/latest
-Authorization: Bearer <Personal_Access_Token>
+X-SESSION-TOKEN: <Personal_Access_Token>
 ```
 
 ### Authentication
@@ -823,7 +823,7 @@ Authorization: Bearer <Personal_Access_Token>
 - Created in Notehub UI → Account Settings → Access Tokens
 - Long-lived (no expiration unless revoked)
 - Grants access to ALL projects/devices the user owns
-- Used as: `Authorization: Bearer <token>`
+- Used as: `X-SESSION-TOKEN: <token>`
 - ⚠️ If compromised, attacker has full API access to all devices
 
 **OAuth Client Credentials (Alternative):**
@@ -876,7 +876,7 @@ Authorization: Bearer <Personal_Access_Token>
 2. Type: "Proxy"
 3. Route Alias: `notehub-api` (or any name)
 4. URL: `https://api.notefile.net`
-5. HTTP Headers: `Authorization: Bearer <PAT_TOKEN>`
+5. HTTP Headers: `X-SESSION-TOKEN: <PAT_TOKEN>`
 6. This single route enables ALL Notehub API calls through the Notecard
 
 ---

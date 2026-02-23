@@ -17,7 +17,7 @@ Welcome! In this tutorial you'll set up the **Notehub Routes** that allow your T
 |------|-------|
 | Notehub account | Free at [notehub.io](https://notehub.io) |
 | TankAlarm project | Already created in Notehub |
-| Notehub API token | Personal Access Token (for route authentication) |
+| Notehub Personal Access Token | Created from your profile menu → API Access (for route authentication) |
 | All devices provisioned | Client, Server, and Viewer Notecards already connected to Notehub |
 
 > **Time to complete:** ~30 minutes
@@ -131,18 +131,20 @@ This ensures the server has full visibility into all relay commands and can log/
 
 ---
 
-## Step 1: Create a Notehub API Token
+## Step 1: Create a Personal Access Token
 
-Routes #1, #2, and #3 use the Notehub Device API to add notes to specific devices. This requires authentication.
+Routes #1, #2, and #3 use the Notehub Device API to add notes to specific devices. This requires authentication via a **Personal Access Token (PAT)**.
 
 1. Log in to [notehub.io](https://notehub.io)
-2. Click your **profile icon** (top right) → **Account Settings**
-3. Click **API Tokens** in the left sidebar
-4. Click **Generate new token**
-5. Name it: `TankAlarm Route Relay`
+2. Click your **profile icon** (top right) → **API Access**
+3. Click **Create New Token**
+4. Name it: `TankAlarm Route Relay`
+5. Set the **expiration** to the longest available duration
 6. Copy the token — you'll need it for the routes below
 
-> **⚡ Tip:** Store this token securely. You can always regenerate it, but all routes using the old token will break.
+> **⚠️ Important: Do NOT use Programmatic API Access (OAuth).** The Client ID / Client Secret found under Project Settings → Programmatic API Access generates OAuth tokens that **expire every 30 minutes** — they are useless for routes that need to work 24/7. Always use a **Personal Access Token** for route authentication.
+
+> **⚡ Tip:** Store this token securely. You can always regenerate it, but all routes using the old token will break. Set a calendar reminder before the token expires to create a replacement.
 
 ---
 
@@ -183,14 +185,14 @@ This route catches all `.qo` events from client devices and delivers them as `.q
 |---------|-------|
 | **Route Name** | `ClientToServerRelay` |
 | **URL** | `https://api.notefile.net/v1/projects/YOUR_PROJECT_UID/devices/YOUR_SERVER_DEVICE_UID/notes/{{notefile_base}}.qi` |
-| **Additional Headers** | Header Name: `Authorization`   Header Value: `Bearer YOUR_API_TOKEN` |
+| **Additional Headers** | Header Name: `X-SESSION-TOKEN`   Header Value: `YOUR_API_TOKEN` |
 
 Replace the placeholders:
 - `YOUR_PROJECT_UID` → Your Notehub project UID (found in project settings, format: `app:XXXX`)
 - `YOUR_SERVER_DEVICE_UID` → The server's device UID (e.g., `dev:123456789012`)
-- `YOUR_API_TOKEN` → The API token from Step 1
+- `YOUR_API_TOKEN` → The Personal Access Token from Step 1 (**paste the raw token only — do not include `Bearer `**)
 
-> **Headers Tip:** Leave the Headers dropdown set to **Additional Headers**. The default `Content-Type: application/json` is sent automatically — you only need to add the `Authorization` header.
+> **Headers Tip:** Leave the Headers dropdown set to **Additional Headers**. The default `Content-Type: application/json` is sent automatically — you only need to add the `X-SESSION-TOKEN` header.
 
 ### 3c. Configure the Data Transform
 
@@ -245,7 +247,7 @@ This is the most sophisticated route. The server sends ALL commands through a si
 |---------|-------|
 | **Route Name** | `ServerToClientRelay` |
 | **URL** | See dynamic URL below |
-| **Additional Headers** | Header Name: `Authorization`   Header Value: `Bearer YOUR_API_TOKEN` |
+| **Additional Headers** | Header Name: `X-SESSION-TOKEN`   Header Value: `YOUR_API_TOKEN` |
 
 ### 4b. Configure the Dynamic URL
 
@@ -304,7 +306,7 @@ This route delivers the viewer summary from the server to all viewer devices.
 |---------|-------|
 | **Route Name** | `ServerToViewerRelay` |
 | **URL** | `https://api.notefile.net/v1/projects/YOUR_PROJECT_UID/devices/YOUR_VIEWER_DEVICE_UID/notes/viewer_summary.qi` |
-| **Additional Headers** | Header Name: `Authorization`   Header Value: `Bearer YOUR_API_TOKEN` |
+| **Additional Headers** | Header Name: `X-SESSION-TOKEN`   Header Value: `YOUR_API_TOKEN` |
 
 ### 5b. Data Transform
 
@@ -408,7 +410,7 @@ After setting up all routes, verify each one works:
 
 | Error Code | Meaning | Fix |
 |-----------|---------|-----|
-| 401 | Unauthorized | Check your API token is correct and not expired |
+| 401 | Unauthorized | Check your Personal Access Token is correct and not expired. Create PATs from your profile menu → API Access. Do **not** use OAuth tokens from Programmatic API Access (they expire every 30 minutes). For `X-SESSION-TOKEN`, paste the raw PAT only — **do not prefix with `Bearer `**. Also check that the header value has no extra whitespace. |
 | 404 | Device not found | Verify the device UID is correct and the device exists in the project |
 | 400 | Bad request | Check the request body format — must be valid JSON with a `body` field |
 

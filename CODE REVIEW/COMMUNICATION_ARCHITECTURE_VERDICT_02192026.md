@@ -202,7 +202,7 @@ For operations that don't fit the route relay model, add the Universal Proxy fro
 
 **1 additional Route:** "UniversalProxy"  
 - URL: `https://api.notefile.net/`  
-- Header: `Authorization: Bearer <access_token>`
+- Header: `X-SESSION-TOKEN: <Personal Access Token>` (paste raw PAT only — do not include `Bearer `)
 
 Use cases:
 - **Fleet discovery:** Server periodically (e.g., once per hour) calls `web.get` to list devices in the client fleet. Eliminates hardcoded client UIDs.
@@ -289,7 +289,7 @@ int pollRate = JGetInt(JGetObjectItem(rsp, "text"));
 | **URL** | `https://api.notefile.net/v1/projects/{projectUID}/devices/{serverDeviceUID}/notes/` |
 | **Append** | The source notefile name (e.g., `telemetry.qi`) using JSONata |
 | **Method** | POST |
-| **Headers** | `Authorization: Bearer <PAT>` |
+| **Headers** | `X-SESSION-TOKEN: <PAT>` |
 | **Filter** | Notefiles: `telemetry.qo`, `alarm.qo`, `daily.qo`, `unload.qo`, `serial_log.qo`, `location_response.qo` |
 | **Filter** | Fleets: `tankalarm-clients` only |
 | **Transform** | JSONata: Include source device UID in body (`_source` field) |
@@ -305,7 +305,7 @@ int pollRate = JGetInt(JGetObjectItem(rsp, "text"));
 | **Type** | General HTTP/HTTPS |
 | **URL** | Dynamic: `https://api.notefile.net/v1/projects/{projectUID}/devices/` + `body._target` + `/notes/` + `body._file` |
 | **Method** | POST |
-| **Headers** | `Authorization: Bearer <PAT>` |
+| **Headers** | `X-SESSION-TOKEN: <PAT>` |
 | **Filter** | Notefiles: `command.qo` |
 | **Filter** | Fleets: `tankalarm-server` only |
 | **Transform** | JSONata: Extract `_target` (target device UID) and `_file` (target .qi filename) from body. Send remaining body fields as the .qi note body. |
@@ -320,7 +320,7 @@ int pollRate = JGetInt(JGetObjectItem(rsp, "text"));
 | **Name** | `UniversalProxy` |
 | **Type** | Proxy for `web.post`/`web.get` |
 | **URL** | `https://api.notefile.net/` |
-| **Headers** | `Authorization: Bearer <PAT>` |
+| **Headers** | `X-SESSION-TOKEN: <PAT>` |
 
 **Purpose:** Enables `web.post`/`web.get` calls from any device to the Notehub API for management operations (fleet discovery, signals, health checks).
 
@@ -628,7 +628,7 @@ Device-level overrides for per-tank settings:
 
 | Token Type | Where Stored | Where Used |
 |---|---|---|
-| Notehub Programmatic Access Token (PAT) | Notehub Route headers (Routes 1, 2, 3) | Authenticates Route API calls to `api.notefile.net` |
+| Notehub Personal Access Token (PAT) | Notehub Route headers (Routes 1, 2, 3) | Authenticates Route API calls to `api.notefile.net` (use raw PAT value in `X-SESSION-TOKEN`; no `Bearer ` prefix) |
 | — | **NOT in device firmware** | The Opta firmware never handles API tokens |
 
 ---
