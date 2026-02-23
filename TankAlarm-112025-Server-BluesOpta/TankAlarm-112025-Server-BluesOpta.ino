@@ -470,6 +470,30 @@ static uint8_t alarmLogCount = 0;
 static uint8_t alarmLogWriteIndex = 0;  // Ring buffer write pointer
 
 // ============================================================================
+// Transmission Log System (outbound messages to clients/Notehub)
+// ============================================================================
+#ifndef MAX_TRANSMISSION_LOG_ENTRIES
+#define MAX_TRANSMISSION_LOG_ENTRIES 100  // Ring buffer of recent outbound transmissions
+#endif
+
+struct TransmissionLogEntry {
+  double timestamp;             // When message was queued
+  char siteName[32];            // Target site name (if applicable)
+  char clientUid[48];           // Target client UID (if applicable)
+  char messageType[24];         // Type: sms, email, config, relay, relay_clear, viewer_summary, serial_request, location_request
+  char status[12];              // outbox, sent, failed
+  char detail[64];              // Brief description/detail
+};
+
+static TransmissionLogEntry gTransmissionLog[MAX_TRANSMISSION_LOG_ENTRIES];
+static uint8_t gTransmissionLogCount = 0;
+static uint8_t gTransmissionLogWriteIndex = 0;  // Ring buffer write pointer
+
+// Forward declaration for transmission log
+static void logTransmission(const char *clientUid, const char *site, const char *messageType, const char *status, const char *detail);
+static void handleTransmissionLogGet(EthernetClient &client);
+
+// ============================================================================
 // Tank Unload Log System
 // ============================================================================
 // Logs when fill-and-empty tanks are unloaded (significant level drop from peak)
@@ -503,7 +527,7 @@ static void sendUnloadSms(const UnloadLogEntry &entry);
 
 // Structure for hourly telemetry snapshots (hot tier)
 #ifndef MAX_HOURLY_HISTORY_PER_TANK
-#define MAX_HOURLY_HISTORY_PER_TANK 168  // 7 days x 24 hours
+#define MAX_HOURLY_HISTORY_PER_TANK 730  // ~2 years of daily data points
 #endif
 
 #ifndef MAX_HISTORY_TANKS
@@ -552,7 +576,7 @@ struct MonthlyArchiveHeader {
 
 // History storage settings
 struct HistorySettings {
-  uint8_t hotTierRetentionDays;     // Days to keep hourly data (default 7)
+  uint16_t hotTierRetentionDays;    // Days to keep snapshot data (default 730)
   uint8_t warmTierRetentionMonths;  // Months to keep daily summaries (default 24)
   bool ftpArchiveEnabled;           // Whether to archive to FTP
   uint8_t ftpSyncHour;              // Hour to sync to FTP (default 3 AM)
@@ -564,7 +588,7 @@ struct HistorySettings {
 #define MAX_HISTORY_SETTINGS_FILE_SIZE 1024  // Max size for history settings JSON file
 
 static HistorySettings gHistorySettings = {
-  7,     // hotTierRetentionDays
+  730,   // hotTierRetentionDays (~2 years)
   24,    // warmTierRetentionMonths
   false, // ftpArchiveEnabled (uses existing FTP config)
   3,     // ftpSyncHour
@@ -715,10 +739,14 @@ struct ClientConfigSnapshot {
 // Enum for client config dispatch status
 enum class ConfigDispatchStatus {
   Ok,
+  OkWithPurge,        // Success — but older pending configs were purged from outbox
   PayloadTooLarge,
   NotecardFailure,
   CachedOnly          // Config saved locally but Notecard unavailable
 };
+
+// Tracks how many stale config notes were purged from the outbox during last dispatch
+static uint8_t gLastConfigPurgeCount = 0;
 
 // FTP session and result structures for backup/restore operations
 struct FtpSession {
@@ -1128,7 +1156,7 @@ tbody tr:nth-child(even){background:#fafafa}
 }
 )HTML";
 
-static const char SERVER_SETTINGS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Server Settings - Tank Alarm</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Server Configuration</h2><form id="settingsForm"><h3>Blues Notehub</h3><div class="form-grid"><label class="field"><span>Product UID <span style="color:var(--danger);">*</span></span><input id="productUidInput" type="text" placeholder="com.company.product:project" required></label></div><p style="color:var(--muted);font-size:0.85rem;margin:-8px 0 16px;">Required. The Product UID from your Blues Notehub project (e.g. com.company.product:project). Changing this requires a device restart to fully apply.</p><h3>Server SMS Alert Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive SMS alerts for server events (e.g., power restoration after outage).</p><div id="smsRecipientsList" class="recipient-list"><div class="empty-state">No SMS recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><button type="button" class="secondary" id="addSmsRecipientBtn">+ Add SMS Recipient</button></div><div class="toggle-group" style="margin-top:-12px;"><label class="toggle"><span>Server down (power loss &gt; 24h)<span class="tooltip-icon" tabindex="0" data-tooltip="Sends an SMS if the server was offline for at least 24 hours before reboot.">?</span></span><input type="checkbox" id="serverDownSmsToggle" checked></label></div><h3>Daily Email Report Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive the daily tank level summary email.</p><div class="form-grid"><label class="field"><span>Daily Email Time (HH:MM)</span><input id="dailyEmailTimeInput" type="time" value="05:00"></label></div><div id="dailyRecipientsList" class="recipient-list"><div class="empty-state">No daily report recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><div id="dailyRecipientControls" style="display:flex;gap:8px;align-items:center;"><select id="dailyRecipientDropdown" style="min-width:250px;"><option value="">Choose a contact...</option></select><button type="button" id="addSelectedDailyRecipient" class="secondary">Add</button></div><a class="pill secondary" href="/contacts" id="addNewContactLink" style="display:none;">+ Add New Contact</a><a class="pill secondary" href="/email-format" style="margin-left:8px;">Email Formatting</a></div><h3>Security</h3><div class="actions" style="margin-bottom: 24px;"><button type="button" class="secondary" id="changePinBtn">Change Admin PIN</button><span id="pinBadge" class="pin-chip hidden">PIN SET</span><span id="pinStatus" style="margin-left:12px;font-size:0.9rem;color:var(--muted)"></span></div><h3>FTP Backup & Restore</h3><div class="form-grid"><label class="field"><span>FTP Host</span><input id="ftpHost" type="text" placeholder="192.168.1.50"></label><label class="field"><span>FTP Port</span><input id="ftpPort" type="number" min="1" max="65535" value="21"></label><label class="field"><span>FTP User</span><input id="ftpUser" type="text" placeholder="user"></label><label class="field"><span>FTP Password <small style="color:var(--muted);font-weight:400;">(leave blank to keep)</small></span><input id="ftpPass" type="password" autocomplete="off"></label><label class="field"><span>FTP Path</span><input id="ftpPath" type="text" placeholder="/tankalarm/server"></label></div><div class="toggle-group"><label class="toggle"><span>Enable FTP</span><input type="checkbox" id="ftpEnabled"></label><label class="toggle"><span>Passive Mode</span><input type="checkbox" id="ftpPassive" chec)HTML" R"HTML(ked></label><label class="toggle"><span>Auto-backup on save</span><input type="checkbox" id="ftpBackupOnChange"></label><label class="toggle"><span>Restore on boot</span><input type="checkbox" id="ftpRestoreOnBoot"></label></div><div class="actions"><button type="button" id="ftpBackupNow">Backup Now</button><button type="button" class="secondary" id="ftpRestoreNow">Restore Now</button></div><div class="actions"><button type="submit">Save Settings</button></div></form></div><div class="card"><h2>Tools & System Info</h2><h3>System Status</h3><div class="form-grid"><div class="field"><span>Firmware Version</span><div id="fwVersionDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Build Date</span><div id="fwBuildDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Firmware Last Updated</span><div id="fwLastUpdatedDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Server Voltage</span><div id="serverVoltageDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Server Time</span><div id="serverTimeDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div></div><h3>Notecard Status</h3><div id="notecardStatusPanel" style="padding:16px;background:var(--chip);border:1px solid var(--card-border);border-radius:var(--radius);margin-bottom:16px;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span id="notecardStatusDot" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#888;"></span><strong id="notecardStatusLabel">Checking...</strong></div><div class="form-grid" style="margin:0;"><div class="field"><span>Connection</span><div id="ncConnStatus" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Product UID</span><div id="ncProductUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Server UID</span><div id="ncServerUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Sync Mode</span><div id="ncSyncMode" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div></div><div class="actions" style="margin-top:12px;"><button type="button" class="secondary" id="ncRefreshBtn">Refresh Notecard Status</button></div></div><h3>Firmware Update (DFU)</h3><div id="dfuStatus" style="padding:12px;background:var(--chip);border:1px solid var(--card-border);margin-bottom:12px"><span id="dfuStatusText">Checking for updates...</span></div><div class="actions"><button type="button" id="dfuCheckBtn" class="secondary">Check for Update</button><button type="button" id="dfuEnableBtn" disabled>Install Update</button></div><p style="color:var(--muted);font-size:0.85rem;margin-top:8px">Firmware updates are deployed via Blues Notehub. Upload new firmware to Notehub, then click &quot;Check for Update&quot; to detect it.</p><h3>Quick Access</h3><div class="actions"><button type="button" class="secondary" id="pauseBodyBtn">Pause Server</button><a class="pill" href="/serial-monitor">Open Serial Monitor</a><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/SERVER_INSTALLATION_GUIDE.md" target="_blank" title="View Server Installation Guide">Help</a></div></div></main><div id="toast"></div><div id="contactSelectModal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2 id="contactSelectTitle">Add Recipient</h2><button class="modal-close" onclick="closeContactSelectModal()">&times;</button></div><form id="contactSelectForm"><div class="form-grid"><div class="form-field"><label>Select Contact</label><select id="contactSelectDropdown" required><option value="">Choose a contact...</option></select></div></div><div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;"><button type="button" class="btn btn-secondary" onclick="closeContactSelectModal()">Cancel</button><button type="submit" class="btn btn-primary">Add</button></div></form></div></div><div id="pinModal" class="modal hidden"><div class="modal-card"><div class="modal-badge" id="pinSessionBadge">Session</div><h2 id="pinModalTitle">Set Admin PIN</h2><p id="pinModalDescription">Enter a 4-digit PIN to unlock configuration changes.</p><form id="pinForm"><label class="field hidden" id="pinCurrentGroup"><span>Current PIN</span><input type="password" id="pinCurrentInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><label class="field" id="pinPrimaryGroup"><span id="pinPrimaryLabel">PIN</span><input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits" aria-describedby="pinHint" title="Enter exactly four digits (0-9)"><small class="pin-hint" id="pinHint">Use exactly 4 digits (0-9). The PIN is kept locally in this browser for 90 days.</small></label><label class="field hidden" id="pinConfirmGroup"><span>Confirm PIN</span><input type="password" id="pinConfirmInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><div class="actions"><button type="submit" id="pinSubmit">Save PIN</button><button type="button" class="secondary" id="pinCancel">Cancel</button></div></form></div></div><script>document.addEventListener('DOMContentLoaded', () => {try{const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const state={pin:token,pinConfigured:false,pendingAction:null,contacts:[],smsAlertRecipients:[],dailyReportRecipients:[],contactSelectMode:null};
+static const char SERVER_SETTINGS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Server Settings - Tank Alarm</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Server Configuration</h2><form id="settingsForm"><h3>Blues Notehub</h3><div class="form-grid"><label class="field"><span>Product UID <span style="color:var(--danger);">*</span></span><input id="productUidInput" type="text" placeholder="com.company.product:project" required></label></div><p style="color:var(--muted);font-size:0.85rem;margin:-8px 0 16px;">Required. The Product UID from your Blues Notehub project (e.g. com.company.product:project). Changing this requires a device restart to fully apply.</p><h3>Server SMS Alert Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive SMS alerts for server events (e.g., power restoration after outage).</p><div id="smsRecipientsList" class="recipient-list"><div class="empty-state">No SMS recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><button type="button" class="secondary" id="addSmsRecipientBtn">+ Add SMS Recipient</button></div><div class="toggle-group" style="margin-top:-12px;"><label class="toggle"><span>Server down (power loss &gt; 24h)<span class="tooltip-icon" tabindex="0" data-tooltip="Sends an SMS if the server was offline for at least 24 hours before reboot.">?</span></span><input type="checkbox" id="serverDownSmsToggle" checked></label></div><h3>Daily Email Report Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive the daily tank level summary email.</p><div class="form-grid"><label class="field"><span>Daily Email Time (HH:MM)</span><input id="dailyEmailTimeInput" type="time" value="05:00"></label></div><div id="dailyRecipientsList" class="recipient-list"><div class="empty-state">No daily report recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><div id="dailyRecipientControls" style="display:flex;gap:8px;align-items:center;"><select id="dailyRecipientDropdown" style="min-width:250px;"><option value="">Choose a contact...</option></select><button type="button" id="addSelectedDailyRecipient" class="secondary">Add</button></div><a class="pill secondary" href="/contacts" id="addNewContactLink" style="display:none;">+ Add New Contact</a><a class="pill secondary" href="/email-format" style="margin-left:8px;">Email Formatting</a></div><h3>Security</h3><div class="actions" style="margin-bottom: 24px;"><button type="button" class="secondary" id="changePinBtn">Change Admin PIN</button><span id="pinBadge" class="pin-chip hidden">PIN SET</span><span id="pinStatus" style="margin-left:12px;font-size:0.9rem;color:var(--muted)"></span></div><h3>FTP Backup & Restore</h3><div class="form-grid"><label class="field"><span>FTP Host</span><input id="ftpHost" type="text" placeholder="192.168.1.50"></label><label class="field"><span>FTP Port</span><input id="ftpPort" type="number" min="1" max="65535" value="21"></label><label class="field"><span>FTP User</span><input id="ftpUser" type="text" placeholder="user"></label><label class="field"><span>FTP Password <small style="color:var(--muted);font-weight:400;">(leave blank to keep)</small></span><input id="ftpPass" type="password" autocomplete="off"></label><label class="field"><span>FTP Path</span><input id="ftpPath" type="text" placeholder="/tankalarm/server"></label></div><div class="toggle-group"><label class="toggle"><span>Enable FTP</span><input type="checkbox" id="ftpEnabled"></label><label class="toggle"><span>Passive Mode</span><input type="checkbox" id="ftpPassive" chec)HTML" R"HTML(ked></label><label class="toggle"><span>Auto-backup on save</span><input type="checkbox" id="ftpBackupOnChange"></label><label class="toggle"><span>Restore on boot</span><input type="checkbox" id="ftpRestoreOnBoot"></label></div><div class="actions"><button type="button" id="ftpBackupNow">Backup Now</button><button type="button" class="secondary" id="ftpRestoreNow">Restore Now</button></div><div class="actions"><button type="submit">Save Settings</button></div></form></div><div class="card"><h2>Tools & System Info</h2><h3>System Status</h3><div class="form-grid"><div class="field"><span>Firmware Version</span><div id="fwVersionDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Build Date</span><div id="fwBuildDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Firmware Last Updated</span><div id="fwLastUpdatedDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Server Voltage</span><div id="serverVoltageDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Server Time</span><div id="serverTimeDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div></div><h3>Notecard Status</h3><div id="notecardStatusPanel" style="padding:16px;background:var(--chip);border:1px solid var(--card-border);border-radius:var(--radius);margin-bottom:16px;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span id="notecardStatusDot" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#888;"></span><strong id="notecardStatusLabel">Checking...</strong></div><div class="form-grid" style="margin:0;"><div class="field"><span>Connection</span><div id="ncConnStatus" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Product UID</span><div id="ncProductUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Server UID</span><div id="ncServerUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Sync Mode</span><div id="ncSyncMode" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div></div><div class="actions" style="margin-top:12px;"><button type="button" class="secondary" id="ncRefreshBtn">Refresh Notecard Status</button></div></div><h3>Firmware Update (DFU)</h3><div id="dfuStatus" style="padding:12px;background:var(--chip);border:1px solid var(--card-border);margin-bottom:12px"><span id="dfuStatusText">Checking for updates...</span></div><div class="actions"><button type="button" id="dfuCheckBtn" class="secondary">Check for Update</button><button type="button" id="dfuEnableBtn" disabled>Install Update</button></div><p style="color:var(--muted);font-size:0.85rem;margin-top:8px">Firmware updates are deployed via Blues Notehub. Upload new firmware to Notehub, then click &quot;Check for Update&quot; to detect it.</p><h3>Quick Access</h3><div class="actions"><button type="button" class="secondary" id="pauseBodyBtn">Pause Server</button><a class="pill" href="/serial-monitor">Open Serial Monitor</a><a class="pill" href="/transmission-log">Transmission Log</a><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/SERVER_INSTALLATION_GUIDE.md" target="_blank" title="View Server Installation Guide">Help</a></div></div></main><div id="toast"></div><div id="contactSelectModal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2 id="contactSelectTitle">Add Recipient</h2><button class="modal-close" onclick="closeContactSelectModal()">&times;</button></div><form id="contactSelectForm"><div class="form-grid"><div class="form-field"><label>Select Contact</label><select id="contactSelectDropdown" required><option value="">Choose a contact...</option></select></div></div><div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;"><button type="button" class="btn btn-secondary" onclick="closeContactSelectModal()">Cancel</button><button type="submit" class="btn btn-primary">Add</button></div></form></div></div><div id="pinModal" class="modal hidden"><div class="modal-card"><div class="modal-badge" id="pinSessionBadge">Session</div><h2 id="pinModalTitle">Set Admin PIN</h2><p id="pinModalDescription">Enter a 4-digit PIN to unlock configuration changes.</p><form id="pinForm"><label class="field hidden" id="pinCurrentGroup"><span>Current PIN</span><input type="password" id="pinCurrentInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><label class="field" id="pinPrimaryGroup"><span id="pinPrimaryLabel">PIN</span><input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits" aria-describedby="pinHint" title="Enter exactly four digits (0-9)"><small class="pin-hint" id="pinHint">Use exactly 4 digits (0-9). The PIN is kept locally in this browser for 90 days.</small></label><label class="field hidden" id="pinConfirmGroup"><span>Confirm PIN</span><input type="password" id="pinConfirmInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><div class="actions"><button type="submit" id="pinSubmit">Save PIN</button><button type="button" class="secondary" id="pinCancel">Cancel</button></div></form></div></div><script>document.addEventListener('DOMContentLoaded', () => {try{const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const state={pin:token,pinConfigured:false,pendingAction:null,contacts:[],smsAlertRecipients:[],dailyReportRecipients:[],contactSelectMode:null};
 const getEl=(id)=>document.getElementById(id);const els={pauseBtn:getEl('pauseBtn'),pauseBodyBtn:getEl('pauseBodyBtn'),toast:getEl('toast'),form:getEl('settingsForm'),productUid:getEl('productUidInput'),serverDownSmsToggle:getEl('serverDownSmsToggle'),dailyEmailTime:getEl('dailyEmailTimeInput'),ftpEnabled:getEl('ftpEnabled'),ftpPassive:getEl('ftpPassive'),ftpBackupOnChange:getEl('ftpBackupOnChange'),ftpRestoreOnBoot:getEl('ftpRestoreOnBoot'),ftpHost:getEl('ftpHost'),ftpPort:getEl('ftpPort'),ftpUser:getEl('ftpUser'),ftpPass:getEl('ftpPass'),ftpPath:getEl('ftpPath'),ftpBackupNow:getEl('ftpBackupNow'),ftpRestoreNow:getEl('ftpRestoreNow'),changePinBtn:getEl('changePinBtn'),pinStatus:getEl('pinStatus'),pinBadge:getEl('pinBadge'),smsRecipientsList:getEl('smsRecipientsList'),dailyRecipientsList:getEl('dailyRecipientsList'),addSmsRecipientBtn:getEl('addSmsRecipientBtn'),dailyRecipientDropdown:getEl('dailyRecipientDropdown'),addSelectedDailyRecipient:getEl('addSelectedDailyRecipient'),contactSelectModal:getEl('contactSelectModal'),contactSelectTitle:getEl('contactSelectTitle'),contactSelectDropdown:getEl('contactSelectDropdown'),contactSelectForm:getEl('contactSelectForm')};if(els.pauseBtn)els.pauseBtn.addEventListener('click',togglePause);if(els.pauseBodyBtn)els.pauseBodyBtn.addEventListener('click',togglePause);const pinEls={modal:getEl('pinModal'),title:getEl('pinModalTitle'),desc:getEl('pinModalDescription'),form:getEl('pinForm'),currentGroup:getEl('pinCurrentGroup'),currentInput:getEl('pinCurrentInput'),primaryGroup:getEl('pinPrimaryGroup'),primaryLabel:getEl('pinPrimaryLabel'),input:getEl('pinInput'),confirmGroup:getEl('pinConfirmGroup'),confirmInput:getEl('pinConfirmInput'),submit:getEl('pinSubmit'),cancel:getEl('pinCancel'),badge:getEl('pinSessionBadge')};)HTML"
 R"HTML(let pinMode='unlock';state.paused=false;funct)HTML" R"HTML(ion showToast(message, isError){if(els.toast)els.toast.textContent=message;if(els.toast)els.toast.style.background=isError?'#dc2626':'#0284c7';if(els.toast)els.toast.classList.add('show');setTimeout(()=>{if(els.toast)els.toast.classList.remove('show')},2500);})HTML"
 R"HTML(funct)HTML" R"HTML(ion escapeHtml(text){const div=document.createElement('div');div.textContent=text;return div.innerHTML;})HTML"
@@ -1166,7 +1194,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html 
 const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}
 const state={pin:token,pinConfigured:false,paused:false,clients:[]};
 const els={toast:document.getElementById('toast'),form:document.getElementById('generatorForm'),productUid:document.getElementById('productUid'),clientUid:document.getElementById('clientUid'),clientList:document.getElementById('clientList'),selectClientModal:document.getElementById('selectClientModal'),loadFromCloudBtn:document.getElementById('loadFromCloudBtn'),siteName:document.getElementById('siteName'),deviceLabel:document.getElementById('deviceLabel'),clientFleet:document.getElementById('clientFleet'),serverFleet:document.getElementById('serverFleet'),sampleMinutes:document.getElementById('sampleMinutes'),dailyEmail:document.getElementById('dailyEmail'),reportTime:document.getElementById('reportTime'),powerSource:document.getElementById('powerSource')};
-function showToast(m,e){if(els.toast){els.toast.innerText=m;els.toast.style.background=e?'#dc2626':'#0284c7';els.toast.classList.add('show');setTimeout(()=>els.toast.classList.remove('show'),3000);}}
+function showToast(m,e,dur){if(els.toast){els.toast.innerText=m;els.toast.style.background=e==='warn'?'#d97706':e?'#dc2626':'#0284c7';els.toast.classList.add('show');setTimeout(()=>els.toast.classList.remove('show'),dur||3000);}}
 let pinMode='unlock';let pendingAction=null;const pinEls={modal:document.getElementById('pinModal'),form:document.getElementById('pinForm'),input:document.getElementById('pinInput'),cancel:document.getElementById('pinCancel')};
 function showPinModal(mode,cb){pinMode=mode;pendingAction=cb;if(pinEls.form)pinEls.form.reset();if(pinEls.modal)pinEls.modal.classList.remove('hidden');if(pinEls.input)pinEls.input.focus();}
 function hidePinModal(){if(pinEls.modal)pinEls.modal.classList.add('hidden');pendingAction=null;}
@@ -1218,7 +1246,7 @@ const inputCards=document.querySelectorAll('#inputsContainer .sensor-card');let 
 /* SUBMIT & DOWNLOAD */
 let lastSubmitPin='';
 const retryBtn=document.getElementById('retryConfigBtn');
-async function submitConfig(e){e.preventDefault();requestPin(async(pin)=>{try{lastSubmitPin=pin;const clientUid=(els.clientUid&&els.clientUid.value?els.clientUid.value:'').trim();if(!clientUid){showToast('Device UID is required to send config',true);return;}const cfg=collectConfig();if(!cfg)return;const res=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin,client:clientUid,config:cfg})});if(res.status===200){showToast('Configuration saved and queued for device');retryBtn.style.display='none';}else if(res.status===202){const t=await res.text();showToast(t||'Config saved locally — Notecard send failed');retryBtn.style.display='inline-block';}else{const t=await res.text();showToast('Error: '+t,true);}}catch(err){showToast('Error: '+err.message,true);}});}
+async function submitConfig(e){e.preventDefault();requestPin(async(pin)=>{try{lastSubmitPin=pin;const clientUid=(els.clientUid&&els.clientUid.value?els.clientUid.value:'').trim();if(!clientUid){showToast('Device UID is required to send config',true);return;}const cfg=collectConfig();if(!cfg)return;const res=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin,client:clientUid,config:cfg})});const resText=await res.text();if(res.status===200){if(resText&&resText.includes('WARNING')){showToast(resText,'warn',6000);}else{showToast('Configuration saved and queued for device');}retryBtn.style.display='none';}else if(res.status===202){showToast(resText||'Config saved locally — Notecard send failed');retryBtn.style.display='inline-block';}else{showToast('Error: '+(resText||res.statusText),true);}}catch(err){showToast('Error: '+err.message,true);}});}
 async function retryConfig(){const clientUid=(els.clientUid&&els.clientUid.value?els.clientUid.value:'').trim();const pin=lastSubmitPin;if(!pin){showToast('Please save config first (need PIN)',true);return;}try{const res=await fetch('/api/config/retry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin,client:clientUid||undefined})});const t=await res.text();if(res.ok){showToast(t||'Config dispatched');retryBtn.style.display='none';}else{showToast(t||'Retry failed — check serial monitor',true);}}catch(err){showToast('Error: '+err.message,true);}}
 retryBtn.addEventListener('click',retryConfig);
 if(els.form)els.form.addEventListener('submit',submitConfig);
@@ -1280,25 +1308,30 @@ funct)HTML" R"HTML(ion updateCalibrationTable(){const tbody = document.getElemen
 funct)HTML" R"HTML(ion updateCalibrationLog(){const tbody = document.getElementById('logTableBody');const filter = document.getElementById('logTankFilter').value;tbody.innerHTML = '';let filtered = calibrationLogs;if(filter){const [clientUid,tankNum] = filter.split(':');filtered = calibrationLogs.filter(log => log.clientUid === clientUid && log.tankNumber === parseInt(tankNum));}if(filtered.length === 0){tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);">No calibration entries found.</td></tr>';return;}filtered.sort((a,b)=> b.timestamp - a.timestamp);filtered.forEach(log =>{const tr = document.createElement('tr');const tankInfo = tanks.find(t => t.client === log.clientUid && t.tank === log.tankNumber);const tankName = tankInfo ? `${tankInfo.site}- ${tankInfo.label || 'Tank ' + log.tankNumber}`:`Tank ${log.tankNumber}`;const isValidReading = log.sensorReading >= 4 && log.sensorReading <= 20;const sensorDisplay = isValidReading ? log.sensorReading.toFixed(2)+ ' mA':(log.sensorReading ? `${log.sensorReading.toFixed(2)} mA (out of range)`:'-- (out of range)');const tempDisplay = log.temperatureF !== undefined && log.temperatureF !== null ? log.temperatureF.toFixed(1)+ '°F':'--';tr.innerHTML = ` <td>${formatEpoch(log.timestamp)}</td><td>${escapeHtml(tankName)}</td><td title="${isValidReading ? '':'Not used for calibration(outside 4-20mA range)'}">${sensorDisplay}</td><td>${formatLevel(log.verifiedLevelInches)}</td><td>${tempDisplay}</td><td>${escapeHtml(log.notes || '--')}</td> `;if(!isValidReading){tr.style.opacity = '0.6';}tbody.appendChild(tr);});}document.getElementById('calibrationForm').addEventListener('submit',async(e)=>{e.preventDefault();const tankKey = document.getElementById('tankSelect').value;if(!tankKey){showToast('Please select a tank',true);return;}const [clientUid,tankNumber] = tankKey.split(':');const levelFeet = parseInt(document.getElementById('levelFeet').value)|| 0;const levelInches = parseFloat(document.getElementById('levelInches').value)|| 0;const totalInches = levelFeet * 12 + levelInches;const timestampInput = document.getElementById('readingTimestamp').value;const note)HTML" R"HTML(s = document.getElementById('notes').value.trim();if(totalInches < 0){showToast('Invalid level value',true);return;}const tank = tanks.find(t => `${t.client}:${t.tank}` === tankKey);const payload ={clientUid:clientUid,tankNumber:parseInt(tankNumber),verifiedLevelInches:totalInches,notes:notes};if(tank && tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20){payload.sensorReading = tank.sensorMa;}if(timestampInput){payload.timestamp = Math.floor(new Date(timestampInput).getTime()/ 1000);}try{const response = await fetch('/api/calibration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to submit calibration');}showToast('Calibration reading submitted successfully');document.getElementById('calibrationForm').reset();loadCalibrationData();}catch(err){console.error('Error submitting calibration:',err);showToast(err.message || 'Failed to submit calibration',true);}});document.getElementById('logTankFilter').addEventListener('change',updateCalibrationLog);const now = new Date();now.setMinutes(now.getMinutes()- now.getTimezoneOffset());document.getElementById('readingTimestamp').value = now.toISOString().slice(0,16);loadTanks();loadCalibrationData();setInterval(loadCalibrationData,30000);funct)HTML" R"HTML(ion viewTankPoints(tankKey){document.getElementById('logTankFilter').value = tankKey;updateCalibrationLog();document.getElementById('logTableBody').closest('.card').scrollIntoView({behavior:'smooth',block:'start'});showToast('Showing data points for selected tank');}async funct)HTML" R"HTML(ion resetCalibration(clientUid,tankNumber){if(!confirm(`Reset calibration for tank ${tankNumber}? This will delete all calibration data for this tank.`)){return;}try{const response = await fetch('/api/calibration',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid,tankNumber:tankNumber})});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to reset calibration');}showToast('Calibration reset successfully');loadCalibrationData();}catch(err){console.error('Error resetting calibration:',err);showToast(err.message || 'Failed to reset calibration',true);}}})();})();
 </script></body></html>)HTML";
 
-static const char HISTORICAL_DATA_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Historical Data - Tank Alarm Server</title><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Fleet Summary</h2><div class="stats-grid"><div class="stat-box"><div class="stat-value" id="statTotalTanks">0</div><div class="stat-label">Total Tanks</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsToday">0</div><div class="stat-label">Alarms Today</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsWeek">0</div><div class="stat-label">Alarms This Week</div></div><div class="stat-box"><div class="stat-value" id="statAvgLevel">--</div><div class="stat-label">Avg Level %</div></div></div></div><div class="card"><h2>Level Trends</h2><div class="controls"><select id="siteFilter"><option value="all")HTML" R"HTML(>All Sites</option></select><select id="tankFilter"><option value="all">All Tanks</option></select><select id="rangeSelect"><option value="24h">Last 24 Hours</option><option value="7d" selected>Last 7 Days</option><option value="30d">Last 30 Days</option><option value="90d">Last 90 Days</option><option value="custom">Custom Range</option></select><input type="date" id="startDate" style="display:none;" onchange="renderLevelChart()"><input type="date" id="endDate" style="display:none;" onchange="renderLevelChart()"><button onclick="refreshData()">Refresh</button><button class="secondary" onclick="exportData()">Export CSV</button></div><div class="chart-container"><canvas id="levelChart"></canvas></div></div><div class="card"><h2>Alarm Frequency</h2><div class="chart-container"><canvas id="alarmChart"></canvas></div></div><div class="card"><h2>Sites &amp; Tanks</h2><p style="color:var(--muted);margin-bottom:16px;">Click on a site to expand and view individual tank details with mini sparklines.</p><div id="sitesContainer"></div></div><div class="card"><h2>VIN Voltage History</h2><p style="color:var(--muted);margin-bottom:16px;">Track power supply voltage trends to detect battery degradation or power issues early.</p><div class="chart-container"><canvas id="voltageChart"></canvas></div></div></main><div id="toast"></div><script>(() => {const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
+static const char HISTORICAL_DATA_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Historical Data - Tank Alarm Server</title><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Fleet Summary</h2><div class="stats-grid"><div class="stat-box"><div class="stat-value" id="statTotalTanks">0</div><div class="stat-label">Total Tanks</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsToday">0</div><div class="stat-label">Alarms Today</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsWeek">0</div><div class="stat-label">Alarms This Week</div></div></div></div><div class="card"><h2>Level Trends</h2><div class="controls"><select id="siteFilter"><option value="all")HTML" R"HTML(>All Sites</option></select><select id="tankFilter"><option value="all">All Tanks</option></select><select id="rangeSelect"><option value="24h">Last 24 Hours</option><option value="7d">Last 7 Days</option><option value="30d" selected>Last 30 Days</option><option value="90d">Last 90 Days</option><option value="6mo">Last 6 Months</option><option value="1yr">Last Year</option><option value="2yr">Last 2 Years</option><option value="custom">Custom Range</option></select><input type="date" id="startDate" style="display:none;" onchange="renderLevelChart()"><input type="date" id="endDate" style="display:none;" onchange="renderLevelChart()"><button onclick="refreshData()">Refresh</button><button class="secondary" onclick="exportData()">Export CSV</button></div><div class="chart-container"><canvas id="levelChart"></canvas></div></div><div class="card"><h2>Alarm Frequency</h2><div class="chart-container"><canvas id="alarmChart"></canvas></div></div><div class="card"><h2>Sites &amp; Tanks</h2><p style="color:var(--muted);margin-bottom:16px;">Click on a site to expand and view individual tank details with mini sparklines.</p><div id="sitesContainer"></div></div><div class="card"><h2>VIN Voltage History</h2><p style="color:var(--muted);margin-bottom:16px;">Track power supply voltage trends to detect battery degradation or power issues early.</p><div class="chart-container"><canvas id="voltageChart"></canvas></div></div></main><div id="toast"></div><script>(() => {const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
 const pause_state={paused:false,pin:token||null,pinConfigured:false};if(pause_els.btn)pause_els.btn.addEventListener('click',togglePauseFlow);if(pause_els.btn)pause_els.btn.addEventListener('mouseenter',()=>{if(pause_state.paused)pause_els.btn.textContent='Resume';});if(pause_els.btn)pause_els.btn.addEventListener('mouseleave',()=>{renderPauseBtn();});fetch('/api/clients?summary=1').then(r=>r.json()).then(d=>{if(d&&d.srv){pause_state.paused=!!d.srv.ps;pause_state.pinConfigured=!!d.srv.pc;renderPauseBtn();}}).catch(e=>console.error('Failed to load pause state',e));
 funct)HTML" R"HTML(ion showPauseToast(message,isError){if(!pause_els.toast)return;const t=pause_els.toast;t.textContent=message;t.style.background=isError?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion renderPauseBtn(){const btn=pause_els.btn;if(!btn)return;if(pause_state.paused){btn.classList.add('paused');btn.style.display='';btn.textContent='Unpause';btn.title='Resume data flow';}else{btn.classList.remove('paused');btn.style.display='none';}}
 async funct)HTML" R"HTML(ion togglePauseFlow(){if(!pause_state.pinConfigured){}else if(!pause_state.pin){const pinInput=prompt('Enter admin PIN to toggle pause');if(!pinInput)return;pause_state.pin=pinInput.trim();}const targetPaused=!pause_state.paused;try{const res=await fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:targetPaused,pin:pause_state.pin||''})});if(!res.ok){if(res.status===403){pause_state.pin=token;pause_state.pinConfigured=true;throw new Error('PIN required or invalid');}const text=await res.text();throw new Error(text||'Pause toggle failed');}const data=await res.json();pause_state.paused=!!data.paused;renderPauseBtn();showPauseToast(pause_state.paused?'Paused for maintenance':'Resumed');}catch(err){showPauseToast(err.message||'Pause toggle failed',true);}}(()=>{const CHART_COLORS=['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];let levelChart=null;let alarmChart=null;let voltageChart=null;let historicalData={sites:{},tanks:[],alarms:[],voltage:[]};funct)HTML" R"HTML(ion showToast(message,isError){const toast=document.getElementById('toast');toast.textContent=message;toast.style.background=isError?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion formatLevel(inches){if(typeof inches!=='number'||!isFinite(inches))return'--';const feet=Math.floor(inches/12);const rem=inches%12;return feet>0?`${feet}' ${rem.toFixed(1)}"`:`${rem.toFixed(1)}"`;}
 funct)HTML" R"HTML(ion formatEpoch(epoch){if(!epoch)return'--';const d=new Date(epoch*1000);return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
-funct)HTML" R"HTML(ion generateSampleData(){const now=Date.now()/1000;const sites=['North Facility','South Facility','East Facility','West Facility'];const tanks=[];const alarms=[];const voltage=[];sites.forEach((site,si)=>{const tankCount=si===0?2:1;for(let t=1;t<=tankCount;t++){const baseLevel=40+Math.random()*60;const readings=[];for(let h=0;h<168;h++){const timestamp=now-h*3600;const level=baseLevel+Math.sin(h/24*Math.PI)*10+(Math.random()-0.5)*5;readings.push({timestamp,level:Math.max(0,level)});}tanks.push({client:`dev:client00${si+1}`,site,tank:t,label:`Tank #${t}`,heightInches:120,readings:readings.reverse(),currentLevel:readings[readings.length-1].level,change24h:(Math.random()-0.5)*10});}});for(let i=0;i<12;i++){const siteIdx=Math.floor(Math.random()*sites.length);alarms.push({timestamp:now-Math.random()*7*86400,site:sites[siteIdx],tank:1,type:Math.random()>0.5?'HIGH':'LOW'});}for(let h=0;h<168;h++){voltage.push({timestamp:now-h*3600,voltage:12.2+Math.sin(h/24*Math.PI)*0.3+(Math.random()-0.5)*0.2});}historicalData={sites:sites.reduce((acc,s)=>{acc[s]=tanks.filter(t=>t.site===s);return acc;},{}),tanks,alarms,voltage:voltage.reverse()};}
-funct)HTML" R"HTML(ion updateStats(){const totalTanks=historicalData.tanks.length;const now=Date.now()/1000;const today=now-86400;const week=now-7*86400;const alarmsToday=historicalData.alarms.filter(a=>a.timestamp>today).length;const alarmsWeek=historicalData.alarms.filter(a=>a.timestamp>week).length;let totalPct=0;let count=0;historicalData.tanks.forEach(t=>{if(t.currentLevel&&t.heightInches){totalPct+=t.currentLevel/t.heightInches*100;count++;}});document.getElementById('statTotalTanks').textContent=totalTanks;document.getElementById('statAlarmsToday').textContent=alarmsToday;document.getElementById('statAlarmsWeek').textContent=alarmsWeek;document.getElementById('statAvgLevel').textContent=count>0?(totalPct/count).toFixed(0)+'%':'--';}
+funct)HTML" R"HTML(ion initEmptyData(){historicalData={sites:{},tanks:[],alarms:[],voltage:[]};}
+funct)HTML" R"HTML(ion updateStats(){const totalTanks=historicalData.tanks.length;const now=Date.now()/1000;const today=now-86400;const week=now-7*86400;const alarmsToday=historicalData.alarms.filter(a=>a.timestamp>today).length;const alarmsWeek=historicalData.alarms.filter(a=>a.timestamp>week).length;document.getElementById('statTotalTanks').textContent=totalTanks;document.getElementById('statAlarmsToday').textContent=alarmsToday;document.getElementById('statAlarmsWeek').textContent=alarmsWeek;}
 funct)HTML" R"HTML(ion populateFilters(){const siteSelect=document.getElementById('siteFilter');const tankSelect=document.getElementById('tankFilter');siteSelect.innerHTML='<option value="all">All Sites</option>';Object.keys(historicalData.sites).sort().forEach(site=>{const opt=document.createElement('option');opt.value=site;opt.textContent=site;siteSelect.appendChild(opt);});tankSelect.innerHTML='<option value="all">All Tanks</option>';historicalData.tanks.forEach((t,i)=>{const opt=document.createElement('option');opt.value=i;opt.textContent=`${t.site} - ${t.label}`;tankSelect.appendChild(opt);});}
-funct)HTML" R"HTML(ion getFilteredData(){const site=document.getElementById('siteFilter').value;const tankIdx=document.getElementById('tankFilter').value;const range=document.getElementById('rangeSelect').value;const now=Date.now()/1000;let cutoff=now-7*86400;let cutoffEnd=now;if(range==='24h')cutoff=now-86400;else if(range==='30d')cutoff=now-30*86400;else if(range==='90d')cutoff=now-90*86400;else if(range==='custom'){const sd=document.getElementById('startDate').value;const ed=document.getElementById('endDate').value;if(sd)cutoff=new Date(sd).getTime()/1000;if(ed)cutoffEnd=new Date(ed+'T23:59:59').getTime()/1000;}let tanks=historicalData.tanks;if(site!=='all')tanks=tanks.filter(t=>t.site===site);if(tankIdx!=='all')tanks=[historicalData.tanks[parseInt(tankIdx)]];return{tanks,cutoff,cutoffEnd};}
+funct)HTML" R"HTML(ion getFilteredData(){const site=document.getElementById('siteFilter').value;const tankIdx=document.getElementById('tankFilter').value;const range=document.getElementById('rangeSelect').value;const now=Date.now()/1000;let cutoff=now-30*86400;let cutoffEnd=now;if(range==='24h')cutoff=now-86400;else if(range==='7d')cutoff=now-7*86400;else if(range==='90d')cutoff=now-90*86400;else if(range==='6mo')cutoff=now-180*86400;else if(range==='1yr')cutoff=now-365*86400;else if(range==='2yr')cutoff=now-730*86400;else if(range==='custom'){const sd=document.getElementById('startDate').value;const ed=document.getElementById('endDate').value;if(sd)cutoff=new Date(sd).getTime()/1000;if(ed)cutoffEnd=new Date(ed+'T23:59:59').getTime()/1000;}let tanks=historicalData.tanks;if(site!=='all')tanks=tanks.filter(t=>t.site===site);if(tankIdx!=='all')tanks=[historicalData.tanks[parseInt(tankIdx)]];return{tanks,cutoff,cutoffEnd};}
 funct)HTML" R"HTML(ion renderLevelChart(){const ctx=document.getElementById('levelChart').getContext('2d');const{tanks,cutoff,cutoffEnd}=getFilteredData();if(levelChart)levelChart.destroy();const datasets=tanks.slice(0,8).map((tank,i)=>{const data=tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).map(r=>({x:new Date(r.timestamp*1000),y:r.level}));return{label:`${tank.site} - ${tank.label}`,data,borderColor:CHART_COLORS[i%CHART_COLORS.length],backgroundColor:CHART_COLORS[i%CHART_COLORS.length]+'20',fill:false,tension:0.3,pointRadius:0};});levelChart=new Chart(ctx,{type:'line',data:{datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{intersect:false,mode:'index'},scales:{x:{type:'time',time:{unit:'day',displayFormats:{hour:'MMM d, HH:mm',day:'MMM d'}},grid:{color:'var(--chart-grid)'}},y:{title:{display:true,text:'Level (inches)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{position:'bottom'}}}});}
 funct)HTML" R"HTML(ion renderAlarmChart(){const ctx=document.getElementById('alarmChart').getContext('2d');if(alarmChart)alarmChart.destroy();const sites=Object.keys(historicalData.sites);const highCounts=sites.map(s=>historicalData.alarms.filter(a=>a.site===s&&a.type==='HIGH').length);const lowCounts=sites.map(s=>historicalData.alarms.filter(a=>a.site===s&&a.type==='LOW').length);alarmChart=new Chart(ctx,{type:'bar',data:{labels:sites,datasets:[{label:'High Alarms',data:highCounts,backgroundColor:'#ef4444'},{label:'Low Alarms',data:lowCounts,backgroundColor:'#f59e0b'}]},options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,beginAtZero:true,title:{display:true,text:'Alarm Count'}}},plugins:{legend:{position:'bottom'}}}});}
 funct)HTML" R"HTML(ion renderVoltageChart(){const ctx=document.getElementById('voltageChart').getContext('2d');if(voltageChart)voltageChart.destroy();const data=historicalData.voltage.map(v=>({x:new Date(v.timestamp*1000),y:v.voltage}));voltageChart=new Chart(ctx,{type:'line',data:{datasets:[{label:'VIN Voltage',data,borderColor:'#10b981',backgroundColor:'#10b98120',fill:true,tension:0.3,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false,scales:{x:{type:'time',time:{unit:'day'},grid:{color:'var(--chart-grid)'}},y:{min:10,max:14,title:{display:true,text:'Voltage (V)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{display:false}}}});}
 funct)HTML" R"HTML(ion createSparkline(container,data){const width=container.clientWidth||100;const height=40;const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;container.appendChild(canvas);const ctx=canvas.getContext('2d');if(!data||data.length<2)return;const values=data.map(d=>d.level);const min=Math.min(...values);const max=Math.max(...values);const range=max-min||1;ctx.strokeStyle='#2563eb';ctx.lineWidth=1.5;ctx.beginPath();data.forEach((d,i)=>{const x=i/(data.length-1)*width;const y=height-(d.level-min)/range*height;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();}
 funct)HTML" R"HTML(ion renderSites(){const container=document.getElementById('sitesContainer');container.innerHTML='';Object.keys(historicalData.sites).sort().forEach(siteName=>{const tanks=historicalData.sites[siteName];const alarmCount=historicalData.alarms.filter(a=>a.site===siteName).length;const siteCard=document.createElement('div');siteCard.className='site-card';siteCard.innerHTML=`<div class="site-header" onclick="this.nextElementSibling.classList.toggle('expanded')"><h3>${siteName}</h3><div class="site-stats"><span>${tanks.length} Tank${tanks.length!==1?'s':''}</span>${alarmCount>0?`<span class="alarm-badge">${alarmCount} Alarms</span>`:''}</div></div><div class="site-content"><div class="tank-grid"></div></div>`;const grid=siteCard.querySelector('.tank-grid');tanks.forEach(tank=>{const change=tank.change24h||0;const changeClass=change>=0?'positive':'negative';const changeSign=change>=0?'+':'';const tankCard=document.createElement('div');tankCard.className='tank-card';tankCard.innerHTML=`<div class="tank-header"><div><div class="tank-name">${tank.label}</div><div class="tank-level">${formatLevel(tank.currentLevel)}</div></div><div class="tank-change ${changeClass}">${changeSign}${change.toFixed(1)}" 24h</div></div><div class="sparkline"></div><div class="tank-footer"><span>Updated: ${formatEpoch(tank.readings[tank.readings.length-1]?.timestamp)}</span></div>`;grid.appendChild(tankCard);const sparklineEl=tankCard.querySelector('.sparkline');const last24h=tank.readings.slice(-24);setTimeout(()=>createSparkline(sparklineEl,last24h),0);});container.appendChild(siteCard);});}
-async funct)HTML" R"HTML(ion loadHistoricalData(){try{const res=await fetch('/api/history');if(!res.ok)throw new Error('Failed to load historical data');const data=await res.json();if(data.tanks&&data.tanks.length>0){historicalData=data;}else{generateSampleData();}updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}catch(err){console.warn('Using sample data:',err.message);generateSampleData();updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}}
-window.refreshData=funct)HTML" R"HTML(ion(){loadHistoricalData();showToast('Data refreshed');};window.exportData=funct)HTML" R"HTML(ion(){const{tanks,cutoff,cutoffEnd}=getFilteredData();let csv='Site,Tank,Timestamp,Level (inches)\n';tanks.forEach(tank=>{tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).forEach(r=>{csv+=`"${tank.site}","${tank.label}",${new Date(r.timestamp*1000).toISOString()},${r.level.toFixed(2)}\n`;});});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='tank_history.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');};document.getElementById('siteFilter').addEventListener('change',renderLevelChart);document.getElementById('tankFilter').addEventListener('change',renderLevelChart);document.getElementById('rangeSelect').addEventListener('change',function(){const sd=document.getElementById('startDate');const ed=document.getElementById('endDate');if(this.value==='custom'){sd.style.display='';ed.style.display='';if(!sd.value){const d=new Date();d.setDate(d.getDate()-7);sd.value=d.toISOString().split('T')[0];}if(!ed.value){ed.value=new Date().toISOString().split('T')[0];}}else{sd.style.display='none';ed.style.display='none';}renderLevelChart();});loadHistoricalData();})();})();
+async funct)HTML" R"HTML(ion loadHistoricalData(){const tankIdx=document.getElementById('tankFilter').value;const range=document.getElementById('rangeSelect').value;let apiDays=90;if(tankIdx!=='all'){apiDays=0;}else{const rangeDays={'24h':7,'7d':7,'30d':30,'90d':90,'6mo':180,'1yr':365,'2yr':730};apiDays=rangeDays[range]||90;}const url=apiDays>0?'/api/history?days='+apiDays:'/api/history';try{const res=await fetch(url);if(!res.ok)throw new Error('Failed to load historical data');const data=await res.json();if(data.tanks&&data.tanks.length>0){historicalData=data;}else{initEmptyData();}updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}catch(err){console.warn('No historical data available:',err.message);initEmptyData();updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}}
+window.refreshData=funct)HTML" R"HTML(ion(){loadHistoricalData();showToast('Data refreshed');};window.exportData=funct)HTML" R"HTML(ion(){const{tanks,cutoff,cutoffEnd}=getFilteredData();let csv='Site,Tank,Timestamp,Level (inches)\n';tanks.forEach(tank=>{tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).forEach(r=>{csv+=`"${tank.site}","${tank.label}",${new Date(r.timestamp*1000).toISOString()},${r.level.toFixed(2)}\n`;});});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='tank_history.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');};document.getElementById('siteFilter').addEventListener('change',renderLevelChart);document.getElementById('tankFilter').addEventListener('change',function(){loadHistoricalData();});document.getElementById('rangeSelect').addEventListener('change',function(){const sd=document.getElementById('startDate');const ed=document.getElementById('endDate');if(this.value==='custom'){sd.style.display='';ed.style.display='';if(!sd.value){const d=new Date();d.setDate(d.getDate()-7);sd.value=d.toISOString().split('T')[0];}if(!ed.value){ed.value=new Date().toISOString().split('T')[0];}}else{sd.style.display='none';ed.style.display='none';}loadHistoricalData();});loadHistoricalData();})();})();
 </script></body></html>)HTML";
+
+static const char TRANSMISSION_LOG_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Transmission Log - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Outbound Transmission Log</h2><p style="color:var(--muted);margin-bottom:16px;">Log of messages sent from the server to clients and external services via Notehub. Shows the most recent 100 transmissions.</p><div class="controls"><button id="refreshBtn">Refresh</button><select id="typeFilter"><option value="all">All Types</option><option value="sms">SMS</option><option value="email">Email</option><option value="config">Config</option><option value="relay">Relay</option><option value="relay_clear">Relay Clear</option><option value="viewer_summary">Viewer Summary</option><option value="serial_request">Serial Request</option><option value="location_request">Location Request</option></select><select id="statusFilter"><option value="all">All Statuses</option><option value="outbox">Outbox</option><option value="sent">Sent</option><option value="failed">Failed</option></select><input type="text" id="searchInput" placeholder="Filter by site or client..." style="max-width:250px;"><button class="secondary" id="exportBtn">Export CSV</button></div><table><thead><tr><th>Date/Time</th><th>Site</th><th>Client ID</th><th>Type</th><th>Status</th><th>Detail</th></tr></thead><tbody id="logBody"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody></table></div></main><div id="toast"></div><script>(()=>{const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;})HTML"
+R"HTML(const toast=document.getElementById('toast');const logBody=document.getElementById('logBody');const typeFilter=document.getElementById('typeFilter');const statusFilter=document.getElementById('statusFilter');const searchInput=document.getElementById('searchInput');let allEntries=[];function showToast(m,e){toast.textContent=m;toast.style.background=e?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}function escapeHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}function formatEpoch(e){if(!e)return'--';const d=new Date(e*1000);if(isNaN(d.getTime()))return'--';return d.toLocaleString(undefined,{month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true});}function statusBadge(s){const colors={outbox:'#fef3c7;color:#92400e',sent:'#d1fae5;color:#065f46',failed:'#fee2e2;color:#991b1b'};const bg=colors[s]||'#e5e7eb;color:#374151';return `<span style="display:inline-block;padding:2px 8px;font-size:0.75rem;font-weight:600;background:${bg};border-radius:var(--radius);">${escapeHtml(s)}</span>`;})HTML"
+R"HTML(function typeBadge(t){const colors={sms:'#dbeafe;color:#1e40af',email:'#fce7f3;color:#9d174d',config:'#e0e7ff;color:#3730a3',relay:'#fef3c7;color:#92400e',relay_clear:'#fef3c7;color:#92400e',viewer_summary:'#d1fae5;color:#065f46',serial_request:'#f3e8ff;color:#6b21a8',location_request:'#ccfbf1;color:#0f766e'};const bg=colors[t]||'#e5e7eb;color:#374151';return `<span style="display:inline-block;padding:2px 8px;font-size:0.75rem;font-weight:600;background:${bg};border-radius:var(--radius);">${escapeHtml(t)}</span>`;}function renderTable(){const tf=typeFilter.value;const sf=statusFilter.value;const search=searchInput.value.toLowerCase().trim();let filtered=allEntries;if(tf!=='all')filtered=filtered.filter(e=>e.type===tf);if(sf!=='all')filtered=filtered.filter(e=>e.status===sf);if(search)filtered=filtered.filter(e=>(e.site||'').toLowerCase().includes(search)||(e.client||'').toLowerCase().includes(search)||(e.detail||'').toLowerCase().includes(search));if(filtered.length===0){logBody.innerHTML='<tr><td colspan="6" class="empty-state">No matching transmissions found.</td></tr>';return;}logBody.innerHTML=filtered.map(e=>`<tr><td style="white-space:nowrap;">${formatEpoch(e.timestamp)}</td><td>${escapeHtml(e.site||'--')}</td><td style="font-size:0.85rem;font-family:ui-monospace,monospace;">${escapeHtml(e.client||'--')}</td><td>${typeBadge(e.type)}</td><td>${statusBadge(e.status)}</td><td style="font-size:0.85rem;">${escapeHtml(e.detail||'')}</td></tr>`).join('');}async function loadLog(){try{const res=await fetch('/api/transmission-log');if(!res.ok)throw new Error('Failed to load');const data=await res.json();allEntries=data.entries||[];renderTable();}catch(err){logBody.innerHTML='<tr><td colspan="6" class="empty-state">Error: '+escapeHtml(err.message)+'</td></tr>';}}document.getElementById('refreshBtn').addEventListener('click',loadLog);typeFilter.addEventListener('change',renderTable);statusFilter.addEventListener('change',renderTable);searchInput.addEventListener('input',renderTable);)HTML"
+R"HTML(document.getElementById('exportBtn').addEventListener('click',()=>{let csv='Date/Time,Site,Client ID,Type,Status,Detail\n';const tf=typeFilter.value;const sf=statusFilter.value;const search=searchInput.value.toLowerCase().trim();let filtered=allEntries;if(tf!=='all')filtered=filtered.filter(e=>e.type===tf);if(sf!=='all')filtered=filtered.filter(e=>e.status===sf);if(search)filtered=filtered.filter(e=>(e.site||'').toLowerCase().includes(search)||(e.client||'').toLowerCase().includes(search));filtered.forEach(e=>{const dt=e.timestamp?new Date(e.timestamp*1000).toISOString():'';csv+=`"${dt}","${e.site||''}","${e.client||''}","${e.type||''}","${e.status||''}","${(e.detail||'').replace(/"/g,'""')}"\n`;});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='transmission_log.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');});loadLog();setInterval(loadLog,15000);})();</script></body></html>)HTML";
 
 static const char LOGIN_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TankAlarm Login</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><div id="loading-overlay"><div class="spinner"></div></div><main><h1 class="login-title"><span class="brand">TankAlarm</span> Login</h1><p>Enter your PIN to access the dashboard.</p><form id="loginForm" class="login-form"><input type="password" id="pin" class="pin-input" placeholder="Enter PIN" required autocomplete="current-password" pattern="\d{4}" title="4-digit PIN"><button type="submit" class="login-button">Login</button><div id="error" class="error">Invalid PIN</div></form></main><script>window.addEventListener('load',()=>{const ov=document.getElementById('loading-overlay');if(ov)ov.classList.add('hidden');});document.getElementById("loginForm").addEventListener("submit",async(e)=>{e.preventDefault();const pin=document.getElementById("pin").value;try{const res=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin})});if(res.ok){localStorage.setItem("tankalarm_token",pin);const params=new URLSearchParams(window.location.search);window.location.href=params.get("redirect")||"/";}else{document.getElementById("error").textContent="Invalid PIN";document.getElementById("error").style.display="block";}}catch(err){document.getElementById("error").textContent="Connection failed: "+err.message;document.getElementById("error").style.display="block";}});</script></body></html>)HTML";
 
@@ -1353,11 +1386,14 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="e
 .status-pill.alarm{background:#fee2e2;color:#991b1b;}
 .status-pill.stale{background:#fef3c7;color:#92400e;}
 .no-data{padding:40px 18px;text-align:center;color:var(--muted);}
-</style></head><body data-theme="light"><div id="loading-overlay"><div class="spinner"></div></div><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="logout()">Logout</button></div></div></header><main><div class="stats-grid"><div class="stat-card"><span>Total Clients</span><strong id="statClients">0</strong></div><div class="stat-card"><span>Active Sensors</span><strong id="statTanks">0</strong></div><div class="stat-card"><span>Active Alarms</span><strong id="statAlarms">0</strong></div><div class="stat-card"><span>Stale (&gt;25h)</span><strong id="statStale">0</strong></div></div><section class="card"><h2 style="margin:0 0 0.5rem;">Historical Data</h2><p style="color:var(--muted);margin-bottom:12px;">Review long-term trends, alarms, and site summaries.</p><div class="actions"><a class="pill" href="/historical">Open Historical Data</a></div></section><section><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><h2 style="margin:0;">Fleet Telemetry</h2><span style="font-size:0.85rem;color:var(--muted);">Auto-refreshes while this page is open</span></div><div id="siteContainer"><div class="no-data">Loading fleet data...</div></div></section></main><div id="toast"></div>)HTML" R"HTML(<script>
+.dc-sparkline{margin-top:6px;height:36px;width:100%;position:relative;}
+.dc-sparkline canvas{display:block;width:100%;height:100%;border-radius:4px;background:color-mix(in srgb,var(--accent) 5%,transparent);}
+.dc-sparkline .spark-label{position:absolute;top:2px;right:4px;font-size:0.6rem;color:var(--muted);pointer-events:none;}
+</style></head><body data-theme="light"><div id="loading-overlay"><div class="spinner"></div></div><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="logout()">Logout</button></div></div></header><main><div class="stats-grid"><div class="stat-card"><span>Total Clients</span><strong id="statClients">0</strong></div><div class="stat-card"><span>Active Sensors</span><strong id="statTanks">0</strong></div><div class="stat-card"><span>Active Alarms</span><strong id="statAlarms">0</strong></div><div class="stat-card"><span>Stale (&gt;25h)</span><strong id="statStale">0</strong></div></div><section><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><h2 style="margin:0;">Fleet Telemetry</h2><span style="font-size:0.85rem;color:var(--muted);">Auto-refreshes while this page is open</span></div><div id="siteContainer"><div class="no-data">Loading fleet data...</div></div></section><section class="card"><h2 style="margin:0 0 0.5rem;">Historical Data</h2><p style="color:var(--muted);margin-bottom:12px;">Review long-term trends, alarms, and site summaries.</p><div class="actions"><a class="pill" href="/historical">Open Historical Data</a></div></section></main><div id="toast"></div>)HTML" R"HTML(<script>
 (()=>{const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}
 const STALE_MIN=1500;const DEFAULT_REFRESH_S=60;
 const els={pauseBtn:document.getElementById('pauseBtn'),siteContainer:document.getElementById('siteContainer'),statClients:document.getElementById('statClients'),statTanks:document.getElementById('statTanks'),statAlarms:document.getElementById('statAlarms'),statStale:document.getElementById('statStale'),toast:document.getElementById('toast')};
-const state={clients:[],sites:{},refreshing:false,timer:null,uiRefreshS:DEFAULT_REFRESH_S,paused:false,pin:token||null,pinConfigured:false,expandedDot:null};
+const state={clients:[],sites:{},refreshing:false,timer:null,uiRefreshS:DEFAULT_REFRESH_S,paused:false,pin:token||null,pinConfigured:false,expandedDot:null,sparkData:{}};
 function escapeHtml(u){if(!u)return'';return String(u).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
 function formatNum(v){return(typeof v==='number'&&isFinite(v))?v.toFixed(1):'--';}
 function formatLevel(inches){if(typeof inches!=='number'||!isFinite(inches)||inches<=0)return'--';const ft=Math.floor(inches/12);const rem=inches%12;return ft>0?`${ft}' ${rem.toFixed(1)}"`:`${rem.toFixed(1)}"`;}
@@ -1372,6 +1408,28 @@ function objectTypeLabel(ot){const map={tank:'Tank Level',gas:'Gas Pressure',rpm
 function objectTypeIcon(ot){const map={tank:'\u2BEA',gas:'\u26A1',rpm:'\u2699',flow:'\u{1F4A7}',engine:'\u2699',pump:'\u2699'};return map[ot]||'\u{1F4CA}';}
 function unitLabel(mu,ot){if(mu)return mu;if(ot==='gas')return'psi';if(ot==='rpm')return'rpm';if(ot==='flow')return'gpm';return'in';}
 function formatValue(val,mu,ot){if(typeof val!=='number'||!isFinite(val))return'--';if(!mu&&(!ot||ot==='tank'))return formatLevel(val);return val.toFixed(1);}
+const SPARKLINE_TYPES=new Set(['tank','gas','flow']);
+function drawSparkline(container,readings,color){
+if(!readings||readings.length<2){container.innerHTML='<span class="spark-label">No trend data</span>';return;}
+const width=container.clientWidth||200;const height=36;
+const canvas=document.createElement('canvas');canvas.width=width*2;canvas.height=height*2;canvas.style.width=width+'px';canvas.style.height=height+'px';
+container.appendChild(canvas);
+const ctx=canvas.getContext('2d');ctx.scale(2,2);
+const vals=readings.map(r=>r.level);const min=Math.min(...vals);const max=Math.max(...vals);const range=max-min||1;
+const pad=2;const drawH=height-pad*2;const drawW=width-pad*2;
+ctx.strokeStyle=color||'#2563eb';ctx.lineWidth=1.5;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();
+vals.forEach((v,i)=>{const x=pad+i/(vals.length-1)*drawW;const y=pad+drawH-(v-min)/range*drawH;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});
+ctx.stroke();
+const grad=ctx.createLinearGradient(0,pad,0,height);grad.addColorStop(0,(color||'#2563eb')+'30');grad.addColorStop(1,(color||'#2563eb')+'05');ctx.lineTo(pad+drawW,height);ctx.lineTo(pad,height);ctx.closePath();ctx.fillStyle=grad;ctx.fill();
+const label=document.createElement('span');label.className='spark-label';const spanSec=readings.length>=2?(readings[readings.length-1].timestamp-readings[0].timestamp):0;const spanDays=Math.round(spanSec/86400);let spanText=spanDays>=60?Math.round(spanDays/30)+'mo':spanDays>=2?spanDays+'d':'<1d';label.textContent=readings.length+'pts / '+spanText;container.appendChild(label);}
+async function loadSparklineData(){
+try{const res=await fetch('/api/history?days=90');if(!res.ok)return;const data=await res.json();
+if(!data.tanks||!data.tanks.length)return;
+const map={};data.tanks.forEach(t=>{const key=(t.client||'')+'|'+(t.tank||1);map[key]=t.readings||[];});
+state.sparkData=map;renderSparklines();}catch(e){console.warn('Sparkline data unavailable:',e.message);}}
+function renderSparklines(){
+document.querySelectorAll('.dc-sparkline[data-spark-key]').forEach(el=>{
+const key=el.dataset.sparkKey;const readings=state.sparkData[key];if(readings&&readings.length>=2){el.innerHTML='';drawSparkline(el,readings,el.dataset.sparkColor);}});}
 function buildSiteModel(rawClients){const sites={};rawClients.forEach(c=>{const uid=c.c||'';const site=c.s||'Unknown Site';if(!sites[site])sites[site]={name:site,clients:{}};if(!sites[site].clients[uid])sites[site].clients[uid]={uid:uid,alarm:!!c.a,lastUpdate:c.u||0,vinVoltage:c.v,vinVoltageEpoch:c.ve,tanks:[]};const cl=sites[site].clients[uid];if(c.a)cl.alarm=true;if(c.u>cl.lastUpdate)cl.lastUpdate=c.u;const tanks=Array.isArray(c.ts)?c.ts:[];if(tanks.length){tanks.forEach((t,idx)=>{cl.tanks.push({label:t.n||c.n||'Sensor',tank:t.k||'',levelInches:t.l,sensorMa:t.ma,sensorType:t.st||'',objectType:t.ot||'tank',measurementUnit:t.mu||'',contents:t.ct||'',alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,change24h:t.d,tankIdx:idx});});}else if(c.u){cl.tanks.push({label:c.n||'Sensor',tank:c.k||'',levelInches:c.l,sensorMa:c.ma,sensorType:'',objectType:'tank',measurementUnit:'',contents:'',alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,change24h:undefined,tankIdx:0});}});return sites;}
 )HTML" R"HTML(
 function clientStatusColor(cl){if(cl.alarm)return'red';if(!cl.lastUpdate||isStale(cl.lastUpdate))return'yellow';return'green';}
@@ -1383,7 +1441,8 @@ const ot=t.objectType||'tank';const mu=unitLabel(t.measurementUnit,ot);const val
 let alarmHtml='';if(t.alarm)alarmHtml=`<div class="dc-alarm">ALARM: ${escapeHtml(t.alarmType)}</div>`;
 let contentsHtml='';if(t.contents)contentsHtml=`<div class="dc-contents">${escapeHtml(t.contents)}</div>`;
 const staleBadge=stale&&t.lastUpdate?`<span class="status-pill stale">Stale</span>`:'';
-card.innerHTML=`<div class="dc-type">${objectTypeLabel(ot)} ${staleBadge}</div><div class="dc-name">${escapeHtml(t.label||'Sensor')}${t.tank?' #'+t.tank:''}</div>${contentsHtml}<div class="dc-value">${val} <small>${escapeHtml(mu)}</small></div>${changeHtml}${alarmHtml}<div class="dc-meta"><span>${timeAgo(t.lastUpdate)}</span>${t._vinVoltage&&t._vinVoltage>0?'<span>VIN: '+t._vinVoltage.toFixed(2)+'V</span>':''}</div><div class="dc-actions"><button class="secondary btn-small" onclick="refreshTank('${escapeHtml(t._clientUid)}')" ${state.refreshing?'disabled':''}>Refresh</button><button class="secondary btn-small" onclick="clearRelays('${escapeHtml(t._clientUid)}',${t.tankIdx||0})" ${state.refreshing?'disabled':''}>Clear Relay</button></div>`;return card;}
+let sparkHtml='';if(SPARKLINE_TYPES.has(ot)){const sparkKey=escapeHtml(t._clientUid)+'|'+(t.tank||1);const sparkColor=ot==='gas'?'#f59e0b':ot==='flow'?'#10b981':'#2563eb';sparkHtml=`<div class="dc-sparkline" data-spark-key="${sparkKey}" data-spark-color="${sparkColor}"><span class="spark-label">Loading trend...</span></div>`;}
+card.innerHTML=`<div class="dc-type">${objectTypeLabel(ot)} ${staleBadge}</div><div class="dc-name">${escapeHtml(t.label||'Sensor')}${t.tank?' #'+t.tank:''}</div>${contentsHtml}<div class="dc-value">${val} <small>${escapeHtml(mu)}</small></div>${sparkHtml}${changeHtml}${alarmHtml}<div class="dc-meta"><span>${timeAgo(t.lastUpdate)}</span>${t._vinVoltage&&t._vinVoltage>0?'<span>VIN: '+t._vinVoltage.toFixed(2)+'V</span>':''}</div><div class="dc-actions"><button class="secondary btn-small" onclick="refreshTank('${escapeHtml(t._clientUid)}')" ${state.refreshing?'disabled':''}>Refresh</button><button class="secondary btn-small" onclick="clearRelays('${escapeHtml(t._clientUid)}',${t.tankIdx||0})" ${state.refreshing?'disabled':''}>Clear Relay</button></div>`;return card;
 )HTML" R"HTML(
 function toggleDotInfo(section,cl,siteName){const slot=section.querySelector('.cdot-info-slot');if(state.expandedDot===cl.uid){slot.innerHTML='';state.expandedDot=null;return;}state.expandedDot=cl.uid;const color=clientStatusColor(cl);const statusText=cl.alarm?'ALARM':isStale(cl.lastUpdate)?'Stale / No Data':'Online';const tankCount=cl.tanks.length;slot.innerHTML=`<div class="cdot-info open"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><div><strong>${escapeHtml(cl.uid)}</strong><span class="status-pill ${color==='red'?'alarm':color==='yellow'?'stale':'ok'}" style="margin-left:8px;">${statusText}</span></div><div style="display:flex;gap:6px;"><a class="pill secondary" style="font-size:0.75rem;padding:2px 10px;" href="/config-generator?uid=${encodeURIComponent(cl.uid)}">Edit Config</a><a class="pill secondary" style="font-size:0.75rem;padding:2px 10px;" href="/site-config?site=${encodeURIComponent(siteName)}">Site Config</a></div></div><div style="margin-top:6px;color:var(--muted);font-size:0.85rem;">${tankCount} sensor${tankCount!==1?'s':''} &middot; Last update: ${formatEpoch(cl.lastUpdate)} &middot; VIN: ${formatVoltage(cl.vinVoltage)}</div></div>`;}
 function updateStats(){const allClients=Object.values(state.sites).flatMap(s=>Object.values(s.clients));const allTanks=allClients.flatMap(c=>c.tanks);const clientIds=new Set(allClients.map(c=>c.uid));if(els.statClients)els.statClients.textContent=clientIds.size;if(els.statTanks)els.statTanks.textContent=allTanks.length;if(els.statAlarms)els.statAlarms.textContent=allTanks.filter(t=>t.alarm).length;const stale=allTanks.filter(t=>isStale(t.lastUpdate)).length;if(els.statStale)els.statStale.textContent=stale;}
@@ -1396,7 +1455,7 @@ window.refreshTank=refreshTank;
 window.logout=function(){localStorage.removeItem('tankalarm_token');window.location.href='/login';};
 async function clearRelays(clientUid,tankIdx){if(state.refreshing)return;if(state.pinConfigured&&!state.pin){const p=prompt('Enter admin PIN to control relays');if(!p)return;state.pin=p.trim();}state.refreshing=true;renderSites();try{const res=await fetch('/api/relay/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid,tankIdx:tankIdx,pin:state.pin||''})});if(!res.ok){if(res.status===403){state.pin=token;state.pinConfigured=true;throw new Error('PIN required or invalid');}throw new Error(await res.text()||'Clear relay failed');}showToast('Relay clear command sent');setTimeout(()=>refreshData(),1000);}catch(err){showToast(err.message||'Clear relay failed',true);}finally{state.refreshing=false;renderSites();}}
 window.clearRelays=clearRelays;
-function applyServerData(data){state.clients=data.cs||[];state.sites=buildSiteModel(state.clients);const srv=data.srv||{};state.paused=!!srv.ps;state.pinConfigured=!!srv.pc;state.uiRefreshS=DEFAULT_REFRESH_S;renderSites();renderPauseButton();updateStats();scheduleRefresh();}
+function applyServerData(data){state.clients=data.cs||[];state.sites=buildSiteModel(state.clients);const srv=data.srv||{};state.paused=!!srv.ps;state.pinConfigured=!!srv.pc;state.uiRefreshS=DEFAULT_REFRESH_S;renderSites();renderPauseButton();updateStats();scheduleRefresh();if(Object.keys(state.sparkData).length){renderSparklines();}else{loadSparklineData();}if(!state.sparkTimer){state.sparkTimer=setInterval(loadSparklineData,300000);}}
 function scheduleRefresh(){if(state.timer)clearInterval(state.timer);state.timer=setInterval(refreshData,state.uiRefreshS*1000);}
 async function refreshData(){try{const res=await fetch('/api/clients?summary=1');if(!res.ok)throw new Error('Failed to fetch fleet data');applyServerData(await res.json());hideLoading();}catch(err){showToast(err.message||'Fleet refresh failed',true);}}
 refreshData();})();
@@ -1486,7 +1545,7 @@ static void handleSerialRequestPost(EthernetClient &client, const String &body);
 static void handleCalibrationGet(EthernetClient &client);
 static void handleCalibrationPost(EthernetClient &client, const String &body);
 static void handleCalibrationDelete(EthernetClient &client, const String &body);
-static void sendHistoryJson(EthernetClient &client);
+static void sendHistoryJson(EthernetClient &client, const String &query = "");
 static void handleHistoryCompare(EthernetClient &client, const String &query);
 static void handleHistoryYearOverYear(EthernetClient &client, const String &query);
 static void handleServerSettingsPost(EthernetClient &client, const String &body);
@@ -3921,6 +3980,40 @@ static void clearAlarmEvent(const char *clientUid, uint8_t tankNumber) {
   }
 }
 
+// ============================================================================
+// Transmission Log Helper
+// ============================================================================
+static void logTransmission(const char *clientUid, const char *site, const char *messageType, const char *status, const char *detail) {
+  TransmissionLogEntry &entry = gTransmissionLog[gTransmissionLogWriteIndex];
+
+  // Get current time from Notecard epoch tracker
+  double now = 0.0;
+  if (gLastSyncedEpoch > 0.0) {
+    now = gLastSyncedEpoch + (double)(millis() - gLastSyncMillis) / 1000.0;
+  }
+
+  entry.timestamp = now;
+  strlcpy(entry.siteName, site ? site : "", sizeof(entry.siteName));
+  strlcpy(entry.clientUid, clientUid ? clientUid : "", sizeof(entry.clientUid));
+  strlcpy(entry.messageType, messageType ? messageType : "unknown", sizeof(entry.messageType));
+  strlcpy(entry.status, status ? status : "outbox", sizeof(entry.status));
+  strlcpy(entry.detail, detail ? detail : "", sizeof(entry.detail));
+
+  // Advance ring buffer
+  gTransmissionLogWriteIndex = (gTransmissionLogWriteIndex + 1) % MAX_TRANSMISSION_LOG_ENTRIES;
+  if (gTransmissionLogCount < MAX_TRANSMISSION_LOG_ENTRIES) {
+    gTransmissionLogCount++;
+  }
+
+  Serial.print(F("TX Log: "));
+  Serial.print(messageType);
+  Serial.print(F(" -> "));
+  Serial.print(clientUid ? clientUid : "(server)");
+  Serial.print(F(" ["));
+  Serial.print(status);
+  Serial.println(F("]"));
+}
+
 // Find or create a tank history entry
 static TankHourlyHistory *findOrCreateTankHistory(const char *clientUid, uint8_t tankNumber) {
   // Search existing entries
@@ -4219,7 +4312,7 @@ static void saveHistorySettings() {
 
 // Helper to apply history settings from JSON document
 static void applyHistorySettingsFromJson(const JsonDocument &doc) {
-  gHistorySettings.hotTierRetentionDays = doc["hotDays"] | 7;
+  gHistorySettings.hotTierRetentionDays = doc["hotDays"] | 730;
   gHistorySettings.warmTierRetentionMonths = doc["warmMonths"] | 24;
   gHistorySettings.ftpArchiveEnabled = doc["ftpArchive"] | false;
   gHistorySettings.ftpSyncHour = doc["ftpHour"] | 3;
@@ -4734,10 +4827,15 @@ static void handleWebRequests() {
     serveFile(client, EMAIL_FORMAT_HTML);
   } else if (method == "GET" && path == "/historical") {
     serveFile(client, HISTORICAL_DATA_HTML);
+  } else if (method == "GET" && path == "/transmission-log") {
+    serveFile(client, TRANSMISSION_LOG_HTML);
   } else if (method == "POST" && path == "/api/login") {
     handleLoginPost(client, body);
-  } else if (method == "GET" && path == "/api/history") {
-    sendHistoryJson(client);
+  } else if (method == "GET" && (path == "/api/history" || path.startsWith("/api/history?"))) {
+    String histQuery = "";
+    int histQs = path.indexOf('?');
+    if (histQs >= 0) histQuery = path.substring(histQs + 1);
+    sendHistoryJson(client, histQuery);
   } else if (method == "GET" && path.startsWith("/api/history/compare")) {
     // Parse query params: ?current=YYYYMM&previous=YYYYMM
     String queryString = "";
@@ -4888,6 +4986,8 @@ static void handleWebRequests() {
     } else {
       handleFtpRestorePost(client, body);
     }
+  } else if (method == "GET" && path == "/api/transmission-log") {
+    handleTransmissionLogGet(client);
   } else if (method == "GET" && path == "/api/notecard/status") {
     handleNotecardStatusGet(client);
   } else if (method == "GET" && path == "/api/dfu/status") {
@@ -5682,6 +5782,15 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
         respondStatus(client, 202, F("Config saved locally — Notecard send failed (auto-retry every 60s). Check serial monitor for details."));
         return;
       }
+      if (status == ConfigDispatchStatus::OkWithPurge) {
+        // Config queued successfully but older pending configs were purged
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+          "Config queued. WARNING: %u older pending config(s) were replaced in the outbox.",
+          gLastConfigPurgeCount);
+        respondStatus(client, 200, msg);
+        return;
+      }
     }
   }
 
@@ -5873,6 +5982,11 @@ static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state
   Serial.print(F(" -> "));
   Serial.println(state ? "ON" : "OFF");
 
+  // Log to transmission log
+  char detail[64];
+  snprintf(detail, sizeof(detail), "Relay %u %s (%s)", relayNum, state ? "ON" : "OFF", source ? source : "");
+  logTransmission(clientUid, "", "relay", "outbox", detail);
+
   return true;
 }
 
@@ -5915,6 +6029,11 @@ static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
   Serial.print(clientUid);
   Serial.print(F(", tank "));
   Serial.println(tankIdx);
+
+  // Log to transmission log
+  char detail[64];
+  snprintf(detail, sizeof(detail), "Reset relay alarms tank %u", tankIdx);
+  logTransmission(clientUid, "", "relay_clear", "outbox", detail);
 
   return true;
 }
@@ -6067,13 +6186,102 @@ static void handleFtpRestorePost(EthernetClient &client, const String &body) {
 // Notecard Config Dispatch Helpers
 // ============================================================================
 
+// Purge any pending config notes for a specific client from the local Notecard outbox.
+// Uses note.changes to enumerate pending notes in command.qo, then deletes any
+// that have _type=="config" and _target==clientUid.  Returns number purged.
+static uint8_t purgePendingConfigNotes(const char *clientUid) {
+  if (!clientUid || clientUid[0] == '\0') return 0;
+
+  uint8_t purged = 0;
+
+  // Ask for pending notes in the command outbox
+  J *req = notecard.newRequest("note.changes");
+  if (!req) return 0;
+  JAddStringToObject(req, "file", COMMAND_OUTBOX_FILE);
+
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) return 0;
+
+  // Check for error (e.g. file doesn't exist yet)
+  const char *err = JGetString(rsp, "err");
+  if (err && err[0] != '\0') {
+    notecard.deleteResponse(rsp);
+    return 0;
+  }
+
+  J *notes = JGetObject(rsp, "notes");
+  if (!notes) {
+    notecard.deleteResponse(rsp);
+    return 0;
+  }
+
+  // Collect note IDs to delete (we can't modify the list while iterating)
+  // Max 20 stale configs is more than enough for any realistic scenario
+  static const uint8_t MAX_PURGE = 20;
+  char noteIds[MAX_PURGE][48];
+  uint8_t toDelete = 0;
+
+  J *note = notes->child;
+  while (note && toDelete < MAX_PURGE) {
+    const char *noteId = note->string;  // The note ID is the key name
+    J *body = JGetObject(note, "body");
+    if (body && noteId) {
+      const char *type = JGetString(body, "_type");
+      const char *target = JGetString(body, "_target");
+      if (type && target && strcmp(type, "config") == 0 && strcmp(target, clientUid) == 0) {
+        strlcpy(noteIds[toDelete], noteId, sizeof(noteIds[toDelete]));
+        toDelete++;
+      }
+    }
+    note = note->next;
+  }
+  notecard.deleteResponse(rsp);
+
+  // Now delete each stale config note
+  for (uint8_t i = 0; i < toDelete; i++) {
+    J *delReq = notecard.newRequest("note.delete");
+    if (!delReq) continue;
+    JAddStringToObject(delReq, "file", COMMAND_OUTBOX_FILE);
+    JAddStringToObject(delReq, "note", noteIds[i]);
+    J *delRsp = notecard.requestAndResponse(delReq);
+    if (delRsp) {
+      const char *delErr = JGetString(delRsp, "err");
+      if (!delErr || delErr[0] == '\0') {
+        purged++;
+        Serial.print(F("PURGED stale config note "));
+        Serial.print(noteIds[i]);
+        Serial.print(F(" for client "));
+        Serial.println(clientUid);
+      }
+      notecard.deleteResponse(delRsp);
+    }
+  }
+
+  if (purged > 0) {
+    char detail[64];
+    snprintf(detail, sizeof(detail), "Purged %u stale config(s) from outbox", purged);
+    logTransmission(clientUid, "", "config", "outbox", detail);
+  }
+
+  return purged;
+}
+
 // Send a cached config JSON payload to a specific client via Notecard note.add.
 // Returns true on success, false on failure (with error logged to Serial).
+// Automatically purges any stale pending config notes for the same client first.
 static bool sendConfigViaNotecard(const char *clientUid, const char *jsonPayload) {
   // Pre-flight: check that Product UID is configured (required for Notehub routing)
   if (gConfig.productUid[0] == '\0') {
     Serial.println(F("ERROR: Cannot dispatch config - Product UID not set in Server Settings"));
     return false;
+  }
+
+  // Purge any older pending config notes for this client before adding the new one
+  gLastConfigPurgeCount = purgePendingConfigNotes(clientUid);
+  if (gLastConfigPurgeCount > 0) {
+    Serial.print(F("WARNING: Replaced "));
+    Serial.print(gLastConfigPurgeCount);
+    Serial.println(F(" older pending config(s) in outbox"));
   }
 
   J *req = notecard.newRequest("note.add");
@@ -6121,6 +6329,10 @@ static bool sendConfigViaNotecard(const char *clientUid, const char *jsonPayload
   notecard.deleteResponse(rsp);
   Serial.print(F("Queued config update for client "));
   Serial.println(clientUid);
+
+  // Log to transmission log
+  logTransmission(clientUid, "", "config", "outbox", "Config update dispatched");
+
   return true;
 }
 
@@ -6156,7 +6368,7 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
     if (snap) {
       // pendingDispatch stays true until ACK received
     }
-    return ConfigDispatchStatus::Ok;
+    return (gLastConfigPurgeCount > 0) ? ConfigDispatchStatus::OkWithPurge : ConfigDispatchStatus::Ok;
   }
 
   // Send failed — mark for auto-retry (pendingDispatch already true)
@@ -6466,6 +6678,15 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   }
   if (!isSystemAlarm) {
     rec->levelInches = level;
+    // Record historical snapshot from alarm so trend data captures alarm events
+    if (level > 0.0f) {
+      const char *alarmSiteName = doc["s"] | doc["site"] | rec->site;
+      float alarmVin = 0.0f;
+      ClientMetadata *alarmMeta = findOrCreateClientMetadata(clientUid);
+      if (alarmMeta) alarmVin = alarmMeta->vinVoltage;
+      recordTelemetrySnapshot(clientUid, alarmSiteName, tankNumber,
+                              rec->heightInches, level, alarmVin);
+    }
   }
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
   gTankRegistryDirty = true;
@@ -6725,6 +6946,13 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     rec->levelInches = newLevel;
     rec->lastUpdateEpoch = now;
     gTankRegistryDirty = true;
+    
+    // Record historical snapshot from daily report so sparklines/charts have data
+    // even when change-based telemetry is disabled (levelChangeThreshold = 0)
+    if (newLevel > 0.0f) {
+      recordTelemetrySnapshot(clientUid, siteName, tankNumber,
+                              rec->heightInches, newLevel, vinVoltage);
+    }
   }
 }
 
@@ -7037,6 +7265,9 @@ static void sendSmsAlert(const char *message) {
   JAddItemToObject(req, "body", body);
   notecard.sendRequest(req);
 
+  // Log to transmission log
+  logTransmission("", "", "sms", "outbox", message ? message : "SMS alert");
+
   Serial.print(F("SMS alert dispatched: "));
   Serial.println(message);
 }
@@ -7140,6 +7371,9 @@ static void sendDailyEmail() {
 
   gLastDailyEmailSentEpoch = now;
   Serial.println(F("Daily email queued"));
+
+  // Log to transmission log
+  logTransmission("", "", "email", "outbox", "Daily tank summary email");
 }
 
 static void publishViewerSummary() {
@@ -7215,8 +7449,11 @@ static void publishViewerSummary() {
   if (queued) {
     gLastViewerSummaryEpoch = now;
     Serial.println(F("Viewer summary queued"));
+    // Log to transmission log
+    logTransmission("", gConfig.serverName, "viewer_summary", "outbox", "Viewer summary published");
   } else {
     Serial.println(F("Viewer summary queue failed"));
+    logTransmission("", gConfig.serverName, "viewer_summary", "failed", "Viewer summary queue failed");
   }
 }
 
@@ -8134,27 +8371,56 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
 
 
 
-static void sendHistoryJson(EthernetClient &client) {
+static void sendHistoryJson(EthernetClient &client, const String &query = "") {
   // Build JSON response with historical tank data for charting
-  // Structure: { tanks: [...], alarms: [...], voltage: [], settings: {}, comparison: null }
-  // Historical data may reach ~64KB; ArduinoJson v7 auto-sizes
+  // Supports query params: ?days=N (limit readings age), ?tank=CLIENT:NUM (single tank, full range)
+  // When viewing all tanks, limit to 90 days to reduce payload; single tank gets full range
   JsonDocument doc;
   // doc.isNull() removed; in ArduinoJson 7 it returns true for new/empty docs
+  
+  // Parse query parameters
+  String tankFilter = getQueryParam(query, "tank");   // e.g. "dev:abc123:1"
+  String daysParam = getQueryParam(query, "days");    // e.g. "90", "365", "730"
+  int maxDays = 0;  // 0 = no limit
+  if (daysParam.length() > 0) {
+    maxDays = daysParam.toInt();
+    if (maxDays <= 0) maxDays = 0;
+  }
+  
+  // Default: 90 days for all-tanks overview, full range for single tank
+  double cutoffEpoch = 0.0;
+  double nowEpoch = 0.0;
   
   JsonArray tanksArray = doc["tanks"].to<JsonArray>();
   JsonArray alarmsArray = doc["alarms"].to<JsonArray>();
   JsonArray voltageArray = doc["voltage"].to<JsonArray>();
   
   // Get current epoch
-  double nowEpoch = 0.0;
   if (gLastSyncedEpoch > 0.0) {
     nowEpoch = gLastSyncedEpoch + (double)(millis() - gLastSyncMillis) / 1000.0;
+  }
+  
+  // Calculate cutoff based on days parameter
+  if (maxDays > 0 && nowEpoch > 0.0) {
+    cutoffEpoch = nowEpoch - (double)maxDays * 86400.0;
   }
   
   // Use stored tank history for trend data
   for (uint8_t h = 0; h < gTankHistoryCount; h++) {
     TankHourlyHistory &hist = gTankHistory[h];
     if (hist.snapshotCount == 0) continue;
+    
+    // Apply single-tank filter if specified (format: "clientUid:tankNumber")
+    if (tankFilter.length() > 0) {
+      int colonIdx = tankFilter.lastIndexOf(':');
+      if (colonIdx > 0) {
+        String filterClient = tankFilter.substring(0, colonIdx);
+        int filterTank = tankFilter.substring(colonIdx + 1).toInt();
+        if (strcmp(hist.clientUid, filterClient.c_str()) != 0 || hist.tankNumber != filterTank) {
+          continue;
+        }
+      }
+    }
     
     JsonObject tankObj = tanksArray.add<JsonObject>();
     tankObj["client"] = hist.clientUid;
@@ -8167,11 +8433,14 @@ static void sendHistoryJson(EthernetClient &client) {
     uint16_t latestIdx = (hist.writeIndex - 1 + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
     tankObj["currentLevel"] = hist.snapshots[latestIdx].level;
     
-    // Include all stored readings for charting
+    // Include readings, filtered by cutoff if set
     JsonArray readings = tankObj["readings"].to<JsonArray>();
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
       uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
       TelemetrySnapshot &snap = hist.snapshots[idx];
+      
+      // Skip readings older than cutoff
+      if (cutoffEpoch > 0.0 && snap.timestamp < cutoffEpoch) continue;
       
       JsonObject reading = readings.add<JsonObject>();
       reading["timestamp"] = snap.timestamp;
@@ -8197,6 +8466,7 @@ static void sendHistoryJson(EthernetClient &client) {
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
       uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
       TelemetrySnapshot &snap = hist.snapshots[idx];
+      if (cutoffEpoch > 0.0 && snap.timestamp < cutoffEpoch) continue;
       if (snap.voltage > 0) {
         JsonObject voltObj = voltageArray.add<JsonObject>();
         voltObj["timestamp"] = snap.timestamp;
@@ -10221,6 +10491,36 @@ static void handleNotecardStatusGet(EthernetClient &client) {
   responseStr += "\"serverUid\":\"" + String(gServerUid) + "\",";
   responseStr += "\"syncMode\":\"" + syncMode + "\"";
   responseStr += "}";
+  respondJson(client, responseStr);
+}
+
+// ============================================================================
+// Transmission Log Web API Handler
+// ============================================================================
+
+static void handleTransmissionLogGet(EthernetClient &client) {
+  // Build JSON response from ring buffer, newest first
+  String responseStr = "{\"entries\":[";
+  bool first = true;
+
+  for (int i = (int)gTransmissionLogCount - 1; i >= 0; i--) {
+    int idx = (gTransmissionLogWriteIndex - 1 - ((int)gTransmissionLogCount - 1 - i) + MAX_TRANSMISSION_LOG_ENTRIES) % MAX_TRANSMISSION_LOG_ENTRIES;
+    const TransmissionLogEntry &e = gTransmissionLog[idx];
+
+    if (!first) responseStr += ",";
+    first = false;
+
+    responseStr += "{";
+    responseStr += "\"timestamp\":" + String(e.timestamp, 0) + ",";
+    responseStr += "\"site\":\"" + String(e.siteName) + "\",";
+    responseStr += "\"client\":\"" + String(e.clientUid) + "\",";
+    responseStr += "\"type\":\"" + String(e.messageType) + "\",";
+    responseStr += "\"status\":\"" + String(e.status) + "\",";
+    responseStr += "\"detail\":\"" + String(e.detail) + "\"";
+    responseStr += "}";
+  }
+
+  responseStr += "],\"count\":" + String(gTransmissionLogCount) + "}";
   respondJson(client, responseStr);
 }
 
