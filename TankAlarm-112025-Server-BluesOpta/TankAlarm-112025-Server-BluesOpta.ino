@@ -188,11 +188,11 @@
 // MAX_RELAYS and CLIENT_SERIAL_BUFFER_SIZE are defined in TankAlarm_Common.h
 
 #ifndef SERVER_SERIAL_BUFFER_SIZE
-#define SERVER_SERIAL_BUFFER_SIZE 100  // Keep last 100 server serial messages
+#define SERVER_SERIAL_BUFFER_SIZE 60   // Keep last 60 server serial messages (reduced for RAM)
 #endif
 
 #ifndef MAX_CLIENT_SERIAL_LOGS
-#define MAX_CLIENT_SERIAL_LOGS 10  // Track serial logs for up to 10 clients
+#define MAX_CLIENT_SERIAL_LOGS 5    // Track serial logs for up to 5 clients (reduced for RAM)
 #endif
 
 // ============================================================================
@@ -451,7 +451,7 @@ static uint8_t gTankCalibrationCount = 0;
 // ============================================================================
 // Structure for alarm history logging
 #ifndef MAX_ALARM_LOG_ENTRIES
-#define MAX_ALARM_LOG_ENTRIES 100  // Ring buffer of recent alarms
+#define MAX_ALARM_LOG_ENTRIES 50   // Ring buffer of recent alarms (reduced for RAM)
 #endif
 
 struct AlarmLogEntry {
@@ -473,7 +473,7 @@ static uint8_t alarmLogWriteIndex = 0;  // Ring buffer write pointer
 // Transmission Log System (outbound messages to clients/Notehub)
 // ============================================================================
 #ifndef MAX_TRANSMISSION_LOG_ENTRIES
-#define MAX_TRANSMISSION_LOG_ENTRIES 100  // Ring buffer of recent outbound transmissions
+#define MAX_TRANSMISSION_LOG_ENTRIES 50   // Ring buffer of recent outbound transmissions (reduced for RAM)
 #endif
 
 struct TransmissionLogEntry {
@@ -527,8 +527,10 @@ static void sendUnloadSms(const UnloadLogEntry &entry);
 
 // Structure for hourly telemetry snapshots (hot tier)
 #ifndef MAX_HOURLY_HISTORY_PER_TANK
-#define MAX_HOURLY_HISTORY_PER_TANK 730  // ~2 years of daily data points
+#define MAX_HOURLY_HISTORY_PER_TANK 90   // ~3 months of daily data (older data archived to FTP warm tier)
 #endif
+// NOTE: Reduced from 730 to fit in Opta's 512KB RAM. Full 2-year retention
+// planned via LittleFS-backed on-demand file storage (Phase 2 optimization).
 
 #ifndef MAX_HISTORY_TANKS
 #define MAX_HISTORY_TANKS 20
@@ -4251,7 +4253,8 @@ static bool loadArchivedMonth(uint16_t year, uint8_t month, JsonDocument &doc) {
   snprintf(remotePath, sizeof(remotePath), "%s/history/%04d%02d_history.json", 
            gConfig.ftpPath, year, month);
   
-  char buffer[16384];
+  // Use static buffer to avoid 16KB stack allocation (Mbed OS stack is only 4-8KB)
+  static char buffer[16384];
   size_t len = 0;
   if (!ftpRetrieveBuffer(session, remotePath, buffer, sizeof(buffer), len, err, sizeof(err))) {
     ftpQuit(session);
@@ -6337,7 +6340,8 @@ static bool sendConfigViaNotecard(const char *clientUid, const char *jsonPayload
 }
 
 static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVariantConst cfgObj) {
-  char buffer[8192];
+  // Use static buffer to avoid 8KB stack allocation (Mbed OS stack is only 4-8KB)
+  static char buffer[8192];
   size_t len = serializeJson(cfgObj, buffer, sizeof(buffer));
   if (len == 0 || len >= sizeof(buffer)) {
     Serial.println(F("Client config payload too large"));
@@ -7346,7 +7350,8 @@ static void sendDailyEmail() {
     return;
   }
 
-  char buffer[MAX_EMAIL_BUFFER];
+  // Use static buffer to avoid 16KB stack allocation (Mbed OS stack is only 4-8KB)
+  static char buffer[MAX_EMAIL_BUFFER];
   size_t len = serializeJson(doc, buffer, sizeof(buffer));
   if (len == 0 || len >= sizeof(buffer)) {
     Serial.println(F("Daily email payload too large"));

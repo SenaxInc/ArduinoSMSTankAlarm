@@ -61,7 +61,7 @@
 // Serial Buffer Configuration
 // ============================================================================
 #ifndef CLIENT_SERIAL_BUFFER_SIZE
-#define CLIENT_SERIAL_BUFFER_SIZE 50  // Buffer up to 50 log messages per client
+#define CLIENT_SERIAL_BUFFER_SIZE 30  // Buffer up to 30 log messages per client (reduced for RAM)
 #endif
 
 // ============================================================================
