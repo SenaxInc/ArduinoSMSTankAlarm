@@ -5254,6 +5254,7 @@ static void serveCss(EthernetClient &client) {
   size_t cssLen = strlen_P(STYLE_CSS);
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: text/css"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(cssLen);
   client.println(F("Cache-Control: public, max-age=3600"));
@@ -5801,6 +5802,7 @@ static void respondJson(EthernetClient &client, const String &body, int status) 
     client.println();
   }
   client.println(F("Content-Type: application/json"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(body.length());
   client.println();
@@ -5828,6 +5830,7 @@ static bool respondJson(EthernetClient &client, const JsonDocument &doc, int sta
     client.println();
   }
   client.println(F("Content-Type: application/json"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(length);
   client.println();
@@ -5846,6 +5849,7 @@ static bool respondJson(EthernetClient &client, const JsonDocument &doc) {
 static void beginChunkedCsvDownload(EthernetClient &client, const String &filename) {
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: text/csv"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Disposition: attachment; filename=\""));
   client.print(filename);
   client.println(F("\""));
@@ -5942,6 +5946,7 @@ static void respondStatus(EthernetClient &client, int status, const char *messag
     client.println(F("Error"));
   }
   client.println(F("Content-Type: text/plain"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(strlen(message));
   client.println();
@@ -9125,6 +9130,7 @@ static void sendHistoryJson(EthernetClient &client, const String &query) {
   
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: application/json"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(jsonOut.length());
   client.println(F("Cache-Control: no-cache"));
@@ -9302,6 +9308,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: application/json"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(jsonOut.length());
   client.println(F("Cache-Control: no-cache"));
@@ -9534,6 +9541,7 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: application/json"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(jsonOut.length());
   client.println(F("Cache-Control: no-cache"));
