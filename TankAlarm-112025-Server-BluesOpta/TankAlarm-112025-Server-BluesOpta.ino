@@ -1502,7 +1502,7 @@ async function clearRelays(clientUid,tankIdx){if(state.refreshing)return;if(stat
 window.clearRelays=clearRelays;
 function applyServerData(data){state.clients=data.cs||[];state.sites=buildSiteModel(state.clients);const srv=data.srv||{};state.paused=!!srv.ps;state.pinConfigured=!!srv.pc;state.uiRefreshS=DEFAULT_REFRESH_S;renderSites();renderPauseButton();updateStats();scheduleRefresh();if(Object.keys(state.sparkData).length){renderSparklines();}else{loadSparklineData();}if(!state.sparkTimer){state.sparkTimer=setInterval(loadSparklineData,300000);}}
 function scheduleRefresh(){if(state.timer)clearInterval(state.timer);state.timer=setInterval(refreshData,state.uiRefreshS*1000);}
-async function refreshData(){try{const res=await fetch('/api/clients?summary=1');if(!res.ok)throw new Error('Failed to fetch fleet data');applyServerData(await res.json());hideLoading();}catch(err){showToast(err.message||'Fleet refresh failed',true);}}
+async function refreshData(){try{const res=await fetch('/api/clients?summary=1');if(!res.ok)throw new Error('Failed to fetch fleet data');applyServerData(await res.json());}catch(err){showToast(err.message||'Fleet refresh failed',true);if(!state.timer)setTimeout(refreshData,3000);}finally{hideLoading();}}
 refreshData();})();
 </script></body></html>)HTML";
 
@@ -5282,6 +5282,8 @@ static void serveFile(EthernetClient &client, const char* htmlContent) {
   if (htmlLen > LARGE_FILE_THRESHOLD) {
     client.println(F("HTTP/1.1 200 OK"));
     client.println(F("Content-Type: text/html"));
+    client.println(F("Connection: close"));
+    client.println(F("Cache-Control: no-cache"));
     client.print(F("Content-Length: "));
     client.println(htmlLen);
     client.println();
@@ -5331,7 +5333,19 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
   const char* pin = doc["pin"];
   bool valid = false;
 
-  if (pin && gConfig.configPin[0] != '\0' && pinMatches(pin)) {
+  // If no PIN is configured yet (fresh install), accept any non-empty PIN
+  // and set it as the admin PIN
+  if (!isValidPin(gConfig.configPin)) {
+    if (pin && strlen(pin) == 4) {
+      strlcpy(gConfig.configPin, pin, sizeof(gConfig.configPin));
+      saveConfig(gConfig);
+      valid = true;
+      Serial.println(F("Admin PIN set via first login"));
+    } else {
+      // Accept blank/any PIN on fresh install to allow initial access
+      valid = true;
+    }
+  } else if (pin && pinMatches(pin)) {
      valid = true;
   }
 
@@ -5758,6 +5772,8 @@ static void respondHtml(EthernetClient &client, const String &body) {
 
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: text/html"));
+  client.println(F("Connection: close"));
+  client.println(F("Cache-Control: no-cache"));
   client.print(F("Content-Length: "));
   client.println(output.length());
   client.println();
