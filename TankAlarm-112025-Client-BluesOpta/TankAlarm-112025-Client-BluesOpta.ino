@@ -555,7 +555,6 @@ static unsigned long gLastVinPollMillis = 0;
 // Solar-Only (No Battery) runtime state
 static bool gSolarOnlyStartupComplete = false;   // Has startup debounce/warmup passed?
 static bool gSolarOnlySensorsReady = false;       // Is voltage high enough for sensors?
-static unsigned long gSolarOnlyDebounceStart = 0; // When voltage first exceeded debounce threshold
 static bool gSolarOnlySunsetActive = false;       // Is sunset protocol in progress?
 static unsigned long gSolarOnlySunsetStart = 0;   // When voltage decline was first detected
 static float gSolarOnlyLastVin = 0.0f;            // Previous Vin reading for trend detection
@@ -2606,10 +2605,14 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     if (soCfg["batteryFailureFallback"].is<bool>()) gConfig.solarOnlyConfig.batteryFailureFallback = soCfg["batteryFailureFallback"].as<bool>();
     if (soCfg["batteryFailureThreshold"].is<int>()) gConfig.solarOnlyConfig.batteryFailureThreshold = (uint8_t)soCfg["batteryFailureThreshold"].as<int>();
     if (gConfig.solarOnlyConfig.enabled && !wasEnabled) {
-      gSolarOnlyStartupComplete = false;
-      gSolarOnlySensorsReady = false;
-      gSolarOnlyDebounceStart = 0;
-      Serial.println(F("Solar-only mode enabled"));
+      // Device is already running with stable power — skip startup debounce.
+      // performStartupDebounce() is only called from setup() on boot.
+      gSolarOnlyStartupComplete = true;
+      gSolarOnlySensorsReady = true;
+      gSolarOnlySunsetActive = false;
+      gSolarOnlyStateSaved = false;
+      loadSolarStateFromFlash();
+      Serial.println(F("Solar-only mode enabled (runtime)"));
       addSerialLog("Solar-only mode enabled via config update");
     } else if (!gConfig.solarOnlyConfig.enabled && wasEnabled) {
       gSolarOnlyStartupComplete = true;
@@ -4925,12 +4928,16 @@ static void updatePowerState() {
         loadSolarStateFromFlash();
         saveSolarStateToFlash();
       }
-    } else if (gPowerState <= POWER_STATE_ECO) {
-      // Battery recovered — reset failure tracking
+    } else if (gPowerState < POWER_STATE_CRITICAL_HIBERNATE) {
+      // Battery exited CRITICAL — reset failure counter.
+      // A battery oscillating between CRITICAL and LOW_POWER should not
+      // accumulate false counts — reset as soon as voltage improves enough
+      // to leave CRITICAL (requires POWER_CRITICAL_EXIT_VOLTAGE hysteresis).
       if (gSolarOnlyBatFailCount > 0) {
         gSolarOnlyBatFailCount = 0;
       }
-      if (gSolarOnlyBatteryFailed) {
+      if (gSolarOnlyBatteryFailed && gPowerState <= POWER_STATE_ECO) {
+        // Full recovery to ECO or better — deactivate fallback
         gSolarOnlyBatteryFailed = false;
         Serial.println(F("Battery recovered — solar-only fallback deactivated"));
         addSerialLog("Battery recovered: normal mode restored");
