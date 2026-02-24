@@ -219,6 +219,60 @@ inline float vinMaxReadableVoltage(const VinMonitorConfig* config) {
 #define BATTERY_ALARM_MIN_INTERVAL_MS         3600000UL
 
 // ============================================================================
+// Solar-Only (No Battery) Configuration
+// ============================================================================
+// For installations powered directly by a solar panel with NO battery backup.
+// The device only operates when the sun is out and must handle:
+//   - Startup debounce (wait for stable voltage before reading sensors)
+//   - Sensor voltage gating (4-20mA sensors need minimum excitation voltage)
+//   - Opportunistic daily reports (send ASAP after boot if overdue)
+//   - Sunset protocol (detect declining voltage, save state before power loss)
+//   - Battery failure fallback (auto-enable for solar+battery when battery fails)
+
+struct SolarOnlyConfig {
+  bool enabled;                     // true = solar-only (no battery) mode active
+  float startupDebounceVoltage;     // Min Vin before system is "ready" (with Vin divider)
+  uint16_t startupDebounceSec;      // Vin must stay above debounce voltage for this long
+  uint16_t startupWarmupSec;        // Warmup time without Vin divider (fallback timer)
+  float sensorGateVoltage;          // Min Vin to read sensors (with Vin divider)
+  float sunsetVoltage;              // Vin below this starts sunset protocol (with Vin divider)
+  uint16_t sunsetConfirmSec;        // Declining voltage duration before shutdown save
+  uint16_t opportunisticReportHours;// Send report ASAP if this many hours since last
+  bool batteryFailureFallback;      // Auto-enable solar-only behaviors if battery fails
+  uint8_t batteryFailureThreshold;  // Consecutive CRITICAL readings to trigger fallback
+};
+
+// Solar-Only default values
+#define SOLAR_ONLY_DEFAULT_DEBOUNCE_VOLTAGE    10.0f   // 10V minimum to start
+#define SOLAR_ONLY_DEFAULT_DEBOUNCE_SEC        30      // 30s stable
+#define SOLAR_ONLY_DEFAULT_WARMUP_SEC          60      // 60s warmup without Vin divider
+#define SOLAR_ONLY_DEFAULT_SENSOR_GATE_VOLTAGE 11.0f   // 11V for 4-20mA excitation
+#define SOLAR_ONLY_DEFAULT_SUNSET_VOLTAGE      10.0f   // Below 10V = sunset approaching
+#define SOLAR_ONLY_DEFAULT_SUNSET_CONFIRM_SEC  120     // 2 minutes declining = save state
+#define SOLAR_ONLY_DEFAULT_REPORT_HOURS        20      // Report if >20h since last
+#define SOLAR_ONLY_DEFAULT_FAILURE_THRESHOLD   10      // 10 consecutive critical readings
+
+// State persistence file for solar-only mode (survives power cycles)
+#define SOLAR_STATE_FILE "/fs/solar_state.json"
+
+/**
+ * Initialize SolarOnlyConfig with defaults.
+ */
+inline void initSolarOnlyConfig(SolarOnlyConfig* config) {
+  if (!config) return;
+  config->enabled = false;
+  config->startupDebounceVoltage = SOLAR_ONLY_DEFAULT_DEBOUNCE_VOLTAGE;
+  config->startupDebounceSec = SOLAR_ONLY_DEFAULT_DEBOUNCE_SEC;
+  config->startupWarmupSec = SOLAR_ONLY_DEFAULT_WARMUP_SEC;
+  config->sensorGateVoltage = SOLAR_ONLY_DEFAULT_SENSOR_GATE_VOLTAGE;
+  config->sunsetVoltage = SOLAR_ONLY_DEFAULT_SUNSET_VOLTAGE;
+  config->sunsetConfirmSec = SOLAR_ONLY_DEFAULT_SUNSET_CONFIRM_SEC;
+  config->opportunisticReportHours = SOLAR_ONLY_DEFAULT_REPORT_HOURS;
+  config->batteryFailureFallback = false;
+  config->batteryFailureThreshold = SOLAR_ONLY_DEFAULT_FAILURE_THRESHOLD;
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 

@@ -493,6 +493,9 @@ struct ClientConfig {
   // Analog voltage divider for reading actual battery voltage (Vin)
   // Requires external resistor divider wired to an Opta analog input
   VinMonitorConfig vinMonitor;  // Optional analog Vin voltage divider
+  // Solar-Only (No Battery) mode configuration
+  // For installations powered directly by solar panel without battery backup
+  SolarOnlyConfig solarOnlyConfig;
 };
 
 struct MonitorRuntime {
@@ -548,6 +551,24 @@ static float gLastBatteryAlertVoltage = 0.0f;
 // Analog Vin voltage divider monitoring
 static float gVinVoltage = 0.0f;          // Last reading from voltage divider (actual battery V)
 static unsigned long gLastVinPollMillis = 0;
+
+// Solar-Only (No Battery) runtime state
+static bool gSolarOnlyStartupComplete = false;   // Has startup debounce/warmup passed?
+static bool gSolarOnlySensorsReady = false;       // Is voltage high enough for sensors?
+static unsigned long gSolarOnlyDebounceStart = 0; // When voltage first exceeded debounce threshold
+static bool gSolarOnlySunsetActive = false;       // Is sunset protocol in progress?
+static unsigned long gSolarOnlySunsetStart = 0;   // When voltage decline was first detected
+static float gSolarOnlyLastVin = 0.0f;            // Previous Vin reading for trend detection
+static double gSolarOnlyLastReportEpoch = 0.0;    // Last daily report epoch (persisted to flash)
+static uint32_t gSolarOnlyBootCount = 0;          // Boot counter (persisted to flash)
+static bool gSolarOnlyBatteryFailed = false;      // Battery failure fallback active?
+static uint8_t gSolarOnlyBatFailCount = 0;        // Consecutive critical battery readings
+static bool gSolarOnlyStateSaved = false;         // Has state been saved during sunset?
+
+// Is solar-only behavior active (either configured or battery failure fallback)?
+static bool isSolarOnlyActive() {
+  return gConfig.solarOnlyConfig.enabled || gSolarOnlyBatteryFailed;
+}
 
 // Power conservation state machine
 static PowerState gPowerState = POWER_STATE_NORMAL;
@@ -740,6 +761,12 @@ static void updatePowerState();
 static void sendPowerStateChange(PowerState oldState, PowerState newState, float voltage);
 static const char* getPowerStateDescription(PowerState state);
 static unsigned long getPowerStateSleepMs(PowerState state);
+// Solar-only (no battery) mode
+static void loadSolarStateFromFlash();
+static void saveSolarStateToFlash();
+static void performStartupDebounce();
+static void checkSolarOnlySunsetProtocol(unsigned long now);
+static bool isSensorVoltageGateOpen();
 
 void setup() {
   Serial.begin(115200);
@@ -884,6 +911,27 @@ void setup() {
     addSerialLog("Vin voltage divider monitoring initialized");
     // Do initial read
     gVinVoltage = readVinDividerVoltage();
+  }
+
+  // Solar-Only (No Battery) mode initialization
+  if (isSolarOnlyActive()) {
+    loadSolarStateFromFlash();
+    gSolarOnlyBootCount++;
+    Serial.print(F("Solar-only mode: boot #"));
+    Serial.println(gSolarOnlyBootCount);
+    if (gSolarOnlyLastReportEpoch > 0.0) {
+      Serial.print(F("  Last report epoch: "));
+      Serial.println((unsigned long)gSolarOnlyLastReportEpoch);
+    }
+    addSerialLog("Solar-only mode active");
+    // Perform startup debounce (blocks until power is stable)
+    performStartupDebounce();
+    // Save updated boot count
+    saveSolarStateToFlash();
+  } else {
+    // Non-solar-only: startup is always complete
+    gSolarOnlyStartupComplete = true;
+    gSolarOnlySensorsReady = true;
   }
 
   Serial.println(F("Client setup complete"));
@@ -1051,10 +1099,41 @@ void loop() {
     ensureTimeSync();
     updateDailyScheduleIfNeeded();
 
-    if (gNextDailyReportEpoch > 0.0 && currentEpoch() >= gNextDailyReportEpoch) {
+    bool reportDue = false;
+    if (isSolarOnlyActive()) {
+      // Opportunistic reporting: send ASAP if overdue by configured threshold
+      double nowEpoch = currentEpoch();
+      if (nowEpoch > 0.0 && gSolarOnlyStartupComplete && isSensorVoltageGateOpen()) {
+        double hoursSinceLastReport = 9999.0;
+        if (gSolarOnlyLastReportEpoch > 0.0) {
+          hoursSinceLastReport = (nowEpoch - gSolarOnlyLastReportEpoch) / 3600.0;
+        }
+        if (hoursSinceLastReport >= (double)gConfig.solarOnlyConfig.opportunisticReportHours) {
+          reportDue = true;
+        }
+        // Also honor the scheduled time if it has passed
+        if (gNextDailyReportEpoch > 0.0 && nowEpoch >= gNextDailyReportEpoch) {
+          reportDue = true;
+        }
+      }
+    } else {
+      // Standard scheduled reporting
+      reportDue = (gNextDailyReportEpoch > 0.0 && currentEpoch() >= gNextDailyReportEpoch);
+    }
+
+    if (reportDue) {
       sendDailyReport();
+      gSolarOnlyLastReportEpoch = currentEpoch();
+      if (isSolarOnlyActive()) {
+        saveSolarStateToFlash();  // Persist last report epoch across power cycles
+      }
       scheduleNextDailyReport();
     }
+  }
+  
+  // Solar-only sunset protocol: detect declining voltage and save state
+  if (isSolarOnlyActive() && gSolarOnlyStartupComplete) {
+    checkSolarOnlySunsetProtocol(now);
   }
 
   // Sleep to reduce power consumption between loop iterations
@@ -1346,6 +1425,9 @@ static void createDefaultConfig(ClientConfig &cfg) {
   // Analog Vin voltage divider defaults (disabled)
   // Requires: External resistor divider wired from battery to an Opta analog input
   initVinMonitorConfig(&cfg.vinMonitor);                     // Disabled by default
+  
+  // Solar-Only (No Battery) mode defaults (disabled)
+  initSolarOnlyConfig(&cfg.solarOnlyConfig);                 // Disabled by default
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -1513,6 +1595,23 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     if (cfg.vinMonitor.r2Kohm <= 0.0f) cfg.vinMonitor.r2Kohm = VIN_MONITOR_DEFAULT_R2_KOHM;
   } else {
     initVinMonitorConfig(&cfg.vinMonitor);
+  }
+
+  // Load solar-only (no battery) mode configuration
+  JsonObject soCfg = doc["solarOnlyConfig"].as<JsonObject>();
+  if (soCfg) {
+    cfg.solarOnlyConfig.enabled = soCfg["enabled"].is<bool>() ? soCfg["enabled"].as<bool>() : false;
+    cfg.solarOnlyConfig.startupDebounceVoltage = soCfg["startupDebounceVoltage"].is<float>() ? soCfg["startupDebounceVoltage"].as<float>() : SOLAR_ONLY_DEFAULT_DEBOUNCE_VOLTAGE;
+    cfg.solarOnlyConfig.startupDebounceSec = soCfg["startupDebounceSec"].is<int>() ? (uint16_t)soCfg["startupDebounceSec"].as<int>() : SOLAR_ONLY_DEFAULT_DEBOUNCE_SEC;
+    cfg.solarOnlyConfig.startupWarmupSec = soCfg["startupWarmupSec"].is<int>() ? (uint16_t)soCfg["startupWarmupSec"].as<int>() : SOLAR_ONLY_DEFAULT_WARMUP_SEC;
+    cfg.solarOnlyConfig.sensorGateVoltage = soCfg["sensorGateVoltage"].is<float>() ? soCfg["sensorGateVoltage"].as<float>() : SOLAR_ONLY_DEFAULT_SENSOR_GATE_VOLTAGE;
+    cfg.solarOnlyConfig.sunsetVoltage = soCfg["sunsetVoltage"].is<float>() ? soCfg["sunsetVoltage"].as<float>() : SOLAR_ONLY_DEFAULT_SUNSET_VOLTAGE;
+    cfg.solarOnlyConfig.sunsetConfirmSec = soCfg["sunsetConfirmSec"].is<int>() ? (uint16_t)soCfg["sunsetConfirmSec"].as<int>() : SOLAR_ONLY_DEFAULT_SUNSET_CONFIRM_SEC;
+    cfg.solarOnlyConfig.opportunisticReportHours = soCfg["opportunisticReportHours"].is<int>() ? (uint16_t)soCfg["opportunisticReportHours"].as<int>() : SOLAR_ONLY_DEFAULT_REPORT_HOURS;
+    cfg.solarOnlyConfig.batteryFailureFallback = soCfg["batteryFailureFallback"].is<bool>() ? soCfg["batteryFailureFallback"].as<bool>() : false;
+    cfg.solarOnlyConfig.batteryFailureThreshold = soCfg["batteryFailureThreshold"].is<int>() ? (uint8_t)soCfg["batteryFailureThreshold"].as<int>() : SOLAR_ONLY_DEFAULT_FAILURE_THRESHOLD;
+  } else {
+    initSolarOnlyConfig(&cfg.solarOnlyConfig);
   }
 
   // Support both old "tanks" and new "monitors" array names
@@ -1968,6 +2067,37 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
     Serial.print(F(", Max readable: "));
     Serial.print(maxV, 1);
     Serial.println(F("V"));
+  }
+  if (cfg.solarOnlyConfig.enabled) {
+    Serial.println(F("Solar-Only (No Battery) Mode:"));
+    Serial.println(F("  - Device operates only during daylight hours"));
+    Serial.println(F("  - Daily reports sent opportunistically on startup"));
+    if (cfg.vinMonitor.enabled) {
+      Serial.print(F("  - Startup debounce: "));
+      Serial.print(cfg.solarOnlyConfig.startupDebounceVoltage, 1);
+      Serial.print(F("V for "));
+      Serial.print(cfg.solarOnlyConfig.startupDebounceSec);
+      Serial.println(F("s"));
+      Serial.print(F("  - Sensor gate voltage: "));
+      Serial.print(cfg.solarOnlyConfig.sensorGateVoltage, 1);
+      Serial.println(F("V"));
+      Serial.print(F("  - Sunset threshold: "));
+      Serial.print(cfg.solarOnlyConfig.sunsetVoltage, 1);
+      Serial.println(F("V"));
+    } else {
+      Serial.print(F("  - Startup warmup: "));
+      Serial.print(cfg.solarOnlyConfig.startupWarmupSec);
+      Serial.println(F("s (no Vin divider)"));
+    }
+    Serial.print(F("  - Opportunistic report threshold: "));
+    Serial.print(cfg.solarOnlyConfig.opportunisticReportHours);
+    Serial.println(F("h"));
+  }
+  if (cfg.solarOnlyConfig.batteryFailureFallback) {
+    Serial.println(F("Battery Failure Fallback:"));
+    Serial.print(F("  - Auto-enable solar-only behaviors after "));
+    Serial.print(cfg.solarOnlyConfig.batteryFailureThreshold);
+    Serial.println(F(" consecutive critical readings"));
   }
   Serial.println(F("-----------------------------"));
 }
@@ -2458,6 +2588,36 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     } else if (!gConfig.vinMonitor.enabled && wasEnabled) {
       gVinVoltage = 0.0f;
       Serial.println(F("Vin monitor disabled"));
+    }
+  }
+
+  // Handle Solar-Only (No Battery) configuration update
+  if (!doc["solarOnlyConfig"].isNull()) {
+    JsonObjectConst soCfg = doc["solarOnlyConfig"].as<JsonObjectConst>();
+    bool wasEnabled = gConfig.solarOnlyConfig.enabled;
+    gConfig.solarOnlyConfig.enabled = soCfg["enabled"].is<bool>() ? soCfg["enabled"].as<bool>() : false;
+    if (soCfg["startupDebounceVoltage"].is<float>()) gConfig.solarOnlyConfig.startupDebounceVoltage = soCfg["startupDebounceVoltage"].as<float>();
+    if (soCfg["startupDebounceSec"].is<int>()) gConfig.solarOnlyConfig.startupDebounceSec = (uint16_t)soCfg["startupDebounceSec"].as<int>();
+    if (soCfg["startupWarmupSec"].is<int>()) gConfig.solarOnlyConfig.startupWarmupSec = (uint16_t)soCfg["startupWarmupSec"].as<int>();
+    if (soCfg["sensorGateVoltage"].is<float>()) gConfig.solarOnlyConfig.sensorGateVoltage = soCfg["sensorGateVoltage"].as<float>();
+    if (soCfg["sunsetVoltage"].is<float>()) gConfig.solarOnlyConfig.sunsetVoltage = soCfg["sunsetVoltage"].as<float>();
+    if (soCfg["sunsetConfirmSec"].is<int>()) gConfig.solarOnlyConfig.sunsetConfirmSec = (uint16_t)soCfg["sunsetConfirmSec"].as<int>();
+    if (soCfg["opportunisticReportHours"].is<int>()) gConfig.solarOnlyConfig.opportunisticReportHours = (uint16_t)soCfg["opportunisticReportHours"].as<int>();
+    if (soCfg["batteryFailureFallback"].is<bool>()) gConfig.solarOnlyConfig.batteryFailureFallback = soCfg["batteryFailureFallback"].as<bool>();
+    if (soCfg["batteryFailureThreshold"].is<int>()) gConfig.solarOnlyConfig.batteryFailureThreshold = (uint8_t)soCfg["batteryFailureThreshold"].as<int>();
+    if (gConfig.solarOnlyConfig.enabled && !wasEnabled) {
+      gSolarOnlyStartupComplete = false;
+      gSolarOnlySensorsReady = false;
+      gSolarOnlyDebounceStart = 0;
+      Serial.println(F("Solar-only mode enabled"));
+      addSerialLog("Solar-only mode enabled via config update");
+    } else if (!gConfig.solarOnlyConfig.enabled && wasEnabled) {
+      gSolarOnlyStartupComplete = true;
+      gSolarOnlySensorsReady = true;
+      gSolarOnlyBatteryFailed = false;
+      gSolarOnlyBatFailCount = 0;
+      Serial.println(F("Solar-only mode disabled"));
+      addSerialLog("Solar-only mode disabled via config update");
     }
   }
 
@@ -3264,6 +3424,11 @@ static float readTankSensor(uint8_t idx) {
 }
 
 static void sampleTanks() {
+  // Solar-only sensor voltage gating: skip sampling if power is insufficient
+  if (isSolarOnlyActive() && !isSensorVoltageGateOpen()) {
+    return;  // Voltage too low for reliable sensor readings
+  }
+  
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
     float inches = readTankSensor(i);
     
@@ -4339,6 +4504,238 @@ static void sendPowerStateChange(PowerState oldState, PowerState newState, float
   Serial.println(F("Power state change sent to server"));
 }
 
+// ============================================================================
+// Solar-Only (No Battery) Mode Implementation
+// ============================================================================
+
+/**
+ * Load persisted solar-only state from flash.
+ * Restores last report epoch and boot count across power cycles.
+ */
+static void loadSolarStateFromFlash() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return;
+    FILE *file = fopen(SOLAR_STATE_FILE, "r");
+    if (!file) {
+      Serial.println(F("No solar state file found - first boot"));
+      return;
+    }
+    char buf[256];
+    size_t len = fread(buf, 1, sizeof(buf) - 1, file);
+    fclose(file);
+    buf[len] = '\0';
+    
+    JsonDocument doc;
+    if (deserializeJson(doc, buf) == DeserializationError::Ok) {
+      gSolarOnlyLastReportEpoch = doc["lastReportEpoch"].is<double>() ? doc["lastReportEpoch"].as<double>() : 0.0;
+      gSolarOnlyBootCount = doc["bootCount"].is<unsigned long>() ? doc["bootCount"].as<unsigned long>() : 0;
+      gSolarOnlyBatteryFailed = doc["batteryFailed"].is<bool>() ? doc["batteryFailed"].as<bool>() : false;
+      Serial.println(F("Solar state loaded from flash"));
+    }
+  #endif
+#endif
+}
+
+/**
+ * Save solar-only state to flash for persistence across power cycles.
+ */
+static void saveSolarStateToFlash() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return;
+    JsonDocument doc;
+    doc["lastReportEpoch"] = gSolarOnlyLastReportEpoch;
+    doc["bootCount"] = gSolarOnlyBootCount;
+    doc["batteryFailed"] = gSolarOnlyBatteryFailed;
+    
+    char buf[256];
+    size_t len = serializeJson(doc, buf, sizeof(buf));
+    
+    FILE *file = fopen(SOLAR_STATE_FILE, "w");
+    if (file) {
+      fwrite(buf, 1, len, file);
+      fclose(file);
+    }
+  #endif
+#endif
+}
+
+/**
+ * Perform startup debounce for solar-only mode.
+ * Blocks in setup() until power is deemed stable enough to operate.
+ *
+ * With Vin divider: waits until Vin >= startupDebounceVoltage for startupDebounceSec continuously.
+ * Without Vin divider: waits startupWarmupSec as a fixed timer.
+ */
+static void performStartupDebounce() {
+  Serial.println(F("Solar-only: startup debounce..."));
+  
+  if (gConfig.vinMonitor.enabled) {
+    // Voltage-based debounce: wait for stable voltage above threshold
+    float debounceV = gConfig.solarOnlyConfig.startupDebounceVoltage;
+    uint16_t debounceSec = gConfig.solarOnlyConfig.startupDebounceSec;
+    unsigned long debounceMs = (unsigned long)debounceSec * 1000UL;
+    unsigned long stableStart = 0;
+    bool stable = false;
+    
+    Serial.print(F("  Waiting for Vin >= "));
+    Serial.print(debounceV, 1);
+    Serial.print(F("V for "));
+    Serial.print(debounceSec);
+    Serial.println(F("s"));
+    
+    while (!stable) {
+      gVinVoltage = readVinDividerVoltage();
+      
+      if (gVinVoltage >= debounceV) {
+        if (stableStart == 0) {
+          stableStart = millis();
+        } else if (millis() - stableStart >= debounceMs) {
+          stable = true;
+        }
+      } else {
+        stableStart = 0;  // Reset — voltage dropped
+      }
+      
+      if (!stable) {
+        #ifdef TANKALARM_WATCHDOG_AVAILABLE
+          #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+            mbedWatchdog.kick();
+          #endif
+        #endif
+        rtos::ThisThread::sleep_for(std::chrono::seconds(2));
+      }
+    }
+    
+    Serial.print(F("  Stable at "));
+    Serial.print(gVinVoltage, 2);
+    Serial.println(F("V"));
+    gSolarOnlyStartupComplete = true;
+    
+    // Check if voltage is high enough for sensors
+    gSolarOnlySensorsReady = (gVinVoltage >= gConfig.solarOnlyConfig.sensorGateVoltage);
+  } else {
+    // Timer-based warmup: wait fixed duration without voltage feedback
+    uint16_t warmupSec = gConfig.solarOnlyConfig.startupWarmupSec;
+    Serial.print(F("  Timer warmup: "));
+    Serial.print(warmupSec);
+    Serial.println(F("s"));
+    
+    unsigned long warmupMs = (unsigned long)warmupSec * 1000UL;
+    unsigned long warmupStart = millis();
+    
+    while (millis() - warmupStart < warmupMs) {
+      #ifdef TANKALARM_WATCHDOG_AVAILABLE
+        #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+          mbedWatchdog.kick();
+        #endif
+      #endif
+      rtos::ThisThread::sleep_for(std::chrono::seconds(2));
+    }
+    
+    Serial.println(F("  Warmup complete"));
+    gSolarOnlyStartupComplete = true;
+    gSolarOnlySensorsReady = true;  // Assume OK without voltage info
+  }
+  
+  addSerialLog("Solar-only startup debounce complete");
+}
+
+/**
+ * Check if the sensor voltage gate is open (sufficient power for sensors).
+ * With Vin divider: checks Vin against sensorGateVoltage.
+ * Without Vin divider: returns true after startup debounce is complete.
+ */
+static bool isSensorVoltageGateOpen() {
+  if (!isSolarOnlyActive()) return true;
+  if (!gSolarOnlyStartupComplete) return false;
+  
+  if (gConfig.vinMonitor.enabled && gVinVoltage > 0.5f) {
+    bool gateOpen = (gVinVoltage >= gConfig.solarOnlyConfig.sensorGateVoltage);
+    if (gateOpen != gSolarOnlySensorsReady) {
+      gSolarOnlySensorsReady = gateOpen;
+      if (gateOpen) {
+        Serial.println(F("Solar-only: sensors ready (voltage gate open)"));
+      } else {
+        Serial.println(F("Solar-only: sensors gated (voltage too low)"));
+      }
+    }
+    return gateOpen;
+  }
+  
+  // Without Vin divider, assume sensors are ready after warmup
+  return gSolarOnlySensorsReady;
+}
+
+/**
+ * Sunset protocol: detect declining voltage and save state before power loss.
+ * Called every loop iteration when solar-only mode is active.
+ *
+ * With Vin divider: detects voltage dropping below sunsetVoltage with declining trend.
+ * Without Vin divider: no sunset detection possible (relies on graceful power loss handling).
+ */
+static void checkSolarOnlySunsetProtocol(unsigned long now) {
+  // Only works with Vin divider — without it, we can't detect sunset
+  if (!gConfig.vinMonitor.enabled || gVinVoltage <= 0.5f) return;
+  
+  float sunsetV = gConfig.solarOnlyConfig.sunsetVoltage;
+  uint16_t confirmSec = gConfig.solarOnlyConfig.sunsetConfirmSec;
+  
+  if (gVinVoltage < sunsetV && gVinVoltage <= gSolarOnlyLastVin) {
+    // Voltage is below sunset threshold AND declining
+    if (!gSolarOnlySunsetActive) {
+      gSolarOnlySunsetActive = true;
+      gSolarOnlySunsetStart = now;
+      Serial.print(F("Solar-only: sunset protocol started (Vin="));
+      Serial.print(gVinVoltage, 2);
+      Serial.println(F("V)"));
+    } else if (now - gSolarOnlySunsetStart >= (unsigned long)confirmSec * 1000UL) {
+      // Confirmed declining — save state and prepare for shutdown
+      if (!gSolarOnlyStateSaved) {
+        gSolarOnlyStateSaved = true;
+        Serial.println(F("Solar-only: sunset confirmed — saving state"));
+        addSerialLog("Sunset protocol: saving state");
+        
+        // Save state to flash
+        saveSolarStateToFlash();
+        
+        // Flush any pending telemetry
+        if (gNotecardAvailable) {
+          J *req = notecard.newRequest("hub.sync");
+          if (req) {
+            notecard.sendRequest(req);
+            Serial.println(F("  Flushed pending data"));
+          }
+        }
+        
+        // Send a sunset notification to the server
+        if (gNotecardAvailable) {
+          JsonDocument doc;
+          doc["c"] = gDeviceUID;
+          doc["s"] = gConfig.siteName;
+          doc["y"] = "solar_sunset";
+          doc["t"] = currentEpoch();
+          doc["v"] = roundTo(gVinVoltage, 2);
+          doc["bootCount"] = gSolarOnlyBootCount;
+          doc["uptime"] = millis() / 1000UL;
+          publishNote(ALARM_FILE, doc, true);
+        }
+      }
+    }
+  } else if (gVinVoltage >= sunsetV) {
+    // Voltage recovered above sunset threshold — cancel protocol
+    if (gSolarOnlySunsetActive) {
+      gSolarOnlySunsetActive = false;
+      gSolarOnlyStateSaved = false;
+      gSolarOnlySunsetStart = 0;
+      Serial.println(F("Solar-only: sunset protocol cancelled (voltage recovered)"));
+    }
+  }
+  
+  gSolarOnlyLastVin = gVinVoltage;
+}
+
 /**
  * Determine the best available battery voltage from all monitoring sources.
  * Returns the lower of available sources (conservative approach — protect the battery).
@@ -4496,6 +4893,49 @@ static void updatePowerState() {
                getPowerStateDescription(gPowerState), voltage, getPowerStateSleepMs(gPowerState));
       Serial.println(logMsg);
       addSerialLog(logMsg);
+    }
+  }
+  
+  // Battery failure fallback: for solar+battery setups, detect persistent critical voltage
+  // and auto-enable solar-only behaviors (opportunistic reporting, sunset protocol)
+  if (gConfig.solarOnlyConfig.batteryFailureFallback && !gConfig.solarOnlyConfig.enabled) {
+    if (gPowerState == POWER_STATE_CRITICAL_HIBERNATE) {
+      gSolarOnlyBatFailCount++;
+      if (gSolarOnlyBatFailCount >= gConfig.solarOnlyConfig.batteryFailureThreshold && !gSolarOnlyBatteryFailed) {
+        gSolarOnlyBatteryFailed = true;
+        gSolarOnlyStartupComplete = true;  // Already running, no debounce needed
+        gSolarOnlySensorsReady = true;
+        Serial.println(F("BATTERY FAILURE DETECTED — enabling solar-only fallback behaviors"));
+        addSerialLog("Battery failure: solar-only fallback active");
+        
+        // Notify server
+        if (gNotecardAvailable) {
+          JsonDocument doc;
+          doc["c"] = gDeviceUID;
+          doc["s"] = gConfig.siteName;
+          doc["y"] = "battery_failure";
+          doc["t"] = currentEpoch();
+          doc["v"] = roundTo(voltage, 2);
+          doc["failCount"] = gSolarOnlyBatFailCount;
+          doc["se"] = true;  // Escalate via SMS
+          publishNote(ALARM_FILE, doc, true);
+        }
+        
+        // Load solar state if not already loaded
+        loadSolarStateFromFlash();
+        saveSolarStateToFlash();
+      }
+    } else if (gPowerState <= POWER_STATE_ECO) {
+      // Battery recovered — reset failure tracking
+      if (gSolarOnlyBatFailCount > 0) {
+        gSolarOnlyBatFailCount = 0;
+      }
+      if (gSolarOnlyBatteryFailed) {
+        gSolarOnlyBatteryFailed = false;
+        Serial.println(F("Battery recovered — solar-only fallback deactivated"));
+        addSerialLog("Battery recovered: normal mode restored");
+        saveSolarStateToFlash();
+      }
     }
   }
 }
