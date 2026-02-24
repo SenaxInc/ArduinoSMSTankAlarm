@@ -933,6 +933,16 @@ void setup() {
     gSolarOnlySensorsReady = true;
   }
 
+  // Immediate boot telemetry for grid-powered clients so the server
+  // sees this device right away instead of waiting for the first sample
+  // interval (default 30 min).  Solar-only clients skip this to avoid
+  // wasting power on brownout reboots.
+  if (!isSolarOnlyActive()) {
+    Serial.println(F("Sending boot telemetry..."));
+    addSerialLog("Boot telemetry");
+    sampleTanks();
+  }
+
   Serial.println(F("Client setup complete"));
   addSerialLog("Client started successfully");
 }
