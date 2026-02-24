@@ -1,4 +1,4 @@
-# TankAlarm Backup and Recovery Guide
+﻿# TankAlarm Backup and Recovery Guide
 
 **Protecting Your Configuration and Data with Comprehensive Backup Strategies**
 
@@ -944,4 +944,4 @@ After change complete:
 ---
 
 *Backup and Recovery Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Firmware 1.1.1+*
+*Compatible with TankAlarm Firmware 1.1.2+*

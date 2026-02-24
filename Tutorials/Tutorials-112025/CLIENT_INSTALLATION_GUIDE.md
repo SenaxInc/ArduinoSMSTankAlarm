@@ -1,4 +1,4 @@
-# TankAlarm Client Installation Guide
+﻿# TankAlarm Client Installation Guide
 
 **Setting Up Your TankAlarm Field Monitoring Device**
 
@@ -406,7 +406,7 @@ Done compiling
 ### Expected Serial Output
 
 ```
-TankAlarm 112025 Client - Blues Opta v1.1.1 (Feb 20 2026)
+TankAlarm 112025 Client - Blues Opta v1.1.2 (Feb 20 2026)
 Initializing...
 LittleFS initialized (524288 bytes free)
 Loading configuration from /client_config.json
@@ -966,4 +966,4 @@ After successful installation:
 ---
 
 *Installation Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Client Firmware 1.1.1+*
+*Compatible with TankAlarm Client Firmware 1.1.2+*

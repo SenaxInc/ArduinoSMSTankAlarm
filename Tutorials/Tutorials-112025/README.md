@@ -1,4 +1,4 @@
-# TankAlarm Tutorials
+﻿# TankAlarm Tutorials
 
 **Professional Installation and Setup Guides for the TankAlarm 112025 System**
 
@@ -704,18 +704,18 @@ These tutorials are maintained alongside firmware releases:
 
 | Tutorial | Version | Last Updated | Firmware Compatibility |
 |----------|---------|--------------|------------------------|
-| Quick Start | 1.1 | Feb 2026 | v1.1.1+ |
-| Client Installation | 1.1 | Feb 2026 | v1.1.1+ |
-| Server Installation | 1.1 | Feb 2026 | v1.1.1+ |
-| Fleet Setup | 1.1 | Feb 2026 | v1.1.1+ |
-| Firmware Update | 1.1 | Feb 2026 | v1.1.1+ |
-| Sensor Calibration | 1.1 | Feb 2026 | v1.1.1+ |
-| Relay Control | 1.1 | Feb 2026 | v1.1.1+ |
-| Unload Tracking | 1.1 | Feb 2026 | v1.1.1+ |
-| Backup and Recovery | 1.1 | Feb 2026 | v1.1.1+ |
-| Troubleshooting | 1.1 | Feb 2026 | v1.1.1+ |
-| Dashboard | 1.1 | Feb 2026 | v1.1.1+ |
-| Advanced Configuration | 1.1 | Feb 2026 | v1.1.1+ |
+| Quick Start | 1.1 | Feb 2026 | v1.1.2+ |
+| Client Installation | 1.1 | Feb 2026 | v1.1.2+ |
+| Server Installation | 1.1 | Feb 2026 | v1.1.2+ |
+| Fleet Setup | 1.1 | Feb 2026 | v1.1.2+ |
+| Firmware Update | 1.1 | Feb 2026 | v1.1.2+ |
+| Sensor Calibration | 1.1 | Feb 2026 | v1.1.2+ |
+| Relay Control | 1.1 | Feb 2026 | v1.1.2+ |
+| Unload Tracking | 1.1 | Feb 2026 | v1.1.2+ |
+| Backup and Recovery | 1.1 | Feb 2026 | v1.1.2+ |
+| Troubleshooting | 1.1 | Feb 2026 | v1.1.2+ |
+| Dashboard | 1.1 | Feb 2026 | v1.1.2+ |
+| Advanced Configuration | 1.1 | Feb 2026 | v1.1.2+ |
 
 ---
 
@@ -817,4 +817,4 @@ Head to the **[Quick Start Guide](QUICK_START_GUIDE.md)** and have your first sy
 ---
 
 *Tutorial Library v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Firmware 1.1.1+*
+*Compatible with TankAlarm Firmware 1.1.2+*

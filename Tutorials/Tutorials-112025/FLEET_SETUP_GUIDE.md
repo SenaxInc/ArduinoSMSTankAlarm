@@ -1,4 +1,4 @@
-# TankAlarm Fleet Setup Guide
+﻿# TankAlarm Fleet Setup Guide
 
 **Deploying and Managing Multiple Tank Monitoring Devices**
 
@@ -1026,4 +1026,4 @@ For advanced scenarios beyond standard fleets:
 ---
 
 *Fleet Setup Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Firmware 1.1.1+*
+*Compatible with TankAlarm Firmware 1.1.2+*

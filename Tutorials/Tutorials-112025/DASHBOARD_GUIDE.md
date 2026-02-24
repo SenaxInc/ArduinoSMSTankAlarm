@@ -1,4 +1,4 @@
-# TankAlarm Dashboard Guide
+﻿# TankAlarm Dashboard Guide
 
 **Using the Server Web Interface for Monitoring and Configuration**
 
@@ -289,7 +289,7 @@ Select Client: [  North Farm Tank-01  ▼ ]
 │                                              │
 │  Device UID:    dev:864475044012345          │
 │  Last Seen:     10:30:15 AM (2 min ago)      │
-│  Firmware:      v1.1.1                       │
+│  Firmware:      v1.1.2                       │
 └──────────────────────────────────────────────┘
 ```
 
@@ -1182,4 +1182,4 @@ See server README for complete API documentation.
 ---
 
 *Dashboard Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Server Firmware 1.1.1+*
+*Compatible with TankAlarm Server Firmware 1.1.2+*

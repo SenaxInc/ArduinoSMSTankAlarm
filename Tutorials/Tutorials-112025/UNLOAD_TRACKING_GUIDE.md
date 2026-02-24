@@ -1,4 +1,4 @@
-# TankAlarm Unload Tracking Guide
+﻿# TankAlarm Unload Tracking Guide
 
 **Monitoring Fill-and-Empty Tank Cycles for Delivery Tracking and Inventory Management**
 
@@ -796,4 +796,4 @@ if (abs(sensor1 - sensor2) < 2.0) {  // Within 2 inches
 ---
 
 *Unload Tracking Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Firmware 1.1.1+*
+*Compatible with TankAlarm Firmware 1.1.2+*

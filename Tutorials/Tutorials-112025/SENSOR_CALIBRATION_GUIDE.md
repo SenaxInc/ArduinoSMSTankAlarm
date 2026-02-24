@@ -1,4 +1,4 @@
-# TankAlarm Sensor Calibration Guide
+﻿# TankAlarm Sensor Calibration Guide
 
 **Achieving Accurate Tank Level Measurements Through Proper Sensor Calibration**
 
@@ -1003,4 +1003,4 @@ Supervisor: _____________________ Date: __________
 ---
 
 *Sensor Calibration Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Firmware 1.1.1+*
+*Compatible with TankAlarm Firmware 1.1.2+*

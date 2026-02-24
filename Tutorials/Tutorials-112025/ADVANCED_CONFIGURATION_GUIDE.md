@@ -1,4 +1,4 @@
-# TankAlarm Advanced Configuration Guide
+﻿# TankAlarm Advanced Configuration Guide
 
 **Power User Settings and Optimization Techniques**
 
@@ -1128,4 +1128,4 @@ diff intended.json actual.json
 ---
 
 *Advanced Configuration Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Firmware 1.1.1+*
+*Compatible with TankAlarm Firmware 1.1.2+*

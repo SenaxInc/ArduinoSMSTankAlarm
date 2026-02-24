@@ -1,4 +1,4 @@
-# TankAlarm Quick Start Guide
+﻿# TankAlarm Quick Start Guide
 
 **Get Your First Tank Monitoring System Running in 30 Minutes**
 
@@ -863,11 +863,11 @@ A: Yes! Modify `html_content.h` in server firmware. See SERVER_INSTALLATION_GUID
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | Jan 2026 | Initial release for firmware v1.0.0 |
-| 1.1 | Feb 2026 | Updated for firmware v1.1.1: fleet architecture, relay forwarding, config ACK |
+| 1.1 | Feb 2026 | Updated for firmware v1.1.2: fleet architecture, relay forwarding, config ACK |
 
 ---
 
 *Quick Start Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Firmware 1.1.1+*
+*Compatible with TankAlarm Firmware 1.1.2+*
 
 **Ready to expand your deployment?** See the [Fleet Setup Guide](FLEET_SETUP_GUIDE.md) for multi-site installations.

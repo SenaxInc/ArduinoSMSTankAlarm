@@ -1,4 +1,4 @@
-# TankAlarm Server Installation Guide
+﻿# TankAlarm Server Installation Guide
 
 **Setting Up Your Central Tank Monitoring Server**
 
@@ -529,7 +529,7 @@ Done compiling
 ### Expected Serial Output
 
 ```
-TankAlarm 112025 Server - Blues Opta v1.1.1 (Feb 20 2026)
+TankAlarm 112025 Server - Blues Opta v1.1.2 (Feb 20 2026)
 Initializing...
 LittleFS initialized (524288 bytes free)
 Loading configuration from /server_config.json
@@ -1349,4 +1349,4 @@ After successful installation:
 ---
 
 *Server Installation Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Server Firmware 1.1.1+*
+*Compatible with TankAlarm Server Firmware 1.1.2+*

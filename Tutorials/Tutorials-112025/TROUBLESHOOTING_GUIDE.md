@@ -1,4 +1,4 @@
-# TankAlarm Troubleshooting Guide
+﻿# TankAlarm Troubleshooting Guide
 
 **Diagnosing and Resolving Common Issues**
 
@@ -1285,7 +1285,7 @@ Set to **115200** baud in Arduino IDE serial monitor
 
 ```
 [Startup Messages]
-TankAlarm Client v1.1.1
+TankAlarm Client v1.1.2
 Initializing Notecard...
 Notecard: CONNECTED
 Product UID: com.company.tankalarm:production
@@ -1547,4 +1547,4 @@ Gather this information:
 ---
 
 *Troubleshooting Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Firmware 1.1.1+*
+*Compatible with TankAlarm Firmware 1.1.2+*

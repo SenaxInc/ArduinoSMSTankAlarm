@@ -1,4 +1,4 @@
-# TankAlarm Relay Control and Automation Guide
+﻿# TankAlarm Relay Control and Automation Guide
 
 **Automating Equipment Control with Arduino Opta Built-in Relays**
 
@@ -984,4 +984,4 @@ Content-Type: application/json
 ---
 
 *Relay Control and Automation Guide v1.1 | Last Updated: February 20, 2026*  
-*Compatible with TankAlarm Firmware 1.1.1+*
+*Compatible with TankAlarm Firmware 1.1.2+*
