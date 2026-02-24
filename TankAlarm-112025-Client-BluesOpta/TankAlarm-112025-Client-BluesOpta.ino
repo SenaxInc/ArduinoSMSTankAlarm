@@ -490,6 +490,9 @@ struct ClientConfig {
   // Battery voltage monitoring via Notecard (when wired directly to battery)
   // Provides low voltage alerts and trend analysis
   BatteryConfig batteryMonitor; // Notecard battery voltage monitoring
+  // Analog voltage divider for reading actual battery voltage (Vin)
+  // Requires external resistor divider wired to an Opta analog input
+  VinMonitorConfig vinMonitor;  // Optional analog Vin voltage divider
 };
 
 struct MonitorRuntime {
@@ -541,6 +544,10 @@ static unsigned long gLastBatteryPollMillis = 0;
 static unsigned long gLastBatteryAlarmMillis = 0;
 static BatteryAlertType gLastBatteryAlert = BATTERY_ALERT_NONE;
 static float gLastBatteryAlertVoltage = 0.0f;
+
+// Analog Vin voltage divider monitoring
+static float gVinVoltage = 0.0f;          // Last reading from voltage divider (actual battery V)
+static unsigned long gLastVinPollMillis = 0;
 
 // Power conservation state machine
 static PowerState gPowerState = POWER_STATE_NORMAL;
@@ -860,6 +867,25 @@ void setup() {
     pollBatteryVoltage(gBatteryData, gConfig.batteryMonitor);
   }
 
+  // Initialize analog Vin voltage divider monitoring
+  if (gConfig.vinMonitor.enabled) {
+    float ratio = vinDividerRatio(&gConfig.vinMonitor);
+    float maxV = vinMaxReadableVoltage(&gConfig.vinMonitor);
+    Serial.print(F("Vin monitor enabled: pin=A"));
+    Serial.print(gConfig.vinMonitor.analogPin);
+    Serial.print(F(" R1="));
+    Serial.print(gConfig.vinMonitor.r1Kohm, 1);
+    Serial.print(F("k R2="));
+    Serial.print(gConfig.vinMonitor.r2Kohm, 1);
+    Serial.print(F("k ratio="));
+    Serial.print(ratio, 4);
+    Serial.print(F(" maxV="));
+    Serial.println(maxV, 1);
+    addSerialLog("Vin voltage divider monitoring initialized");
+    // Do initial read
+    gVinVoltage = readVinDividerVoltage();
+  }
+
   Serial.println(F("Client setup complete"));
   addSerialLog("Client started successfully");
 }
@@ -983,6 +1009,19 @@ void loop() {
           checkBatteryAlerts(gBatteryData, gConfig.batteryMonitor);
         }
       }
+    }
+  }
+  
+  // Poll analog Vin voltage divider (when hardware is connected)
+  // Always poll even in CRITICAL — needed to detect battery recovery.
+  if (gConfig.vinMonitor.enabled) {
+    unsigned long vinPollInterval = (unsigned long)gConfig.vinMonitor.pollIntervalSec * 1000UL;
+    if (gPowerState >= POWER_STATE_LOW_POWER) {
+      vinPollInterval *= 2;  // 2x slower when conserving
+    }
+    if (now - gLastVinPollMillis >= vinPollInterval) {
+      gLastVinPollMillis = now;
+      gVinVoltage = readVinDividerVoltage();
     }
   }
   
@@ -1303,6 +1342,10 @@ static void createDefaultConfig(ClientConfig &cfg) {
   // Requires: Notecard VIN wired directly to 12V battery (not through 5V regulator)
   initBatteryConfig(&cfg.batteryMonitor, BATTERY_TYPE_LEAD_ACID_12V);
   cfg.batteryMonitor.enabled = false;                        // Disabled by default
+  
+  // Analog Vin voltage divider defaults (disabled)
+  // Requires: External resistor divider wired from battery to an Opta analog input
+  initVinMonitorConfig(&cfg.vinMonitor);                     // Disabled by default
 }
 
 static bool loadConfigFromFlash(ClientConfig &cfg) {
@@ -1452,6 +1495,24 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     // Default values if batteryMonitor object not present
     initBatteryConfig(&cfg.batteryMonitor, BATTERY_TYPE_LEAD_ACID_12V);
     cfg.batteryMonitor.enabled = false;
+  }
+
+  // Load analog Vin voltage divider configuration
+  JsonObject vinCfg = doc["vinMonitor"].as<JsonObject>();
+  if (vinCfg) {
+    cfg.vinMonitor.enabled = vinCfg["enabled"].is<bool>() ? vinCfg["enabled"].as<bool>() : false;
+    cfg.vinMonitor.analogPin = vinCfg["pin"].is<int>() ? (uint8_t)vinCfg["pin"].as<int>() : VIN_MONITOR_DEFAULT_PIN;
+    cfg.vinMonitor.r1Kohm = vinCfg["r1Kohm"].is<float>() ? vinCfg["r1Kohm"].as<float>() : VIN_MONITOR_DEFAULT_R1_KOHM;
+    cfg.vinMonitor.r2Kohm = vinCfg["r2Kohm"].is<float>() ? vinCfg["r2Kohm"].as<float>() : VIN_MONITOR_DEFAULT_R2_KOHM;
+    cfg.vinMonitor.pollIntervalSec = vinCfg["pollIntervalSec"].is<int>() ? (uint16_t)vinCfg["pollIntervalSec"].as<int>() : VIN_MONITOR_DEFAULT_POLL_SEC;
+    cfg.vinMonitor.includeInDailyReport = vinCfg["includeInDaily"].is<bool>() ? vinCfg["includeInDaily"].as<bool>() : true;
+    // Validate pin range (A0-A7)
+    if (cfg.vinMonitor.analogPin > 7) cfg.vinMonitor.analogPin = VIN_MONITOR_DEFAULT_PIN;
+    // Validate resistor values
+    if (cfg.vinMonitor.r1Kohm <= 0.0f) cfg.vinMonitor.r1Kohm = VIN_MONITOR_DEFAULT_R1_KOHM;
+    if (cfg.vinMonitor.r2Kohm <= 0.0f) cfg.vinMonitor.r2Kohm = VIN_MONITOR_DEFAULT_R2_KOHM;
+  } else {
+    initVinMonitorConfig(&cfg.vinMonitor);
   }
 
   // Support both old "tanks" and new "monitors" array names
@@ -1889,6 +1950,23 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
     Serial.print(cfg.batteryMonitor.lowVoltage, 1);
     Serial.print(F("V, Critical="));
     Serial.print(cfg.batteryMonitor.criticalVoltage, 1);
+    Serial.println(F("V"));
+  }
+  if (cfg.vinMonitor.enabled) {
+    float ratio = vinDividerRatio(&cfg.vinMonitor);
+    float maxV = vinMaxReadableVoltage(&cfg.vinMonitor);
+    Serial.println(F("Vin Voltage Divider Monitor:"));
+    Serial.print(F("  - Analog pin: A"));
+    Serial.println(cfg.vinMonitor.analogPin);
+    Serial.print(F("  - Resistors: R1="));
+    Serial.print(cfg.vinMonitor.r1Kohm, 1);
+    Serial.print(F("k, R2="));
+    Serial.print(cfg.vinMonitor.r2Kohm, 1);
+    Serial.println(F("k"));
+    Serial.print(F("  - Divider ratio: "));
+    Serial.print(ratio, 4);
+    Serial.print(F(", Max readable: "));
+    Serial.print(maxV, 1);
     Serial.println(F("V"));
   }
   Serial.println(F("-----------------------------"));
@@ -2352,6 +2430,34 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     if (newSolarPowered != gConfig.solarPowered) {
       gConfig.solarPowered = newSolarPowered;
       hardwareChanged = true;  // Need to reconfigure Notecard hub settings
+    }
+  }
+
+  // Handle Vin voltage divider configuration
+  if (!doc["vinMonitor"].isNull()) {
+    JsonObjectConst vinCfg = doc["vinMonitor"].as<JsonObjectConst>();
+    bool wasEnabled = gConfig.vinMonitor.enabled;
+    gConfig.vinMonitor.enabled = vinCfg["enabled"].is<bool>() ? vinCfg["enabled"].as<bool>() : false;
+    if (vinCfg["pin"].is<int>()) {
+      uint8_t newPin = (uint8_t)vinCfg["pin"].as<int>();
+      if (newPin <= 7) gConfig.vinMonitor.analogPin = newPin;
+    }
+    if (vinCfg["r1Kohm"].is<float>() && vinCfg["r1Kohm"].as<float>() > 0.0f) {
+      gConfig.vinMonitor.r1Kohm = vinCfg["r1Kohm"].as<float>();
+    }
+    if (vinCfg["r2Kohm"].is<float>() && vinCfg["r2Kohm"].as<float>() > 0.0f) {
+      gConfig.vinMonitor.r2Kohm = vinCfg["r2Kohm"].as<float>();
+    }
+    if (vinCfg["pollIntervalSec"].is<int>()) {
+      gConfig.vinMonitor.pollIntervalSec = (uint16_t)vinCfg["pollIntervalSec"].as<int>();
+    }
+    if (gConfig.vinMonitor.enabled && !wasEnabled) {
+      gLastVinPollMillis = 0;  // Force immediate first read
+      gVinVoltage = 0.0f;
+      Serial.println(F("Vin monitor enabled"));
+    } else if (!gConfig.vinMonitor.enabled && wasEnabled) {
+      gVinVoltage = 0.0f;
+      Serial.println(F("Vin monitor disabled"));
     }
   }
 
@@ -4234,9 +4340,14 @@ static void sendPowerStateChange(PowerState oldState, PowerState newState, float
 }
 
 /**
- * Determine the best available battery voltage from both monitoring sources.
- * Returns the lower of the two (conservative approach — protect the battery).
+ * Determine the best available battery voltage from all monitoring sources.
+ * Returns the lower of available sources (conservative approach — protect the battery).
  * A source is only considered if it has valid recent data.
+ *
+ * Sources (in priority order):
+ *   1. SunSaver MPPT via Modbus RS-485 (most accurate, directly from charge controller)
+ *   2. Notecard card.voltage (direct battery connection, includes trend analysis)
+ *   3. Analog Vin voltage divider (direct ADC reading of battery via resistor divider)
  */
 static float getEffectiveBatteryVoltage() {
   float voltage = 0.0f;
@@ -4259,6 +4370,16 @@ static float getEffectiveBatteryVoltage() {
     } else {
       // Use the LOWER of the two readings (conservative — protect battery)
       voltage = min(voltage, gBatteryData.voltage);
+    }
+  }
+  
+  // Source 3: Analog Vin voltage divider
+  if (gConfig.vinMonitor.enabled && gVinVoltage > 0.5f) {
+    if (!hasVoltage) {
+      voltage = gVinVoltage;
+      hasVoltage = true;
+    } else {
+      voltage = min(voltage, gVinVoltage);
     }
   }
   
@@ -4397,10 +4518,18 @@ static void sendDailyReport() {
   uint8_t part = 0;
   bool queuedAny = false;
 
-  // Reuse cached battery voltage if available, otherwise read from Notecard
-  float vinVoltage = (gConfig.batteryMonitor.enabled && gBatteryData.valid && gBatteryData.voltage > 0.0f)
-                     ? gBatteryData.voltage
-                     : readNotecardVinVoltage();
+  // Best available voltage for daily report:
+  //   1. Analog Vin divider (actual battery, most accurate if installed)
+  //   2. Notecard battery monitor (card.voltage with trend data)
+  //   3. Notecard card.voltage (simple one-shot read)
+  float vinVoltage = 0.0f;
+  if (gConfig.vinMonitor.enabled && gVinVoltage > 0.5f) {
+    vinVoltage = gVinVoltage;
+  } else if (gConfig.batteryMonitor.enabled && gBatteryData.valid && gBatteryData.voltage > 0.0f) {
+    vinVoltage = gBatteryData.voltage;
+  } else {
+    vinVoltage = readNotecardVinVoltage();
+  }
 
   while (tankCursor < eligibleCount) {
     JsonDocument doc;
@@ -5548,6 +5677,55 @@ static float readNotecardVinVoltage() {
   }
 
   return (float)voltage;
+}
+
+// ============================================================================
+// Analog Vin Voltage Divider Reading
+// ============================================================================
+
+/**
+ * Read actual battery voltage via an external voltage divider on an Opta analog input.
+ *
+ * Wiring: Battery+ --> R1 --> Analog Pin --> R2 --> GND
+ * The ADC reads the divided voltage; we reverse the ratio to get battery voltage.
+ *
+ * Takes 8 samples with 2ms settling delay between each (same pattern as readTankSensor).
+ * Total time: ~16ms — negligible power cost.
+ *
+ * @return Battery voltage in volts, or 0.0 if Vin monitor is disabled or ratio is invalid.
+ */
+static float readVinDividerVoltage() {
+  if (!gConfig.vinMonitor.enabled) return 0.0f;
+
+  float ratio = vinDividerRatio(&gConfig.vinMonitor);
+  if (ratio <= 0.0f) return 0.0f;
+
+  uint8_t pin = gConfig.vinMonitor.analogPin;
+  if (pin > 7) return 0.0f;
+
+  // Multi-sample averaging: 8 samples with 2ms settling delay
+  float total = 0.0f;
+  const uint8_t samples = 8;
+  for (uint8_t i = 0; i < samples; ++i) {
+    int raw = analogRead(pin);
+    float pinVoltage = (float)raw / VIN_MONITOR_ADC_MAX * VIN_MONITOR_ADC_REF_VOLTAGE;
+    total += pinVoltage;
+    delay(2);
+  }
+  float avgPinVoltage = total / samples;
+
+  // Reverse the divider ratio to get actual battery voltage
+  float batteryVoltage = avgPinVoltage / ratio;
+
+  if (batteryVoltage > 0.5f) {  // Filter out noise when nothing is connected
+    Serial.print(F("Vin divider: pin="));
+    Serial.print(avgPinVoltage, 2);
+    Serial.print(F("V -> battery="));
+    Serial.print(batteryVoltage, 2);
+    Serial.println(F("V"));
+  }
+
+  return batteryVoltage;
 }
 
 // ============================================================================

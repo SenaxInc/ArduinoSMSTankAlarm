@@ -145,6 +145,69 @@ struct BatteryConfig {
 };
 
 // ============================================================================
+// Voltage Divider (Vin Monitor) Configuration
+// ============================================================================
+// Reads actual battery voltage via analog input + external voltage divider.
+//
+// Wiring: Battery+ --> R1 --> Opta Analog Pin --> R2 --> GND
+//   Example: R1=22kΩ, R2=47kΩ → ratio = 47/(22+47) = 0.6812
+//            12V × 0.6812 = 8.17V at pin (within Opta 0-10V ADC range)
+//            Max readable voltage = 10V / 0.6812 = 14.68V
+//
+// The divider draws continuous quiescent current: 12V / (R1+R2) ≈ 0.17mA
+// which is negligible compared to MCU + Notecard draw (~100-200mA).
+
+struct VinMonitorConfig {
+  bool enabled;               // true = voltage divider hardware is connected
+  uint8_t analogPin;          // Opta analog input pin index (0=A0 .. 7=A7)
+  float r1Kohm;               // High-side resistor in kΩ (battery to pin)
+  float r2Kohm;               // Low-side resistor in kΩ (pin to GND)
+  uint16_t pollIntervalSec;   // How often to read (seconds)
+  bool includeInDailyReport;  // Include Vin reading in daily report
+};
+
+// Defaults for VinMonitorConfig
+#define VIN_MONITOR_DEFAULT_PIN             0       // A0
+#define VIN_MONITOR_DEFAULT_R1_KOHM         22.0f   // 22kΩ high-side
+#define VIN_MONITOR_DEFAULT_R2_KOHM         47.0f   // 47kΩ low-side
+#define VIN_MONITOR_DEFAULT_POLL_SEC        300     // 5 minutes
+#define VIN_MONITOR_ADC_RESOLUTION          12      // 12-bit ADC (matches client analogReadResolution)
+#define VIN_MONITOR_ADC_MAX                 4095.0f // 2^12 - 1
+#define VIN_MONITOR_ADC_REF_VOLTAGE         10.0f   // Opta analog inputs: 0-10V range
+
+/**
+ * Initialize VinMonitorConfig with defaults.
+ */
+inline void initVinMonitorConfig(VinMonitorConfig* config) {
+  if (!config) return;
+  config->enabled = false;
+  config->analogPin = VIN_MONITOR_DEFAULT_PIN;
+  config->r1Kohm = VIN_MONITOR_DEFAULT_R1_KOHM;
+  config->r2Kohm = VIN_MONITOR_DEFAULT_R2_KOHM;
+  config->pollIntervalSec = VIN_MONITOR_DEFAULT_POLL_SEC;
+  config->includeInDailyReport = true;
+}
+
+/**
+ * Calculate the voltage divider ratio: R2 / (R1 + R2).
+ * Returns 0 if resistors are invalid (prevents division by zero).
+ */
+inline float vinDividerRatio(const VinMonitorConfig* config) {
+  if (!config || (config->r1Kohm + config->r2Kohm) <= 0.0f) return 0.0f;
+  return config->r2Kohm / (config->r1Kohm + config->r2Kohm);
+}
+
+/**
+ * Calculate the maximum readable battery voltage for a given divider config.
+ * Returns 0 if config is invalid.
+ */
+inline float vinMaxReadableVoltage(const VinMonitorConfig* config) {
+  float ratio = vinDividerRatio(config);
+  if (ratio <= 0.0f) return 0.0f;
+  return VIN_MONITOR_ADC_REF_VOLTAGE / ratio;
+}
+
+// ============================================================================
 // Default Configuration Values
 // ============================================================================
 #define BATTERY_DEFAULT_POLL_INTERVAL_SEC     300    // 5 minutes
