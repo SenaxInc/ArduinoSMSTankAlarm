@@ -724,6 +724,7 @@ static void sampleTanks();
 static float readTankSensor(uint8_t idx);
 static void evaluateAlarms(uint8_t idx);
 static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow);
+static void sendRegistration(const char *reason);
 static void sendAlarm(uint8_t idx, const char *alarmType, float inches);
 static void sendDailyReport();
 static void publishNote(const char *fileName, const JsonDocument &doc, bool syncNow);
@@ -940,14 +941,29 @@ void setup() {
     gSolarOnlySensorsReady = true;
   }
 
-  // Immediate boot telemetry for grid-powered clients so the server
-  // sees this device right away instead of waiting for the first sample
-  // interval (default 30 min).  Solar-only clients skip this to avoid
-  // wasting power on brownout reboots.
-  if (!isSolarOnlyActive()) {
-    Serial.println(F("Sending boot telemetry..."));
-    addSerialLog("Boot telemetry");
-    sampleTanks();
+  // Immediate boot telemetry so the server sees this device right away
+  // instead of waiting for the first sample interval (default 30 min).
+  // Solar-only clients with monitors configured skip this to avoid
+  // wasting power on brownout reboots — they rely on the loop interval.
+  // However, unconfigured solar-only clients (monitorCount == 0) DO send
+  // a registration note at boot because there is no other way for the
+  // server to discover them and push an initial configuration.
+  if (gConfig.monitorCount > 0) {
+    if (!isSolarOnlyActive()) {
+      Serial.println(F("Sending boot telemetry..."));
+      addSerialLog("Boot telemetry");
+      sampleTanks();
+    }
+    // Solar clients with monitors rely on loop sample interval
+  } else {
+    // No monitors configured — send a lightweight registration note
+    // so the server discovers this device and can push a config to it.
+    // This is safe for solar-only clients: the registration payload is
+    // tiny, startup debounce has already confirmed stable power, and
+    // the device will never be discoverable otherwise.
+    Serial.println(F("No monitors configured — sending registration..."));
+    addSerialLog("Boot registration (no monitors)");
+    sendRegistration("boot");
   }
 
   Serial.println(F("Client setup complete"));
@@ -987,7 +1003,13 @@ void loop() {
   if (gPowerState != POWER_STATE_CRITICAL_HIBERNATE) {
     if (now - gLastTelemetryMillis >= sampleInterval) {
       gLastTelemetryMillis = now;
-      sampleTanks();
+      if (gConfig.monitorCount > 0) {
+        sampleTanks();
+      } else {
+        // No monitors configured — periodically re-register so the server
+        // knows this device is still online and awaiting configuration.
+        sendRegistration("heartbeat");
+      }
     }
   }
 
@@ -1519,6 +1541,8 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   strlcpy(cfg.serverFleet, doc["serverFleet"].as<const char *>() ? doc["serverFleet"].as<const char *>() : "", sizeof(cfg.serverFleet));
   strlcpy(cfg.clientFleet, doc["clientFleet"].as<const char *>() ? doc["clientFleet"].as<const char *>() : "", sizeof(cfg.clientFleet));
   strlcpy(cfg.dailyEmail, doc["dailyEmail"].as<const char *>() ? doc["dailyEmail"].as<const char *>() : "", sizeof(cfg.dailyEmail));
+  // Product UID: persisted so a remotely-configured UID survives reboot
+  strlcpy(cfg.productUid, doc["productUid"].as<const char *>() ? doc["productUid"].as<const char *>() : "", sizeof(cfg.productUid));
 
   cfg.sampleSeconds = doc["sampleSeconds"].is<uint16_t>() ? doc["sampleSeconds"].as<uint16_t>() : DEFAULT_SAMPLE_SECONDS;
   cfg.minLevelChangeInches = doc["levelChangeThreshold"].is<float>() ? doc["levelChangeThreshold"].as<float>() : DEFAULT_LEVEL_CHANGE_THRESHOLD_INCHES;
@@ -1806,6 +1830,10 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   doc["deviceLabel"] = cfg.deviceLabel;
   doc["clientFleet"] = cfg.clientFleet;
   doc["serverFleet"] = cfg.serverFleet;
+  // Product UID: persist to flash so a remotely-pushed UID survives reboot
+  if (cfg.productUid[0] != '\0') {
+    doc["productUid"] = cfg.productUid;
+  }
   doc["sampleSeconds"] = cfg.sampleSeconds;
   doc["levelChangeThreshold"] = cfg.minLevelChangeInches;
   doc["reportHour"] = cfg.reportHour;
@@ -2541,7 +2569,19 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     strlcpy(gConfig.serverFleet, doc["serverFleet"].as<const char *>(), sizeof(gConfig.serverFleet));
   }
   if (!doc["clientFleet"].isNull()) {
-    strlcpy(gConfig.clientFleet, doc["clientFleet"].as<const char *>(), sizeof(gConfig.clientFleet));
+    const char *newFleet = doc["clientFleet"].as<const char *>();
+    if (newFleet && strcmp(gConfig.clientFleet, newFleet) != 0) {
+      strlcpy(gConfig.clientFleet, newFleet, sizeof(gConfig.clientFleet));
+      hardwareChanged = true;  // Fleet change requires Notecard hub.set reconfiguration
+    }
+  }
+  // Product UID: allow server to push a Notehub product UID to unconfigured devices
+  if (!doc["productUid"].isNull()) {
+    const char *newPuid = doc["productUid"].as<const char *>();
+    if (newPuid && strcmp(gConfig.productUid, newPuid) != 0) {
+      strlcpy(gConfig.productUid, newPuid, sizeof(gConfig.productUid));
+      hardwareChanged = true;  // Product UID change requires Notecard hub.set reconfiguration
+    }
   }
   if (!doc["sampleSeconds"].isNull()) {
     gConfig.sampleSeconds = doc["sampleSeconds"].as<uint16_t>();
@@ -3620,6 +3660,22 @@ static void evaluateAlarms(uint8_t idx) {
   if (highCondition || lowCondition) {
     state.clearDebounceCount = 0;
   }
+}
+
+// ---- Registration note for unconfigured clients ----
+// Sends a minimal telemetry payload (no sensor data) so the server
+// discovers this device and can push a configuration to it.
+static void sendRegistration(const char *reason) {
+  JsonDocument doc;
+  doc["c"] = gDeviceUID;
+  doc["s"] = gConfig.siteName;
+  doc["r"] = reason;
+  doc["t"] = currentEpoch();
+  doc["mc"] = 0;  // Signals server: no monitors configured
+  doc["fv"] = FIRMWARE_VERSION;
+
+  publishNote(TELEMETRY_FILE, doc, true);  // sync immediately so server sees us fast
+  Serial.println(F("Registration note sent"));
 }
 
 static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
