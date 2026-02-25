@@ -5010,16 +5010,32 @@ static void initializeNotecard() {
   Serial.println(F("Waiting for Notecard boot..."));
   delay(3000);
 
-  // Reset Notecard I2C speed to default 100kHz (in case card.wire previously
-  // set 400kHz).  Both sides stay at the Wire.begin() default of 100kHz.
-  {
+  // Auto-detect Notecard I2C speed.  Old firmware may have persisted 400kHz
+  // via card.wire, but Wire.begin() defaults to 100kHz.  Try both speeds.
+  bool ncReady = false;
+  static const unsigned long speeds[] = { 100000UL, 400000UL };
+  for (uint8_t i = 0; i < 2 && !ncReady; i++) {
+    Wire.setClock(speeds[i]);
+    J *pingReq = notecard.newRequest("card.status");
+    if (pingReq) {
+      J *pingRsp = notecard.requestAndResponse(pingReq);
+      if (pingRsp) {
+        const char *pingErr = JGetString(pingRsp, "err");
+        ncReady = (!pingErr || pingErr[0] == '\0');
+        notecard.deleteResponse(pingRsp);
+      }
+    }
+  }
+  if (ncReady) {
+    // Reset Notecard to default 100kHz so future boots always work
     J *wireReq = notecard.newRequest("card.wire");
     if (wireReq) {
       J *wireRsp = notecard.requestAndResponse(wireReq);
       if (wireRsp) notecard.deleteResponse(wireRsp);
     }
+    Wire.setClock(100000UL);
   }
-  Serial.println(F("Notecard initialized"));
+  Serial.println(ncReady ? F("Notecard initialized") : F("WARNING: Notecard not responding"));
 
   J *req = notecard.newRequest("hub.set");
   if (req) {

@@ -2220,28 +2220,39 @@ static void initializeNotecard() {
   Serial.println(F("Waiting for Notecard boot..."));
   delay(3000);
 
-  // Reset Notecard I2C speed to default 100kHz (in case card.wire previously
-  // set 400kHz).  Both sides stay at the Wire.begin() default of 100kHz,
-  // eliminating speed-mismatch {io} errors.
-  {
+  // Auto-detect Notecard I2C speed.  The Notecard persists the speed set by
+  // card.wire across reboots.  Old firmware may have set 400kHz, but
+  // Wire.begin() defaults to 100kHz — creating a speed mismatch that causes
+  // every I2C transaction to fail with {io}.  Try 100kHz first, then 400kHz.
+  bool ready = false;
+  static const unsigned long speeds[] = { 100000UL, 400000UL };
+  for (uint8_t i = 0; i < 2 && !ready; i++) {
+    Wire.setClock(speeds[i]);
+    Serial.print(F("  Trying I2C @ "));
+    Serial.print(speeds[i] / 1000UL);
+    Serial.print(F(" kHz... "));
+    J *pingReq = notecard.newRequest("card.status");
+    if (pingReq) {
+      J *pingRsp = notecard.requestAndResponse(pingReq);
+      if (pingRsp) {
+        const char *pingErr = JGetString(pingRsp, "err");
+        ready = (!pingErr || pingErr[0] == '\0');
+        notecard.deleteResponse(pingRsp);
+      }
+    }
+    Serial.println(ready ? F("OK") : F("no response"));
+  }
+
+  if (ready) {
+    // Reset the Notecard to default 100kHz so future boots always work
+    // at the Wire.begin() default speed.
     J *wireReq = notecard.newRequest("card.wire");
     if (wireReq) {
-      // speed 0 or omitting speed resets to default 100kHz
       J *wireRsp = notecard.requestAndResponse(wireReq);
       if (wireRsp) notecard.deleteResponse(wireRsp);
     }
-  }
-
-  // Verify Notecard is responding
-  bool ready = false;
-  J *pingReq = notecard.newRequest("card.status");
-  if (pingReq) {
-    J *pingRsp = notecard.requestAndResponse(pingReq);
-    if (pingRsp) {
-      const char *pingErr = JGetString(pingRsp, "err");
-      ready = (!pingErr || pingErr[0] == '\0');
-      notecard.deleteResponse(pingRsp);
-    }
+    Wire.setClock(100000UL);  // Match Arduino side to 100kHz
+    Serial.println(F("Notecard connected (I2C reset to 100 kHz)"));
   }
 
   if (!ready) {
@@ -2255,7 +2266,6 @@ static void initializeNotecard() {
     Serial.println(gDeviceUID);
     return;
   }
-  Serial.println(F("Notecard connected"));
 
   // Configure hub mode based on power configuration
   configureNotecardHubMode();
