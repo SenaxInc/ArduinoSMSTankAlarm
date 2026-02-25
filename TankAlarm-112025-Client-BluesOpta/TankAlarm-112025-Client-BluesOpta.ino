@@ -2211,12 +2211,15 @@ static void initializeNotecard() {
   // Configure hub mode based on power configuration
   configureNotecardHubMode();
 
-  req = notecard.newRequest("card.uuid");
+  // Retrieve the Notecard's unique device identifier (e.g., "dev:860322068012345")
+  // Note: card.uuid does NOT exist in the Notecard API — use card.status instead,
+  // which returns the device serial in the "device" field.
+  req = notecard.newRequest("card.status");
   if (req) {
     J *rsp = notecard.requestAndResponse(req);
     if (rsp) {
-      const char *uid = JGetString(rsp, "uuid");
-      if (uid) {
+      const char *uid = JGetString(rsp, "device");
+      if (uid && uid[0] != '\0') {
         strlcpy(gDeviceUID, uid, sizeof(gDeviceUID));
       }
       notecard.deleteResponse(rsp);
@@ -2229,6 +2232,12 @@ static void initializeNotecard() {
 
   Serial.print(F("Notecard UID: "));
   Serial.println(gDeviceUID);
+
+  // Allow the Notecard a moment to stabilize after hub.set and configuration
+  // commands. The Notecard begins its cell connection asynchronously after
+  // hub.set, and sending note.add too quickly afterward can fail on some
+  // firmware versions.
+  delay(2000);
 }
 
 static bool checkNotecardHealth() {
@@ -5191,17 +5200,20 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
   char buffer[1024];
   size_t len = serializeJson(doc, buffer, sizeof(buffer));
   if (len == 0 || len >= sizeof(buffer)) {
+    Serial.println(F("publishNote: JSON serialization failed or exceeded buffer"));
     return;
   }
   buffer[len] = '\0';
 
   if (!gNotecardAvailable) {
+    Serial.println(F("publishNote: Notecard unavailable — buffering"));
     bufferNoteForRetry(fileName, buffer, syncNow);
     return;
   }
 
   J *req = notecard.newRequest("note.add");
   if (!req) {
+    Serial.println(F("publishNote: newRequest(note.add) returned null"));
     gNotecardFailureCount++;
     bufferNoteForRetry(fileName, buffer, syncNow);
     return;
@@ -5214,18 +5226,32 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
 
   J *body = JParse(buffer);
   if (!body) {
+    Serial.println(F("publishNote: JParse failed on serialized JSON"));
     JDelete(req);
     bufferNoteForRetry(fileName, buffer, syncNow);
     return;
   }
 
   JAddItemToObject(req, "body", body);
-  bool success = notecard.sendRequest(req);
-  if (success) {
-    gLastSuccessfulNotecardComm = millis();
-    gNotecardFailureCount = 0;
-    flushBufferedNotes();
+
+  // Use requestAndResponse to capture the Notecard's error message (if any)
+  J *rsp = notecard.requestAndResponse(req);
+  if (rsp) {
+    const char *err = JGetString(rsp, "err");
+    if (err && err[0] != '\0') {
+      Serial.print(F("publishNote: Notecard error: "));
+      Serial.println(err);
+      notecard.deleteResponse(rsp);
+      gNotecardFailureCount++;
+      bufferNoteForRetry(fileName, buffer, syncNow);
+    } else {
+      notecard.deleteResponse(rsp);
+      gLastSuccessfulNotecardComm = millis();
+      gNotecardFailureCount = 0;
+      flushBufferedNotes();
+    }
   } else {
+    Serial.println(F("publishNote: requestAndResponse returned null (I2C failure?)"));
     gNotecardFailureCount++;
     bufferNoteForRetry(fileName, buffer, syncNow);
   }
