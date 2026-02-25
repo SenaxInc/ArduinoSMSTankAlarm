@@ -2174,19 +2174,10 @@ static void configureNotecardHubMode() {
       // In continuous mode, outbound/inbound are not used - always connected
     }
     
-    J *hubRsp = notecard.requestAndResponse(req);
-    if (hubRsp) {
-      const char *hubErr = JGetString(hubRsp, "err");
-      if (hubErr && hubErr[0] != '\0') {
-        Serial.print(F("WARNING: hub.set failed: "));
-        Serial.println(hubErr);
-        addSerialLog("hub.set failed - check Product UID");
-      }
-      notecard.deleteResponse(hubRsp);
-    } else {
-      Serial.println(F("WARNING: hub.set returned no response"));
-      addSerialLog("hub.set no response");
-    }
+    // Fire-and-forget: during boot the Notecard may not be ready yet.
+    // If this fails silently, checkNotecardHealth() in the main loop will
+    // detect the Notecard once it's online and retry configuration.
+    notecard.sendRequest(req);
   }
   
   // Disable GPS location tracking for power savings
@@ -2214,65 +2205,16 @@ static void initializeNotecard() {
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
-  // The Blues Notecard needs ~2.5 seconds from power-on before its I2C
-  // interface is ready. The Opta MCU boots much faster (~500ms), so wait
-  // for the Notecard to finish its boot sequence.
+  // Give the Notecard time to boot — it needs ~2.5s from power-on
   Serial.println(F("Waiting for Notecard boot..."));
   delay(3000);
 
-  // Auto-detect Notecard I2C speed.  The Notecard persists the speed set by
-  // card.wire across reboots.  Old firmware may have set 400kHz, but
-  // Wire.begin() defaults to 100kHz — creating a speed mismatch that causes
-  // every I2C transaction to fail with {io}.  Try 100kHz first, then 400kHz.
-  bool ready = false;
-  static const unsigned long speeds[] = { 100000UL, 400000UL };
-  for (uint8_t i = 0; i < 2 && !ready; i++) {
-    Wire.setClock(speeds[i]);
-    Serial.print(F("  Trying I2C @ "));
-    Serial.print(speeds[i] / 1000UL);
-    Serial.print(F(" kHz... "));
-    J *pingReq = notecard.newRequest("card.status");
-    if (pingReq) {
-      J *pingRsp = notecard.requestAndResponse(pingReq);
-      if (pingRsp) {
-        const char *pingErr = JGetString(pingRsp, "err");
-        ready = (!pingErr || pingErr[0] == '\0');
-        notecard.deleteResponse(pingRsp);
-      }
-    }
-    Serial.println(ready ? F("OK") : F("no response"));
-  }
-
-  if (ready) {
-    // Reset the Notecard to default 100kHz so future boots always work
-    // at the Wire.begin() default speed.
-    J *wireReq = notecard.newRequest("card.wire");
-    if (wireReq) {
-      J *wireRsp = notecard.requestAndResponse(wireReq);
-      if (wireRsp) notecard.deleteResponse(wireRsp);
-    }
-    Wire.setClock(100000UL);  // Match Arduino side to 100kHz
-    Serial.println(F("Notecard connected (I2C reset to 100 kHz)"));
-  }
-
-  if (!ready) {
-    Serial.println(F("ERROR: Notecard not responding on I2C — check wiring and power"));
-    addSerialLog("Notecard I2C failed — offline mode");
-    gNotecardAvailable = false;
-    if (gDeviceUID[0] == '\0') {
-      strlcpy(gDeviceUID, gConfig.deviceLabel, sizeof(gDeviceUID));
-    }
-    Serial.print(F("Notecard UID: "));
-    Serial.println(gDeviceUID);
-    return;
-  }
-
-  // Configure hub mode based on power configuration
+  // Configure hub mode (fire-and-forget — if the Notecard isn't ready yet,
+  // these will silently fail and the main loop's checkNotecardHealth() will
+  // detect the Notecard once it comes online and flush buffered notes).
   configureNotecardHubMode();
 
-  // Retrieve the Notecard's unique device identifier (e.g., "dev:860322068012345").
-  // hub.get returns the device serial in the "device" field.
-  // card.uuid and card.status do NOT contain the device UID.
+  // Try to retrieve the Notecard's Device UID (e.g. "dev:860322068012345").
   J *req = notecard.newRequest("hub.get");
   if (req) {
     J *rsp = notecard.requestAndResponse(req);
@@ -2289,7 +2231,7 @@ static void initializeNotecard() {
     strlcpy(gDeviceUID, gConfig.deviceLabel, sizeof(gDeviceUID));
   }
 
-  Serial.print(F("Notecard UID: "));
+  Serial.print(F("Device UID: "));
   Serial.println(gDeviceUID);
 
   // Allow the Notecard a moment to stabilize after hub.set and configuration
