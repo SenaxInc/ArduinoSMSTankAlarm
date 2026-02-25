@@ -798,7 +798,9 @@ void setup() {
   ensureConfigLoaded();
   printHardwareRequirements(gConfig);
 
-  Wire.begin();
+  // Wire.begin() is NOT called here — notecard.begin() handles I2C initialization.
+  // Calling Wire.begin() twice (here and inside notecard.begin()) corrupts the
+  // Mbed OS I2C peripheral, causing all Notecard communication to fail with {io}.
 
   initializeNotecard();
   ensureTimeSync();
@@ -2216,35 +2218,27 @@ static void initializeNotecard() {
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
   // The Blues Notecard needs ~2.5 seconds from power-on before its I2C
-  // interface is ready. The Opta MCU boots much faster (~500ms), so the
-  // very first I2C transaction can fail with "failed to reset Notecard
-  // interface {io}" if we don't wait. Retry a lightweight request until
-  // the Notecard responds.
-  Serial.print(F("Connecting to Notecard"));
+  // interface is ready. The Opta MCU boots much faster (~500ms), so wait
+  // for the Notecard to finish its boot sequence.
+  Serial.println(F("Waiting for Notecard boot..."));
+  delay(3000);
+
+  // Verify Notecard is responding
   bool ready = false;
-  for (uint8_t attempt = 0; attempt < 15; ++attempt) {
-    J *req = notecard.newRequest("card.status");
-    if (req) {
-      J *rsp = notecard.requestAndResponse(req);
-      if (rsp) {
-        const char *err = JGetString(rsp, "err");
-        if (!err || err[0] == '\0') {
-          ready = true;
-        }
-        notecard.deleteResponse(rsp);
-      }
+  J *pingReq = notecard.newRequest("card.status");
+  if (pingReq) {
+    J *pingRsp = notecard.requestAndResponse(pingReq);
+    if (pingRsp) {
+      const char *pingErr = JGetString(pingRsp, "err");
+      ready = (!pingErr || pingErr[0] == '\0');
+      notecard.deleteResponse(pingRsp);
     }
-    if (ready) break;
-    Serial.print('.');
-    delay(500);
   }
-  Serial.println();
 
   if (!ready) {
     Serial.println(F("ERROR: Notecard not responding on I2C — check wiring and power"));
     addSerialLog("Notecard I2C failed — offline mode");
     gNotecardAvailable = false;
-    // Fall back to label-based UID
     if (gDeviceUID[0] == '\0') {
       strlcpy(gDeviceUID, gConfig.deviceLabel, sizeof(gDeviceUID));
     }
@@ -2254,7 +2248,7 @@ static void initializeNotecard() {
   }
   Serial.println(F("Notecard connected"));
 
-  // Optionally increase I2C speed to 400kHz for faster communication.
+  // Increase I2C speed to 400kHz for faster communication.
   // card.wire tells the Notecard to expect 400kHz, then Wire.setClock()
   // brings the Arduino side up to match.
   J *req = notecard.newRequest("card.wire");
