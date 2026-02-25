@@ -5010,6 +5010,34 @@ static void initializeNotecard() {
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
+  // The Blues Notecard needs ~2.5 seconds from power-on before its I2C
+  // interface is ready. The Opta MCU boots much faster, so retry a
+  // lightweight request until the Notecard responds.
+  Serial.print(F("Connecting to Notecard"));
+  bool ready = false;
+  for (uint8_t attempt = 0; attempt < 15; ++attempt) {
+    J *pingReq = notecard.newRequest("card.status");
+    if (pingReq) {
+      J *pingRsp = notecard.requestAndResponse(pingReq);
+      if (pingRsp) {
+        const char *pingErr = JGetString(pingRsp, "err");
+        if (!pingErr || pingErr[0] == '\0') {
+          ready = true;
+        }
+        notecard.deleteResponse(pingRsp);
+      }
+    }
+    if (ready) break;
+    Serial.print('.');
+    delay(500);
+  }
+  Serial.println();
+  if (!ready) {
+    Serial.println(F("ERROR: Notecard not responding on I2C — check wiring and power"));
+  } else {
+    Serial.println(F("Notecard connected"));
+  }
+
   // Tell the Notecard to use 400kHz I2C, then set the Arduino Wire clock to
   // match. This MUST happen after notecard.begin() because that internally
   // calls Wire.begin() which resets the clock to 100kHz on Mbed OS.

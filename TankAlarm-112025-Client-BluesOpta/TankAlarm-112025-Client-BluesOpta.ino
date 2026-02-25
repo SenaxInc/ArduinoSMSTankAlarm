@@ -799,9 +799,6 @@ void setup() {
   printHardwareRequirements(gConfig);
 
   Wire.begin();
-  // NOTE: Wire.setClock() is called INSIDE initializeNotecard() after
-  // notecard.begin() and card.wire, because notecard.begin() internally calls
-  // Wire.begin() which resets the clock to 100kHz on Mbed OS.
 
   initializeNotecard();
   ensureTimeSync();
@@ -2218,11 +2215,48 @@ static void initializeNotecard() {
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
-  // Tell the Notecard to use 400kHz I2C, then set the Arduino Wire clock to
-  // match. This MUST happen after notecard.begin() because that internally
-  // calls Wire.begin() which resets the clock to 100kHz on Mbed OS.
-  // card.wire is sent at the default 100kHz (which the Notecard accepts),
-  // then Wire.setClock brings the Arduino side up to 400kHz to match.
+  // The Blues Notecard needs ~2.5 seconds from power-on before its I2C
+  // interface is ready. The Opta MCU boots much faster (~500ms), so the
+  // very first I2C transaction can fail with "failed to reset Notecard
+  // interface {io}" if we don't wait. Retry a lightweight request until
+  // the Notecard responds.
+  Serial.print(F("Connecting to Notecard"));
+  bool ready = false;
+  for (uint8_t attempt = 0; attempt < 15; ++attempt) {
+    J *req = notecard.newRequest("card.status");
+    if (req) {
+      J *rsp = notecard.requestAndResponse(req);
+      if (rsp) {
+        const char *err = JGetString(rsp, "err");
+        if (!err || err[0] == '\0') {
+          ready = true;
+        }
+        notecard.deleteResponse(rsp);
+      }
+    }
+    if (ready) break;
+    Serial.print('.');
+    delay(500);
+  }
+  Serial.println();
+
+  if (!ready) {
+    Serial.println(F("ERROR: Notecard not responding on I2C — check wiring and power"));
+    addSerialLog("Notecard I2C failed — offline mode");
+    gNotecardAvailable = false;
+    // Fall back to label-based UID
+    if (gDeviceUID[0] == '\0') {
+      strlcpy(gDeviceUID, gConfig.deviceLabel, sizeof(gDeviceUID));
+    }
+    Serial.print(F("Notecard UID: "));
+    Serial.println(gDeviceUID);
+    return;
+  }
+  Serial.println(F("Notecard connected"));
+
+  // Optionally increase I2C speed to 400kHz for faster communication.
+  // card.wire tells the Notecard to expect 400kHz, then Wire.setClock()
+  // brings the Arduino side up to match.
   J *req = notecard.newRequest("card.wire");
   if (req) {
     JAddIntToObject(req, "speed", (int)NOTECARD_I2C_FREQUENCY);
