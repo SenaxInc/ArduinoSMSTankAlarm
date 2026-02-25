@@ -798,13 +798,7 @@ void setup() {
   ensureConfigLoaded();
   printHardwareRequirements(gConfig);
 
-  // Initialize I2C at 400kHz BEFORE notecard.begin().  The Notecard persists
-  // the speed set by card.wire, so it may already expect 400kHz from a prior
-  // session.  If we let notecard.begin() init Wire at the default 100kHz,
-  // the speed mismatch causes every I2C transaction to fail with {io}.
   Wire.begin();
-  Wire.setClock(NOTECARD_I2C_FREQUENCY);
-
   initializeNotecard();
   ensureTimeSync();
   scheduleNextDailyReport();
@@ -2220,14 +2214,23 @@ static void initializeNotecard() {
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
-  // Wire.setClock again after notecard.begin() in case it reset the clock
-  Wire.setClock(NOTECARD_I2C_FREQUENCY);
-
   // The Blues Notecard needs ~2.5 seconds from power-on before its I2C
   // interface is ready. The Opta MCU boots much faster (~500ms), so wait
   // for the Notecard to finish its boot sequence.
   Serial.println(F("Waiting for Notecard boot..."));
   delay(3000);
+
+  // Reset Notecard I2C speed to default 100kHz (in case card.wire previously
+  // set 400kHz).  Both sides stay at the Wire.begin() default of 100kHz,
+  // eliminating speed-mismatch {io} errors.
+  {
+    J *wireReq = notecard.newRequest("card.wire");
+    if (wireReq) {
+      // speed 0 or omitting speed resets to default 100kHz
+      J *wireRsp = notecard.requestAndResponse(wireReq);
+      if (wireRsp) notecard.deleteResponse(wireRsp);
+    }
+  }
 
   // Verify Notecard is responding
   bool ready = false;
@@ -2253,28 +2256,6 @@ static void initializeNotecard() {
     return;
   }
   Serial.println(F("Notecard connected"));
-
-  // Ensure card.wire is set to 400kHz (persists on Notecard across reboots)
-  J *req = notecard.newRequest("card.wire");
-  if (req) {
-    JAddIntToObject(req, "speed", (int)NOTECARD_I2C_FREQUENCY);
-    J *wireRsp = notecard.requestAndResponse(req);
-    if (wireRsp) {
-      const char *wireErr = JGetString(wireRsp, "err");
-      if (wireErr && wireErr[0] != '\0') {
-        Serial.print(F("WARNING: card.wire failed: "));
-        Serial.println(wireErr);
-        // Don't change Wire clock if Notecard didn't accept the speed
-        notecard.deleteResponse(wireRsp);
-      } else {
-        notecard.deleteResponse(wireRsp);
-        Wire.setClock(NOTECARD_I2C_FREQUENCY);
-      }
-    } else {
-      // No response — leave Wire at default speed for safety
-      Serial.println(F("WARNING: card.wire no response"));
-    }
-  }
 
   // Configure hub mode based on power configuration
   configureNotecardHubMode();

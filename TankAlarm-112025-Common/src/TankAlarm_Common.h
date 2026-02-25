@@ -32,10 +32,6 @@
 #define NOTECARD_I2C_ADDRESS 0x17
 #endif
 
-#ifndef NOTECARD_I2C_FREQUENCY
-#define NOTECARD_I2C_FREQUENCY 400000UL
-#endif
-
 // ============================================================================
 // Ethernet Configuration
 // ============================================================================

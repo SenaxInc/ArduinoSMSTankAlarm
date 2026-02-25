@@ -180,11 +180,7 @@ void setup() {
   Serial.print(F(FIRMWARE_BUILD_DATE));
   Serial.println(F(")"));
 
-  // Initialize I2C at 400kHz BEFORE notecard.begin().  The Notecard persists
-  // the speed set by card.wire, so it may already expect 400kHz.
   Wire.begin();
-  Wire.setClock(NOTECARD_I2C_FREQUENCY);
-
   initializeNotecard();
   ensureTimeSync();
   fetchViewerSummary();  // Drain any queued summaries before serving UI
@@ -248,35 +244,22 @@ static void initializeNotecard() {
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
-  // Wire.setClock again after notecard.begin() in case it reset the clock
-  Wire.setClock(NOTECARD_I2C_FREQUENCY);
-
   // Wait for Notecard boot (needs ~2.5s from power-on before I2C is ready)
   Serial.println(F("Waiting for Notecard boot..."));
   delay(3000);
-  Serial.println(F("Notecard initialized"));
 
-  // Ensure card.wire is set to 400kHz (persists on Notecard across reboots)
-  J *req = notecard.newRequest("card.wire");
-  if (req) {
-    JAddIntToObject(req, "speed", (int)NOTECARD_I2C_FREQUENCY);
-    J *wireRsp = notecard.requestAndResponse(req);
-    if (wireRsp) {
-      const char *wireErr = JGetString(wireRsp, "err");
-      if (wireErr && wireErr[0] != '\0') {
-        Serial.print(F("WARNING: card.wire failed: "));
-        Serial.println(wireErr);
-        notecard.deleteResponse(wireRsp);
-      } else {
-        notecard.deleteResponse(wireRsp);
-        Wire.setClock(NOTECARD_I2C_FREQUENCY);
-      }
-    } else {
-      Serial.println(F("WARNING: card.wire no response"));
+  // Reset Notecard I2C speed to default 100kHz (in case card.wire previously
+  // set 400kHz).  Both sides stay at the Wire.begin() default of 100kHz.
+  {
+    J *wireReq = notecard.newRequest("card.wire");
+    if (wireReq) {
+      J *wireRsp = notecard.requestAndResponse(wireReq);
+      if (wireRsp) notecard.deleteResponse(wireRsp);
     }
   }
+  Serial.println(F("Notecard initialized"));
 
-  req = notecard.newRequest("hub.set");
+  J *req = notecard.newRequest("hub.set");
   if (req) {
     // Use configurable product UID (allows fleet-specific deployments without recompilation)
     JAddStringToObject(req, "product", gConfig.productUid);
