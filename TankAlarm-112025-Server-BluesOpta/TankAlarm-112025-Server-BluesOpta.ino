@@ -2302,7 +2302,9 @@ void setup() {
   printHardwareRequirements();
 
   Wire.begin();
-  Wire.setClock(NOTECARD_I2C_FREQUENCY);
+  // NOTE: Wire.setClock() is called INSIDE initializeNotecard() after
+  // notecard.begin() and card.wire, because notecard.begin() internally calls
+  // Wire.begin() which resets the clock to 100kHz on Mbed OS.
 
   initializeNotecard();
   ensureTimeSync();
@@ -5008,10 +5010,26 @@ static void initializeNotecard() {
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
+  // Tell the Notecard to use 400kHz I2C, then set the Arduino Wire clock to
+  // match. This MUST happen after notecard.begin() because that internally
+  // calls Wire.begin() which resets the clock to 100kHz on Mbed OS.
   J *req = notecard.newRequest("card.wire");
   if (req) {
     JAddIntToObject(req, "speed", (int)NOTECARD_I2C_FREQUENCY);
-    notecard.sendRequest(req);
+    J *wireRsp = notecard.requestAndResponse(req);
+    if (wireRsp) {
+      const char *wireErr = JGetString(wireRsp, "err");
+      if (wireErr && wireErr[0] != '\0') {
+        Serial.print(F("WARNING: card.wire failed: "));
+        Serial.println(wireErr);
+        notecard.deleteResponse(wireRsp);
+      } else {
+        notecard.deleteResponse(wireRsp);
+        Wire.setClock(NOTECARD_I2C_FREQUENCY);
+      }
+    } else {
+      Serial.println(F("WARNING: card.wire no response"));
+    }
   }
 
   req = notecard.newRequest("hub.set");
@@ -8031,13 +8049,24 @@ static void sendSmsAlert(const char *message) {
     return;
   }
   JAddItemToObject(req, "body", body);
-  notecard.sendRequest(req);
 
-  // Log to transmission log
-  logTransmission("", "", "sms", "outbox", message ? message : "SMS alert");
-
-  Serial.print(F("SMS alert dispatched: "));
-  Serial.println(message);
+  J *smsRsp = notecard.requestAndResponse(req);
+  if (smsRsp) {
+    const char *smsErr = JGetString(smsRsp, "err");
+    if (smsErr && smsErr[0] != '\0') {
+      Serial.print(F("WARNING: SMS note.add failed: "));
+      Serial.println(smsErr);
+      logTransmission("", "", "sms", "error", smsErr);
+    } else {
+      logTransmission("", "", "sms", "outbox", message ? message : "SMS alert");
+      Serial.print(F("SMS alert dispatched: "));
+      Serial.println(message);
+    }
+    notecard.deleteResponse(smsRsp);
+  } else {
+    Serial.println(F("WARNING: SMS note.add returned no response"));
+    logTransmission("", "", "sms", "error", "No response from Notecard");
+  }
 }
 
 static void sendDailyEmail() {
@@ -8136,13 +8165,24 @@ static void sendDailyEmail() {
     return;
   }
   JAddItemToObject(req, "body", body);
-  notecard.sendRequest(req);
 
-  gLastDailyEmailSentEpoch = now;
-  Serial.println(F("Daily email queued"));
-
-  // Log to transmission log
-  logTransmission("", "", "email", "outbox", "Daily tank summary email");
+  J *emailRsp = notecard.requestAndResponse(req);
+  if (emailRsp) {
+    const char *emailErr = JGetString(emailRsp, "err");
+    if (emailErr && emailErr[0] != '\0') {
+      Serial.print(F("WARNING: Email note.add failed: "));
+      Serial.println(emailErr);
+      logTransmission("", "", "email", "error", emailErr);
+    } else {
+      gLastDailyEmailSentEpoch = now;
+      Serial.println(F("Daily email queued"));
+      logTransmission("", "", "email", "outbox", "Daily tank summary email");
+    }
+    notecard.deleteResponse(emailRsp);
+  } else {
+    Serial.println(F("WARNING: Email note.add returned no response"));
+    logTransmission("", "", "email", "error", "No response from Notecard");
+  }
 }
 
 static void publishViewerSummary() {

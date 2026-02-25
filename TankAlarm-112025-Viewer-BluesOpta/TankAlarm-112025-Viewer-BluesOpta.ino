@@ -181,7 +181,9 @@ void setup() {
   Serial.println(F(")"));
 
   Wire.begin();
-  Wire.setClock(NOTECARD_I2C_FREQUENCY);
+  // NOTE: Wire.setClock() is called INSIDE initializeNotecard() after
+  // notecard.begin() and card.wire, because notecard.begin() internally calls
+  // Wire.begin() which resets the clock to 100kHz on Mbed OS.
 
   initializeNotecard();
   ensureTimeSync();
@@ -246,10 +248,26 @@ static void initializeNotecard() {
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
+  // Tell the Notecard to use 400kHz I2C, then set the Arduino Wire clock to
+  // match. This MUST happen after notecard.begin() because that internally
+  // calls Wire.begin() which resets the clock to 100kHz on Mbed OS.
   J *req = notecard.newRequest("card.wire");
   if (req) {
     JAddIntToObject(req, "speed", (int)NOTECARD_I2C_FREQUENCY);
-    notecard.sendRequest(req);
+    J *wireRsp = notecard.requestAndResponse(req);
+    if (wireRsp) {
+      const char *wireErr = JGetString(wireRsp, "err");
+      if (wireErr && wireErr[0] != '\0') {
+        Serial.print(F("WARNING: card.wire failed: "));
+        Serial.println(wireErr);
+        notecard.deleteResponse(wireRsp);
+      } else {
+        notecard.deleteResponse(wireRsp);
+        Wire.setClock(NOTECARD_I2C_FREQUENCY);
+      }
+    } else {
+      Serial.println(F("WARNING: card.wire no response"));
+    }
   }
 
   req = notecard.newRequest("hub.set");
@@ -259,18 +277,31 @@ static void initializeNotecard() {
     JAddStringToObject(req, "mode", "continuous");
     // Join the viewer fleet for fleet-scoped DFU, route filtering, and device management
     JAddStringToObject(req, "fleet", "tankalarm-viewer");
-    notecard.sendRequest(req);
+    J *hubRsp = notecard.requestAndResponse(req);
+    if (hubRsp) {
+      const char *hubErr = JGetString(hubRsp, "err");
+      if (hubErr && hubErr[0] != '\0') {
+        Serial.print(F("WARNING: hub.set failed: "));
+        Serial.println(hubErr);
+      }
+      notecard.deleteResponse(hubRsp);
+    } else {
+      Serial.println(F("WARNING: hub.set returned no response"));
+    }
   }
   
   Serial.print(F("Product UID: "));
   Serial.println(gConfig.productUid);
 
-  req = notecard.newRequest("card.uuid");
+  // Retrieve the Notecard's unique device identifier (e.g., "dev:860322068012345").
+  // hub.get returns the device serial in the "device" field.
+  // card.uuid does NOT exist in the Notecard API.
+  req = notecard.newRequest("hub.get");
   if (req) {
     J *rsp = notecard.requestAndResponse(req);
     if (rsp) {
-      const char *uid = JGetString(rsp, "uuid");
-      if (uid) {
+      const char *uid = JGetString(rsp, "device");
+      if (uid && uid[0] != '\0') {
         strlcpy(gViewerUid, uid, sizeof(gViewerUid));
       }
       notecard.deleteResponse(rsp);

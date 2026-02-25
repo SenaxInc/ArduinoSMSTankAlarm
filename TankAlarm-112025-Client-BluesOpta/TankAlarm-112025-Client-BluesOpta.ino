@@ -799,7 +799,9 @@ void setup() {
   printHardwareRequirements(gConfig);
 
   Wire.begin();
-  Wire.setClock(NOTECARD_I2C_FREQUENCY);
+  // NOTE: Wire.setClock() is called INSIDE initializeNotecard() after
+  // notecard.begin() and card.wire, because notecard.begin() internally calls
+  // Wire.begin() which resets the clock to 100kHz on Mbed OS.
 
   initializeNotecard();
   ensureTimeSync();
@@ -2176,7 +2178,19 @@ static void configureNotecardHubMode() {
       // In continuous mode, outbound/inbound are not used - always connected
     }
     
-    notecard.sendRequest(req);
+    J *hubRsp = notecard.requestAndResponse(req);
+    if (hubRsp) {
+      const char *hubErr = JGetString(hubRsp, "err");
+      if (hubErr && hubErr[0] != '\0') {
+        Serial.print(F("WARNING: hub.set failed: "));
+        Serial.println(hubErr);
+        addSerialLog("hub.set failed - check Product UID");
+      }
+      notecard.deleteResponse(hubRsp);
+    } else {
+      Serial.println(F("WARNING: hub.set returned no response"));
+      addSerialLog("hub.set no response");
+    }
   }
   
   // Disable GPS location tracking for power savings
@@ -2189,9 +2203,11 @@ static void configureNotecardHubMode() {
   
   // Disable accelerometer motion tracking for power savings
   // The accelerometer is not used by this tank monitoring application
-  req = notecard.newRequest("card.motion.mode");
+  // card.motion.sync controls motion-triggered syncing; setting mode off
+  // prevents the Notecard from syncing on motion detection.
+  req = notecard.newRequest("card.motion.sync");
   if (req) {
-    JAddStringToObject(req, "mode", "off");
+    JAddBoolToObject(req, "start", false);
     notecard.sendRequest(req);
   }
 }
@@ -2202,19 +2218,39 @@ static void initializeNotecard() {
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
+  // Tell the Notecard to use 400kHz I2C, then set the Arduino Wire clock to
+  // match. This MUST happen after notecard.begin() because that internally
+  // calls Wire.begin() which resets the clock to 100kHz on Mbed OS.
+  // card.wire is sent at the default 100kHz (which the Notecard accepts),
+  // then Wire.setClock brings the Arduino side up to 400kHz to match.
   J *req = notecard.newRequest("card.wire");
   if (req) {
     JAddIntToObject(req, "speed", (int)NOTECARD_I2C_FREQUENCY);
-    notecard.sendRequest(req);
+    J *wireRsp = notecard.requestAndResponse(req);
+    if (wireRsp) {
+      const char *wireErr = JGetString(wireRsp, "err");
+      if (wireErr && wireErr[0] != '\0') {
+        Serial.print(F("WARNING: card.wire failed: "));
+        Serial.println(wireErr);
+        // Don't change Wire clock if Notecard didn't accept the speed
+        notecard.deleteResponse(wireRsp);
+      } else {
+        notecard.deleteResponse(wireRsp);
+        Wire.setClock(NOTECARD_I2C_FREQUENCY);
+      }
+    } else {
+      // No response — leave Wire at default speed for safety
+      Serial.println(F("WARNING: card.wire no response"));
+    }
   }
 
   // Configure hub mode based on power configuration
   configureNotecardHubMode();
 
-  // Retrieve the Notecard's unique device identifier (e.g., "dev:860322068012345")
-  // Note: card.uuid does NOT exist in the Notecard API — use card.status instead,
-  // which returns the device serial in the "device" field.
-  req = notecard.newRequest("card.status");
+  // Retrieve the Notecard's unique device identifier (e.g., "dev:860322068012345").
+  // hub.get returns the device serial in the "device" field.
+  // card.uuid and card.status do NOT contain the device UID.
+  req = notecard.newRequest("hub.get");
   if (req) {
     J *rsp = notecard.requestAndResponse(req);
     if (rsp) {
@@ -4242,12 +4278,12 @@ static bool appendSolarDataToDaily(JsonDocument &doc) {
  * Must be called once during setup when battery monitoring is enabled.
  */
 static void configureBatteryMonitoring(const BatteryConfig &cfg) {
-  // Set calibration offset (diode voltage drop compensation)
+  // Configure battery voltage monitoring thresholds
+  // Note: "calibration" and "set" are not documented card.voltage parameters
+  // and will be silently ignored by the Notecard. Diode drop compensation
+  // should be applied in firmware when reading the voltage instead.
   J *req = notecard.newRequest("card.voltage");
   if (!req) return;
-  
-  JAddBoolToObject(req, "set", true);
-  JAddNumberToObject(req, "calibration", cfg.calibrationOffset);
   
   // Create custom mode string for voltage thresholds
   char modeStr[80];
@@ -4308,6 +4344,14 @@ static bool pollBatteryVoltage(BatteryData &data, const BatteryConfig &cfg) {
   
   // Parse response
   data.voltage = (float)JGetNumber(rsp, "value");
+  
+  // Apply calibration offset (e.g., diode voltage drop compensation).
+  // This was previously sent as a "calibration" field to card.voltage, but
+  // that parameter is not supported by the Notecard API — apply in firmware.
+  if (cfg.calibrationOffset != 0.0f) {
+    data.voltage += cfg.calibrationOffset;
+  }
+  
   data.mode = JGetString(rsp, "mode");
   data.usbPowered = JGetBool(rsp, "usb");
   data.uptimeMinutes = (uint32_t)JGetNumber(rsp, "minutes");
