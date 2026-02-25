@@ -2263,7 +2263,7 @@ static void initializeNotecard() {
   // Retrieve the Notecard's unique device identifier (e.g., "dev:860322068012345").
   // hub.get returns the device serial in the "device" field.
   // card.uuid and card.status do NOT contain the device UID.
-  req = notecard.newRequest("hub.get");
+  J *req = notecard.newRequest("hub.get");
   if (req) {
     J *rsp = notecard.requestAndResponse(req);
     if (rsp) {
