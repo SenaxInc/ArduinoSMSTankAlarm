@@ -409,8 +409,8 @@ For permanent installations, configure a static IP:
 Before compiling, configure your Product UID. You can either:
 
 **Option A: Create `ServerConfig.h`** (recommended for fleet deployments):
-1. Create a new file named `ServerConfig.h` in the server sketch folder
-2. Add your Product UID:
+1. In the `TankAlarm-112025-Server-BluesOpta/` folder, copy `ServerConfig.h.example` to `ServerConfig.h`
+2. Open `ServerConfig.h` and set your Product UID:
    ```cpp
    #define DEFAULT_SERVER_PRODUCT_UID "com.senax.tankalarm:production"
    ```
@@ -420,6 +420,8 @@ Before compiling, configure your Product UID. You can either:
 1. Flash with defaults (Product UID left empty)
 2. Access the dashboard at `http://<server-ip>/`
 3. Go to **Server Settings** → **Blues Notehub** → **Product UID**
+
+> 📂 **Git Note**: `ServerConfig.h` is listed in `.gitignore` — your credentials stay out of version control. Only the `.example` template is committed.
 
 **Critical**: Product UID must match exactly across all devices or Notecard communication will fail!
 

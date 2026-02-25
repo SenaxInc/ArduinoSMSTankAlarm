@@ -165,14 +165,18 @@ Copy the entire `TankAlarm-112025-Common/` folder to your Arduino libraries fold
 
 #### 2.4 Configure Server Firmware
 
-Optionally create a `ServerConfig.h` file in the server sketch folder to set a compile-time Product UID default:
+Optionally create a `ServerConfig.h` file to set a compile-time Product UID default:
+
+1. In the `TankAlarm-112025-Server-BluesOpta/` folder, copy `ServerConfig.h.example` to `ServerConfig.h`
+2. Open `ServerConfig.h` and set your Product UID:
 
 ```cpp
-// === REQUIRED: Product UID ===
 #define DEFAULT_SERVER_PRODUCT_UID "com.company.tankalarm:quickstart"  // ← YOUR PRODUCT UID
 ```
 
-> If you skip this step, you can set the Product UID later through the web dashboard at **Server Settings** → **Blues Notehub** → **Product UID**.
+> 💡 If you skip this step, you can set the Product UID later through the web dashboard at **Server Settings** → **Blues Notehub** → **Product UID**.
+
+> 📂 **Git Note**: `ServerConfig.h` is listed in `.gitignore` so your credentials stay out of version control. Only the `.example` template is committed.
 
 > ⚙️ **Optional network settings** can also be placed in `ServerConfig.h`. For quick start, leave DHCP enabled (default).
 
@@ -226,16 +230,22 @@ Notecard: Blues Notecarrier-F connected to Opta expansion port
 
 #### 3.2 Configure Client Firmware
 
-The default Product UID is defined in the `.ino` file. Find and update it:
+Create a `ClientConfig.h` file to set your Product UID at compile time:
+
+1. In the `TankAlarm-112025-Client-BluesOpta/` folder, copy `ClientConfig.h.example` to `ClientConfig.h`
+2. Open `ClientConfig.h` and set your Product UID:
 
 ```cpp
-// === REQUIRED: Product UID ===
 #define DEFAULT_PRODUCT_UID "com.company.tankalarm:quickstart"  // ← SAME as server
 ```
 
+3. Save the file
+
 > ⚠️ **Critical**: The `DEFAULT_PRODUCT_UID` must be **exactly the same** as the server's Product UID. If they don't match, the client and server will not be able to communicate. You can verify the server's Product UID in the web dashboard under **Server Settings** → **Blues Notehub**.
 
-> 💡 **Note**: The server fleet name (`tankalarm-server`) is configured at runtime via the server dashboard — no compile-time define is needed.
+> 💡 **Tip**: If you skip this step, the firmware compiles with an empty Product UID. You can still push the Product UID at runtime using the server's **Config Generator** page — it auto-fills the UID from the server settings for consistency.
+
+> 📂 **Git Note**: `ClientConfig.h` is listed in `.gitignore` so your credentials stay out of version control. Only the `.example` template is committed.
 
 **Note**: Tank configurations will be done via the server dashboard later.
 

@@ -42,8 +42,15 @@
   #include <IWatchdog.h>
 #endif
 
+// Optional: Create a "ViewerConfig.h" file in this sketch folder to set
+// compile-time defaults (e.g. #define DEFAULT_VIEWER_PRODUCT_UID "com.company.product:project").
+// If the file does not exist, the product UID must be set via the viewer's config JSON.
+#if __has_include("ViewerConfig.h")
+  #include "ViewerConfig.h"
+#endif
+
 #ifndef DEFAULT_VIEWER_PRODUCT_UID
-#define DEFAULT_VIEWER_PRODUCT_UID "com.senax.tankalarm112025:viewer"
+#define DEFAULT_VIEWER_PRODUCT_UID ""  // Set via ViewerConfig.h or config JSON
 #endif
 
 #ifndef VIEWER_SUMMARY_FILE

@@ -11,6 +11,8 @@
 **/config.h
 **/server_config.h
 **/ServerConfig.h
+**/ClientConfig.h
+**/ViewerConfig.h
 
 # Build directories
 build/

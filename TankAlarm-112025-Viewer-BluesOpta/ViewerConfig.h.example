@@ -1,0 +1,23 @@
+/**
+ * ViewerConfig.h  —  Optional compile-time overrides for the TankAlarm Viewer
+ *
+ * Copy this file to "ViewerConfig.h" in the same folder and edit the values
+ * below.  The file is automatically picked up at compile time via __has_include.
+ *
+ * Any value defined here takes effect as the *initial default* when no saved
+ * configuration exists yet (first boot / factory reset).  Values can still be
+ * changed at runtime through the viewer's config JSON.
+ *
+ * NOTE: ViewerConfig.h is listed in .gitignore so your credentials are never
+ *       committed to version control.
+ */
+
+#ifndef VIEWER_CONFIG_H
+#define VIEWER_CONFIG_H
+
+// Blues Notehub Product UID  — required for Notecard communication
+// Must match the server's Product UID for viewer summary routing to work.
+// Format: com.company.product:project
+#define DEFAULT_VIEWER_PRODUCT_UID "com.your-company.your-product:your-project"
+
+#endif // VIEWER_CONFIG_H

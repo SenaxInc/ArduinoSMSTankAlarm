@@ -333,22 +333,29 @@ Your Blues Notecard needs to be associated with your product:
 
 ### Update Product UID
 
-Before compiling, update the Product UID to match your Notehub project:
+Before compiling, configure your Product UID so the client can communicate with the server via Notehub. You have two options:
 
-1. Open the main `.ino` file
-2. Find this line near the top:
-   ```cpp
-   #define DEFAULT_PRODUCT_UID "com.senax.tankalarm112025"
-   ```
-3. Replace with **your Product UID** from Notehub:
+**Option A: Create `ClientConfig.h`** (recommended):
+
+1. In the `TankAlarm-112025-Client-BluesOpta/` folder, copy `ClientConfig.h.example` to `ClientConfig.h`
+2. Open `ClientConfig.h` and set your Product UID:
    ```cpp
    #define DEFAULT_PRODUCT_UID "com.your-company.your-product:your-project"
    ```
-4. Save the file (Ctrl+S)
+3. Save the file (Ctrl+S)
+
+**Option B: Push config from server** (no recompile needed):
+
+1. Flash the client with defaults (Product UID left empty)
+2. On the server dashboard, go to the **Config Generator** page
+3. The Product UID is auto-filled from server settings
+4. Generate and push the config to your client
 
 > ⚠️ **Critical**: The Product UID must be **exactly the same** on the client and server devices. If they don't match, the client will not be able to send telemetry to the server, and the server won't be able to push configuration updates to the client.
 >
 > **Tip**: You can verify the server's Product UID in the web dashboard under **Server Settings** → **Blues Notehub**. When using the **Config Generator** page on the server, the Product UID is automatically filled in from the server settings to ensure consistency.
+
+> 📂 **Git Note**: `ClientConfig.h` is listed in `.gitignore` — your credentials stay out of version control. Only the `.example` template is committed.
 
 ### Select Board and Port
 

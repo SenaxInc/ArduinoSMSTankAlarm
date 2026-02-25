@@ -302,7 +302,7 @@ card.wireless("+mode,auto,-apn,<your_apn>");
 
 - **No SIM**: Insert activated SIM card
 - **Poor signal**: Relocate Opta to area with better coverage
-- **Wrong Product UID**: Reconfigure firmware with correct UID
+- **Wrong Product UID**: Check your Config.h file (see [Config Files Guide](CONFIG_FILES_GUIDE.md)) or push correct UID from server Config Generator
 - **Inactive SIM**: Verify cellular plan active (check with carrier)
 - **APN issue**: Configure correct APN for carrier
 - **Notecard failure**: Replace Notecard

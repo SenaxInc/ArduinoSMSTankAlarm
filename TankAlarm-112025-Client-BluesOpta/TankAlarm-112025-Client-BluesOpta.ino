@@ -98,8 +98,15 @@ static inline bool isStorageAvailable() {
 // Wrapper for shared library roundTo function
 static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(val, decimals); }
 
+// Optional: Create a "ClientConfig.h" file in this sketch folder to set
+// compile-time defaults (e.g. #define DEFAULT_PRODUCT_UID "com.company.product:project").
+// If the file does not exist, the product UID must be set via the Config Generator on the server.
+#if __has_include("ClientConfig.h")
+  #include "ClientConfig.h"
+#endif
+
 #ifndef DEFAULT_PRODUCT_UID
-#define DEFAULT_PRODUCT_UID "com.senax.tankalarm112025"
+#define DEFAULT_PRODUCT_UID ""  // Set via ClientConfig.h or Config Generator
 #endif
 
 // SOLAR_OUTBOUND_INTERVAL_MINUTES and SOLAR_INBOUND_INTERVAL_MINUTES
@@ -2117,6 +2124,11 @@ static void configureNotecardHubMode() {
   if (req) {
     // Use configurable product UID - allows fleet-specific deployments without recompilation
     const char *productUid = (gConfig.productUid[0] != '\0') ? gConfig.productUid : DEFAULT_PRODUCT_UID;
+    if (productUid[0] == '\0') {
+      Serial.println(F("WARNING: No Product UID configured!"));
+      Serial.println(F("  Create ClientConfig.h or push config from server Config Generator."));
+      addSerialLog("No Product UID - Notecard will not sync");
+    }
     JAddStringToObject(req, "product", productUid);
     if (gConfig.clientFleet[0] != '\0') {
       JAddStringToObject(req, "fleet", gConfig.clientFleet);
