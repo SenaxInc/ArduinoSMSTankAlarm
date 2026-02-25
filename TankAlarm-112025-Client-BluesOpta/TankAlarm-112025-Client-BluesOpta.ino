@@ -798,9 +798,12 @@ void setup() {
   ensureConfigLoaded();
   printHardwareRequirements(gConfig);
 
-  // Wire.begin() is NOT called here — notecard.begin() handles I2C initialization.
-  // Calling Wire.begin() twice (here and inside notecard.begin()) corrupts the
-  // Mbed OS I2C peripheral, causing all Notecard communication to fail with {io}.
+  // Initialize I2C at 400kHz BEFORE notecard.begin().  The Notecard persists
+  // the speed set by card.wire, so it may already expect 400kHz from a prior
+  // session.  If we let notecard.begin() init Wire at the default 100kHz,
+  // the speed mismatch causes every I2C transaction to fail with {io}.
+  Wire.begin();
+  Wire.setClock(NOTECARD_I2C_FREQUENCY);
 
   initializeNotecard();
   ensureTimeSync();
@@ -2217,6 +2220,9 @@ static void initializeNotecard() {
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
+  // Wire.setClock again after notecard.begin() in case it reset the clock
+  Wire.setClock(NOTECARD_I2C_FREQUENCY);
+
   // The Blues Notecard needs ~2.5 seconds from power-on before its I2C
   // interface is ready. The Opta MCU boots much faster (~500ms), so wait
   // for the Notecard to finish its boot sequence.
@@ -2248,9 +2254,7 @@ static void initializeNotecard() {
   }
   Serial.println(F("Notecard connected"));
 
-  // Increase I2C speed to 400kHz for faster communication.
-  // card.wire tells the Notecard to expect 400kHz, then Wire.setClock()
-  // brings the Arduino side up to match.
+  // Ensure card.wire is set to 400kHz (persists on Notecard across reboots)
   J *req = notecard.newRequest("card.wire");
   if (req) {
     JAddIntToObject(req, "speed", (int)NOTECARD_I2C_FREQUENCY);

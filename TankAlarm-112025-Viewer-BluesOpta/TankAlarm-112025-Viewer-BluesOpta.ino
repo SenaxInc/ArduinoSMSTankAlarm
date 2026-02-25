@@ -180,8 +180,10 @@ void setup() {
   Serial.print(F(FIRMWARE_BUILD_DATE));
   Serial.println(F(")"));
 
-  // Wire.begin() is NOT called here — notecard.begin() handles I2C initialization.
-  // Calling Wire.begin() twice corrupts the Mbed OS I2C peripheral.
+  // Initialize I2C at 400kHz BEFORE notecard.begin().  The Notecard persists
+  // the speed set by card.wire, so it may already expect 400kHz.
+  Wire.begin();
+  Wire.setClock(NOTECARD_I2C_FREQUENCY);
 
   initializeNotecard();
   ensureTimeSync();
@@ -246,12 +248,15 @@ static void initializeNotecard() {
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
 
+  // Wire.setClock again after notecard.begin() in case it reset the clock
+  Wire.setClock(NOTECARD_I2C_FREQUENCY);
+
   // Wait for Notecard boot (needs ~2.5s from power-on before I2C is ready)
   Serial.println(F("Waiting for Notecard boot..."));
   delay(3000);
   Serial.println(F("Notecard initialized"));
 
-  // Tell the Notecard to use 400kHz I2C, then set the Arduino Wire clock to match.
+  // Ensure card.wire is set to 400kHz (persists on Notecard across reboots)
   J *req = notecard.newRequest("card.wire");
   if (req) {
     JAddIntToObject(req, "speed", (int)NOTECARD_I2C_FREQUENCY);
