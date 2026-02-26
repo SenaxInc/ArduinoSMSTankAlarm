@@ -243,10 +243,6 @@ static void initializeNotecard() {
   notecard.setDebugOutputStream(Serial);
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
-
-  // Give the Notecard time to boot — it needs ~2.5s from power-on
-  Serial.println(F("Waiting for Notecard boot..."));
-  delay(3000);
   Serial.println(F("Notecard initialized"));
 
   J *req = notecard.newRequest("hub.set");
@@ -752,9 +748,9 @@ static void enableDfuMode() {
   Serial.print(F("Enabling DFU mode for version: "));
   Serial.println(gDfuVersion);
 
-  J *req = notecard.newRequest("dfu.mode");
+  J *req = notecard.newRequest("dfu.status");
   if (!req) {
-    Serial.println(F("DFU mode request failed (allocation)"));
+    Serial.println(F("DFU request failed (allocation)"));
     return;
   }
 
@@ -762,16 +758,16 @@ static void enableDfuMode() {
   J *rsp = notecard.requestAndResponse(req);
 
   if (!rsp) {
-    Serial.println(F("DFU mode request failed (no response)"));
+    Serial.println(F("DFU request failed (no response)"));
     return;
   }
 
   if (notecard.responseError(rsp)) {
     const char *err = JGetString(rsp, "err");
-    Serial.print(F("DFU mode error: "));
+    Serial.print(F("DFU enable error: "));
     Serial.println(err ? err : "unknown");
   } else {
-    Serial.println(F("DFU mode enabled. Device will reset after download."));
+    Serial.println(F("DFU enabled. Device will reset after download."));
     gDfuInProgress = true;
   }
 

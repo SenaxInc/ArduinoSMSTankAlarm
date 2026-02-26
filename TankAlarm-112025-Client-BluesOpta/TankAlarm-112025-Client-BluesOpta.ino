@@ -2190,11 +2190,11 @@ static void configureNotecardHubMode() {
   
   // Disable accelerometer motion tracking for power savings
   // The accelerometer is not used by this tank monitoring application
-  // card.motion.sync controls motion-triggered syncing; setting mode off
-  // prevents the Notecard from syncing on motion detection.
+  // card.motion.sync controls motion-triggered syncing; stop prevents
+  // the Notecard from syncing on motion detection.
   req = notecard.newRequest("card.motion.sync");
   if (req) {
-    JAddBoolToObject(req, "start", false);
+    JAddBoolToObject(req, "stop", true);
     notecard.sendRequest(req);
   }
 }
@@ -2204,10 +2204,6 @@ static void initializeNotecard() {
   notecard.setDebugOutputStream(Serial);
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
-
-  // Give the Notecard time to boot — it needs ~2.5s from power-on
-  Serial.println(F("Waiting for Notecard boot..."));
-  delay(3000);
 
   // Configure hub mode (fire-and-forget — if the Notecard isn't ready yet,
   // these will silently fail and the main loop's checkNotecardHealth() will
@@ -2233,12 +2229,6 @@ static void initializeNotecard() {
 
   Serial.print(F("Device UID: "));
   Serial.println(gDeviceUID);
-
-  // Allow the Notecard a moment to stabilize after hub.set and configuration
-  // commands. The Notecard begins its cell connection asynchronously after
-  // hub.set, and sending note.add too quickly afterward can fail on some
-  // firmware versions.
-  delay(2000);
 }
 
 static bool checkNotecardHealth() {
@@ -2281,7 +2271,6 @@ static void syncTimeFromNotecard() {
     gNotecardFailureCount++;
     return;
   }
-  JAddStringToObject(req, "mode", "auto");
   J *rsp = notecard.requestAndResponse(req);
   if (!rsp) {
     gNotecardFailureCount++;
@@ -2409,8 +2398,8 @@ static void enableDfuMode() {
     persistConfigIfDirty();
   }
   
-  // Enable DFU mode on Notecard
-  J *req = notecard.newRequest("dfu.mode");
+  // Enable DFU on Notecard (dfu.status with "on":true triggers the download)
+  J *req = notecard.newRequest("dfu.status");
   if (!req) {
     Serial.println(F("ERROR: Failed to create DFU request"));
     gDfuInProgress = false;

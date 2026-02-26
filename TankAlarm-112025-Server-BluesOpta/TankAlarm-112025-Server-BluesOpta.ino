@@ -5005,10 +5005,6 @@ static void initializeNotecard() {
   notecard.setDebugOutputStream(Serial);
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
-
-  // Give the Notecard time to boot — it needs ~2.5s from power-on
-  Serial.println(F("Waiting for Notecard boot..."));
-  delay(3000);
   Serial.println(F("Notecard initialized"));
 
   J *req = notecard.newRequest("hub.set");
@@ -5105,7 +5101,6 @@ static void ensureTimeSync() {
     if (!req) {
       return;
     }
-    JAddStringToObject(req, "mode", "auto");
     J *rsp = notecard.requestAndResponse(req);
     if (!rsp) {
       return;
@@ -11453,9 +11448,9 @@ static void handleNotecardStatusGet(EthernetClient &client) {
       const char *err = JGetString(rsp, "err");
       if (!err || err[0] == '\0') {
         connected = true;
-        const char *mode = JGetString(rsp, "mode");
-        if (mode && mode[0] != '\0') {
-          syncMode = String(mode);
+        const char *st = JGetString(rsp, "status");
+        if (st && st[0] != '\0') {
+          syncMode = String(st);
         }
       }
       notecard.deleteResponse(rsp);
