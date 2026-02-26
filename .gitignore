@@ -59,3 +59,9 @@ REPORT_LOG.TXT
 
 # Arduino CLI binary
 bin/
+
+# RecycleBin (archived/temporary files)
+RecycleBin/
+
+# Claude Code temporary working directories
+tmpclaude-*-cwd/

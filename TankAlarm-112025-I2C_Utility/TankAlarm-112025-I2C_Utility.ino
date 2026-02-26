@@ -12,6 +12,7 @@
 
 #include <Wire.h>
 #include <Notecard.h>
+#include <TankAlarm_Common.h>
 
 // -----------------------------
 // User-editable defaults
@@ -36,6 +37,10 @@ static const char HUB_MODE[] = "continuous";  // continuous or periodic
 static Notecard notecard;
 static uint8_t gAttachedAddress = DEFAULT_NOTECARD_ADDRESS;
 static bool gAttached = false;
+
+// Required by TankAlarm_I2C.h (extern-declared there)
+uint32_t gCurrentLoopI2cErrors = 0;
+uint32_t gI2cBusRecoveryCount = 0;
 
 // -----------------------------
 // Forward declarations
@@ -62,17 +67,7 @@ static void safeSleep(unsigned long ms) {
   delay(ms);
 }
 
-static uint32_t freeRam() {
-#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  mbed_stats_heap_t heapStats;
-  mbed_stats_heap_get(&heapStats);
-  return (heapStats.reserved_size > heapStats.current_size)
-           ? (heapStats.reserved_size - heapStats.current_size)
-           : 0U;
-#else
-  return 0U;
-#endif
-}
+static uint32_t freeRam() { return tankalarm_freeRam(); }
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
@@ -90,13 +85,7 @@ void setup() {
     Serial.println(F("Initial attach at 0x17 failed. Use 'a' to auto-detect or 'n' for manual address."));
   }
 
-  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    Serial.print(F("Heap free: "));
-    Serial.print(freeRam());
-    Serial.println(F("B"));
-  #else
-    Serial.println(F("Heap stats: not available on this platform"));
-  #endif
+  tankalarm_printHeapStats();
 
   printMenu();
 }
@@ -218,30 +207,10 @@ static void scanI2CBus() {
   Serial.println();
   Serial.println(F("Scanning I2C bus..."));
 
-  uint8_t foundCount = 0;
-  for (uint8_t addr = 0x08; addr <= 0x77; ++addr) {
-    Wire.beginTransmission(addr);
-    int error = Wire.endTransmission();
-    if (error == 0) {
-      Serial.print(F("  Found device at 0x"));
-      if (addr < 0x10) {
-        Serial.print('0');
-      }
-      Serial.print(addr, HEX);
-      if (addr == 0x17) {
-        Serial.print(F("  (Notecard default)"));
-      }
-      Serial.println();
-      foundCount++;
-    }
-  }
-
-  if (foundCount == 0) {
-    Serial.println(F("  No I2C devices found."));
-  } else {
-    Serial.print(F("Scan complete. Devices found: "));
-    Serial.println(foundCount);
-  }
+  // Use shared scan for known TankAlarm devices
+  const uint8_t expectedAddrs[] = { 0x17 };  // Notecard default
+  const char *expectedNames[] = { "Notecard" };
+  tankalarm_scanI2CBus(expectedAddrs, expectedNames, 1);
 }
 
 static bool attachNotecard(uint8_t address) {

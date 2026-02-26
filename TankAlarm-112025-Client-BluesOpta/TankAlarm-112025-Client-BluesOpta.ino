@@ -144,6 +144,18 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define LOCATION_RESPONSE_FILE LOCATION_RESPONSE_OUTBOX_FILE  // "location_response.qo"
 // LOCATION_REQUEST_FILE is already correct ("location_request.qi")
 
+// Health telemetry: client sends periodic system health status
+#define HEALTH_FILE HEALTH_OUTBOX_FILE  // "health.qo"
+
+// Health telemetry feature flag (disabled by default for bandwidth conservation)
+// Uncomment to enable periodic system health reporting to Notehub.
+//#define TANKALARM_HEALTH_TELEMETRY_ENABLED
+
+// Health telemetry interval (default: every 6 hours)
+#ifndef HEALTH_TELEMETRY_INTERVAL_MS
+#define HEALTH_TELEMETRY_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)
+#endif
+
 // CLIENT_SERIAL_BUFFER_SIZE is defined in TankAlarm_Common.h
 
 #ifndef NOTE_BUFFER_PATH
@@ -370,8 +382,8 @@ static constexpr float getDistanceConversionFactor(DistanceUnit unit) {
   }
 }
 
-// Helper function: Get pressure-to-inches conversion factor based on unit
-static float getPressureConversionFactor(const char* unit) {
+// Helper function: Get pressure-to-inches conversion factor by unit name string
+static float getPressureConversionFactorByName(const char* unit) {
   if (strcmp(unit, "bar") == 0) return getPressureConversionFactor(PressureUnit::BAR);
   if (strcmp(unit, "kPa") == 0) return getPressureConversionFactor(PressureUnit::KPA);
   if (strcmp(unit, "mbar") == 0) return getPressureConversionFactor(PressureUnit::MBAR);
@@ -379,8 +391,8 @@ static float getPressureConversionFactor(const char* unit) {
   return getPressureConversionFactor(PressureUnit::PSI); // Default: PSI
 }
 
-// Helper function: Get distance-to-inches conversion factor based on unit
-static float getDistanceConversionFactor(const char* unit) {
+// Helper function: Get distance-to-inches conversion factor by unit name string
+static float getDistanceConversionFactorByName(const char* unit) {
   if (strcmp(unit, "m") == 0) return getDistanceConversionFactor(DistanceUnit::METER);
   if (strcmp(unit, "cm") == 0) return getDistanceConversionFactor(DistanceUnit::CENTIMETER);
   if (strcmp(unit, "ft") == 0) return getDistanceConversionFactor(DistanceUnit::FOOT);
@@ -612,6 +624,14 @@ static unsigned long gPowerStateChangeMillis = 0; // When the current power stat
 static unsigned long gLastPowerStateLogMillis = 0; // Rate-limit power state log messages
 static unsigned long gLastPowerStateTransitionLogMillis = 0; // Rate-limit transition log spam
 
+// Health telemetry tracking
+#ifdef TANKALARM_HEALTH_TELEMETRY_ENABLED
+static unsigned long gLastHealthTelemetryMillis = 0;
+static uint32_t gHeapMinFreeBytes = UINT32_MAX;  // Low-watermark tracker
+static uint32_t gNotecardCommErrorCount = 0;      // Cumulative I2C/serial comm failures
+static uint32_t gStorageWriteErrorCount = 0;      // Cumulative flash write failures
+#endif
+
 static Notecard notecard;
 static char gDeviceUID[48] = {0};
 static unsigned long gLastTelemetryMillis = 0;
@@ -633,8 +653,12 @@ static bool gHardwareSummaryPrinted = false;
 static unsigned long gLastSuccessfulNotecardComm = 0;
 static uint8_t gNotecardFailureCount = 0;
 static bool gNotecardAvailable = true;
-#define NOTECARD_FAILURE_THRESHOLD 5
 #define NOTECARD_RETRY_INTERVAL 60000UL  // Retry after 60 seconds
+
+// I2C bus error tracking (current loop / A0602)
+// Non-static: extern-linked via TankAlarm_I2C.h shared functions
+uint32_t gCurrentLoopI2cErrors = 0;
+uint32_t gI2cBusRecoveryCount = 0;
 
 static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
 
@@ -754,6 +778,7 @@ static void evaluateAlarms(uint8_t idx);
 static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow);
 static void sendRegistration(const char *reason);
 static void sendAlarm(uint8_t idx, const char *alarmType, float inches);
+static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType);
 static void sendDailyReport();
 static void publishNote(const char *fileName, const JsonDocument &doc, bool syncNow);
 static void bufferNoteForRetry(const char *fileName, const char *payload, bool syncNow);
@@ -770,6 +795,7 @@ static void initializeRelays();
 static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, bool activate);
 static int getRelayPin(uint8_t relayIndex);
 static float readNotecardVinVoltage();
+static float readVinDividerVoltage();
 static void checkRelayMomentaryTimeout(unsigned long now);
 static bool fetchNotecardLocation(float &latitude, float &longitude);
 static void resetRelayForTank(uint8_t idx);
@@ -785,6 +811,7 @@ static void evaluateUnload(uint8_t idx);
 static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, double peakEpoch);
 static void sendSolarAlarm(SolarAlertType alertType);
 static bool appendSolarDataToDaily(JsonDocument &doc);
+static void recoverI2CBus();
 // Battery voltage monitoring via Notecard (when wired directly to battery)
 static bool pollBatteryVoltage(BatteryData &data, const BatteryConfig &cfg);
 static void checkBatteryAlerts(const BatteryData &data, const BatteryConfig &cfg);
@@ -805,6 +832,9 @@ static bool isSensorVoltageGateOpen();
 // Diagnostics
 static uint32_t freeRam();
 static void safeSleep(unsigned long ms);
+#ifdef TANKALARM_HEALTH_TELEMETRY_ENABLED
+static void sendHealthTelemetry();
+#endif
 
 void setup() {
   Serial.begin(115200);
@@ -830,6 +860,14 @@ void setup() {
   printHardwareRequirements(gConfig);
 
   Wire.begin();
+
+  // ---- I2C bus scan: verify expected devices are present ----
+  {
+    const uint8_t expectedAddrs[] = { NOTECARD_I2C_ADDRESS, CURRENT_LOOP_I2C_ADDRESS };
+    const char *expectedNames[] = { "Notecard", "A0602 Current Loop" };
+    tankalarm_scanI2CBus(expectedAddrs, expectedNames, 2);
+  }
+
   initializeNotecard();
   ensureTimeSync();
   scheduleNextDailyReport();
@@ -996,13 +1034,7 @@ void setup() {
   }
 
   Serial.println(F("Client setup complete"));
-  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    Serial.print(F("Heap free: "));
-    Serial.print(freeRam());
-    Serial.println(F("B"));
-  #else
-    Serial.println(F("Heap stats: not available on this platform"));
-  #endif
+  tankalarm_printHeapStats();
   addSerialLog("Client started successfully");
 }
 
@@ -1024,6 +1056,91 @@ void loop() {
     lastHealthCheck = now;
     if (!gNotecardAvailable) {
       checkNotecardHealth();
+    }
+  }
+
+  // ---- Prolonged I2C failure detection ----
+  // If both Notecard AND all current-loop sensors are failing for an extended
+  // period, the system is in a "zombie" state (alive but blind).  Force a
+  // hardware reset via the watchdog rather than running indefinitely broken.
+  {
+    static uint32_t consecutiveTotalI2cFailLoops = 0;
+    bool notecardDown = !gNotecardAvailable;
+    bool anyCurrentLoopFailed = false;
+    for (uint8_t i = 0; i < gConfig.monitorCount; i++) {
+      if (gConfig.monitors[i].sensorInterface == SENSOR_CURRENT_LOOP &&
+          gMonitorState[i].consecutiveFailures >= SENSOR_FAILURE_THRESHOLD) {
+        anyCurrentLoopFailed = true;
+        break;
+      }
+    }
+    if (notecardDown && anyCurrentLoopFailed) {
+      consecutiveTotalI2cFailLoops++;
+      if (consecutiveTotalI2cFailLoops == I2C_DUAL_FAIL_RECOVERY_LOOPS) {
+        // First escalation: attempt I2C bus recovery
+        Serial.println(F("I2C: sustained dual failure — attempting bus recovery"));
+        recoverI2CBus();
+        tankalarm_ensureNotecardBinding(notecard);
+      } else if (consecutiveTotalI2cFailLoops >= I2C_DUAL_FAIL_RESET_LOOPS) {
+        // Prolonged dual failure — force watchdog reset
+        Serial.println(F("FATAL: Prolonged I2C failure on all buses. Forcing reset."));
+        // Stop kicking the watchdog — triggers hardware reset within 30s
+        while (true) { delay(100); }
+      }
+    } else {
+      consecutiveTotalI2cFailLoops = 0;
+    }
+  }
+
+  // ---- Current-loop-only I2C failure detection ----
+  // If all current-loop sensors are failing but Notecard is fine, the A0602
+  // expansion may have locked up.  Attempt bus recovery independently.
+  // Uses exponential backoff to avoid excessive recovery cycles on
+  // persistent hardware faults (threshold doubles each time, capped at
+  // I2C_SENSOR_RECOVERY_MAX_BACKOFF × base threshold).
+  {
+    static uint16_t consecutiveSensorOnlyFailLoops = 0;
+    static uint8_t sensorRecoveryBackoff = 1;
+    if (gNotecardAvailable) {  // Notecard is OK — isolate to sensor bus
+      bool allCurrentLoopFailed = false;
+      uint8_t currentLoopCount = 0;
+      uint8_t failedCount = 0;
+      for (uint8_t i = 0; i < gConfig.monitorCount; i++) {
+        if (gConfig.monitors[i].sensorInterface == SENSOR_CURRENT_LOOP) {
+          currentLoopCount++;
+          if (gMonitorState[i].consecutiveFailures >= SENSOR_FAILURE_THRESHOLD) {
+            failedCount++;
+          }
+        }
+      }
+      allCurrentLoopFailed = (currentLoopCount > 0 && failedCount == currentLoopCount);
+      if (allCurrentLoopFailed) {
+        consecutiveSensorOnlyFailLoops++;
+        uint16_t effectiveThreshold = (uint16_t)I2C_SENSOR_ONLY_RECOVERY_THRESHOLD * sensorRecoveryBackoff;
+        if (consecutiveSensorOnlyFailLoops >= effectiveThreshold) {
+          Serial.print(F("I2C: all current-loop sensors failing — bus recovery (backoff x"));
+          Serial.print(sensorRecoveryBackoff);
+          Serial.println(F(")"));
+          recoverI2CBus();
+          // Reset sensor failure counters to give them a fresh chance
+          for (uint8_t i = 0; i < gConfig.monitorCount; i++) {
+            if (gConfig.monitors[i].sensorInterface == SENSOR_CURRENT_LOOP) {
+              gMonitorState[i].consecutiveFailures = 0;
+              gMonitorState[i].sensorFailed = false;
+            }
+          }
+          consecutiveSensorOnlyFailLoops = 0;
+          // Exponential backoff: double threshold each time, capped
+          if (sensorRecoveryBackoff < I2C_SENSOR_RECOVERY_MAX_BACKOFF) {
+            sensorRecoveryBackoff *= 2;
+          }
+        }
+      } else {
+        consecutiveSensorOnlyFailLoops = 0;
+        sensorRecoveryBackoff = 1;  // Reset backoff when sensors recover
+      }
+    } else {
+      consecutiveSensorOnlyFailLoops = 0;  // dual-fail path handles this
     }
   }
 
@@ -1167,6 +1284,21 @@ void loop() {
   }
 
   persistConfigIfDirty();
+
+  // Periodic health telemetry (when enabled, skip in CRITICAL to save power)
+#ifdef TANKALARM_HEALTH_TELEMETRY_ENABLED
+  if (gPowerState <= POWER_STATE_ECO && gNotecardAvailable) {
+    if (now - gLastHealthTelemetryMillis >= HEALTH_TELEMETRY_INTERVAL_MS) {
+      gLastHealthTelemetryMillis = now;
+      sendHealthTelemetry();
+    }
+    // Track heap low-watermark on every loop iteration (cheap operation)
+    uint32_t currentHeap = tankalarm_freeRam();
+    if (currentHeap > 0 && currentHeap < gHeapMinFreeBytes) {
+      gHeapMinFreeBytes = currentHeap;
+    }
+  }
+#endif
   
   // Skip time sync and daily reports in CRITICAL_HIBERNATE
   if (gPowerState != POWER_STATE_CRITICAL_HIBERNATE) {
@@ -1269,12 +1401,12 @@ static float getMonitorHeight(const MonitorConfig &cfg) {
       return cfg.sensorMountHeight;
     } else {
       // For pressure sensors, max range + mount height approximates full tank height
-      float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
+      float rangeInches = cfg.sensorRangeMax * getPressureConversionFactorByName(cfg.sensorRangeUnit);
       return rangeInches + cfg.sensorMountHeight;
     }
   } else if (cfg.sensorInterface == SENSOR_ANALOG) {
     // For analog sensors, max range + mount height approximates full tank height
-    float rangeInches = cfg.sensorRangeMax * getPressureConversionFactor(cfg.sensorRangeUnit);
+    float rangeInches = cfg.sensorRangeMax * getPressureConversionFactorByName(cfg.sensorRangeUnit);
     return rangeInches + cfg.sensorMountHeight;
   } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
     // Digital sensors are binary, treat 1.0 as full
@@ -2226,7 +2358,7 @@ static void initializeNotecard() {
 #ifdef DEBUG_MODE
   notecard.setDebugOutputStream(Serial);
 #endif
-  notecard.begin(NOTECARD_I2C_ADDRESS);
+  tankalarm_ensureNotecardBinding(notecard);
 
   // Configure hub mode (fire-and-forget — if the Notecard isn't ready yet,
   // these will silently fail and the main loop's checkNotecardHealth() will
@@ -2262,6 +2394,12 @@ static bool checkNotecardHealth() {
       gNotecardAvailable = false;
       Serial.println(F("Notecard unavailable - entering offline mode"));
     }
+    // After sustained failures beyond threshold, attempt I2C bus recovery
+    if (gNotecardFailureCount == I2C_NOTECARD_RECOVERY_THRESHOLD) {
+      Serial.println(F("Sustained Notecard failure - attempting I2C bus recovery"));
+      recoverI2CBus();
+      tankalarm_ensureNotecardBinding(notecard);
+    }
     return false;
   }
   
@@ -2272,14 +2410,22 @@ static bool checkNotecardHealth() {
       gNotecardAvailable = false;
       Serial.println(F("Notecard unavailable - entering offline mode"));
     }
+    // After sustained failures beyond threshold, attempt I2C bus recovery
+    if (gNotecardFailureCount == I2C_NOTECARD_RECOVERY_THRESHOLD) {
+      Serial.println(F("Sustained Notecard failure - attempting I2C bus recovery"));
+      recoverI2CBus();
+      tankalarm_ensureNotecardBinding(notecard);
+    }
     return false;
   }
   
   notecard.deleteResponse(rsp);
   
-  // Notecard is responding
+  // Notecard is responding — reinitialize Notecard I2C binding if recovering
   if (!gNotecardAvailable) {
     Serial.println(F("Notecard recovered - online mode restored"));
+    // Re-attach Notecard to Wire in case bus was recovered
+    tankalarm_ensureNotecardBinding(notecard);
   }
   gNotecardAvailable = true;
   gNotecardFailureCount = 0;
@@ -2538,6 +2684,11 @@ static void pollForConfigUpdates() {
 }
 
 static void reinitializeHardware() {
+  // Reinitialize I2C bus in case of configuration changes or bus issues
+  Wire.end();
+  delay(10);
+  Wire.begin();
+
   // Reinitialize all tank sensors with new configuration
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
     const MonitorConfig &cfg = gConfig.monitors[i];
@@ -2564,6 +2715,9 @@ static void reinitializeHardware() {
     gMonitorState[i].lastReportedInches = -9999.0f;
   }
   
+  // Re-attach Notecard after Wire reinit
+  tankalarm_ensureNotecardBinding(notecard);
+
   // Reconfigure Notecard hub settings (may have changed due to power mode)
   configureNotecardHubMode();
   
@@ -2933,26 +3087,36 @@ static void persistConfigIfDirty() {
   }
 }
 
+/**
+ * Attempt to recover a hung I2C bus.
+ * Thin wrapper around tankalarm_recoverI2CBus() from TankAlarm_I2C.h,
+ * providing Client-specific DFU guard and watchdog kick.
+ */
+static void recoverI2CBus() {
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  // Provide a watchdog-kick callback for the shared recovery function
+  auto kickWd = []() {
+    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+      mbedWatchdog.kick();
+    #else
+      IWatchdog.reload();
+    #endif
+  };
+  tankalarm_recoverI2CBus(gDfuInProgress, kickWd);
+#else
+  tankalarm_recoverI2CBus(gDfuInProgress);
+#endif
+}
+
+/**
+ * Read a 4-20mA current loop value from the A0602 expansion module.
+ * Thin wrapper around tankalarm_readCurrentLoopMilliamps() from TankAlarm_I2C.h,
+ * using the runtime-configurable I2C address from gConfig.
+ */
 static float readCurrentLoopMilliamps(int16_t channel) {
-  if (channel < 0) {
-    return -1.0f;
-  }
-  
   // Use runtime-configurable I2C address (falls back to compile-time default)
   uint8_t i2cAddr = gConfig.currentLoopI2cAddress ? gConfig.currentLoopI2cAddress : CURRENT_LOOP_I2C_ADDRESS;
-
-  Wire.beginTransmission(i2cAddr);
-  Wire.write((uint8_t)channel);
-  if (Wire.endTransmission(false) != 0) {
-    return -1.0f;
-  }
-
-  if (Wire.requestFrom(i2cAddr, (uint8_t)2) != 2) {
-    return -1.0f;
-  }
-
-  uint16_t raw = ((uint16_t)Wire.read() << 8) | Wire.read();
-  return 4.0f + (raw / 65535.0f) * 16.0f;
+  return tankalarm_readCurrentLoopMilliamps(channel, i2cAddr);
 }
 
 static float linearMap(float value, float inMin, float inMax, float outMin, float outMax) {
@@ -2990,7 +3154,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
       maxValid = cfg.sensorMountHeight * 1.1f;
     } else {
       // Pressure: calculate max from pressure range
-      float conversionFactor = getPressureConversionFactor(cfg.sensorRangeUnit);
+      float conversionFactor = getPressureConversionFactorByName(cfg.sensorRangeUnit);
       maxValid = (cfg.sensorRangeMax * conversionFactor + cfg.sensorMountHeight) * 1.1f;
     }
     minValid = -maxValid * 0.1f;
@@ -3144,7 +3308,7 @@ static float readTankSensor(uint8_t idx) {
                                  cfg.sensorRangeMin, cfg.sensorRangeMax);
       
       // Convert pressure to liquid height in inches using appropriate conversion factor
-      float conversionFactor = getPressureConversionFactor(cfg.sensorRangeUnit);
+      float conversionFactor = getPressureConversionFactorByName(cfg.sensorRangeUnit);
       float liquidAboveSensor = pressure * conversionFactor;
       
       // Total height from tank bottom = liquid above sensor + sensor mount height
@@ -3184,7 +3348,7 @@ static float readTankSensor(uint8_t idx) {
                                          cfg.sensorRangeMin, cfg.sensorRangeMax);
         
         // Convert distance to inches based on sensorRangeUnit
-        float distanceInches = distanceNative * getDistanceConversionFactor(cfg.sensorRangeUnit);
+        float distanceInches = distanceNative * getDistanceConversionFactorByName(cfg.sensorRangeUnit);
         
         // Calculate liquid level: tank height - distance from sensor to surface
         levelInches = cfg.sensorMountHeight - distanceInches;
@@ -3202,7 +3366,7 @@ static float readTankSensor(uint8_t idx) {
                                    cfg.sensorRangeMin, cfg.sensorRangeMax);
         
         // Convert pressure to liquid height in inches using appropriate conversion factor
-        float conversionFactor = getPressureConversionFactor(cfg.sensorRangeUnit);
+        float conversionFactor = getPressureConversionFactorByName(cfg.sensorRangeUnit);
         float liquidAboveSensor = pressure * conversionFactor;
         
         // Total height from tank bottom = liquid above sensor + sensor mount height
@@ -4663,10 +4827,9 @@ static void saveSolarStateToFlash() {
     char buf[256];
     size_t len = serializeJson(doc, buf, sizeof(buf));
     
-    FILE *file = fopen(SOLAR_STATE_FILE, "w");
-    if (file) {
-      fwrite(buf, 1, len, file);
-      fclose(file);
+    // Use atomic write to prevent corruption on power loss/brownout
+    if (!tankalarm_posix_write_file_atomic(SOLAR_STATE_FILE, buf, len)) {
+      Serial.println(F("Warning: Failed to save solar state"));
     }
   #endif
 #endif
@@ -5147,6 +5310,27 @@ static void sendDailyReport() {
   if (queuedAny) {
     Serial.println(F("Daily report queued"));
   }
+
+  // I2C error rate alerting — notify operators of degrading connections
+  // before they cause measurement gaps.
+  if (gCurrentLoopI2cErrors >= I2C_ERROR_ALERT_THRESHOLD) {
+    Serial.print(F("I2C: 24h error count "));
+    Serial.print(gCurrentLoopI2cErrors);
+    Serial.println(F(" exceeds alert threshold — publishing alarm"));
+    JsonDocument doc;
+    doc["c"] = gDeviceUID;
+    doc["s"] = gConfig.siteName;
+    doc["y"] = "i2c-error-rate";
+    doc["errs"] = gCurrentLoopI2cErrors;
+    doc["recs"] = gI2cBusRecoveryCount;
+    doc["t"] = currentEpoch();
+    publishNote(ALARM_FILE, doc, true);
+  }
+
+  // Reset I2C error counters after daily report so telemetry reflects
+  // the recent 24-hour window rather than lifetime totals.
+  gCurrentLoopI2cErrors = 0;
+  gI2cBusRecoveryCount = 0;
 }
 
 static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit) {
@@ -6393,19 +6577,64 @@ static void safeSleep(unsigned long ms) {
 
 /**
  * Get current free heap bytes for field diagnostics.
- *
- * On Mbed/Opta: uses mbed_stats_heap_get(). Requires MBED_HEAP_STATS_ENABLED
- * in mbed_app.json for non-zero values.
- * On other platforms: returns 0.
+ * Delegates to the shared tankalarm_freeRam() implementation.
  */
-static uint32_t freeRam() {
-#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  mbed_stats_heap_t heapStats;
-  mbed_stats_heap_get(&heapStats);
-  return (heapStats.reserved_size > heapStats.current_size)
-           ? (heapStats.reserved_size - heapStats.current_size)
-           : 0U;
-#else
-  return 0U;
-#endif
+static uint32_t freeRam() { return tankalarm_freeRam(); }
+
+// ============================================================================
+// Health Telemetry (optional, behind TANKALARM_HEALTH_TELEMETRY_ENABLED flag)
+// ============================================================================
+#ifdef TANKALARM_HEALTH_TELEMETRY_ENABLED
+/**
+ * Send a lightweight health status note to Notehub for field diagnosis.
+ * Includes: heap stats, uptime, power state, notecard comm health,
+ * storage availability, and firmware version.
+ *
+ * Bandwidth footprint: ~200 bytes per note, sent at HEALTH_TELEMETRY_INTERVAL_MS.
+ * No impact on normal operation when TANKALARM_HEALTH_TELEMETRY_ENABLED is not defined.
+ */
+static void sendHealthTelemetry() {
+  if (!gNotecardAvailable) return;
+
+  TankAlarmHealthSnapshot snap = tankalarm_collectHealthSnapshot();
+  snap.heapMinFreeBytes = gHeapMinFreeBytes;
+  snap.notecardCommErrors = gNotecardCommErrorCount;
+  snap.storageWriteErrors = gStorageWriteErrorCount;
+  snap.storageAvailable = isStorageAvailable();
+
+  JsonDocument doc;
+  doc["heap_free"] = snap.heapFreeBytes;
+  doc["heap_min_free"] = (snap.heapMinFreeBytes == UINT32_MAX) ? 0 : snap.heapMinFreeBytes;
+  doc["uptime_s"] = snap.uptimeSeconds;
+  doc["power_state"] = (uint8_t)gPowerState;
+  doc["power_state_name"] = getPowerStateDescription(gPowerState);
+  doc["battery_v"] = roundTo(gEffectiveBatteryVoltage, 2);
+  doc["notecard_errors"] = snap.notecardCommErrors;
+  doc["storage_errors"] = snap.storageWriteErrors;
+  doc["storage_ok"] = snap.storageAvailable;
+  doc["fw_version"] = FIRMWARE_VERSION;
+
+  // I2C bus health counters
+  doc["i2c_cl_err"] = gCurrentLoopI2cErrors;
+  doc["i2c_bus_recover"] = gI2cBusRecoveryCount;
+
+  // Include solar data if available
+  if (gSolarManager.isEnabled()) {
+    doc["solar_enabled"] = true;
+  }
+
+  // Include monitor count for fleet visibility
+  uint8_t activeMonitors = 0;
+  for (uint8_t i = 0; i < gConfig.monitorCount; i++) {
+    if (gConfig.monitors[i].sensorInterface != SENSOR_DIGITAL ||
+        gConfig.monitors[i].primaryPin >= 0) {
+      activeMonitors++;
+    }
+  }
+  doc["monitors"] = activeMonitors;
+
+  publishNote(HEALTH_FILE, doc, false);
+
+  DEBUG_PRINTLN(F("Health telemetry sent"));
 }
+#endif // TANKALARM_HEALTH_TELEMETRY_ENABLED

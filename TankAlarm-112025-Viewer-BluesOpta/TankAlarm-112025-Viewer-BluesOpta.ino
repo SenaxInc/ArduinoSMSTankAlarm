@@ -149,6 +149,13 @@ static bool gDfuUpdateAvailable = false;
 static char gDfuVersion[32] = {0};
 static bool gDfuInProgress = false;
 
+// I2C bus health tracking (required by TankAlarm_I2C.h)
+uint32_t gCurrentLoopI2cErrors = 0;    // Not used by Viewer but required by extern
+uint32_t gI2cBusRecoveryCount = 0;
+static bool gNotecardAvailable = true;
+static uint16_t gNotecardFailureCount = 0;
+static unsigned long gLastSuccessfulNotecardComm = 0;
+
 static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tank Alarm Viewer</title><style>:root{--bg:#f8fafc;--text:#0f172a;--header-bg:#ffffff;--meta-color:#475569;--card-bg:#ffffff;--table-border:rgba(15,23,42,0.08)}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);transition:background 0.3s,color 0.3s}header{padding:20px 28px;background:var(--header-bg);box-shadow:0 2px 10px rgba(0,0,0,0.15)}header h1{margin:0;font-size:1.7rem}header .meta{margin-top:12px;font-size:0.95rem;color:var(--meta-color);display:flex;gap:16px;flex-wrap:wrap}.title-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start}.header-actions{display:flex;gap:12px;align-items:center}.icon-button{width:40px;height:40px;border:1px solid rgba(148,163,184,0.4);background:var(--card-bg);color:var(--text);font-size:1.1rem;cursor:pointer}main{padding:24px;max-width:1400px;margin:0 auto}.card{background:var(--card-bg);padding:20px;box-shadow:0 25px 60px rgba(15,23,42,0.15);border:1px solid rgba(15,23,42,0.08)}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--table-border)}th{text-transform:uppercase;letter-spacing:0.05em;font-size:0.75rem;color:var(--meta-color)}tr:last-child td{border-bottom:none}tr.alarm{background:rgba(220,38,38,0.08)}.status-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;font-size:0.85rem}.status-pill.ok{background:rgba(16,185,129,0.15);color:#34d399}.status-pill.alarm{background:rgba(248,113,113,0.2);color:#fca5a5}.timestamp{font-feature-settings:"tnum";color:var(--meta-color);font-size:0.9rem}footer{margin-top:20px;color:var(--meta-color);font-size:0.85rem;text-align:center}</style></head><body><header><div class="title-row"><div><h1 id="viewerName">Tank Alarm Viewer</h1><div class="meta"><span>Viewer UID: <code id="viewerUid">--</code></span><span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span><span>Summary Generated: <span id="summaryGenerated">--</span></span><span>Last Fetch: <span id="lastFetch">--</span></span><span>Next Scheduled Fetch: <span id="nextFetch">--</span></span><span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span></div></div></div></header><main><section class="card"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"><h2 style="margin:0;font-size:1.2rem">Fleet Snapshot</h2><span class="timestamp">Dashboard auto-refresh: )HTML" STR(WEB_REFRESH_MINUTES) R"HTML( min</span></div><table><thead><tr><th>Site</th><th>Tank</th><th>Level (ft/in)</th><th>24hr Change</th><th>Updated</th></tr></thead><tbody id="tankBody"></tbody></table></section><footer>Viewer nodes are read-only mirrors. Configuration and permissions stay on the server fleet.</footer></main><script>(()=>{const REFRESH_SECONDS=)HTML" STR(WEB_REFRESH_SECONDS)R"HTML(;const els={viewerName:document.getElementById('viewerName'),viewerUid:document.getElementById('viewerUid'),sourceServer:document.getElementById('sourceServer'),sourceUid:document.getElementById('sourceUid'),summaryGenerated:document.getElementById('summaryGenerated'),lastFetch:document.getElementById('lastFetch'),nextFetch:document.getElementById('nextFetch'),refreshHint:document.getElementById('refreshHint'),tankBody:document.getElementById('tankBody')};const state={tanks:[]};function applyTankData(d){els.viewerName.textContent=d.vn||d.viewerName||'Tank Alarm Viewer';els.viewerUid.textContent=d.vi||d.viewerUid||'--';els.sourceServer.textContent=d.sn||d.sourceServerName||'Server';els.sourceUid.textContent=d.si||d.sourceServerUid||'--';els.summaryGenerated.textContent=formatEpoch(d.ge||d.generatedEpoch);els.lastFetch.textContent=formatEpoch(d.lf||d.lastFetchEpoch);els.nextFetch.textContent=formatEpoch(d.nf||d.nextFetchEpoch);els.refreshHint.textContent=describeCadence(d.rs||d.refreshSeconds,d.bh||d.baseHour);state.tanks=d.tanks||[];renderTankRows()}async function fetchTanks(){try{const res=await fetch('/api/tanks');if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();applyTankData(data)}catch(err){console.error('Viewer refresh failed',err)}}function renderTankRows(){const tbody=els.tankBody;tbody.innerHTML='';const rows=state.tanks;if(!rows.length){const tr=document.createElement('tr');tr.innerHTML='<td colspan="5">No tank data available</td>';tbody.appendChild(tr);return}const now=Date.now();const staleThresholdMs=93600000;rows.forEach(t=>{const tr=document.createElement('tr');const alarm=t.a!==undefined?t.a:t.alarm;if(alarm)tr.classList.add('alarm');const lastUpdate=t.u||t.lastUpdate;const isStale=lastUpdate&&((now-(lastUpdate*1000))>staleThresholdMs);const staleWarning=isStale?' ⚠️':'';tr.innerHTML=`<td>${escapeHtml(t.s||t.site,'--')}</td><td>${escapeHtml(t.n||t.label||'Tank')}&nbsp;#${escapeHtml((t.k??t.tank??'?'))}</td><td>${formatFeetInches(t.l!==undefined?t.l:t.levelInches)}</td><td>--</td><td>${formatEpoch(lastUpdate)}${staleWarning}</td>`;if(isStale){tr.style.opacity='0.6';tr.title='Data is over 26 hours old'}tbody.appendChild(tr)})}function statusBadge(t){const alarm=t.a!==undefined?t.a:t.alarm;if(!alarm){return'<span class="status-pill ok">Normal</span>'}const label=escapeHtml(t.at||t.alarmType||'Alarm','Alarm');return`<span class="status-pill alarm">${label}</span>`}function formatFeetInches(inches){if(typeof inches!=='number'||!isFinite(inches)||inches<0)return'--';const feet=Math.floor(inches/12);const remainingInches=inches-(feet*12);return`${feet}' ${remainingInches.toFixed(1)}"`}function formatEpoch(epoch){if(!epoch)return'--';const date=new Date(epoch*1000);if(isNaN(date.getTime()))return'--';return date.toLocaleString()}function describeCadence(seconds,baseHour){const hours=seconds?(seconds/3600).toFixed(1).replace(/\.0$/,''):'6';const hourLabel=(typeof baseHour==='number')?baseHour:6;return`${hours}h cadence · starts ${hourLabel}:00`}function escapeHtml(value,fallback=''){if(value===undefined||value===null||value==='')return fallback;const entityMap={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};return String(value).replace(/[&<>"']/g,c=>entityMap[c]||c)}fetchTanks();setInterval(()=>fetchTanks(),REFRESH_SECONDS*1000)})();</script></body></html>)HTML";
 
 static void initializeNotecard();
@@ -200,17 +207,11 @@ static void safeSleep(unsigned long ms) {
   }
 }
 
-static uint32_t freeRam() {
-#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  mbed_stats_heap_t heapStats;
-  mbed_stats_heap_get(&heapStats);
-  return (heapStats.reserved_size > heapStats.current_size)
-           ? (heapStats.reserved_size - heapStats.current_size)
-           : 0U;
-#else
-  return 0U;
-#endif
-}
+/**
+ * Get current free heap bytes for field diagnostics.
+ * Delegates to the shared tankalarm_freeRam() implementation.
+ */
+static uint32_t freeRam() { return tankalarm_freeRam(); }
 
 void setup() {
   Serial.begin(115200);
@@ -225,6 +226,14 @@ void setup() {
   Serial.println(F(")"));
 
   Wire.begin();
+
+  // I2C bus scan: verify Notecard is present
+  {
+    const uint8_t expectedAddrs[] = { NOTECARD_I2C_ADDRESS };
+    const char *expectedNames[] = { "Notecard" };
+    tankalarm_scanI2CBus(expectedAddrs, expectedNames, 1);
+  }
+
   initializeNotecard();
   ensureTimeSync();
   fetchViewerSummary();  // Drain any queued summaries before serving UI
@@ -252,13 +261,7 @@ void setup() {
   Serial.println(F("Watchdog not available on this platform"));
 #endif
 
-  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    Serial.print(F("Heap free: "));
-    Serial.print(freeRam());
-    Serial.println(F("B"));
-  #else
-    Serial.println(F("Heap stats: not available on this platform"));
-  #endif
+  tankalarm_printHeapStats();
 
   Serial.println(F("Viewer setup complete"));
 }
@@ -276,6 +279,34 @@ void loop() {
 
   handleWebRequests();
   ensureTimeSync();
+
+  // ---- Notecard I2C health check (every 5 minutes when unavailable) ----
+  {
+    static unsigned long lastNcHealthCheck = 0;
+    unsigned long now = millis();
+    if (!gNotecardAvailable && (now - lastNcHealthCheck > 300000UL)) {
+      lastNcHealthCheck = now;
+      J *hcReq = notecard.newRequest("card.version");
+      if (hcReq) {
+        J *hcRsp = notecard.requestAndResponse(hcReq);
+        if (hcRsp) {
+          notecard.deleteResponse(hcRsp);
+          gNotecardAvailable = true;
+          gNotecardFailureCount = 0;
+          gLastSuccessfulNotecardComm = millis();
+          tankalarm_ensureNotecardBinding(notecard);
+          Serial.println(F("Notecard recovered - online"));
+        } else {
+          gNotecardFailureCount++;
+          if (gNotecardFailureCount >= I2C_NOTECARD_RECOVERY_THRESHOLD) {
+            tankalarm_recoverI2CBus(gDfuInProgress);
+            tankalarm_ensureNotecardBinding(notecard);
+            gNotecardFailureCount = 0;
+          }
+        }
+      }
+    }
+  }
 
   if (gNextSummaryFetchEpoch > 0.0 && currentEpoch() >= gNextSummaryFetchEpoch) {
     fetchViewerSummary();
@@ -619,14 +650,33 @@ static void fetchViewerSummary() {
   while (true) {
     J *req = notecard.newRequest("note.get");
     if (!req) {
+      gNotecardFailureCount++;
+      if (gNotecardFailureCount >= NOTECARD_FAILURE_THRESHOLD && gNotecardAvailable) {
+        gNotecardAvailable = false;
+        Serial.println(F("Notecard unavailable - I2C health check will attempt recovery"));
+      }
       return;
     }
     JAddStringToObject(req, "file", VIEWER_SUMMARY_FILE);
     JAddBoolToObject(req, "delete", true);
     J *rsp = notecard.requestAndResponse(req);
     if (!rsp) {
+      gNotecardFailureCount++;
+      if (gNotecardFailureCount >= NOTECARD_FAILURE_THRESHOLD && gNotecardAvailable) {
+        gNotecardAvailable = false;
+        Serial.println(F("Notecard unavailable - I2C health check will attempt recovery"));
+      }
       return;
     }
+
+    // Notecard responded — reset failure tracking
+    if (!gNotecardAvailable) {
+      gNotecardAvailable = true;
+      gNotecardFailureCount = 0;
+      Serial.println(F("Notecard recovered"));
+    }
+    gNotecardFailureCount = 0;
+    gLastSuccessfulNotecardComm = millis();
 
     J *body = JGetObject(rsp, "body");
     if (!body) {

@@ -80,6 +80,39 @@ static inline double tankalarm_currentEpoch(double lastSyncedEpoch, unsigned lon
 }
 
 // ============================================================================
+// Notecard I2C Binding
+// ============================================================================
+
+/**
+ * Re-establish the Notecard's I2C binding after bus recovery or Wire reinit.
+ *
+ * AUDIT RESULT (2026-02-26): The Blues note-arduino library's
+ * `Notecard::begin(uint32_t)` calls `make_note_i2c(Wire)`, which uses a
+ * singleton guard (`if (!note_i2c)`) — so the NoteI2c_Arduino object is
+ * only allocated ONCE, regardless of how many times `begin()` is called.
+ * Subsequent calls re-register the I2C function-pointer callbacks
+ * (NoteSetFnI2CDefault) and re-set the address/MTU, but do NOT leak memory.
+ *
+ * Safe to call:
+ *   - After recoverI2CBus() (which calls Wire.end() + Wire.begin())
+ *   - After reinitializeHardware() (which calls Wire.end() + Wire.begin())
+ *   - When transitioning back to online mode after an outage
+ *
+ * NOT needed for:
+ *   - Periodic health checks when the bus hasn't been reset
+ *   - Normal Notecard request/response cycles
+ *
+ * @param notecard  Reference to the Notecard instance
+ * @param i2cAddr   I2C address (default NOTECARD_I2C_ADDRESS from TankAlarm_Common.h)
+ */
+static inline void tankalarm_ensureNotecardBinding(
+    Notecard &notecard,
+    uint32_t i2cAddr = NOTECARD_I2C_ADDRESS
+) {
+  notecard.begin(i2cAddr);
+}
+
+// ============================================================================
 // Notecard Configuration
 // ============================================================================
 

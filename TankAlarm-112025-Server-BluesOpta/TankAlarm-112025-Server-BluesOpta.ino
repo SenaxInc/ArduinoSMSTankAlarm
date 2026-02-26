@@ -850,6 +850,13 @@ static char gDfuVersion[32] = {0};
 static char gDfuMode[16] = "idle";  // Notecard DFU mode: idle, downloading, ready, error, etc.
 static bool gDfuInProgress = false;
 
+// I2C bus health tracking (required by TankAlarm_I2C.h)
+uint32_t gCurrentLoopI2cErrors = 0;    // Not used by Server but required by extern
+uint32_t gI2cBusRecoveryCount = 0;
+static bool gNotecardAvailable = true;
+static uint16_t gNotecardFailureCount = 0;
+static unsigned long gLastSuccessfulNotecardComm = 0;
+
 // Server voltage monitoring
 // NOTE: card.voltage reads the Notecard's V+ power rail (~5V from Opta regulator),
 // NOT the external 12V battery. To read actual battery voltage, either:
@@ -2303,17 +2310,11 @@ static void safeSleep(unsigned long ms) {
   }
 }
 
-static uint32_t freeRam() {
-#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  mbed_stats_heap_t heapStats;
-  mbed_stats_heap_get(&heapStats);
-  return (heapStats.reserved_size > heapStats.current_size)
-           ? (heapStats.reserved_size - heapStats.current_size)
-           : 0U;
-#else
-  return 0U;
-#endif
-}
+/**
+ * Get current free heap bytes for field diagnostics.
+ * Delegates to the shared tankalarm_freeRam() implementation.
+ */
+static uint32_t freeRam() { return tankalarm_freeRam(); }
 
 void setup() {
   Serial.begin(115200);
@@ -2346,6 +2347,14 @@ void setup() {
   printHardwareRequirements();
 
   Wire.begin();
+
+  // I2C bus scan: verify Notecard is present
+  {
+    const uint8_t expectedAddrs[] = { NOTECARD_I2C_ADDRESS };
+    const char *expectedNames[] = { "Notecard" };
+    tankalarm_scanI2CBus(expectedAddrs, expectedNames, 1);
+  }
+
   initializeNotecard();
   ensureTimeSync();
   scheduleNextDailyEmail();
@@ -2394,13 +2403,7 @@ void setup() {
   Serial.println(F("Warning: Watchdog timer not available on this platform"));
 #endif
 
-  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    Serial.print(F("Heap free: "));
-    Serial.print(freeRam());
-    Serial.println(F("B"));
-  #else
-    Serial.println(F("Heap stats: not available on this platform"));
-  #endif
+  tankalarm_printHeapStats();
 
   Serial.println(F("Server setup complete"));
   Serial.println(F("----------------------------------"));
@@ -2456,6 +2459,33 @@ void loop() {
   }
 
   handleWebRequests();
+
+  // ---- Notecard I2C health check (every 5 minutes when unavailable) ----
+  {
+    static unsigned long lastNcHealthCheck = 0;
+    if (!gNotecardAvailable && (now - lastNcHealthCheck > 300000UL)) {
+      lastNcHealthCheck = now;
+      J *hcReq = notecard.newRequest("card.version");
+      if (hcReq) {
+        J *hcRsp = notecard.requestAndResponse(hcReq);
+        if (hcRsp) {
+          notecard.deleteResponse(hcRsp);
+          gNotecardAvailable = true;
+          gNotecardFailureCount = 0;
+          gLastSuccessfulNotecardComm = millis();
+          tankalarm_ensureNotecardBinding(notecard);
+          Serial.println(F("Notecard recovered - online"));
+        } else {
+          gNotecardFailureCount++;
+          if (gNotecardFailureCount >= I2C_NOTECARD_RECOVERY_THRESHOLD) {
+            tankalarm_recoverI2CBus(gDfuInProgress);
+            tankalarm_ensureNotecardBinding(notecard);
+            gNotecardFailureCount = 0;
+          }
+        }
+      }
+    }
+  }
 
   now = millis();
   if (now - gLastPollMillis > 5000UL) {
@@ -5057,6 +5087,7 @@ static void initializeNotecard() {
   notecard.setDebugOutputStream(Serial);
 #endif
   notecard.begin(NOTECARD_I2C_ADDRESS);
+  gLastSuccessfulNotecardComm = millis();
   Serial.println(F("Notecard initialized"));
 
   J *req = notecard.newRequest("hub.set");
@@ -7223,16 +7254,33 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
   while (processed < MAX_NOTES_PER_FILE_PER_POLL) {
     J *req = notecard.newRequest("note.get");
     if (!req) {
+      gNotecardFailureCount++;
+      if (gNotecardFailureCount >= NOTECARD_FAILURE_THRESHOLD && gNotecardAvailable) {
+        gNotecardAvailable = false;
+        Serial.println(F("Notecard unavailable - I2C health check will attempt recovery"));
+      }
       return;
     }
     JAddStringToObject(req, "file", fileName);
     JAddBoolToObject(req, "delete", true);
     J *rsp = notecard.requestAndResponse(req);
     if (!rsp) {
-      // Note: notecard.requestAndResponse() internally cleans up the request
-      // so we don't need to explicitly delete it here
+      gNotecardFailureCount++;
+      if (gNotecardFailureCount >= NOTECARD_FAILURE_THRESHOLD && gNotecardAvailable) {
+        gNotecardAvailable = false;
+        Serial.println(F("Notecard unavailable - I2C health check will attempt recovery"));
+      }
       return;
     }
+
+    // Notecard responded — reset failure tracking
+    if (!gNotecardAvailable) {
+      gNotecardAvailable = true;
+      gNotecardFailureCount = 0;
+      Serial.println(F("Notecard recovered"));
+    }
+    gNotecardFailureCount = 0;
+    gLastSuccessfulNotecardComm = millis();
 
     J *body = JGetObject(rsp, "body");
     if (!body) {

@@ -209,6 +209,11 @@
 #define VIEWER_SUMMARY_INBOX_FILE "viewer_summary.qi"   // Viewer receives summary
 #endif
 
+// --- Health telemetry ---
+#ifndef HEALTH_OUTBOX_FILE
+#define HEALTH_OUTBOX_FILE "health.qo"          // Client sends periodic health status
+#endif
+
 // ============================================================================
 // DFU (Device Firmware Update) Check Interval
 // ============================================================================
@@ -222,8 +227,10 @@
 #include "TankAlarm_Platform.h"
 #include "TankAlarm_Config.h"
 #include "TankAlarm_Utils.h"
+#include "TankAlarm_I2C.h"
 #include "TankAlarm_Notecard.h"
 #include "TankAlarm_Solar.h"
 #include "TankAlarm_Battery.h"
+#include "TankAlarm_Diagnostics.h"
 
 #endif // TANKALARM_COMMON_H

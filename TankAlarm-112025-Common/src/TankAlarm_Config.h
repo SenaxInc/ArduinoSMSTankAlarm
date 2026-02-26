@@ -65,4 +65,58 @@
 #define SOLAR_OUTBOUND_INTERVAL_MINUTES 360  // 6 hours for solar
 #endif
 
+// ============================================================================
+// I2C Recovery Configuration
+// ============================================================================
+
+// Number of consecutive Notecard failures before attempting I2C bus recovery
+#ifndef I2C_NOTECARD_RECOVERY_THRESHOLD
+#define I2C_NOTECARD_RECOVERY_THRESHOLD 10
+#endif
+
+// Number of consecutive Notecard request failures before entering offline mode
+#ifndef NOTECARD_FAILURE_THRESHOLD
+#define NOTECARD_FAILURE_THRESHOLD 5
+#endif
+
+// Number of consecutive loop iterations (dual failure) before attempting bus recovery
+#ifndef I2C_DUAL_FAIL_RECOVERY_LOOPS
+#define I2C_DUAL_FAIL_RECOVERY_LOOPS 30
+#endif
+
+// Number of consecutive loop iterations (dual failure) before forcing watchdog reset
+#ifndef I2C_DUAL_FAIL_RESET_LOOPS
+#define I2C_DUAL_FAIL_RESET_LOOPS 120
+#endif
+
+// Number of consecutive current-loop-only failures (all sensors) before bus recovery
+#ifndef I2C_SENSOR_ONLY_RECOVERY_THRESHOLD
+#define I2C_SENSOR_ONLY_RECOVERY_THRESHOLD 10
+#endif
+
+// Maximum number of I2C read retries per channel in readCurrentLoopMilliamps()
+#ifndef I2C_CURRENT_LOOP_MAX_RETRIES
+#define I2C_CURRENT_LOOP_MAX_RETRIES 3
+#endif
+
+// Number of startup I2C bus scan attempts when expected devices are missing
+#ifndef I2C_STARTUP_SCAN_RETRIES
+#define I2C_STARTUP_SCAN_RETRIES 3
+#endif
+
+// Delay (ms) between startup scan retry attempts
+#ifndef I2C_STARTUP_SCAN_RETRY_DELAY_MS
+#define I2C_STARTUP_SCAN_RETRY_DELAY_MS 2000
+#endif
+
+// Maximum backoff multiplier for sensor-only I2C recovery (powers of 2)
+#ifndef I2C_SENSOR_RECOVERY_MAX_BACKOFF
+#define I2C_SENSOR_RECOVERY_MAX_BACKOFF 8
+#endif
+
+// 24-hour I2C error count threshold that triggers an alarm note
+#ifndef I2C_ERROR_ALERT_THRESHOLD
+#define I2C_ERROR_ALERT_THRESHOLD 50
+#endif
+
 #endif // TANKALARM_CONFIG_H
