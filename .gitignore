@@ -65,3 +65,6 @@ RecycleBin/
 
 # Claude Code temporary working directories
 tmpclaude-*-cwd/
+
+# CodeQL analysis artifacts
+_codeql_detected_source_root
