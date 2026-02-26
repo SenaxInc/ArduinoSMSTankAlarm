@@ -207,6 +207,15 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define MAX_ALARMS_PER_HOUR 10  // Maximum alarms per tank per hour
 #endif
 
+#ifndef MAX_GLOBAL_ALARMS_PER_HOUR
+#define MAX_GLOBAL_ALARMS_PER_HOUR 30  // Maximum alarms across ALL tanks per hour
+#endif
+
+// Config schema versioning — bump when adding/removing fields to detect stale configs
+#ifndef CONFIG_SCHEMA_VERSION
+#define CONFIG_SCHEMA_VERSION 1
+#endif
+
 #ifndef MIN_ALARM_INTERVAL_SECONDS
 #define MIN_ALARM_INTERVAL_SECONDS 300  // Minimum 5 minutes between same alarm type
 #endif
@@ -464,6 +473,7 @@ struct MonitorConfig {
 };
 
 struct ClientConfig {
+  uint8_t configSchemaVersion;  // Schema version for forward/backward compat detection
   char siteName[32];
   char deviceUid[32];   // Device UID (e.g., dev:...)
   char deviceLabel[24];
@@ -496,6 +506,16 @@ struct ClientConfig {
   // Solar-Only (No Battery) mode configuration
   // For installations powered directly by solar panel without battery backup
   SolarOnlyConfig solarOnlyConfig;
+  // Remote-tunable power conservation thresholds (0.0 = use compile-time default)
+  // Allows server to adjust voltage trip points without firmware update
+  float powerEcoEnterV;       // Enter ECO below this voltage (default: POWER_ECO_ENTER_VOLTAGE)
+  float powerLowEnterV;       // Enter LOW_POWER below this voltage
+  float powerCriticalEnterV;  // Enter CRITICAL below this voltage
+  float powerEcoExitV;        // Exit ECO above this voltage
+  float powerLowExitV;        // Exit LOW_POWER above this voltage
+  float powerCriticalExitV;   // Exit CRITICAL above this voltage
+  // Remote-tunable health check interval (0 = use compile-time default)
+  uint32_t healthCheckBaseIntervalMs;  // Base Notecard health check interval in ms
 };
 
 struct MonitorRuntime {
@@ -535,6 +555,10 @@ struct MonitorRuntime {
 static ClientConfig gConfig;
 static MonitorRuntime gMonitorState[MAX_TANKS];
 
+// Global alarm rate limiting (across all tanks)
+static unsigned long gGlobalAlarmTimestamps[MAX_GLOBAL_ALARMS_PER_HOUR];
+static uint8_t gGlobalAlarmCount = 0;
+
 // Solar/Battery charger monitoring (SunSaver MPPT via RS-485)
 static SolarManager gSolarManager;
 static unsigned long gLastSolarAlarmMillis = 0;
@@ -562,7 +586,13 @@ static double gSolarOnlyLastReportEpoch = 0.0;    // Last daily report epoch (pe
 static uint32_t gSolarOnlyBootCount = 0;          // Boot counter (persisted to flash)
 static bool gSolarOnlyBatteryFailed = false;      // Battery failure fallback active?
 static uint8_t gSolarOnlyBatFailCount = 0;        // Consecutive critical battery readings
+static unsigned long gSolarOnlyBatFailLastIncrMillis = 0; // When bat-fail count was last incremented
 static bool gSolarOnlyStateSaved = false;         // Has state been saved during sunset?
+
+// 24-hour decay period for battery failure counter (prevents long-term false accumulation)
+#ifndef SOLAR_BAT_FAIL_DECAY_MS
+#define SOLAR_BAT_FAIL_DECAY_MS (24UL * 60UL * 60UL * 1000UL)  // 24 hours
+#endif
 
 // Is solar-only behavior active (either configured or battery failure fallback)?
 static bool isSolarOnlyActive() {
@@ -628,9 +658,13 @@ static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
 static bool gRelayState[MAX_RELAYS] = {false, false, false, false};
 static unsigned long gLastRelayCheckMillis = 0;
 
-// Per-tank relay activation tracking for momentary mode timeout
-static unsigned long gRelayActivationTime[MAX_TANKS] = {0};
+// Per-relay activation tracking for momentary mode timeout
+// Each relay in a tank's mask can have a different momentary duration,
+// so we track activation time per-relay (not per-tank) to support
+// independent timeout behavior.
+static unsigned long gRelayActivationTime[MAX_RELAYS] = {0};
 static bool gRelayActiveForTank[MAX_TANKS] = {false};
+static uint8_t gRelayActiveMaskForTank[MAX_TANKS] = {0}; // Which relays are currently active for each tank
 
 // Clear button state for debouncing
 static unsigned long gClearButtonLastPressTime = 0;
@@ -735,6 +769,266 @@ static void sendConfigAck(bool success, const char *message, const char *configV
 static void persistConfigIfDirty();
 static void sampleTanks();
 static float readTankSensor(uint8_t idx);
+
+// ============================================================================
+// Non-blocking Pulse Sampler State Machine
+// ============================================================================
+// Instead of blocking the main loop with delay(1) for up to 60 seconds,
+// the pulse sampler runs as a cooperative state machine. Each call to
+// pollPulseSampler() does a short burst of work (up to PULSE_POLL_BURST_MS),
+// then returns. When the configured sample duration has elapsed, the result
+// is finalized and made available via readPulseSensorResult().
+// Between sampling periods, readTankSensor() returns the last computed value.
+// ============================================================================
+#ifndef PULSE_POLL_BURST_MS
+#define PULSE_POLL_BURST_MS 50  // Max ms per poll call (keeps loop responsive)
+#endif
+
+enum PulseSamplerState : uint8_t {
+  PULSE_STATE_IDLE = 0,        // Not sampling, waiting for next sample request
+  PULSE_STATE_SAMPLING = 1,    // Actively counting pulses/edges
+  PULSE_STATE_COMPLETE = 2     // Sample complete, result ready
+};
+
+struct PulseSamplerContext {
+  PulseSamplerState state;
+  unsigned long sampleStartMs;
+  uint32_t sampleDurationMs;
+  bool useAccumulatedMode;
+  bool useTimeBased;
+  uint8_t pulsesPerRev;
+  HallEffectSensorType hallType;
+  int pin;
+  // Pulse counting state
+  uint32_t pulseCount;
+  unsigned long lastPulseTimeMs;
+  int lastPinState;
+  // Time-based state
+  unsigned long firstPulseTime;
+  unsigned long secondPulseTime;
+  bool firstPulseDetected;
+  bool secondPulseDetected;
+  // Result
+  float resultRpm;
+  bool resultReady;
+};
+
+static PulseSamplerContext gPulseSampler[MAX_TANKS];
+static bool gPulseSamplerInitialized = false;
+
+static void initPulseSamplers() {
+  if (gPulseSamplerInitialized) return;
+  memset(gPulseSampler, 0, sizeof(gPulseSampler));
+  gPulseSamplerInitialized = true;
+}
+
+// Detect an edge based on hall effect sensor type
+static inline bool detectPulseEdge(HallEffectSensorType hallType, int lastState, int currentState) {
+  switch (hallType) {
+    case HALL_EFFECT_UNIPOLAR:
+    case HALL_EFFECT_ANALOG:
+      return (lastState == HIGH && currentState == LOW);
+    case HALL_EFFECT_BIPOLAR:
+    case HALL_EFFECT_OMNIPOLAR:
+      return (lastState != currentState);
+    default:
+      return (lastState == HIGH && currentState == LOW);
+  }
+}
+
+// Start a new sampling period for a pulse sensor
+static void startPulseSample(uint8_t idx, const MonitorConfig &cfg) {
+  PulseSamplerContext &ctx = gPulseSampler[idx];
+
+  int pin = (cfg.pulsePin >= 0 && cfg.pulsePin < 255) ? cfg.pulsePin :
+            ((cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx));
+  pinMode(pin, INPUT_PULLUP);
+
+  uint8_t pulsesPerRev = (cfg.pulsesPerUnit > 0) ? cfg.pulsesPerUnit : 1;
+
+  // Determine sampling parameters
+  uint32_t sampleDurationMs;
+  bool useAccumulatedMode;
+
+  if (cfg.pulseSampleDurationMs > 0) {
+    sampleDurationMs = cfg.pulseSampleDurationMs;
+    useAccumulatedMode = cfg.pulseAccumulatedMode;
+  } else if (cfg.expectedPulseRate > 0.0f) {
+    PulseSamplingRecommendation rec = getRecommendedPulseSampling(cfg.expectedPulseRate);
+    sampleDurationMs = rec.sampleDurationMs;
+    useAccumulatedMode = rec.accumulatedMode;
+  } else {
+    sampleDurationMs = RPM_SAMPLE_DURATION_MS;
+    useAccumulatedMode = cfg.pulseAccumulatedMode;
+  }
+
+  ctx.state = PULSE_STATE_SAMPLING;
+  ctx.sampleStartMs = millis();
+  ctx.sampleDurationMs = sampleDurationMs;
+  ctx.useAccumulatedMode = useAccumulatedMode;
+  ctx.useTimeBased = (!useAccumulatedMode && cfg.hallEffectDetection == HALL_DETECT_TIME_BASED);
+  ctx.pulsesPerRev = pulsesPerRev;
+  ctx.hallType = cfg.hallEffectType;
+  ctx.pin = pin;
+  ctx.pulseCount = 0;
+  ctx.lastPulseTimeMs = 0;
+  ctx.lastPinState = digitalRead(pin);
+  ctx.firstPulseTime = 0;
+  ctx.secondPulseTime = 0;
+  ctx.firstPulseDetected = false;
+  ctx.secondPulseDetected = false;
+  ctx.resultReady = false;
+
+  // For accumulated mode, use the global accumulated counter
+  if (useAccumulatedMode && !gRpmAccumulatedInitialized[idx]) {
+    atomicResetPulses(idx);
+    gRpmAccumulatedStartMillis[idx] = millis();
+    gRpmLastPinState[idx] = ctx.lastPinState;
+    gRpmAccumulatedInitialized[idx] = true;
+  }
+}
+
+// Poll the pulse sampler for a short burst. Returns true when the sample is complete.
+static bool pollPulseSampler(uint8_t idx) {
+  PulseSamplerContext &ctx = gPulseSampler[idx];
+  if (ctx.state != PULSE_STATE_SAMPLING) return (ctx.state == PULSE_STATE_COMPLETE);
+
+  const unsigned long DEBOUNCE_MS = 2;
+  const float MS_PER_MINUTE = 60000.0f;
+  unsigned long now = millis();
+  unsigned long elapsed = now - ctx.sampleStartMs;
+
+  // --- ACCUMULATED MODE ---
+  if (ctx.useAccumulatedMode) {
+    // Short burst to catch pulses (up to PULSE_POLL_BURST_MS)
+    unsigned long burstStart = millis();
+    int lastState = gRpmLastPinState[idx];
+    unsigned long lastPulseTime = ctx.lastPulseTimeMs;
+
+    while ((millis() - burstStart) < PULSE_POLL_BURST_MS) {
+      int currentState = digitalRead(ctx.pin);
+      if (detectPulseEdge(ctx.hallType, lastState, currentState)) {
+        unsigned long pt = millis();
+        if (pt - lastPulseTime >= DEBOUNCE_MS) {
+          atomicIncrementPulses(idx);
+          lastPulseTime = pt;
+        }
+      }
+      lastState = currentState;
+    }
+    gRpmLastPinState[idx] = lastState;
+    ctx.lastPulseTimeMs = lastPulseTime;
+
+    // Accumulated mode: finalize when the telemetry sample interval has elapsed
+    // (the caller drives this via sampleDurationMs, typically == sampleSeconds * 1000)
+    unsigned long accumElapsed = now - gRpmAccumulatedStartMillis[idx];
+    if (accumElapsed >= ctx.sampleDurationMs || (accumElapsed > 1000 && elapsed >= ctx.sampleDurationMs)) {
+      uint32_t pulseCount = atomicReadAndResetPulses(idx);
+      if (accumElapsed > 1000 && pulseCount > 0) {
+        ctx.resultRpm = ((float)pulseCount * MS_PER_MINUTE) /
+                        ((float)accumElapsed * (float)ctx.pulsesPerRev);
+      } else {
+        ctx.resultRpm = 0.0f;
+      }
+      gRpmAccumulatedStartMillis[idx] = now;
+      ctx.resultReady = true;
+      ctx.state = PULSE_STATE_COMPLETE;
+      return true;
+    }
+    return false;
+  }
+
+  // Check if sample duration has elapsed (for non-accumulated modes)
+  bool timeUp = (elapsed >= ctx.sampleDurationMs);
+
+  // --- TIME-BASED MODE ---
+  if (ctx.useTimeBased) {
+    if (!ctx.secondPulseDetected) {
+      unsigned long burstStart = millis();
+      int lastState = ctx.lastPinState;
+
+      while ((millis() - burstStart) < PULSE_POLL_BURST_MS && !ctx.secondPulseDetected) {
+        int currentState = digitalRead(ctx.pin);
+        if (detectPulseEdge(ctx.hallType, lastState, currentState)) {
+          unsigned long pt = millis();
+          if (pt - ctx.lastPulseTimeMs >= DEBOUNCE_MS) {
+            ctx.lastPulseTimeMs = pt;
+            if (!ctx.firstPulseDetected) {
+              ctx.firstPulseTime = pt;
+              ctx.firstPulseDetected = true;
+            } else {
+              ctx.secondPulseTime = pt;
+              ctx.secondPulseDetected = true;
+            }
+          }
+        }
+        lastState = currentState;
+      }
+      ctx.lastPinState = lastState;
+    }
+
+    // Early exit if we got both pulses, or time is up
+    if (ctx.secondPulseDetected || timeUp) {
+      if (ctx.secondPulseDetected) {
+        unsigned long period = ctx.secondPulseTime - ctx.firstPulseTime;
+        if (period > 0) {
+          ctx.resultRpm = MS_PER_MINUTE / ((float)period * (float)ctx.pulsesPerRev);
+        } else {
+          ctx.resultRpm = gRpmLastReading[idx];
+        }
+      } else {
+        ctx.resultRpm = gRpmLastReading[idx]; // Keep last reading
+      }
+      ctx.resultReady = true;
+      ctx.state = PULSE_STATE_COMPLETE;
+      return true;
+    }
+    return false;
+  }
+
+  // --- PULSE COUNTING MODE ---
+  {
+    unsigned long burstStart = millis();
+    int lastState = ctx.lastPinState;
+
+    while ((millis() - burstStart) < PULSE_POLL_BURST_MS) {
+      int currentState = digitalRead(ctx.pin);
+      if (detectPulseEdge(ctx.hallType, lastState, currentState)) {
+        unsigned long pt = millis();
+        if (pt - ctx.lastPulseTimeMs >= DEBOUNCE_MS) {
+          ctx.pulseCount++;
+          ctx.lastPulseTimeMs = pt;
+        }
+      }
+      lastState = currentState;
+    }
+    ctx.lastPinState = lastState;
+
+    if (timeUp) {
+      ctx.resultRpm = ((float)ctx.pulseCount * MS_PER_MINUTE) /
+                      ((float)ctx.sampleDurationMs * (float)ctx.pulsesPerRev);
+      ctx.resultReady = true;
+      ctx.state = PULSE_STATE_COMPLETE;
+      return true;
+    }
+    return false;
+  }
+}
+
+// Read the pulse sensor result for a given index.
+// If a sample is still in progress, returns the last known reading.
+// If a sample just completed, returns the new result and resets state.
+static float readPulseSensorResult(uint8_t idx) {
+  PulseSamplerContext &ctx = gPulseSampler[idx];
+  if (ctx.resultReady) {
+    float rpm = ctx.resultRpm;
+    gRpmLastReading[idx] = rpm;
+    ctx.state = PULSE_STATE_IDLE;
+    ctx.resultReady = false;
+    return rpm;
+  }
+  return gRpmLastReading[idx];
+}
 static void evaluateAlarms(uint8_t idx);
 static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow);
 static void sendRegistration(const char *reason);
@@ -877,9 +1171,12 @@ void setup() {
   }
 
   // Explicitly initialize relay state tracking arrays for clarity and consistency
-  for (uint8_t i = 0; i < MAX_TANKS; ++i) {
+  for (uint8_t i = 0; i < MAX_RELAYS; ++i) {
     gRelayActivationTime[i] = 0;
+  }
+  for (uint8_t i = 0; i < MAX_TANKS; ++i) {
     gRelayActiveForTank[i] = false;
+    gRelayActiveMaskForTank[i] = 0;
   }
 
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
@@ -1023,7 +1320,11 @@ void loop() {
 #endif
 
   // Check notecard health periodically (with exponential backoff)
+  // Use remote-tunable base interval if configured, otherwise compile-time default
   static unsigned long lastHealthCheck = 0;
+  const unsigned long healthBaseInterval = (gConfig.healthCheckBaseIntervalMs > 0) 
+    ? gConfig.healthCheckBaseIntervalMs 
+    : NOTECARD_HEALTH_CHECK_BASE_INTERVAL_MS;
   static unsigned long healthCheckInterval = NOTECARD_HEALTH_CHECK_BASE_INTERVAL_MS;
   if (now - lastHealthCheck > healthCheckInterval) {
     lastHealthCheck = now;
@@ -1031,8 +1332,8 @@ void loop() {
       bool recovered = checkNotecardHealth();
       if (recovered) {
         // Notecard recovered — reset backoff to base interval
-        healthCheckInterval = NOTECARD_HEALTH_CHECK_BASE_INTERVAL_MS;
-        Serial.println(F("Notecard health check interval reset to 5 min"));
+        healthCheckInterval = healthBaseInterval;
+        Serial.println(F("Notecard health check interval reset to base"));
       } else {
         // Still failing — exponential backoff up to max
         if (healthCheckInterval < NOTECARD_HEALTH_CHECK_MAX_INTERVAL_MS) {
@@ -1521,6 +1822,7 @@ static void ensureConfigLoaded() {
 
 static void createDefaultConfig(ClientConfig &cfg) {
   memset(&cfg, 0, sizeof(ClientConfig));
+  cfg.configSchemaVersion = CONFIG_SCHEMA_VERSION;
   strlcpy(cfg.siteName, "Opta Tank Site", sizeof(cfg.siteName));
   strlcpy(cfg.deviceLabel, "Client-112025", sizeof(cfg.deviceLabel));
   strlcpy(cfg.clientFleet, "tankalarm-clients", sizeof(cfg.clientFleet));
@@ -1685,6 +1987,20 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
 
   memset(&cfg, 0, sizeof(ClientConfig));
 
+  // Config schema versioning: detect stale configs from older firmware
+  cfg.configSchemaVersion = doc["configSchemaVersion"].is<int>() 
+    ? (uint8_t)doc["configSchemaVersion"].as<int>() 
+    : 0;
+  if (cfg.configSchemaVersion != CONFIG_SCHEMA_VERSION) {
+    Serial.print(F("Config schema mismatch: stored="));
+    Serial.print(cfg.configSchemaVersion);
+    Serial.print(F(" expected="));
+    Serial.println(CONFIG_SCHEMA_VERSION);
+    // Continue loading — fields absent in older schema get safe defaults from memset(0)
+    // The config will be re-saved with the current schema version on next persist
+    cfg.configSchemaVersion = CONFIG_SCHEMA_VERSION;
+  }
+
   strlcpy(cfg.siteName, doc["site"].as<const char *>() ? doc["site"].as<const char *>() : "", sizeof(cfg.siteName));
   strlcpy(cfg.deviceUid, doc["deviceUid"].as<const char *>() ? doc["deviceUid"].as<const char *>() : "", sizeof(cfg.deviceUid));
   strlcpy(cfg.deviceLabel, doc["deviceLabel"].as<const char *>() ? doc["deviceLabel"].as<const char *>() : "", sizeof(cfg.deviceLabel));
@@ -1803,6 +2119,19 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   } else {
     initSolarOnlyConfig(&cfg.solarOnlyConfig);
   }
+
+  // Load remote-tunable power thresholds (0.0 = use compile-time default)
+  cfg.powerEcoEnterV = doc["powerEcoEnterV"].is<float>() ? doc["powerEcoEnterV"].as<float>() : 0.0f;
+  cfg.powerLowEnterV = doc["powerLowEnterV"].is<float>() ? doc["powerLowEnterV"].as<float>() : 0.0f;
+  cfg.powerCriticalEnterV = doc["powerCriticalEnterV"].is<float>() ? doc["powerCriticalEnterV"].as<float>() : 0.0f;
+  cfg.powerEcoExitV = doc["powerEcoExitV"].is<float>() ? doc["powerEcoExitV"].as<float>() : 0.0f;
+  cfg.powerLowExitV = doc["powerLowExitV"].is<float>() ? doc["powerLowExitV"].as<float>() : 0.0f;
+  cfg.powerCriticalExitV = doc["powerCriticalExitV"].is<float>() ? doc["powerCriticalExitV"].as<float>() : 0.0f;
+
+  // Load remote-tunable health check interval
+  cfg.healthCheckBaseIntervalMs = doc["healthCheckBaseIntervalMs"].is<int>() 
+    ? (uint32_t)doc["healthCheckBaseIntervalMs"].as<int>() 
+    : 0;
 
   // Support both old "tanks" and new "monitors" array names
   JsonArray monitorsArray = doc["monitors"].as<JsonArray>();
@@ -1975,6 +2304,7 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   if (!docPtr) return false;
   JsonDocument &doc = *docPtr;
 
+  doc["configSchemaVersion"] = cfg.configSchemaVersion;
   doc["site"] = cfg.siteName;
   doc["deviceUid"] = cfg.deviceUid;
   doc["deviceLabel"] = cfg.deviceLabel;
@@ -2129,29 +2459,42 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     t["unloadAlarmEmail"] = cfg.monitors[i].unloadAlarmEmail;
   }
 
+  // Save remote-tunable power thresholds (only if non-default)
+  if (cfg.powerEcoEnterV > 0.0f) doc["powerEcoEnterV"] = cfg.powerEcoEnterV;
+  if (cfg.powerLowEnterV > 0.0f) doc["powerLowEnterV"] = cfg.powerLowEnterV;
+  if (cfg.powerCriticalEnterV > 0.0f) doc["powerCriticalEnterV"] = cfg.powerCriticalEnterV;
+  if (cfg.powerEcoExitV > 0.0f) doc["powerEcoExitV"] = cfg.powerEcoExitV;
+  if (cfg.powerLowExitV > 0.0f) doc["powerLowExitV"] = cfg.powerLowExitV;
+  if (cfg.powerCriticalExitV > 0.0f) doc["powerCriticalExitV"] = cfg.powerCriticalExitV;
+
+  // Save remote-tunable health check interval (only if non-default)
+  if (cfg.healthCheckBaseIntervalMs > 0) doc["healthCheckBaseIntervalMs"] = cfg.healthCheckBaseIntervalMs;
+
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     // Mbed OS — atomic write-to-temp-then-rename
-    String jsonStr;
-    size_t len = serializeJson(doc, jsonStr);
+    // Use fixed buffer instead of Arduino String to avoid heap fragmentation
+    char jsonBuf[4096];
+    size_t len = serializeJson(doc, jsonBuf, sizeof(jsonBuf));
     if (len == 0) {
       Serial.println(F("Failed to serialize config"));
       return false;
     }
     if (!tankalarm_posix_write_file_atomic("/fs/client_config.json",
-                                            jsonStr.c_str(), jsonStr.length())) {
+                                            jsonBuf, len)) {
       Serial.println(F("Failed to write config"));
       return false;
     }
     return true;
   #else
-    String jsonStr;
-    size_t len = serializeJson(doc, jsonStr);
+    // Use fixed buffer instead of Arduino String to avoid heap fragmentation
+    char jsonBuf[4096];
+    size_t len = serializeJson(doc, jsonBuf, sizeof(jsonBuf));
     if (len == 0) {
       Serial.println(F("Failed to serialize config"));
       return false;
     }
     if (!tankalarm_littlefs_write_file_atomic(CLIENT_CONFIG_PATH,
-            (const uint8_t *)jsonStr.c_str(), jsonStr.length())) {
+            (const uint8_t *)jsonBuf, len)) {
       Serial.println(F("Failed to write config"));
       return false;
     }
@@ -2861,6 +3204,19 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     }
   }
 
+  // Handle remote-tunable power conservation thresholds
+  if (!doc["powerEcoEnterV"].isNull()) gConfig.powerEcoEnterV = doc["powerEcoEnterV"].as<float>();
+  if (!doc["powerLowEnterV"].isNull()) gConfig.powerLowEnterV = doc["powerLowEnterV"].as<float>();
+  if (!doc["powerCriticalEnterV"].isNull()) gConfig.powerCriticalEnterV = doc["powerCriticalEnterV"].as<float>();
+  if (!doc["powerEcoExitV"].isNull()) gConfig.powerEcoExitV = doc["powerEcoExitV"].as<float>();
+  if (!doc["powerLowExitV"].isNull()) gConfig.powerLowExitV = doc["powerLowExitV"].as<float>();
+  if (!doc["powerCriticalExitV"].isNull()) gConfig.powerCriticalExitV = doc["powerCriticalExitV"].as<float>();
+
+  // Handle remote-tunable health check interval
+  if (!doc["healthCheckBaseIntervalMs"].isNull()) {
+    gConfig.healthCheckBaseIntervalMs = (uint32_t)doc["healthCheckBaseIntervalMs"].as<int>();
+  }
+
   if (!doc["tanks"].isNull()) {
     hardwareChanged = true;  // Tank configuration affects hardware
     JsonArrayConst tanks = doc["tanks"].as<JsonArrayConst>();
@@ -3055,6 +3411,11 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   
   if (hardwareChanged) {
     reinitializeHardware();
+    // Hardware change invalidates old sensor baselines — force fresh readings
+    resetTelemetryBaselines();
+    // Reset power state so voltage thresholds are re-evaluated cleanly
+    gPowerState = POWER_STATE_NORMAL;
+    gPowerStateDebounce = 0;
   } else if (telemetryPolicyChanged) {
     resetTelemetryBaselines();
   }
@@ -3423,296 +3784,24 @@ static float readTankSensor(uint8_t idx) {
       return levelInches;
     }
     case SENSOR_PULSE: {
-      // Hall effect RPM sensor - supports multiple sensor types and detection methods
-      // Now supports configurable sample duration and accumulated mode for very low RPM
-      // Uses expectedPulseRate to auto-configure optimal sampling if not explicitly set
+      // Non-blocking RPM sensor via cooperative state machine.
+      // Each call does a short polling burst (PULSE_POLL_BURST_MS) then returns.
+      // When the configured sample duration elapses, the result is finalized.
+      // Between samples, the last computed RPM is returned immediately.
+      initPulseSamplers();
       
-      // Use pulsePin if available, otherwise use primaryPin
-      int pin = (cfg.pulsePin >= 0 && cfg.pulsePin < 255) ? cfg.pulsePin : 
-                ((cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx));
+      PulseSamplerContext &pctx = gPulseSampler[idx];
       
-      // Configure pin as input with pullup for digital Hall effect sensors
-      pinMode(pin, INPUT_PULLUP);
-      
-      // Validate pulses per revolution/unit
-      uint8_t pulsesPerRev = (cfg.pulsesPerUnit > 0) ? cfg.pulsesPerUnit : 1;
-      const float MS_PER_MINUTE = 60000.0f;
-      
-      // Determine sampling parameters:
-      // 1. If explicitly configured, use those values
-      // 2. If expectedPulseRate is set, use recommended values
-      // 3. Otherwise, use defaults
-      uint32_t sampleDurationMs;
-      bool useAccumulatedMode;
-      
-      if (cfg.pulseSampleDurationMs > 0) {
-        // Explicitly configured - use as-is
-        sampleDurationMs = cfg.pulseSampleDurationMs;
-        useAccumulatedMode = cfg.pulseAccumulatedMode;
-      } else if (cfg.expectedPulseRate > 0.0f) {
-        // Use recommendation based on expected rate
-        PulseSamplingRecommendation rec = getRecommendedPulseSampling(cfg.expectedPulseRate);
-        sampleDurationMs = rec.sampleDurationMs;
-        useAccumulatedMode = rec.accumulatedMode;
-      } else {
-        // Use defaults
-        sampleDurationMs = RPM_SAMPLE_DURATION_MS;
-        useAccumulatedMode = cfg.pulseAccumulatedMode;
+      // Start a new sample if idle
+      if (pctx.state == PULSE_STATE_IDLE) {
+        startPulseSample(idx, cfg);
       }
       
-      // Common constants
-      const unsigned long DEBOUNCE_MS = 2;
-      const uint32_t MAX_ITERATIONS = sampleDurationMs * 2;
+      // Poll the sampler (non-blocking burst)
+      pollPulseSampler(idx);
       
-      float rpm = 0.0f;
-      
-      // ACCUMULATED MODE: Count pulses between telemetry reports
-      // Useful for very low RPM (< 1 RPM) where sample duration would be impractical
-      // With sampleSeconds=1800 (30 min) and 1 pulse/rev, can detect down to 0.033 RPM
-      // Can be auto-enabled based on expectedPulseRate
-      if (useAccumulatedMode) {
-        unsigned long now = millis();
-        
-        // Initialize accumulated counting on first call
-        if (!gRpmAccumulatedInitialized[idx]) {
-          atomicResetPulses(idx);
-          gRpmAccumulatedStartMillis[idx] = now;
-          gRpmLastPinState[idx] = digitalRead(pin);
-          gRpmAccumulatedInitialized[idx] = true;
-          Serial.print(F("Pulse accumulated mode initialized for monitor "));
-          Serial.println(idx);
-        }
-        
-        // Sample for a short burst to catch any recent pulses
-        // This supplements the main loop polling
-        unsigned long burstStart = millis();
-        const unsigned long BURST_DURATION_MS = 1000; // 1 second burst sample
-        int lastState = gRpmLastPinState[idx];
-        unsigned long lastPulseTime = 0;
-        
-        while ((millis() - burstStart) < BURST_DURATION_MS) {
-          int currentState = digitalRead(pin);
-          bool edgeDetected = false;
-          
-          switch (cfg.hallEffectType) {
-            case HALL_EFFECT_UNIPOLAR:
-            case HALL_EFFECT_ANALOG:
-              edgeDetected = (lastState == HIGH && currentState == LOW);
-              break;
-            case HALL_EFFECT_BIPOLAR:
-            case HALL_EFFECT_OMNIPOLAR:
-              edgeDetected = (lastState != currentState);
-              break;
-            default:
-              edgeDetected = (lastState == HIGH && currentState == LOW);
-              break;
-          }
-          
-          if (edgeDetected) {
-            unsigned long pulseTime = millis();
-            if (pulseTime - lastPulseTime >= DEBOUNCE_MS) {
-              atomicIncrementPulses(idx);
-              lastPulseTime = pulseTime;
-            }
-          }
-          lastState = currentState;
-          delay(1);
-          
-#ifdef TANKALARM_WATCHDOG_AVAILABLE
-          #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-            mbedWatchdog.kick();
-          #else
-            IWatchdog.reload();
-          #endif
-#endif
-        }
-        gRpmLastPinState[idx] = lastState;
-        
-        // Calculate RPM from accumulated pulses over elapsed time
-        // Use atomic read to get consistent pulse count
-        unsigned long elapsedMs = now - gRpmAccumulatedStartMillis[idx];
-        uint32_t pulseCount = atomicReadPulses(idx);
-        if (elapsedMs > 1000 && pulseCount > 0) {
-          // RPM = (pulses * 60000) / (elapsed_ms * pulses_per_rev)
-          rpm = ((float)pulseCount * MS_PER_MINUTE) / 
-                ((float)elapsedMs * (float)pulsesPerRev);
-        } else if (elapsedMs > sampleDurationMs && pulseCount == 0) {
-          // No pulses for longer than sample duration - report 0 RPM
-          rpm = 0.0f;
-        } else {
-          // Not enough time elapsed, use last reading
-          rpm = gRpmLastReading[idx];
-        }
-        
-        // Reset accumulated count after reading (start fresh for next period)
-        atomicResetPulses(idx);
-        gRpmAccumulatedStartMillis[idx] = now;
-        
-        Serial.print(F("RPM accumulated: "));
-        Serial.print(rpm, 2);
-        Serial.print(F(" ("));
-        Serial.print(elapsedMs / 1000);
-        Serial.println(F("s period)"));
-      }
-      // TIME-BASED MODE: Measure period between consecutive pulses
-      else if (cfg.hallEffectDetection == HALL_DETECT_TIME_BASED) {
-        // Time-based detection: measure period between pulses
-        // More flexible for different magnet types and orientations
-        // Requires fewer pulses to get a reading
-        
-        unsigned long sampleStart = millis();
-        int lastState = digitalRead(pin);
-        gRpmLastPinState[idx] = lastState;
-        unsigned long firstPulseTime = 0;
-        unsigned long secondPulseTime = 0;
-        unsigned long cycleLastPulseTime = 0; // Track last pulse within this measurement cycle for debounce
-        uint32_t iterationCount = 0;
-        bool firstPulseDetected = false;
-        bool secondPulseDetected = false;
-        
-        // Detect edge transitions based on sensor type
-        // Use configurable sample duration
-        while ((millis() - sampleStart) < sampleDurationMs && iterationCount < MAX_ITERATIONS) {
-          int currentState = digitalRead(pin);
-          bool edgeDetected = false;
-          
-          // Determine edge detection based on hall effect sensor type
-          switch (cfg.hallEffectType) {
-            case HALL_EFFECT_UNIPOLAR:
-            case HALL_EFFECT_ANALOG:
-              // Unipolar and Analog: triggers on one pole (active low), detect falling edge
-              edgeDetected = (lastState == HIGH && currentState == LOW);
-              break;
-            case HALL_EFFECT_BIPOLAR:
-            case HALL_EFFECT_OMNIPOLAR:
-              // Bipolar/Latching and Omnipolar: detect both edges (state changes)
-              edgeDetected = (lastState != currentState);
-              break;
-            default:
-              // Default to unipolar behavior if value is invalid/corrupted
-              edgeDetected = (lastState == HIGH && currentState == LOW);
-              break;
-          }
-          
-          if (edgeDetected) {
-            unsigned long now = millis();
-            // Debounce using cycle-local tracking within this measurement
-            if (now - cycleLastPulseTime >= DEBOUNCE_MS) {
-              cycleLastPulseTime = now;
-              if (!firstPulseDetected) {
-                firstPulseTime = now;
-                firstPulseDetected = true;
-              } else if (!secondPulseDetected) {
-                secondPulseTime = now;
-                gRpmPulsePeriodMs[idx] = secondPulseTime - firstPulseTime;
-                gRpmLastPulseTime[idx] = secondPulseTime;
-                secondPulseDetected = true;
-                break; // Got our measurement, exit early
-              }
-            }
-          }
-          lastState = currentState;
-          delay(1);
-          iterationCount++;
-          
-#ifdef TANKALARM_WATCHDOG_AVAILABLE
-          #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-            mbedWatchdog.kick();
-          #else
-            IWatchdog.reload();
-          #endif
-#endif
-        }
-        
-        gRpmLastPinState[idx] = lastState;
-        gRpmLastSampleMillis[idx] = millis();
-        
-        // Calculate RPM from pulse period
-        if (secondPulseDetected && gRpmPulsePeriodMs[idx] > 0) {
-          // Got a valid measurement this cycle
-          // RPM = (60000 ms/min) / (period_ms * pulses_per_rev)
-          rpm = MS_PER_MINUTE / ((float)gRpmPulsePeriodMs[idx] * (float)pulsesPerRev);
-        } else if (firstPulseDetected && !secondPulseDetected) {
-          // Only one pulse detected - RPM is very low or stopped
-          // If we didn't get a second pulse within the sample duration,
-          // RPM is below: 60000ms / (sampleDurationMs * pulsesPerRev)
-          // For 60s sampling with 1 pulse/rev: < 1 RPM
-          // Consider using rpmAccumulatedMode=true for sub-1 RPM measurement
-          rpm = gRpmLastReading[idx];
-        } else {
-          // No pulses detected, keep last reading
-          rpm = gRpmLastReading[idx];
-        }
-        
-      } else {
-        // PULSE COUNTING MODE (traditional approach)
-        // Sample pulses for configurable duration (default 60 seconds)
-        // This provides accurate RPM measurement by counting multiple pulses
-        
-        unsigned long sampleStart = millis();
-        uint32_t pulseCount = 0;
-        
-        // Always read current pin state first to establish baseline
-        int lastState = digitalRead(pin);
-        gRpmLastPinState[idx] = lastState;
-        
-        unsigned long lastPulseTime = 0;
-        uint32_t iterationCount = 0;
-        
-        while ((millis() - sampleStart) < sampleDurationMs && iterationCount < MAX_ITERATIONS) {
-          int currentState = digitalRead(pin);
-          bool edgeDetected = false;
-          
-          // Determine edge detection based on hall effect sensor type
-          switch (cfg.hallEffectType) {
-            case HALL_EFFECT_UNIPOLAR:
-            case HALL_EFFECT_ANALOG:
-              // Unipolar and Analog: triggers on one pole, detect falling edge (active low)
-              edgeDetected = (lastState == HIGH && currentState == LOW);
-              break;
-            case HALL_EFFECT_BIPOLAR:
-            case HALL_EFFECT_OMNIPOLAR:
-              // Bipolar/Latching and Omnipolar: count both edges (state changes)
-              edgeDetected = (lastState != currentState);
-              break;
-            default:
-              // Default to unipolar behavior for safety and consistency
-              edgeDetected = (lastState == HIGH && currentState == LOW);
-              break;
-          }
-          
-          if (edgeDetected) {
-            unsigned long now = millis();
-            if (now - lastPulseTime >= DEBOUNCE_MS) {
-              pulseCount++;
-              lastPulseTime = now;
-            }
-          }
-          lastState = currentState;
-          delay(1);
-          iterationCount++;
-          
-#ifdef TANKALARM_WATCHDOG_AVAILABLE
-          #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-            mbedWatchdog.kick();
-          #else
-            IWatchdog.reload();
-          #endif
-#endif
-        }
-        
-        gRpmLastPinState[idx] = lastState;
-        gRpmLastSampleMillis[idx] = millis();
-        
-        // Calculate RPM from pulse count (using pre-validated pulsesPerRev)
-        // RPM = (pulses * 60000) / (sample_duration_ms * pulses_per_rev)
-        rpm = ((float)pulseCount * MS_PER_MINUTE) / ((float)sampleDurationMs * (float)pulsesPerRev);
-      }
-      
-      gRpmLastReading[idx] = rpm;
-      
-      // Return RPM value (use highAlarmThreshold for max expected RPM)
-      return rpm;
+      // Return the best available reading
+      return readPulseSensorResult(idx);
     }
     default:
       return 0.0f;
@@ -4014,9 +4103,32 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
     return false;
   }
 
-  // Add current timestamp
+  // Add current timestamp (per-tank)
   if (state.alarmCount < MAX_ALARMS_PER_HOUR) {
     state.alarmTimestamps[state.alarmCount++] = now;
+  }
+
+  // Global alarm rate limit — cap total alarms across ALL tanks per hour
+  {
+    uint8_t gValid = 0;
+    for (uint8_t g = 0; g < gGlobalAlarmCount; ++g) {
+      if (gGlobalAlarmTimestamps[g] > oneHourAgo) {
+        gGlobalAlarmTimestamps[gValid++] = gGlobalAlarmTimestamps[g];
+      }
+    }
+    gGlobalAlarmCount = gValid;
+
+    if (gGlobalAlarmCount >= MAX_GLOBAL_ALARMS_PER_HOUR) {
+      Serial.print(F("Rate limit: Global hourly cap reached ("));
+      Serial.print(gGlobalAlarmCount);
+      Serial.print(F("/"));
+      Serial.print(MAX_GLOBAL_ALARMS_PER_HOUR);
+      Serial.println(F(")"));
+      return false;
+    }
+    if (gGlobalAlarmCount < MAX_GLOBAL_ALARMS_PER_HOUR) {
+      gGlobalAlarmTimestamps[gGlobalAlarmCount++] = now;
+    }
   }
 
   // Update last alarm time for this type
@@ -4166,7 +4278,14 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
       if (shouldActivateRelay && !gRelayActiveForTank[idx]) {
         triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, true);
         gRelayActiveForTank[idx] = true;
-        gRelayActivationTime[idx] = millis();
+        gRelayActiveMaskForTank[idx] = cfg.relayMask;
+        // Set per-relay activation times for independent timeout tracking
+        unsigned long activateTime = millis();
+        for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+          if (cfg.relayMask & (1 << r)) {
+            gRelayActivationTime[r] = activateTime;
+          }
+        }
         Serial.print(F("Relay activated for "));
         Serial.print(alarmType);
         Serial.print(F(" alarm (mode: "));
@@ -4853,6 +4972,29 @@ static void loadSolarStateFromFlash() {
       gSolarOnlyBatteryFailed = doc["batteryFailed"].is<bool>() ? doc["batteryFailed"].as<bool>() : false;
       Serial.println(F("Solar state loaded from flash"));
     }
+  #else
+    // STM32 LittleFS path
+    if (!LittleFS.exists(SOLAR_STATE_FILE)) {
+      Serial.println(F("No solar state file found - first boot"));
+      return;
+    }
+    File file = LittleFS.open(SOLAR_STATE_FILE, "r");
+    if (!file) {
+      Serial.println(F("No solar state file found - first boot"));
+      return;
+    }
+    char buf[256];
+    size_t len = file.readBytes(buf, sizeof(buf) - 1);
+    file.close();
+    buf[len] = '\0';
+    
+    JsonDocument doc;
+    if (deserializeJson(doc, buf) == DeserializationError::Ok) {
+      gSolarOnlyLastReportEpoch = doc["lastReportEpoch"].is<double>() ? doc["lastReportEpoch"].as<double>() : 0.0;
+      gSolarOnlyBootCount = doc["bootCount"].is<unsigned long>() ? doc["bootCount"].as<unsigned long>() : 0;
+      gSolarOnlyBatteryFailed = doc["batteryFailed"].is<bool>() ? doc["batteryFailed"].as<bool>() : false;
+      Serial.println(F("Solar state loaded from flash (LittleFS)"));
+    }
   #endif
 #endif
 }
@@ -4876,6 +5018,20 @@ static void saveSolarStateToFlash() {
     if (!tankalarm_posix_write_file_atomic(SOLAR_STATE_FILE, buf, len)) {
       Serial.println(F("Warning: Failed to save solar state"));
     }
+  #else
+    // STM32 LittleFS path
+    JsonDocument doc;
+    doc["lastReportEpoch"] = gSolarOnlyLastReportEpoch;
+    doc["bootCount"] = gSolarOnlyBootCount;
+    doc["batteryFailed"] = gSolarOnlyBatteryFailed;
+    
+    char buf[256];
+    size_t len = serializeJson(doc, buf, sizeof(buf));
+    
+    if (!tankalarm_littlefs_write_file_atomic(SOLAR_STATE_FILE,
+            (const uint8_t *)buf, len)) {
+      Serial.println(F("Warning: Failed to save solar state (LittleFS)"));
+    }
   #endif
 #endif
 }
@@ -4885,8 +5041,15 @@ static void saveSolarStateToFlash() {
  * Blocks in setup() until power is deemed stable enough to operate.
  *
  * With Vin divider: waits until Vin >= startupDebounceVoltage for startupDebounceSec continuously.
+ *   Safety timeout: aborts after STARTUP_DEBOUNCE_MAX_WAIT_MS (default 5 minutes) if voltage
+ *   never stabilizes, to prevent infinite blocking on brownout/bad-wiring conditions.
  * Without Vin divider: waits startupWarmupSec as a fixed timer.
  */
+// Maximum time to wait for voltage-based startup debounce before giving up (5 minutes)
+#ifndef STARTUP_DEBOUNCE_MAX_WAIT_MS
+#define STARTUP_DEBOUNCE_MAX_WAIT_MS (5UL * 60UL * 1000UL)
+#endif
+
 static void performStartupDebounce() {
   Serial.println(F("Solar-only: startup debounce..."));
   
@@ -4897,14 +5060,28 @@ static void performStartupDebounce() {
     unsigned long debounceMs = (unsigned long)debounceSec * 1000UL;
     unsigned long stableStart = 0;
     bool stable = false;
+    unsigned long debounceLoopStart = millis();
     
     Serial.print(F("  Waiting for Vin >= "));
     Serial.print(debounceV, 1);
     Serial.print(F("V for "));
     Serial.print(debounceSec);
-    Serial.println(F("s"));
+    Serial.print(F("s (max wait: "));
+    Serial.print(STARTUP_DEBOUNCE_MAX_WAIT_MS / 60000UL);
+    Serial.println(F(" min)"));
     
     while (!stable) {
+      // Safety timeout: prevent infinite blocking if voltage never stabilizes
+      if (millis() - debounceLoopStart >= STARTUP_DEBOUNCE_MAX_WAIT_MS) {
+        Serial.print(F("  WARNING: Startup debounce timeout after "));
+        Serial.print(STARTUP_DEBOUNCE_MAX_WAIT_MS / 60000UL);
+        Serial.print(F(" min (Vin="));
+        Serial.print(gVinVoltage, 2);
+        Serial.println(F("V) — proceeding with degraded power"));
+        addSerialLog("Startup debounce timeout - proceeding anyway");
+        break;
+      }
+      
       gVinVoltage = readVinDividerVoltage();
       
       if (gVinVoltage >= debounceV) {
@@ -4922,9 +5099,11 @@ static void performStartupDebounce() {
       }
     }
     
-    Serial.print(F("  Stable at "));
-    Serial.print(gVinVoltage, 2);
-    Serial.println(F("V"));
+    if (stable) {
+      Serial.print(F("  Stable at "));
+      Serial.print(gVinVoltage, 2);
+      Serial.println(F("V"));
+    }
     gSolarOnlyStartupComplete = true;
     
     // Check if voltage is high enough for sensors
@@ -5112,43 +5291,51 @@ static void updatePowerState() {
   
   gEffectiveBatteryVoltage = voltage;
   
+  // Use remote-tunable thresholds if configured, otherwise compile-time defaults
+  const float ecoEnter      = (gConfig.powerEcoEnterV > 0.0f) ? gConfig.powerEcoEnterV : POWER_ECO_ENTER_VOLTAGE;
+  const float lowEnter      = (gConfig.powerLowEnterV > 0.0f) ? gConfig.powerLowEnterV : POWER_LOW_ENTER_VOLTAGE;
+  const float criticalEnter = (gConfig.powerCriticalEnterV > 0.0f) ? gConfig.powerCriticalEnterV : POWER_CRITICAL_ENTER_VOLTAGE;
+  const float ecoExit       = (gConfig.powerEcoExitV > 0.0f) ? gConfig.powerEcoExitV : POWER_ECO_EXIT_VOLTAGE;
+  const float lowExit       = (gConfig.powerLowExitV > 0.0f) ? gConfig.powerLowExitV : POWER_LOW_EXIT_VOLTAGE;
+  const float criticalExit  = (gConfig.powerCriticalExitV > 0.0f) ? gConfig.powerCriticalExitV : POWER_CRITICAL_EXIT_VOLTAGE;
+  
   // Determine the proposed state based on current voltage and hysteresis direction
   PowerState proposed;
   
   if (gPowerState == POWER_STATE_NORMAL) {
     // Currently NORMAL — check if we should degrade
-    if (voltage < POWER_CRITICAL_ENTER_VOLTAGE) {
+    if (voltage < criticalEnter) {
       proposed = POWER_STATE_CRITICAL_HIBERNATE;
-    } else if (voltage < POWER_LOW_ENTER_VOLTAGE) {
+    } else if (voltage < lowEnter) {
       proposed = POWER_STATE_LOW_POWER;
-    } else if (voltage < POWER_ECO_ENTER_VOLTAGE) {
+    } else if (voltage < ecoEnter) {
       proposed = POWER_STATE_ECO;
     } else {
       proposed = POWER_STATE_NORMAL;
     }
   } else if (gPowerState == POWER_STATE_ECO) {
     // Currently ECO — can degrade further or recover
-    if (voltage < POWER_CRITICAL_ENTER_VOLTAGE) {
+    if (voltage < criticalEnter) {
       proposed = POWER_STATE_CRITICAL_HIBERNATE;
-    } else if (voltage < POWER_LOW_ENTER_VOLTAGE) {
+    } else if (voltage < lowEnter) {
       proposed = POWER_STATE_LOW_POWER;
-    } else if (voltage >= POWER_ECO_EXIT_VOLTAGE) {
+    } else if (voltage >= ecoExit) {
       proposed = POWER_STATE_NORMAL;  // Recovered
     } else {
       proposed = POWER_STATE_ECO;     // Stay in ECO
     }
   } else if (gPowerState == POWER_STATE_LOW_POWER) {
     // Currently LOW_POWER — can degrade to CRITICAL or recover
-    if (voltage < POWER_CRITICAL_ENTER_VOLTAGE) {
+    if (voltage < criticalEnter) {
       proposed = POWER_STATE_CRITICAL_HIBERNATE;
-    } else if (voltage >= POWER_LOW_EXIT_VOLTAGE) {
+    } else if (voltage >= lowExit) {
       proposed = POWER_STATE_ECO;     // Step up one level (not straight to NORMAL)
     } else {
       proposed = POWER_STATE_LOW_POWER;
     }
   } else {
     // Currently CRITICAL_HIBERNATE — only recover if voltage is high enough
-    if (voltage >= POWER_CRITICAL_EXIT_VOLTAGE) {
+    if (voltage >= criticalExit) {
       proposed = POWER_STATE_LOW_POWER;  // Step up one level at a time
     } else {
       proposed = POWER_STATE_CRITICAL_HIBERNATE;
@@ -5216,6 +5403,7 @@ static void updatePowerState() {
   if (gConfig.solarOnlyConfig.batteryFailureFallback && !gConfig.solarOnlyConfig.enabled) {
     if (gPowerState == POWER_STATE_CRITICAL_HIBERNATE) {
       gSolarOnlyBatFailCount++;
+      gSolarOnlyBatFailLastIncrMillis = millis();
       if (gSolarOnlyBatFailCount >= gConfig.solarOnlyConfig.batteryFailureThreshold && !gSolarOnlyBatteryFailed) {
         gSolarOnlyBatteryFailed = true;
         gSolarOnlyStartupComplete = true;  // Already running, no debounce needed
@@ -5246,6 +5434,14 @@ static void updatePowerState() {
       // accumulate false counts — reset as soon as voltage improves enough
       // to leave CRITICAL (requires POWER_CRITICAL_EXIT_VOLTAGE hysteresis).
       if (gSolarOnlyBatFailCount > 0) {
+        gSolarOnlyBatFailCount = 0;
+      }
+      // Time-based decay: if the counter hasn't been incremented in 24 hours,
+      // decay it to zero. This prevents slow accumulation over days/weeks of
+      // borderline voltage from eventually triggering a false state transition.
+      if (gSolarOnlyBatFailCount > 0 && 
+          (millis() - gSolarOnlyBatFailLastIncrMillis >= SOLAR_BAT_FAIL_DECAY_MS)) {
+        Serial.println(F("Solar bat-fail counter decayed (24h without increment)"));
         gSolarOnlyBatFailCount = 0;
       }
       if (gSolarOnlyBatteryFailed && gPowerState <= POWER_STATE_ECO) {
@@ -5443,7 +5639,8 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
   // fileName is already a plain .qo notefile name (e.g., "telemetry.qo")
   // Cross-device routing is handled by Notehub Routes — no fleet: prefix needed
 
-  char buffer[1024];
+  // Static buffer to avoid 1 KB stack pressure on every call path
+  static char buffer[1024];
   size_t len = serializeJson(doc, buffer, sizeof(buffer));
   if (len == 0 || len >= sizeof(buffer)) {
     Serial.println(F("publishNote: JSON serialization failed or exceeded buffer"));
@@ -5572,35 +5769,39 @@ static void flushBufferedNotes() {
         while ((ch = fgetc(src)) != EOF && ch != '\n') {}
         continue;
       }
-      String line = String(lineBuffer);
-      line.trim();
-      if (line.length() == 0) {
-        continue;
+      // Trim trailing whitespace (newline, CR, spaces) in-place
+      size_t lineLen = strlen(lineBuffer);
+      while (lineLen > 0 && (lineBuffer[lineLen - 1] == '\n' || lineBuffer[lineLen - 1] == '\r' || lineBuffer[lineLen - 1] == ' ')) {
+        lineBuffer[--lineLen] = '\0';
       }
+      if (lineLen == 0) continue;
 
-      int firstTab = line.indexOf('\t');
-      int secondTab = (firstTab >= 0) ? line.indexOf('\t', firstTab + 1) : -1;
-      if (firstTab < 0 || secondTab < 0) {
-        continue;
-      }
+      // Parse tab-delimited fields: fileName\tsyncFlag\tpayload
+      char *tab1 = strchr(lineBuffer, '\t');
+      if (!tab1) continue;
+      char *tab2 = strchr(tab1 + 1, '\t');
+      if (!tab2) continue;
 
-      String fileName = line.substring(0, firstTab);
-      String syncToken = line.substring(firstTab + 1, secondTab);
-      bool syncNow = (syncToken == "1");
-      String payload = line.substring(secondTab + 1);
+      *tab1 = '\0';  // null-terminate fileName
+      *tab2 = '\0';  // null-terminate syncToken
+
+      const char *fileName = lineBuffer;
+      bool syncNow = (*(tab1 + 1) == '1');
+      const char *payload = tab2 + 1;
 
       J *req = notecard.newRequest("note.add");
       if (!req) {
         wroteFailures = true;
-        fprintf(tmp, "%s\n", line.c_str());
+        *tab1 = '\t'; *tab2 = '\t';  // restore tabs for re-serialization
+        fprintf(tmp, "%s\n", lineBuffer);
         continue;
       }
-      JAddStringToObject(req, "file", fileName.c_str());
+      JAddStringToObject(req, "file", fileName);
       if (syncNow) {
         JAddBoolToObject(req, "sync", true);
       }
 
-      J *body = JParse(payload.c_str());
+      J *body = JParse(payload);
       if (!body) {
         JDelete(req);
         continue;
@@ -5609,7 +5810,8 @@ static void flushBufferedNotes() {
 
       if (!notecard.sendRequest(req)) {
         wroteFailures = true;
-        fprintf(tmp, "%s\n", line.c_str());
+        *tab1 = '\t'; *tab2 = '\t';  // restore tabs for re-serialization
+        fprintf(tmp, "%s\n", lineBuffer);
       }
     }
     
@@ -5645,35 +5847,48 @@ static void flushBufferedNotes() {
 
     bool wroteFailures = false;
     while (src.available()) {
-      String line = src.readStringUntil('\n');
-      line.trim();
-      if (line.length() == 0) {
-        continue;
+      // Read line into fixed buffer instead of Arduino String
+      char lineBuffer[1024];
+      size_t lineLen = 0;
+      while (src.available() && lineLen < sizeof(lineBuffer) - 1) {
+        char c = src.read();
+        if (c == '\n') break;
+        lineBuffer[lineLen++] = c;
       }
+      lineBuffer[lineLen] = '\0';
 
-      int firstTab = line.indexOf('\t');
-      int secondTab = (firstTab >= 0) ? line.indexOf('\t', firstTab + 1) : -1;
-      if (firstTab < 0 || secondTab < 0) {
-        continue;
+      // Trim trailing whitespace (CR, spaces) in-place
+      while (lineLen > 0 && (lineBuffer[lineLen - 1] == '\r' || lineBuffer[lineLen - 1] == ' ')) {
+        lineBuffer[--lineLen] = '\0';
       }
+      if (lineLen == 0) continue;
 
-      String fileName = line.substring(0, firstTab);
-      String syncToken = line.substring(firstTab + 1, secondTab);
-      bool syncNow = (syncToken == "1");
-      String payload = line.substring(secondTab + 1);
+      // Parse tab-delimited fields: fileName\tsyncFlag\tpayload
+      char *tab1 = strchr(lineBuffer, '\t');
+      if (!tab1) continue;
+      char *tab2 = strchr(tab1 + 1, '\t');
+      if (!tab2) continue;
+
+      *tab1 = '\0';  // null-terminate fileName
+      *tab2 = '\0';  // null-terminate syncToken
+
+      const char *fileName = lineBuffer;
+      bool syncNow = (*(tab1 + 1) == '1');
+      const char *payload = tab2 + 1;
 
       J *req = notecard.newRequest("note.add");
       if (!req) {
         wroteFailures = true;
-        tmp.println(line);
+        *tab1 = '\t'; *tab2 = '\t';  // restore tabs for re-serialization
+        tmp.println(lineBuffer);
         continue;
       }
-      JAddStringToObject(req, "file", fileName.c_str());
+      JAddStringToObject(req, "file", fileName);
       if (syncNow) {
         JAddBoolToObject(req, "sync", true);
       }
 
-      J *body = JParse(payload.c_str());
+      J *body = JParse(payload);
       if (!body) {
         JDelete(req);
         continue;
@@ -5682,7 +5897,8 @@ static void flushBufferedNotes() {
 
       if (!notecard.sendRequest(req)) {
         wroteFailures = true;
-        tmp.println(line);
+        *tab1 = '\t'; *tab2 = '\t';  // restore tabs for re-serialization
+        tmp.println(lineBuffer);
       }
     }
 
@@ -6052,8 +6268,9 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
   }
 }
 
-// Check and deactivate relays that have exceeded the momentary timeout
-// Uses the minimum duration among the active relays in the mask
+// Check and deactivate relays that have exceeded their individual momentary timeout.
+// Each relay in a tank's mask is tracked independently, allowing different durations
+// (e.g., relay 0 = 10 min, relay 2 = 60 min) to expire at their own times.
 static void checkRelayMomentaryTimeout(unsigned long now) {
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
     const MonitorConfig &cfg = gConfig.monitors[i];
@@ -6063,40 +6280,47 @@ static void checkRelayMomentaryTimeout(unsigned long now) {
       continue;
     }
     
-    // Find the minimum duration among the relays in this tank's mask
-    // 0 means "use default" (30 minutes)
-    uint32_t minDurationMs = 0xFFFFFFFF; // Start with max value
-    for (uint8_t r = 0; r < 4; r++) {
-      if (cfg.relayMask & (1 << r)) {
-        uint16_t seconds = cfg.relayMomentarySeconds[r];
-        if (seconds == 0) {
-          seconds = DEFAULT_RELAY_MOMENTARY_SECONDS; // Use default for 0
-        }
-        uint32_t durationMs = (uint32_t)seconds * 1000UL;
-        if (durationMs < minDurationMs) {
-          minDurationMs = durationMs;
-        }
+    // Check each relay in this tank's active mask independently
+    uint8_t expiredMask = 0;
+    for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+      if (!(gRelayActiveMaskForTank[i] & (1 << r))) {
+        continue; // Relay not active for this tank
       }
-    }
-    
-    // Default to 30 minutes if no relays in mask (shouldn't happen)
-    if (minDurationMs == 0xFFFFFFFF) {
-      minDurationMs = DEFAULT_RELAY_MOMENTARY_SECONDS * 1000UL;
-    }
-    
-    // Check if the duration has elapsed
-    // Note: Unsigned subtraction correctly handles millis() overflow due to modular arithmetic
-    if (now - gRelayActivationTime[i] >= minDurationMs) {
-      // Deactivate the relay
-      if (cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
-        triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
-        Serial.print(F("Momentary relay timeout ("));
-        Serial.print(minDurationMs / 60000UL);
+      
+      uint16_t seconds = cfg.relayMomentarySeconds[r];
+      if (seconds == 0) {
+        seconds = DEFAULT_RELAY_MOMENTARY_SECONDS; // Use default for 0
+      }
+      uint32_t durationMs = (uint32_t)seconds * 1000UL;
+      
+      // Note: Unsigned subtraction correctly handles millis() overflow
+      if (now - gRelayActivationTime[r] >= durationMs) {
+        expiredMask |= (1 << r);
+        Serial.print(F("Momentary relay "));
+        Serial.print(r);
+        Serial.print(F(" timeout ("));
+        Serial.print(seconds / 60);
         Serial.print(F(" min) for tank "));
         Serial.println(i);
       }
+    }
+    
+    // Deactivate expired relays
+    if (expiredMask != 0 && cfg.relayTargetClient[0] != '\0') {
+      triggerRemoteRelays(cfg.relayTargetClient, expiredMask, false);
+    }
+    
+    // Update active mask — remove expired relays
+    gRelayActiveMaskForTank[i] &= ~expiredMask;
+    for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+      if (expiredMask & (1 << r)) {
+        gRelayActivationTime[r] = 0;
+      }
+    }
+    
+    // If no relays remain active for this tank, clear the tank-level flag
+    if (gRelayActiveMaskForTank[i] == 0) {
       gRelayActiveForTank[i] = false;
-      gRelayActivationTime[i] = 0;
     }
   }
 }
@@ -6115,7 +6339,13 @@ static void resetRelayForTank(uint8_t idx) {
     Serial.println(idx);
   }
   gRelayActiveForTank[idx] = false;
-  gRelayActivationTime[idx] = 0;
+  // Clear per-relay activation times for relays in this tank's mask
+  for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+    if (gRelayActiveMaskForTank[idx] & (1 << r)) {
+      gRelayActivationTime[r] = 0;
+    }
+  }
+  gRelayActiveMaskForTank[idx] = 0;
 }
 
 // ============================================================================

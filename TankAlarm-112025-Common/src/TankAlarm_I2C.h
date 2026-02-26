@@ -106,8 +106,8 @@ static inline void tankalarm_recoverI2CBus(
   }
 
   // Generate STOP condition: SDA goes low then high while SCL is high
-  pinMode(I2C_SDA_PIN, OUTPUT);
   digitalWrite(I2C_SDA_PIN, LOW);
+  pinMode(I2C_SDA_PIN, OUTPUT);
   delayMicroseconds(5);
   digitalWrite(I2C_SCL_PIN, HIGH);
   delayMicroseconds(5);
@@ -152,7 +152,7 @@ static inline I2CScanResult tankalarm_scanI2CBus(
     const char * const *expectedNames,
     uint8_t count
 ) {
-  I2CScanResult result = {0, count, 0, false};
+  I2CScanResult result = {0, count, 0, 0, false};
 
   while (result.retryCount < I2C_STARTUP_SCAN_RETRIES && !result.allFound) {
     if (result.retryCount > 0) {
@@ -247,7 +247,7 @@ static inline float tankalarm_readCurrentLoopMilliamps(
 
     Wire.beginTransmission(i2cAddr);
     Wire.write((uint8_t)channel);
-    uint8_t err = Wire.endTransmission(false);
+    uint8_t err = Wire.endTransmission();
     if (err != 0) {
       if (attempt == MAX_I2C_RETRIES - 1) {
         // Log specific I2C error code on final attempt:
@@ -262,6 +262,8 @@ static inline float tankalarm_readCurrentLoopMilliamps(
       }
       continue;
     }
+
+    delay(1); // Give A0602 time to process the channel change
 
     if (Wire.requestFrom(i2cAddr, (uint8_t)2) != 2) {
       if (attempt == MAX_I2C_RETRIES - 1) {
