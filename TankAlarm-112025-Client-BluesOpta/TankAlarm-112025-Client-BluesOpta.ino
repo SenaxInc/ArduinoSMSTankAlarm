@@ -2203,8 +2203,7 @@ static void initializeNotecard() {
 #ifdef DEBUG_MODE
   notecard.setDebugOutputStream(Serial);
 #endif
-  Wire3.begin();
-  notecard.begin(NOTECARD_I2C_ADDRESS, 255, Wire3);
+  notecard.begin(NOTECARD_I2C_ADDRESS);
 
   // Configure hub mode (fire-and-forget — if the Notecard isn't ready yet,
   // these will silently fail and the main loop's checkNotecardHealth() will
