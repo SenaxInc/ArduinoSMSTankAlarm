@@ -43,6 +43,8 @@ The TankAlarm 112025 Server receives tank level data from multiple clients, disp
 
 **For detailed step-by-step instructions, see [INSTALLATION.md](INSTALLATION.md)**
 
+**For Notecard I2C diagnostics/recovery, see [../Tutorials/Tutorials-112025/I2C_UTILITY_GUIDE.md](../Tutorials/Tutorials-112025/I2C_UTILITY_GUIDE.md)**
+
 ### 3. Blues Notehub Setup
 1. Create account at [notehub.io](https://notehub.io)
 2. Create a product for your tank alarm system

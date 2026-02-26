@@ -8,7 +8,7 @@
 
 This directory contains comprehensive, step-by-step tutorials for deploying and managing the TankAlarm 112025 tank monitoring system. All tutorials follow a consistent SparkFun-style format with clear instructions, troubleshooting sections, and helpful diagrams.
 
-**Tutorial Count:** 15 comprehensive guides covering installation, configuration, communication, operations, and advanced features.
+**Tutorial Count:** 16 comprehensive guides covering installation, configuration, communication, operations, and advanced features.
 
 ---
 
@@ -36,6 +36,26 @@ Perfect for:
 ---
 
 ## 🔗 Communication & Routes (Set Up Before Devices!)
+
+### [I2C Utility Guide](I2C_UTILITY_GUIDE.md) ⭐
+
+*Diagnose and recover Notecard I2C communication without editing production firmware*
+
+**Covers:**
+- Uploading and running the shared I2C utility on Client, Server, or Viewer
+- Scanning the I2C bus and detecting Notecard address issues
+- Running `hub.get`, `card.version`, and `card.wireless` diagnostics
+- Recovery actions: `hub.sync`, `hub.set`, and `card.io` address reset
+- Controlled factory restore workflow and post-recovery verification
+
+**Best for:**
+- Devices showing `{io}` Notecard transport errors
+- Field troubleshooting where fast isolation is required
+- Confirming hardware vs Notehub configuration issues
+
+**Time:** 10-20 minutes
+
+---
 
 ### [Notehub Routes Setup](NOTEHUB_ROUTES_SETUP.md) ⭐
 
