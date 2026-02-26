@@ -11,6 +11,60 @@
 
 #include <Arduino.h>
 #include <math.h>
+#include <string.h>
+
+// ============================================================================
+// Sensor Unit Conversion
+// ============================================================================
+
+// Unit conversion constants for 4-20mA sensors
+// constexpr gives type-safety, scoping, and debugger visibility vs bare #define
+static constexpr float METERS_TO_INCHES      = 39.3701f;  // 1 meter = 39.3701 inches
+static constexpr float CENTIMETERS_TO_INCHES = 0.393701f; // 1 centimeter = 0.393701 inches
+static constexpr float FEET_TO_INCHES        = 12.0f;     // 1 foot = 12 inches
+
+// Pressure-to-height conversion factors (for water at standard conditions)
+static constexpr float PSI_TO_INCHES_WATER   = 27.68f;    // 1 PSI = 27.68 inches of water column
+static constexpr float BAR_TO_INCHES_WATER   = 401.5f;    // 1 bar = 401.5 inches of water
+static constexpr float KPA_TO_INCHES_WATER   = 4.015f;    // 1 kPa = 4.015 inches of water
+static constexpr float MBAR_TO_INCHES_WATER  = 0.4015f;   // 1 mbar = 0.4015 inches of water
+
+enum class PressureUnit : uint8_t {
+  PSI,
+  BAR,
+  KPA,
+  MBAR,
+  IN_H2O
+};
+
+enum class DistanceUnit : uint8_t {
+  INCH,
+  METER,
+  CENTIMETER,
+  FOOT
+};
+
+// Conversion helpers (defined in header to avoid Arduino preprocessor prototype issues)
+inline float getPressureConversionFactor(PressureUnit unit) {
+  switch (unit) {
+    case PressureUnit::BAR:    return BAR_TO_INCHES_WATER;
+    case PressureUnit::KPA:    return KPA_TO_INCHES_WATER;
+    case PressureUnit::MBAR:   return MBAR_TO_INCHES_WATER;
+    case PressureUnit::IN_H2O: return 1.0f;
+    case PressureUnit::PSI:
+    default:                   return PSI_TO_INCHES_WATER;
+  }
+}
+
+inline float getDistanceConversionFactor(DistanceUnit unit) {
+  switch (unit) {
+    case DistanceUnit::METER:      return METERS_TO_INCHES;
+    case DistanceUnit::CENTIMETER: return CENTIMETERS_TO_INCHES;
+    case DistanceUnit::FOOT:       return FEET_TO_INCHES;
+    case DistanceUnit::INCH:
+    default:                       return 1.0f;
+  }
+}
 
 // ============================================================================
 // strlcpy - Safe String Copy
