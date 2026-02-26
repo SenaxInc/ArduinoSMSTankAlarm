@@ -268,8 +268,8 @@ static bool autoAttachNotecard() {
     return true;
   }
 
-  // Try likely alternate addresses (if card.io changed i2c)
-  for (uint8_t addr = 0x10; addr <= 0x1F; ++addr) {
+  // Try any ACKing address on the bus (supports alternate/custom setups)
+  for (uint8_t addr = 0x08; addr <= 0x77; ++addr) {
     if (addr == DEFAULT_NOTECARD_ADDRESS) {
       continue;
     }
@@ -277,6 +277,12 @@ static bool autoAttachNotecard() {
     if (!i2cAck(addr)) {
       continue;
     }
+
+    Serial.print(F("  Candidate ACK at 0x"));
+    if (addr < 0x10) {
+      Serial.print('0');
+    }
+    Serial.println(addr, HEX);
 
     if (attachNotecard(addr)) {
       Serial.println(F("Auto-detect success."));

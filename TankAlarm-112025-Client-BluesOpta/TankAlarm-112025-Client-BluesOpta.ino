@@ -191,6 +191,14 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define CURRENT_LOOP_I2C_ADDRESS 0x64
 #endif
 
+#ifndef CURRENT_LOOP_I2C_ALT_ADDRESS_1
+#define CURRENT_LOOP_I2C_ALT_ADDRESS_1 0x0A
+#endif
+
+#ifndef CURRENT_LOOP_I2C_ALT_ADDRESS_2
+#define CURRENT_LOOP_I2C_ALT_ADDRESS_2 0x00
+#endif
+
 #ifndef ALARM_DEBOUNCE_COUNT
 #define ALARM_DEBOUNCE_COUNT 3  // Require 3 consecutive samples to trigger/clear alarm
 #endif
@@ -758,6 +766,8 @@ static void createDefaultConfig(ClientConfig &cfg);
 static bool loadConfigFromFlash(ClientConfig &cfg);
 static bool saveConfigToFlash(const ClientConfig &cfg);
 static void printHardwareRequirements(const ClientConfig &cfg);
+static bool i2cAck(uint8_t address);
+static uint8_t resolveCurrentLoopI2cAddress(uint8_t preferredAddress);
 static void initializeNotecard();
 static void configureNotecardHubMode();
 static void syncTimeFromNotecard();
@@ -1094,6 +1104,51 @@ static void safeSleep(unsigned long ms);
 static void sendHealthTelemetry();
 #endif
 
+static bool i2cAck(uint8_t address) {
+  if (address < 0x08 || address > 0x77) {
+    return false;
+  }
+  Wire.beginTransmission(address);
+  return (Wire.endTransmission() == 0);
+}
+
+static uint8_t resolveCurrentLoopI2cAddress(uint8_t preferredAddress) {
+  const uint8_t fallbackAddress = CURRENT_LOOP_I2C_ADDRESS;
+  const uint8_t candidates[] = {
+    preferredAddress,
+    fallbackAddress,
+    CURRENT_LOOP_I2C_ALT_ADDRESS_1,
+    CURRENT_LOOP_I2C_ALT_ADDRESS_2
+  };
+
+  for (uint8_t idx = 0; idx < (uint8_t)(sizeof(candidates) / sizeof(candidates[0])); ++idx) {
+    uint8_t candidate = candidates[idx];
+    if (candidate < 0x08 || candidate > 0x77 || candidate == NOTECARD_I2C_ADDRESS) {
+      continue;
+    }
+
+    bool duplicate = false;
+    for (uint8_t prev = 0; prev < idx; ++prev) {
+      if (candidates[prev] == candidate) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) {
+      continue;
+    }
+
+    if (i2cAck(candidate)) {
+      return candidate;
+    }
+  }
+
+  if (preferredAddress >= 0x08 && preferredAddress <= 0x77 && preferredAddress != NOTECARD_I2C_ADDRESS) {
+    return preferredAddress;
+  }
+  return fallbackAddress;
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial && millis() < 2000) {
@@ -1119,9 +1174,24 @@ void setup() {
 
   Wire.begin();
 
+  uint8_t configuredCurrentLoopAddr = gConfig.currentLoopI2cAddress;
+  if (configuredCurrentLoopAddr < 0x08 || configuredCurrentLoopAddr > 0x77 || configuredCurrentLoopAddr == NOTECARD_I2C_ADDRESS) {
+    configuredCurrentLoopAddr = CURRENT_LOOP_I2C_ADDRESS;
+  }
+  uint8_t resolvedCurrentLoopAddr = resolveCurrentLoopI2cAddress(configuredCurrentLoopAddr);
+  if (resolvedCurrentLoopAddr != configuredCurrentLoopAddr) {
+    Serial.print(F("I2C: current loop address override 0x"));
+    if (configuredCurrentLoopAddr < 0x10) Serial.print('0');
+    Serial.print(configuredCurrentLoopAddr, HEX);
+    Serial.print(F(" -> 0x"));
+    if (resolvedCurrentLoopAddr < 0x10) Serial.print('0');
+    Serial.println(resolvedCurrentLoopAddr, HEX);
+  }
+  gConfig.currentLoopI2cAddress = resolvedCurrentLoopAddr;
+
   // ---- I2C bus scan: verify expected devices are present ----
   {
-    const uint8_t expectedAddrs[] = { NOTECARD_I2C_ADDRESS, CURRENT_LOOP_I2C_ADDRESS };
+    const uint8_t expectedAddrs[] = { NOTECARD_I2C_ADDRESS, resolvedCurrentLoopAddr };
     const char *expectedNames[] = { "Notecard", "A0602 Current Loop" };
     I2CScanResult scanResult = tankalarm_scanI2CBus(expectedAddrs, expectedNames, 2);
 
@@ -1132,7 +1202,7 @@ void setup() {
     // Determine per-device status via quick probes
     Wire.beginTransmission(NOTECARD_I2C_ADDRESS);
     gStartupNotecardFound = (Wire.endTransmission() == 0);
-    Wire.beginTransmission(CURRENT_LOOP_I2C_ADDRESS);
+    Wire.beginTransmission(resolvedCurrentLoopAddr);
     gStartupCurrentLoopFound = (Wire.endTransmission() == 0);
   }
 
@@ -3523,7 +3593,10 @@ static void logI2CRecoveryEvent(I2CRecoveryTrigger trigger) {
  */
 static float readCurrentLoopMilliamps(int16_t channel) {
   // Use runtime-configurable I2C address (falls back to compile-time default)
-  uint8_t i2cAddr = gConfig.currentLoopI2cAddress ? gConfig.currentLoopI2cAddress : CURRENT_LOOP_I2C_ADDRESS;
+  uint8_t i2cAddr = gConfig.currentLoopI2cAddress;
+  if (i2cAddr < 0x08 || i2cAddr > 0x77 || i2cAddr == NOTECARD_I2C_ADDRESS) {
+    i2cAddr = CURRENT_LOOP_I2C_ADDRESS;
+  }
   return tankalarm_readCurrentLoopMilliamps(channel, i2cAddr);
 }
 
