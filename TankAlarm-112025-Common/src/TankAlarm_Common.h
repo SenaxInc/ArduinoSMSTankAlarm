@@ -214,6 +214,11 @@
 #define HEALTH_OUTBOX_FILE "health.qo"          // Client sends periodic health status
 #endif
 
+// --- Diagnostics (I2C recovery events, future: config changes, DFU events) ---
+#ifndef DIAG_OUTBOX_FILE
+#define DIAG_OUTBOX_FILE "diag.qo"             // All sketches send diagnostic events
+#endif
+
 // ============================================================================
 // DFU (Device Firmware Update) Check Interval
 // ============================================================================

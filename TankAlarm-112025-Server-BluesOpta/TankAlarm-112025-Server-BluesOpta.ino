@@ -2460,10 +2460,11 @@ void loop() {
 
   handleWebRequests();
 
-  // ---- Notecard I2C health check (every 5 minutes when unavailable) ----
+  // ---- Notecard I2C health check (with exponential backoff) ----
   {
     static unsigned long lastNcHealthCheck = 0;
-    if (!gNotecardAvailable && (now - lastNcHealthCheck > 300000UL)) {
+    static unsigned long ncHealthInterval = NOTECARD_HEALTH_CHECK_BASE_INTERVAL_MS;
+    if (!gNotecardAvailable && (now - lastNcHealthCheck > ncHealthInterval)) {
       lastNcHealthCheck = now;
       J *hcReq = notecard.newRequest("card.version");
       if (hcReq) {
@@ -2474,14 +2475,28 @@ void loop() {
           gNotecardFailureCount = 0;
           gLastSuccessfulNotecardComm = millis();
           tankalarm_ensureNotecardBinding(notecard);
-          Serial.println(F("Notecard recovered - online"));
+          ncHealthInterval = NOTECARD_HEALTH_CHECK_BASE_INTERVAL_MS;
+          Serial.println(F("Notecard recovered - online (backoff reset)"));
         } else {
           gNotecardFailureCount++;
           if (gNotecardFailureCount >= I2C_NOTECARD_RECOVERY_THRESHOLD) {
             tankalarm_recoverI2CBus(gDfuInProgress);
+            Serial.print(F("I2C recovery event (trigger=HEALTH_CHECK, count="));
+            Serial.print(gI2cBusRecoveryCount);
+            Serial.println(F(")"));
             tankalarm_ensureNotecardBinding(notecard);
             gNotecardFailureCount = 0;
           }
+          // Exponential backoff up to max
+          if (ncHealthInterval < NOTECARD_HEALTH_CHECK_MAX_INTERVAL_MS) {
+            ncHealthInterval *= 2;
+            if (ncHealthInterval > NOTECARD_HEALTH_CHECK_MAX_INTERVAL_MS) {
+              ncHealthInterval = NOTECARD_HEALTH_CHECK_MAX_INTERVAL_MS;
+            }
+          }
+          Serial.print(F("Notecard health check backoff: next in "));
+          Serial.print(ncHealthInterval / 60000UL);
+          Serial.println(F(" min"));
         }
       }
     }

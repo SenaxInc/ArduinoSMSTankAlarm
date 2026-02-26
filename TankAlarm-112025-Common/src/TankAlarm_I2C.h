@@ -25,6 +25,22 @@
 #include "TankAlarm_Config.h"
 
 // ============================================================================
+// I2C Recovery Trigger Types
+// ============================================================================
+
+/**
+ * Identifies what caused an I2C bus recovery attempt.
+ * Used for diagnostic logging via Notecard (diag.qo).
+ */
+enum I2CRecoveryTrigger {
+  I2C_RECOVERY_NOTECARD_FAILURE = 0,  // Notecard unresponsive after threshold
+  I2C_RECOVERY_SENSOR_ONLY     = 1,  // All current-loop sensors failing, Notecard OK
+  I2C_RECOVERY_DUAL_FAILURE    = 2,  // Both Notecard and sensors failing
+  I2C_RECOVERY_HEALTH_CHECK    = 3,  // Server/Viewer health check triggered
+  I2C_RECOVERY_MANUAL          = 4   // I2C Utility or manual trigger
+};
+
+// ============================================================================
 // I2C Error Counters (extern — defined in each sketch)
 // ============================================================================
 
@@ -118,6 +134,7 @@ struct I2CScanResult {
   uint8_t foundCount;       // Number of expected devices found
   uint8_t expectedCount;    // Total expected devices
   uint8_t retryCount;       // Number of retry attempts used
+  uint8_t unexpectedCount;  // Number of unexpected devices on the bus
   bool allFound;            // True if all expected devices responded
 };
 
@@ -176,6 +193,7 @@ static inline I2CScanResult tankalarm_scanI2CBus(
   }
 
   // Quick scan for unexpected devices
+  result.unexpectedCount = 0;
   for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
     bool isExpected = false;
     for (uint8_t idx = 0; idx < count; idx++) {
@@ -187,6 +205,7 @@ static inline I2CScanResult tankalarm_scanI2CBus(
     if (isExpected) continue;
     Wire.beginTransmission(addr);
     if (Wire.endTransmission() == 0) {
+      result.unexpectedCount++;
       Serial.print(F("  0x"));
       if (addr < 0x10) Serial.print('0');
       Serial.print(addr, HEX);

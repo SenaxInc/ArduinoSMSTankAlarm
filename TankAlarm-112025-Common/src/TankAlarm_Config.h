@@ -114,6 +114,18 @@
 #define I2C_SENSOR_RECOVERY_MAX_BACKOFF 8
 #endif
 
+// Maximum backoff interval for Notecard health checks (ms)
+// Health check interval starts at 5 min, doubles after each failure,
+// and caps at this value. Resets to 5 min on successful recovery.
+#ifndef NOTECARD_HEALTH_CHECK_MAX_INTERVAL_MS
+#define NOTECARD_HEALTH_CHECK_MAX_INTERVAL_MS 4800000UL  // 80 minutes
+#endif
+
+// Base interval for Notecard health checks (ms)
+#ifndef NOTECARD_HEALTH_CHECK_BASE_INTERVAL_MS
+#define NOTECARD_HEALTH_CHECK_BASE_INTERVAL_MS 300000UL  // 5 minutes
+#endif
+
 // 24-hour I2C error count threshold that triggers an alarm note
 #ifndef I2C_ERROR_ALERT_THRESHOLD
 #define I2C_ERROR_ALERT_THRESHOLD 50

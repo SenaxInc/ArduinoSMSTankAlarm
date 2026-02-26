@@ -147,6 +147,9 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 // Health telemetry: client sends periodic system health status
 #define HEALTH_FILE HEALTH_OUTBOX_FILE  // "health.qo"
 
+// Diagnostics: I2C recovery events, future extension for config/DFU events
+#define DIAG_FILE DIAG_OUTBOX_FILE  // "diag.qo"
+
 // Health telemetry feature flag (disabled by default for bandwidth conservation)
 // Uncomment to enable periodic system health reporting to Notehub.
 //#define TANKALARM_HEALTH_TELEMETRY_ENABLED
@@ -611,6 +614,13 @@ static bool gNotecardAvailable = true;
 uint32_t gCurrentLoopI2cErrors = 0;
 uint32_t gI2cBusRecoveryCount = 0;
 
+// Startup I2C scan results — persisted for first health telemetry report
+static bool gStartupNotecardFound = false;
+static bool gStartupCurrentLoopFound = false;
+static uint8_t gStartupScanRetries = 0;
+static uint8_t gStartupUnexpectedDevices = 0;
+static bool gStartupScanReported = false;
+
 static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
 
 // Relay control state
@@ -763,6 +773,7 @@ static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, 
 static void sendSolarAlarm(SolarAlertType alertType);
 static bool appendSolarDataToDaily(JsonDocument &doc);
 static void recoverI2CBus();
+static void logI2CRecoveryEvent(I2CRecoveryTrigger trigger);
 // Battery voltage monitoring via Notecard (when wired directly to battery)
 static bool pollBatteryVoltage(BatteryData &data, const BatteryConfig &cfg);
 static void checkBatteryAlerts(const BatteryData &data, const BatteryConfig &cfg);
@@ -816,7 +827,17 @@ void setup() {
   {
     const uint8_t expectedAddrs[] = { NOTECARD_I2C_ADDRESS, CURRENT_LOOP_I2C_ADDRESS };
     const char *expectedNames[] = { "Notecard", "A0602 Current Loop" };
-    tankalarm_scanI2CBus(expectedAddrs, expectedNames, 2);
+    I2CScanResult scanResult = tankalarm_scanI2CBus(expectedAddrs, expectedNames, 2);
+
+    // Persist results for first health telemetry report (3.2.5)
+    gStartupScanRetries = scanResult.retryCount;
+    gStartupUnexpectedDevices = scanResult.unexpectedCount;
+
+    // Determine per-device status via quick probes
+    Wire.beginTransmission(NOTECARD_I2C_ADDRESS);
+    gStartupNotecardFound = (Wire.endTransmission() == 0);
+    Wire.beginTransmission(CURRENT_LOOP_I2C_ADDRESS);
+    gStartupCurrentLoopFound = (Wire.endTransmission() == 0);
   }
 
   initializeNotecard();
@@ -1001,12 +1022,35 @@ void loop() {
   #endif
 #endif
 
-  // Check notecard health periodically
+  // Check notecard health periodically (with exponential backoff)
   static unsigned long lastHealthCheck = 0;
-  if (now - lastHealthCheck > 300000UL) {  // Check every 5 minutes
+  static unsigned long healthCheckInterval = NOTECARD_HEALTH_CHECK_BASE_INTERVAL_MS;
+  if (now - lastHealthCheck > healthCheckInterval) {
     lastHealthCheck = now;
     if (!gNotecardAvailable) {
-      checkNotecardHealth();
+      bool recovered = checkNotecardHealth();
+      if (recovered) {
+        // Notecard recovered — reset backoff to base interval
+        healthCheckInterval = NOTECARD_HEALTH_CHECK_BASE_INTERVAL_MS;
+        Serial.println(F("Notecard health check interval reset to 5 min"));
+      } else {
+        // Still failing — exponential backoff up to max
+        if (healthCheckInterval < NOTECARD_HEALTH_CHECK_MAX_INTERVAL_MS) {
+          healthCheckInterval *= 2;
+          if (healthCheckInterval > NOTECARD_HEALTH_CHECK_MAX_INTERVAL_MS) {
+            healthCheckInterval = NOTECARD_HEALTH_CHECK_MAX_INTERVAL_MS;
+          }
+        }
+        // Enforce higher floor in low-power states to conserve battery
+        if (gPowerState >= POWER_STATE_LOW_POWER && healthCheckInterval < 1200000UL) {
+          healthCheckInterval = 1200000UL;  // 20 min floor in LOW_POWER+
+        } else if (gPowerState >= POWER_STATE_ECO && healthCheckInterval < 600000UL) {
+          healthCheckInterval = 600000UL;   // 10 min floor in ECO
+        }
+        Serial.print(F("Notecard health check backoff: next in "));
+        Serial.print(healthCheckInterval / 60000UL);
+        Serial.println(F(" min"));
+      }
     }
   }
 
@@ -1031,6 +1075,7 @@ void loop() {
         // First escalation: attempt I2C bus recovery
         Serial.println(F("I2C: sustained dual failure — attempting bus recovery"));
         recoverI2CBus();
+        logI2CRecoveryEvent(I2C_RECOVERY_DUAL_FAILURE);
         tankalarm_ensureNotecardBinding(notecard);
       } else if (consecutiveTotalI2cFailLoops >= I2C_DUAL_FAIL_RESET_LOOPS) {
         // Prolonged dual failure — force watchdog reset
@@ -1073,6 +1118,7 @@ void loop() {
           Serial.print(sensorRecoveryBackoff);
           Serial.println(F(")"));
           recoverI2CBus();
+          logI2CRecoveryEvent(I2C_RECOVERY_SENSOR_ONLY);
           // Reset sensor failure counters to give them a fresh chance
           for (uint8_t i = 0; i < gConfig.monitorCount; i++) {
             if (gConfig.monitors[i].sensorInterface == SENSOR_CURRENT_LOOP) {
@@ -2349,6 +2395,7 @@ static bool checkNotecardHealth() {
     if (gNotecardFailureCount == I2C_NOTECARD_RECOVERY_THRESHOLD) {
       Serial.println(F("Sustained Notecard failure - attempting I2C bus recovery"));
       recoverI2CBus();
+      logI2CRecoveryEvent(I2C_RECOVERY_NOTECARD_FAILURE);
       tankalarm_ensureNotecardBinding(notecard);
     }
     return false;
@@ -2365,6 +2412,7 @@ static bool checkNotecardHealth() {
     if (gNotecardFailureCount == I2C_NOTECARD_RECOVERY_THRESHOLD) {
       Serial.println(F("Sustained Notecard failure - attempting I2C bus recovery"));
       recoverI2CBus();
+      logI2CRecoveryEvent(I2C_RECOVERY_NOTECARD_FAILURE);
       tankalarm_ensureNotecardBinding(notecard);
     }
     return false;
@@ -3057,6 +3105,52 @@ static void recoverI2CBus() {
 #else
   tankalarm_recoverI2CBus(gDfuInProgress);
 #endif
+}
+
+/**
+ * Publish an I2C recovery diagnostic event via Notecard.
+ *
+ * Sends a lightweight "diag.qo" note containing trigger type, cumulative
+ * recovery count, current I2C error count, and timestamp.  Only publishes
+ * when the Notecard is reachable (SENSOR_ONLY trigger); for NOTECARD_FAILURE
+ * and DUAL_FAILURE triggers the Notecard is down, so the event is recorded
+ * only in the daily counter and Serial log.
+ *
+ * Rate-limited to at most one note per 60 seconds to prevent flooding
+ * during rapid-fire recovery cycles.
+ */
+static void logI2CRecoveryEvent(I2CRecoveryTrigger trigger) {
+  // Rate limit: at most one diagnostic note per 60 seconds
+  static unsigned long lastDiagNoteMillis = 0;
+  const unsigned long DIAG_RATE_LIMIT_MS = 60000UL;
+  unsigned long now = millis();
+
+  if (!gNotecardAvailable || (now - lastDiagNoteMillis < DIAG_RATE_LIMIT_MS && lastDiagNoteMillis != 0)) {
+    // Can't publish (Notecard down) or rate-limited — just log to Serial
+    Serial.print(F("I2C recovery event (trigger="));
+    Serial.print((uint8_t)trigger);
+    Serial.print(F(", count="));
+    Serial.print(gI2cBusRecoveryCount);
+    Serial.println(F(") — not published"));
+    return;
+  }
+
+  lastDiagNoteMillis = now;
+
+  JsonDocument doc;
+  doc["ev"] = "i2c-recovery";
+  doc["trigger"] = (uint8_t)trigger;
+  doc["count"] = gI2cBusRecoveryCount;
+  doc["i2c_errs"] = gCurrentLoopI2cErrors;
+  double epoch = currentEpoch();
+  if (epoch > 0) {
+    doc["t"] = epoch;
+  }
+
+  publishNote(DIAG_FILE, doc, false);  // false = don't force immediate sync
+  Serial.print(F("I2C recovery event published (trigger="));
+  Serial.print((uint8_t)trigger);
+  Serial.println(F(")"));
 }
 
 /**
@@ -6583,6 +6677,15 @@ static void sendHealthTelemetry() {
     }
   }
   doc["monitors"] = activeMonitors;
+
+  // Include startup I2C scan results (first report only) — 3.2.5
+  if (!gStartupScanReported) {
+    doc["scan_nc"] = gStartupNotecardFound;           // Notecard found at boot?
+    doc["scan_cl"] = gStartupCurrentLoopFound;        // Current loop (A0602) found?
+    doc["scan_retries"] = gStartupScanRetries;        // Retry attempts used
+    doc["scan_unexpected"] = gStartupUnexpectedDevices; // Unexpected I2C devices
+    gStartupScanReported = true;
+  }
 
   publishNote(HEALTH_FILE, doc, false);
 
