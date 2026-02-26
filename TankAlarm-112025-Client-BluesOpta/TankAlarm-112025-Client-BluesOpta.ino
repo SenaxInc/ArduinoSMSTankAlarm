@@ -749,6 +749,8 @@ static unsigned long gLastLocationRequestCheckMillis = 0;
 
 // Forward declarations
 static PulseSamplingRecommendation getRecommendedPulseSampling(float expectedRate);
+static inline bool detectPulseEdge(HallEffectSensorType hallType, int lastState, int currentState);
+static void startPulseSample(uint8_t idx, const MonitorConfig &cfg);
 static float getMonitorHeight(const MonitorConfig &cfg);
 static void initializeStorage();
 static void ensureConfigLoaded();
