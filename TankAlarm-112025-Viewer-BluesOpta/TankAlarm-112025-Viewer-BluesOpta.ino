@@ -168,10 +168,54 @@ static void handleViewerSummary(JsonDocument &doc, double epoch);
 static void checkForFirmwareUpdate();
 static void enableDfuMode();
 
+// ============================================================================
+// Diagnostics Helpers
+// ============================================================================
+
+static void safeSleep(unsigned long ms) {
+  if (ms == 0) {
+    return;
+  }
+
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  const unsigned long maxChunk = (WATCHDOG_TIMEOUT_SECONDS * 1000UL) / 2;
+#else
+  const unsigned long maxChunk = ms;
+#endif
+
+  unsigned long remaining = ms;
+  while (remaining > 0) {
+    unsigned long chunk = (remaining > maxChunk) ? maxChunk : remaining;
+    delay(chunk);
+
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
+#endif
+
+    remaining -= chunk;
+  }
+}
+
+static uint32_t freeRam() {
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  mbed_stats_heap_t heapStats;
+  mbed_stats_heap_get(&heapStats);
+  return (heapStats.reserved_size > heapStats.current_size)
+           ? (heapStats.reserved_size - heapStats.current_size)
+           : 0U;
+#else
+  return 0U;
+#endif
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial && millis() < 2000) {
-    delay(10);
+    safeSleep(10);
   }
   Serial.println();
   Serial.print(F("Tank Alarm Viewer 112025 v"));
@@ -207,6 +251,14 @@ void setup() {
 #else
   Serial.println(F("Watchdog not available on this platform"));
 #endif
+
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    Serial.print(F("Heap free: "));
+    Serial.print(freeRam());
+    Serial.println(F("B"));
+  #else
+    Serial.println(F("Heap stats: not available on this platform"));
+  #endif
 
   Serial.println(F("Viewer setup complete"));
 }
@@ -370,7 +422,7 @@ static void handleWebRequests() {
     respondStatus(client, 404, "Not Found");
   }
 
-  delay(1);
+  safeSleep(1);
   client.stop();
 }
 
@@ -387,7 +439,7 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
   unsigned long start = millis();
   while (client.connected() && millis() - start < 5000UL) {
     if (!client.available()) {
-      delay(1);
+      safeSleep(1);
       continue;
     }
 

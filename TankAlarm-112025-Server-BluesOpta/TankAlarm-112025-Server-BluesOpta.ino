@@ -2271,10 +2271,54 @@ static SerialRequestResult requestClientSerialLogs(const char *clientUid, String
   return SerialRequestResult::Sent;
 }
 
+// ============================================================================
+// Diagnostics Helpers
+// ============================================================================
+
+static void safeSleep(unsigned long ms) {
+  if (ms == 0) {
+    return;
+  }
+
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  const unsigned long maxChunk = (WATCHDOG_TIMEOUT_SECONDS * 1000UL) / 2;
+#else
+  const unsigned long maxChunk = ms;
+#endif
+
+  unsigned long remaining = ms;
+  while (remaining > 0) {
+    unsigned long chunk = (remaining > maxChunk) ? maxChunk : remaining;
+    delay(chunk);
+
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
+#endif
+
+    remaining -= chunk;
+  }
+}
+
+static uint32_t freeRam() {
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  mbed_stats_heap_t heapStats;
+  mbed_stats_heap_get(&heapStats);
+  return (heapStats.reserved_size > heapStats.current_size)
+           ? (heapStats.reserved_size - heapStats.current_size)
+           : 0U;
+#else
+  return 0U;
+#endif
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial && millis() < 2000) {
-    delay(10);
+    safeSleep(10);
   }
 
   Serial.println();
@@ -2349,6 +2393,14 @@ void setup() {
 #else
   Serial.println(F("Warning: Watchdog timer not available on this platform"));
 #endif
+
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    Serial.print(F("Heap free: "));
+    Serial.print(freeRam());
+    Serial.println(F("B"));
+  #else
+    Serial.println(F("Heap stats: not available on this platform"));
+  #endif
 
   Serial.println(F("Server setup complete"));
   Serial.println(F("----------------------------------"));
@@ -3159,7 +3211,7 @@ static bool ftpReadResponse(EthernetClient &client, int &code, char *message, si
         }
       }
     }
-    delay(5);
+    safeSleep(5);
   }
   return false;
 }
@@ -3334,7 +3386,7 @@ static bool ftpRetrieveBuffer(FtpSession &session, const char *remoteFile, char 
     if (!dataClient.connected()) {
       break;
     }
-    delay(2);
+    safeSleep(2);
   }
   out[outLen] = 0;
   dataClient.stop();
@@ -3399,7 +3451,7 @@ static bool nwsLookupGridPoint(ClientMetadata *meta) {
   // Wait for response
   unsigned long start = millis();
   while (!client.available() && millis() - start < NWS_API_TIMEOUT_MS) {
-    delay(10);
+    safeSleep(10);
   }
   
   if (!client.available()) {
@@ -3495,7 +3547,7 @@ static float nwsFetchAverageTemperature(ClientMetadata *meta, double timestamp) 
   // Wait for response
   unsigned long start = millis();
   while (!client.available() && millis() - start < NWS_API_TIMEOUT_MS) {
-    delay(10);
+    safeSleep(10);
   }
   
   if (!client.available()) {
@@ -5159,7 +5211,7 @@ static float readAnalogVinVoltage() {
     int raw = analogRead(VIN_ANALOG_PIN);
     float pinVoltage = (float)raw / VIN_ADC_MAX * VIN_ADC_REF_VOLTAGE;
     total += pinVoltage / VIN_DIVIDER_RATIO;  // Reverse the divider to get actual Vin
-    delay(2);
+    safeSleep(2);
   }
   return total / (float)samples;
 #else
@@ -5750,7 +5802,7 @@ static void handleWebRequests() {
     respondStatus(client, 404, F("Not Found"));
   }
 
-  delay(1);
+  safeSleep(1);
   client.stop();
 }
 
@@ -5767,7 +5819,7 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
   unsigned long start = millis();
   while (client.connected() && millis() - start < 5000UL) {
     if (!client.available()) {
-      delay(1);
+      safeSleep(1);
       continue;
     }
 
@@ -7204,7 +7256,7 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
     processed++;
 
     // Yield to keep the loop responsive and allow watchdog kicks elsewhere
-    delay(1);
+    safeSleep(1);
   }
 }
 

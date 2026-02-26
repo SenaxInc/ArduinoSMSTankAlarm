@@ -55,15 +55,33 @@ static bool runCardRestore();
 static void printStatus();
 static bool readLine(char *buffer, size_t bufferSize, unsigned long timeoutMs);
 static bool parseHexAddress(const char *text, uint8_t &addressOut);
+static void safeSleep(unsigned long ms);
+static uint32_t freeRam();
+
+static void safeSleep(unsigned long ms) {
+  delay(ms);
+}
+
+static uint32_t freeRam() {
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  mbed_stats_heap_t heapStats;
+  mbed_stats_heap_get(&heapStats);
+  return (heapStats.reserved_size > heapStats.current_size)
+           ? (heapStats.reserved_size - heapStats.current_size)
+           : 0U;
+#else
+  return 0U;
+#endif
+}
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
   while (!Serial && millis() < 3000) {
-    delay(10);
+    safeSleep(10);
   }
 
   Wire.begin();
-  delay(50);
+  safeSleep(50);
 
   printBanner();
   scanI2CBus();
@@ -72,12 +90,20 @@ void setup() {
     Serial.println(F("Initial attach at 0x17 failed. Use 'a' to auto-detect or 'n' for manual address."));
   }
 
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    Serial.print(F("Heap free: "));
+    Serial.print(freeRam());
+    Serial.println(F("B"));
+  #else
+    Serial.println(F("Heap stats: not available on this platform"));
+  #endif
+
   printMenu();
 }
 
 void loop() {
   if (!Serial.available()) {
-    delay(10);
+    safeSleep(10);
     return;
   }
 
@@ -451,7 +477,7 @@ static bool resetI2CAddressToDefault() {
 
   notecard.deleteResponse(rsp);
   Serial.println(F("card.io succeeded. Re-attaching at default address 0x17..."));
-  delay(200);
+  safeSleep(200);
   return attachNotecard(DEFAULT_NOTECARD_ADDRESS);
 }
 
@@ -542,7 +568,7 @@ static bool readLine(char *buffer, size_t bufferSize, unsigned long timeoutMs) {
         buffer[index++] = ch;
       }
     }
-    delay(5);
+    safeSleep(5);
   }
 
   buffer[0] = '\0';

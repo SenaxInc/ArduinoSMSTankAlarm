@@ -1,6 +1,6 @@
 /*
   Tank Alarm Client 112025 - Arduino Opta + Blues Notecard
-  Version: 1.1.2
+  Version: 1.1.3
 
   Hardware:
   - Arduino Opta Lite (STM32H747XI dual-core)
@@ -271,6 +271,14 @@ enum PowerState : uint8_t {
 #define POWER_CRITICAL_SLEEP_MS            300000    // 5 minutes
 #endif
 
+#ifndef POWER_STATE_PERIODIC_LOG_MS
+#define POWER_STATE_PERIODIC_LOG_MS        1800000UL // 30 minutes
+#endif
+
+#ifndef POWER_STATE_TRANSITION_LOG_MIN_MS
+#define POWER_STATE_TRANSITION_LOG_MIN_MS  300000UL  // 5 minutes
+#endif
+
 // Outbound sync multipliers (applied to base outbound interval)
 #ifndef POWER_ECO_OUTBOUND_MULTIPLIER
 #define POWER_ECO_OUTBOUND_MULTIPLIER      2    // 2x slower (e.g., 12h instead of 6h)
@@ -314,50 +322,69 @@ enum PowerState : uint8_t {
 #endif
 
 // Unit conversion constants for 4-20mA sensors
-#ifndef METERS_TO_INCHES
-#define METERS_TO_INCHES 39.3701f           // 1 meter = 39.3701 inches
-#endif
-
-#ifndef CENTIMETERS_TO_INCHES
-#define CENTIMETERS_TO_INCHES 0.393701f     // 1 centimeter = 0.393701 inches
-#endif
-
-#ifndef FEET_TO_INCHES
-#define FEET_TO_INCHES 12.0f                // 1 foot = 12 inches
-#endif
+// constexpr gives type-safety, scoping, and debugger visibility vs bare #define
+static constexpr float METERS_TO_INCHES      = 39.3701f;  // 1 meter = 39.3701 inches
+static constexpr float CENTIMETERS_TO_INCHES = 0.393701f; // 1 centimeter = 0.393701 inches
+static constexpr float FEET_TO_INCHES        = 12.0f;     // 1 foot = 12 inches
 
 // Pressure-to-height conversion factors (for water at standard conditions)
-#ifndef PSI_TO_INCHES_WATER
-#define PSI_TO_INCHES_WATER 27.68f          // 1 PSI = 27.68 inches of water column
-#endif
+static constexpr float PSI_TO_INCHES_WATER   = 27.68f;    // 1 PSI = 27.68 inches of water column
+static constexpr float BAR_TO_INCHES_WATER   = 401.5f;    // 1 bar = 401.5 inches of water
+static constexpr float KPA_TO_INCHES_WATER   = 4.015f;    // 1 kPa = 4.015 inches of water
+static constexpr float MBAR_TO_INCHES_WATER  = 0.4015f;   // 1 mbar = 0.4015 inches of water
 
-#ifndef BAR_TO_INCHES_WATER
-#define BAR_TO_INCHES_WATER 401.5f          // 1 bar = 401.5 inches of water
-#endif
+enum class PressureUnit : uint8_t {
+  PSI,
+  BAR,
+  KPA,
+  MBAR,
+  IN_H2O
+};
 
-#ifndef KPA_TO_INCHES_WATER
-#define KPA_TO_INCHES_WATER 4.015f          // 1 kPa = 4.015 inches of water
-#endif
+enum class DistanceUnit : uint8_t {
+  INCH,
+  METER,
+  CENTIMETER,
+  FOOT
+};
 
-#ifndef MBAR_TO_INCHES_WATER
-#define MBAR_TO_INCHES_WATER 0.4015f        // 1 mbar = 0.4015 inches of water
-#endif
+// constexpr conversion helpers
+static constexpr float getPressureConversionFactor(PressureUnit unit) {
+  switch (unit) {
+    case PressureUnit::BAR:   return BAR_TO_INCHES_WATER;
+    case PressureUnit::KPA:   return KPA_TO_INCHES_WATER;
+    case PressureUnit::MBAR:  return MBAR_TO_INCHES_WATER;
+    case PressureUnit::IN_H2O:return 1.0f;
+    case PressureUnit::PSI:
+    default:                  return PSI_TO_INCHES_WATER;
+  }
+}
+
+static constexpr float getDistanceConversionFactor(DistanceUnit unit) {
+  switch (unit) {
+    case DistanceUnit::METER:      return METERS_TO_INCHES;
+    case DistanceUnit::CENTIMETER: return CENTIMETERS_TO_INCHES;
+    case DistanceUnit::FOOT:       return FEET_TO_INCHES;
+    case DistanceUnit::INCH:
+    default:                       return 1.0f;
+  }
+}
 
 // Helper function: Get pressure-to-inches conversion factor based on unit
 static float getPressureConversionFactor(const char* unit) {
-  if (strcmp(unit, "bar") == 0) return BAR_TO_INCHES_WATER;
-  if (strcmp(unit, "kPa") == 0) return KPA_TO_INCHES_WATER;
-  if (strcmp(unit, "mbar") == 0) return MBAR_TO_INCHES_WATER;
-  if (strcmp(unit, "inH2O") == 0) return 1.0f;
-  return PSI_TO_INCHES_WATER; // Default: PSI
+  if (strcmp(unit, "bar") == 0) return getPressureConversionFactor(PressureUnit::BAR);
+  if (strcmp(unit, "kPa") == 0) return getPressureConversionFactor(PressureUnit::KPA);
+  if (strcmp(unit, "mbar") == 0) return getPressureConversionFactor(PressureUnit::MBAR);
+  if (strcmp(unit, "inH2O") == 0) return getPressureConversionFactor(PressureUnit::IN_H2O);
+  return getPressureConversionFactor(PressureUnit::PSI); // Default: PSI
 }
 
 // Helper function: Get distance-to-inches conversion factor based on unit
 static float getDistanceConversionFactor(const char* unit) {
-  if (strcmp(unit, "m") == 0) return METERS_TO_INCHES;
-  if (strcmp(unit, "cm") == 0) return CENTIMETERS_TO_INCHES;
-  if (strcmp(unit, "ft") == 0) return FEET_TO_INCHES;
-  return 1.0f; // Default: assume inches
+  if (strcmp(unit, "m") == 0) return getDistanceConversionFactor(DistanceUnit::METER);
+  if (strcmp(unit, "cm") == 0) return getDistanceConversionFactor(DistanceUnit::CENTIMETER);
+  if (strcmp(unit, "ft") == 0) return getDistanceConversionFactor(DistanceUnit::FOOT);
+  return getDistanceConversionFactor(DistanceUnit::INCH); // Default: assume inches
 }
 
 // Object types - what is being monitored
@@ -583,6 +610,7 @@ static float gEffectiveBatteryVoltage = 0.0f;  // Best voltage from either sourc
 static uint8_t gPowerStateDebounce = 0;        // Consecutive readings at proposed new state
 static unsigned long gPowerStateChangeMillis = 0; // When the current power state was entered
 static unsigned long gLastPowerStateLogMillis = 0; // Rate-limit power state log messages
+static unsigned long gLastPowerStateTransitionLogMillis = 0; // Rate-limit transition log spam
 
 static Notecard notecard;
 static char gDeviceUID[48] = {0};
@@ -774,6 +802,9 @@ static void saveSolarStateToFlash();
 static void performStartupDebounce();
 static void checkSolarOnlySunsetProtocol(unsigned long now);
 static bool isSensorVoltageGateOpen();
+// Diagnostics
+static uint32_t freeRam();
+static void safeSleep(unsigned long ms);
 
 void setup() {
   Serial.begin(115200);
@@ -965,6 +996,13 @@ void setup() {
   }
 
   Serial.println(F("Client setup complete"));
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    Serial.print(F("Heap free: "));
+    Serial.print(freeRam());
+    Serial.println(F("B"));
+  #else
+    Serial.println(F("Heap stats: not available on this platform"));
+  #endif
   addSerialLog("Client started successfully");
 }
 
@@ -1178,22 +1216,7 @@ void loop() {
   // For sleep durations longer than the watchdog timeout, we sleep in chunks
   // and kick the watchdog between each chunk to prevent a hardware reset.
   unsigned long sleepMs = getPowerStateSleepMs(gPowerState);
-  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    // Watchdog timeout is WATCHDOG_TIMEOUT_SECONDS (default 30s).
-    // Sleep in chunks of at most half the watchdog timeout to stay safe.
-    const unsigned long maxChunk = (WATCHDOG_TIMEOUT_SECONDS * 1000UL) / 2;  // 15s default
-    unsigned long remaining = sleepMs;
-    while (remaining > 0) {
-      unsigned long chunk = (remaining > maxChunk) ? maxChunk : remaining;
-      rtos::ThisThread::sleep_for(std::chrono::milliseconds(chunk));
-      #ifdef TANKALARM_WATCHDOG_AVAILABLE
-        mbedWatchdog.kick();
-      #endif
-      remaining -= chunk;
-    }
-  #else
-    delay(sleepMs);
-  #endif
+  safeSleep(sleepMs);
 }
 
 // Helper: Get recommended pulse sampling parameters based on expected rate
@@ -4687,12 +4710,7 @@ static void performStartupDebounce() {
       }
       
       if (!stable) {
-        #ifdef TANKALARM_WATCHDOG_AVAILABLE
-          #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-            mbedWatchdog.kick();
-          #endif
-        #endif
-        rtos::ThisThread::sleep_for(std::chrono::seconds(2));
+        safeSleep(2000);
       }
     }
     
@@ -4714,12 +4732,7 @@ static void performStartupDebounce() {
     unsigned long warmupStart = millis();
     
     while (millis() - warmupStart < warmupMs) {
-      #ifdef TANKALARM_WATCHDOG_AVAILABLE
-        #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-          mbedWatchdog.kick();
-        #endif
-      #endif
-      rtos::ThisThread::sleep_for(std::chrono::seconds(2));
+      safeSleep(2000);
     }
     
     Serial.println(F("  Warmup complete"));
@@ -4955,17 +4968,23 @@ static void updatePowerState() {
       
       // Notify server of the state change (entry or recovery)
       sendPowerStateChange(oldState, gPowerState, voltage);
-      gPowerStateChangeMillis = millis();
+      unsigned long transitionNow = millis();
+      gPowerStateChangeMillis = transitionNow;
       gPreviousPowerState = oldState;
+      gLastPowerStateLogMillis = transitionNow;
       
-      // Log to serial
-      Serial.print(F("Power state: "));
-      Serial.print(getPowerStateDescription(oldState));
-      Serial.print(F(" -> "));
-      Serial.print(getPowerStateDescription(gPowerState));
-      Serial.print(F(" ("));
-      Serial.print(voltage, 2);
-      Serial.println(F("V)"));
+      // Log transition with rate limiting to prevent serial/log flooding near thresholds
+      if (gLastPowerStateTransitionLogMillis == 0 ||
+          (transitionNow - gLastPowerStateTransitionLogMillis) >= POWER_STATE_TRANSITION_LOG_MIN_MS) {
+        gLastPowerStateTransitionLogMillis = transitionNow;
+        Serial.print(F("Power state: "));
+        Serial.print(getPowerStateDescription(oldState));
+        Serial.print(F(" -> "));
+        Serial.print(getPowerStateDescription(gPowerState));
+        Serial.print(F(" ("));
+        Serial.print(voltage, 2);
+        Serial.println(F("V)"));
+      }
     }
   } else {
     gPowerStateDebounce = 0;  // Reset debounce if proposed matches current
@@ -4974,7 +4993,7 @@ static void updatePowerState() {
   // Periodic power state log (every 30 minutes, only when not NORMAL)
   if (gPowerState != POWER_STATE_NORMAL) {
     unsigned long now = millis();
-    if (now - gLastPowerStateLogMillis >= 1800000UL) {
+    if (now - gLastPowerStateLogMillis >= POWER_STATE_PERIODIC_LOG_MS) {
       gLastPowerStateLogMillis = now;
       char logMsg[96];
       snprintf(logMsg, sizeof(logMsg), "Power: %s (%.2fV, sleep=%lums)", 
@@ -6339,8 +6358,54 @@ static bool fetchNotecardLocation(float &latitude, float &longitude) {
     Serial.print(F(")"));
   }
   Serial.println();
-  
+
   return true;
 }
 
+// ============================================================================
+// Diagnostics
+// ============================================================================
 
+/**
+ * Sleep for the given duration in milliseconds, kicking the watchdog in
+ * safe-sized chunks so a long sleep cannot trigger a hardware reset.
+ *
+ * On Mbed/Opta: uses rtos::ThisThread::sleep_for() in chunks of at most
+ * half the watchdog timeout (15 s default).
+ * On other platforms: falls back to delay().
+ */
+static void safeSleep(unsigned long ms) {
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  const unsigned long maxChunk = (WATCHDOG_TIMEOUT_SECONDS * 1000UL) / 2;
+  unsigned long remaining = ms;
+  while (remaining > 0) {
+    unsigned long chunk = (remaining > maxChunk) ? maxChunk : remaining;
+    rtos::ThisThread::sleep_for(std::chrono::milliseconds(chunk));
+    #ifdef TANKALARM_WATCHDOG_AVAILABLE
+      mbedWatchdog.kick();
+    #endif
+    remaining -= chunk;
+  }
+#else
+  delay(ms);
+#endif
+}
+
+/**
+ * Get current free heap bytes for field diagnostics.
+ *
+ * On Mbed/Opta: uses mbed_stats_heap_get(). Requires MBED_HEAP_STATS_ENABLED
+ * in mbed_app.json for non-zero values.
+ * On other platforms: returns 0.
+ */
+static uint32_t freeRam() {
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  mbed_stats_heap_t heapStats;
+  mbed_stats_heap_get(&heapStats);
+  return (heapStats.reserved_size > heapStats.current_size)
+           ? (heapStats.reserved_size - heapStats.current_size)
+           : 0U;
+#else
+  return 0U;
+#endif
+}

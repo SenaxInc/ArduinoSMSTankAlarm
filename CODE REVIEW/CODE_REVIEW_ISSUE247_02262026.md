@@ -160,3 +160,40 @@ The Feb 19/20 review cycle left one High-severity item deferred that overlaps wi
 ---
 
 *Review completed February 26, 2026. Recommended next action: confirm with issue author that the JSON sizing proposal is superseded by the v7 migration, then scope v1.2.0 to the three high-value items above plus H4 atomic writes.*
+
+---
+
+## Implementation Update — February 26, 2026
+
+The following recommended items from this review are now implemented in code:
+
+- `freeRam()` diagnostics at end of `setup()` in:
+	- `TankAlarm-112025-Client-BluesOpta.ino`
+	- `TankAlarm-112025-Server-BluesOpta.ino`
+	- `TankAlarm-112025-Viewer-BluesOpta.ino`
+	- `TankAlarm-112025-I2C_Utility.ino`
+- `safeSleep()` helper adoption and replacement of direct sleep/delay sites in:
+	- `TankAlarm-112025-Client-BluesOpta.ino`
+	- `TankAlarm-112025-Server-BluesOpta.ino`
+	- `TankAlarm-112025-Viewer-BluesOpta.ino`
+	- `TankAlarm-112025-I2C_Utility.ino`
+- `constexpr` conversion helper cleanups + rate-limited power-state logging in:
+	- `TankAlarm-112025-Client-BluesOpta.ino`
+
+### Updated Recommendation Table Status
+
+| Category | Proposal | Recommendation | Current Status |
+|----------|----------|---------------|----------------|
+| 1a | `freeRam()` diagnostic helper | **Implement** | **Implemented (Client/Server/Viewer/I2C Utility)** |
+| 1b | `F()` macro conversions | Skip — already done | Unchanged |
+| 1c | `strlcpy` replacements | Skip — already done | Unchanged |
+| 1d | `gConfigDirty` after solar toggle | Skip — unconditionally set at line 2879 | Unchanged |
+| 2 | JSON StaticJsonDocument sizing | **Do not implement** — regression to v6 API | Unchanged |
+| 3 | `safeSleep()` helper | **Implement** — fixes unguarded sleep calls at lines 4696/4723 | **Implemented (Client/Server/Viewer/I2C Utility)** |
+| 4 (partial) | Rate-limited state transition logging | **Implement** | **Implemented (Client)** |
+| 4 (partial) | Hysteresis streamlining | Defer | Unchanged |
+| 4 (partial) | Auto relay de-energize on hibernate | Verify before implementing | Unchanged |
+| 5 | Modular file split | **Defer** — document module map now, implement separately | Unchanged |
+| 6a | `constexpr` conversion helpers | **Implement** | **Implemented (Client)** |
+| 6b | Remove redundant zero-inits | Skip | Unchanged |
+| 6c | `DEBUG_PRINTLN` macros | Conditional on existing debug flag | Unchanged |
