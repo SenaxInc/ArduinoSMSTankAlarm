@@ -45,7 +45,7 @@ enum class DistanceUnit : uint8_t {
 };
 
 // Conversion helpers (defined in header to avoid Arduino preprocessor prototype issues)
-inline float getPressureConversionFactor(PressureUnit unit) {
+static inline float getPressureConversionFactor(PressureUnit unit) {
   switch (unit) {
     case PressureUnit::BAR:    return BAR_TO_INCHES_WATER;
     case PressureUnit::KPA:    return KPA_TO_INCHES_WATER;
@@ -56,7 +56,7 @@ inline float getPressureConversionFactor(PressureUnit unit) {
   }
 }
 
-inline float getDistanceConversionFactor(DistanceUnit unit) {
+static inline float getDistanceConversionFactor(DistanceUnit unit) {
   switch (unit) {
     case DistanceUnit::METER:      return METERS_TO_INCHES;
     case DistanceUnit::CENTIMETER: return CENTIMETERS_TO_INCHES;
