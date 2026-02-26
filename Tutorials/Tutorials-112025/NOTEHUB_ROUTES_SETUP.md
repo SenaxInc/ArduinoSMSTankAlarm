@@ -184,7 +184,7 @@ This route catches all `.qo` events from client devices and delivers them as `.q
 | Setting | Value |
 |---------|-------|
 | **Route Name** | `ClientToServerRelay` |
-| **URL** | `https://api.notefile.net/v1/projects/YOUR_PROJECT_UID/devices/YOUR_SERVER_DEVICE_UID/notes/{{notefile_base}}.qi` |
+| **URL** | `https://api.notefile.net/v1/projects/YOUR_PROJECT_UID/devices/YOUR_SERVER_DEVICE_UID/notes/[filebase].qi` |
 | **Additional Headers** | Header Name: `X-SESSION-TOKEN`   Header Value: `YOUR_API_TOKEN` |
 
 Replace the placeholders:
@@ -213,7 +213,7 @@ This passes the entire event body through to the server's `.qi` notefile.
 | **Fleets** | Select your **client fleet** only |
 | **Notefiles** | `telemetry.qo`, `alarm.qo`, `daily.qo`, `unload.qo`, `serial_log.qo`, `serial_ack.qo`, `config_ack.qo`, `location_response.qo`, `relay_forward.qo` |
 
-> **⚡ Tip:** The `{{notefile_base}}` template variable extracts the base name without the extension. So `telemetry.qo` becomes `telemetry`, and the URL appends `.qi` — resulting in the note being added to `telemetry.qi` on the server.
+> **⚡ Tip:** The `[filebase]` placeholder variable is a reserved Blues Notehub string that extracts the base name of the Notefile to the left of the first non-alphanumeric, non-underscore character. So `telemetry.qo` becomes `telemetry`, `relay_forward.qo` becomes `relay_forward`, and so on. The URL appends `.qi` — resulting in the note being added to (e.g.) `telemetry.qi` on the server. See the [Blues placeholder docs](https://dev.blues.io/notehub/notehub-walkthrough/#using-placeholder-variable-substitution-interpolation) for the full list of reserved placeholder strings.
 
 > **⚡ Important:** Do not include `config.qo` — it does not exist. Config is delivered to clients via `command.qo` with `_type: config`, and clients acknowledge via `config_ack.qo`.
 
@@ -406,12 +406,32 @@ After setting up all routes, verify each one works:
 
 ## Troubleshooting
 
+### "ClientToServerRelay failing after installing new firmware"
+
+If `telemetry.qo` (and other client `.qo` files) appear in the Notehub event log but the ClientToServerRelay route fails for every event, the most likely cause is an **invalid URL placeholder** in the route configuration.
+
+**Symptom:** Route logs show errors (4xx/5xx) for every client-originated event.
+
+**Cause:** An earlier version of this guide incorrectly used `{{notefile_base}}` as the URL placeholder. That syntax is **not** recognized by Notehub. Notehub uses square-bracket placeholders (`[filebase]`), and any unrecognized `{{...}}` string is left as a literal in the URL, causing every route call to target a malformed endpoint.
+
+**Fix:** Edit the ClientToServerRelay route URL and replace `{{notefile_base}}` with `[filebase]`:
+
+| Wrong (causes failure) | Correct |
+|------------------------|---------|
+| `.../notes/{{notefile_base}}.qi` | `.../notes/[filebase].qi` |
+
+Save the route and re-route a failed event from Route Logs to confirm the fix.
+
+> **Why `[filebase]`?** It is a Blues-reserved placeholder that strips the file extension and any characters after the first dot. So `telemetry.qo` → `telemetry`, `relay_forward.qo` → `relay_forward`, `config_ack.qo` → `config_ack`, etc. See the [Blues placeholder docs](https://dev.blues.io/notehub/notehub-walkthrough/#using-placeholder-variable-substitution-interpolation) for the full list.
+
+---
+
 ### "Route returned 4xx error"
 
 | Error Code | Meaning | Fix |
 |-----------|---------|-----|
 | 401 | Unauthorized | Check your Personal Access Token is correct and not expired. Create PATs from your profile menu → API Access. Do **not** use OAuth tokens from Programmatic API Access (they expire every 30 minutes). For `X-SESSION-TOKEN`, paste the raw PAT only — **do not prefix with `Bearer `**. Also check that the header value has no extra whitespace. |
-| 404 | Device not found | Verify the device UID is correct and the device exists in the project |
+| 404 | Device not found | Verify the device UID is correct and the device exists in the project. Also check that the URL placeholder is `[filebase]` (not `{{notefile_base}}`). |
 | 400 | Bad request | Check the request body format — must be valid JSON with a `body` field |
 
 ### "Notes not appearing on target device"
