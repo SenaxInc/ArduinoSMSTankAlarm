@@ -1909,7 +1909,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   memset(&cfg, 0, sizeof(ClientConfig));
   cfg.configSchemaVersion = CONFIG_SCHEMA_VERSION;
   strlcpy(cfg.siteName, "Opta Tank Site", sizeof(cfg.siteName));
-  strlcpy(cfg.deviceLabel, "Client-112025", sizeof(cfg.deviceLabel));
+  strlcpy(cfg.deviceLabel, "Unconfigured Client", sizeof(cfg.deviceLabel));
   strlcpy(cfg.clientFleet, "tankalarm-clients", sizeof(cfg.clientFleet));
   strlcpy(cfg.serverFleet, "tankalarm-server", sizeof(cfg.serverFleet));
   strlcpy(cfg.dailyEmail, "reports@example.com", sizeof(cfg.dailyEmail));
