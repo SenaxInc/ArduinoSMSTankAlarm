@@ -219,6 +219,18 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define MAX_GLOBAL_ALARMS_PER_HOUR 30  // Maximum alarms across ALL tanks per hour
 #endif
 
+#ifndef TELEMETRY_OUTBOX_MAX_PENDING
+#define TELEMETRY_OUTBOX_MAX_PENDING 15  // Max telemetry.qo notes in outbox; older ones are dropped
+#endif
+
+#ifndef TELEMETRY_NOTE_ID_LEN
+#define TELEMETRY_NOTE_ID_LEN 48         // Max length of a Notecard note ID string
+#endif
+
+#ifndef TELEMETRY_TRIM_COLLECTION_HEADROOM
+#define TELEMETRY_TRIM_COLLECTION_HEADROOM 4  // Extra IDs collected beyond the limit to detect overflow
+#endif
+
 // Config schema versioning — bump when adding/removing fields to detect stale configs
 #ifndef CONFIG_SCHEMA_VERSION
 #define CONFIG_SCHEMA_VERSION 1
@@ -1051,6 +1063,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
 static void bufferNoteForRetry(const char *fileName, const char *payload, bool syncNow);
 static void flushBufferedNotes();
 static void pruneNoteBufferIfNeeded();
+static void trimTelemetryOutbox();
 static void ensureTimeSync();
 static void updateDailyScheduleIfNeeded();
 static bool checkNotecardHealth();
@@ -4116,6 +4129,7 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   doc["r"] = reason;
   doc["t"] = currentEpoch();
 
+  trimTelemetryOutbox();
   publishNote(TELEMETRY_FILE, doc, syncNow);
 }
 
@@ -5707,6 +5721,100 @@ static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankInd
 
   state.lastDailySentInches = state.currentInches;
   return true;
+}
+
+// Trim the telemetry.qo outbox so at most TELEMETRY_OUTBOX_MAX_PENDING notes are queued.
+// If more are pending, the oldest notes are deleted to make room for the new one.
+// This prevents unbounded queue growth when the Notecard cannot sync for an extended period.
+// The loop retries if the initial collection window was exceeded (large backlog recovery).
+static void trimTelemetryOutbox() {
+  if (!gNotecardAvailable) {
+    return;
+  }
+
+  // Static buffer to avoid a stack allocation on every call.
+  static const uint8_t MAX_IDS = TELEMETRY_OUTBOX_MAX_PENDING + TELEMETRY_TRIM_COLLECTION_HEADROOM;
+  static char noteIds[MAX_IDS][TELEMETRY_NOTE_ID_LEN];
+
+  uint8_t totalDeleted = 0;
+  bool overflowed = true;  // start true to enter the loop at least once
+
+  // Retry if the queue exceeded MAX_IDS on the previous pass so that a large
+  // backlog (e.g., after a long outage) is fully drained to the target limit.
+  while (overflowed) {
+    overflowed = false;
+
+    J *req = notecard.newRequest("note.changes");
+    if (!req) {
+      break;
+    }
+    JAddStringToObject(req, "file", TELEMETRY_FILE);
+
+    J *rsp = notecard.requestAndResponse(req);
+    if (!rsp) {
+      break;
+    }
+
+    const char *err = JGetString(rsp, "err");
+    if (err && err[0] != '\0') {
+      notecard.deleteResponse(rsp);
+      break;
+    }
+
+    J *notes = JGetObject(rsp, "notes");
+    if (!notes) {
+      notecard.deleteResponse(rsp);
+      break;
+    }
+
+    // Collect IDs oldest-first; detect if the queue extends beyond our window.
+    uint8_t count = 0;
+    J *note = notes->child;
+    while (note && count < MAX_IDS) {
+      if (note->string) {
+        strlcpy(noteIds[count], note->string, TELEMETRY_NOTE_ID_LEN);
+        count++;
+      }
+      note = note->next;
+    }
+    if (note) {
+      overflowed = true;  // more notes exist beyond MAX_IDS — loop again after deleting
+    }
+    notecard.deleteResponse(rsp);
+
+    if (count < TELEMETRY_OUTBOX_MAX_PENDING) {
+      break;  // Under the limit — nothing to do
+    }
+
+    // Delete the oldest notes, leaving TELEMETRY_OUTBOX_MAX_PENDING - 1 pending so that
+    // the note about to be added brings the total exactly to TELEMETRY_OUTBOX_MAX_PENDING.
+    // count == 15: toDelete = 1 → 14 pending → after add = 15 ✓
+    // count == 17: toDelete = 3 → 14 pending → after add = 15 ✓
+    uint8_t toDelete = count - TELEMETRY_OUTBOX_MAX_PENDING + 1;
+    for (uint8_t i = 0; i < toDelete; i++) {
+      J *delReq = notecard.newRequest("note.delete");
+      if (!delReq) {
+        overflowed = false;  // stop retrying if allocations fail
+        break;
+      }
+      JAddStringToObject(delReq, "file", TELEMETRY_FILE);
+      JAddStringToObject(delReq, "note", noteIds[i]);
+      J *delRsp = notecard.requestAndResponse(delReq);
+      if (delRsp) {
+        const char *delErr = JGetString(delRsp, "err");
+        if (!delErr || delErr[0] == '\0') {
+          totalDeleted++;
+        }
+        notecard.deleteResponse(delRsp);
+      }
+    }
+  }
+
+  if (totalDeleted > 0) {
+    Serial.print(F("trimTelemetryOutbox: dropped "));
+    Serial.print(totalDeleted);
+    Serial.println(F(" old telemetry note(s) to stay under limit"));
+  }
 }
 
 static void publishNote(const char *fileName, const JsonDocument &doc, bool syncNow) {
