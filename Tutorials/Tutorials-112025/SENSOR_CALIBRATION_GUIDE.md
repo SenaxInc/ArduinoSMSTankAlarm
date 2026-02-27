@@ -921,7 +921,7 @@ Requires accurate flow metering but eliminates tank geometry errors.
 - ISO 17025 - Testing and Calibration Laboratories
 
 **Arduino Opta Resources:**
-- [Opta Analog Expansion Datasheet](https://docs.arduino.cc/resources/datasheets/AFX00006-datasheet.pdf)
+- [Opta Analog Expansion Datasheet](https://docs.arduino.cc/resources/datasheets/AFX00007-datasheet.pdf)
 - [4-20mA Input Specifications](https://docs.arduino.cc/hardware/opta-analog)
 
 ### Related TankAlarm Guides
