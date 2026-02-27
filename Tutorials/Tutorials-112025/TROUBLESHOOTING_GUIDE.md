@@ -255,12 +255,24 @@ A yellow LED **lit** means the expansion module is detecting an active signal on
 - Tank B's sensor is wired to CH1 (LED 2 lights up)
 - Tank D's sensor is wired to CH3 (LED 4 lights up)
 
+**Does updating the client config change the LEDs?**
+
+No. The channel LEDs are **hardware-only** indicators — they respond to the electrical signal on the physical terminal, not to the firmware or software configuration. Changing which tanks are configured, adding or removing sensors in the config, or pushing a new config from the server has no effect on these LEDs. Only physically connecting or disconnecting a sensor (or the sensor providing/losing current) changes the LED state.
+
+**How many LEDs will be lit with one sensor?**
+
+Exactly **one** — only the channel that has an active sensor wired to it will illuminate. If you have a single gas sensor connected to CH0, only LED 1 will be lit. Unused channels with nothing wired to them will remain off (in 4-20mA mode, an open circuit = no current = LED off).
+
+**Can the LEDs be disabled to conserve energy?**
+
+No. The channel indicator LEDs on the A0602 are built into the expansion module's hardware circuit and **cannot be controlled or disabled via firmware**. There is no software API to turn them off. The energy draw is very small (typically 1–3 mA per lit LED) and is unlikely to be a meaningful power concern in most installations. If power is extremely constrained, the only option would be to physically cover the LEDs on the board (not recommended, as they are useful status indicators during troubleshooting).
+
 **When to investigate:**
 
 | LED Behavior | Meaning |
 |--------------|---------|
-| LED lit, matching a configured sensor channel | ✅ Normal — sensor is active and providing a signal |
-| LED lit, but no sensor configured or wired to that channel | ⚠️ Unexpected — check for loose wiring connected to that channel, or floating inputs |
+| LED lit, matching a wired sensor channel | ✅ Normal — sensor is active and providing a signal |
+| LED lit, but no sensor wired to that channel | ⚠️ Unexpected — check for loose wiring connected to that channel, or floating inputs |
 | LED off for a channel that should have a sensor | ⚠️ Problem — sensor not providing signal; check wiring, sensor power, and 4-20mA loop |
 | All LEDs off | ⚠️ Problem — expansion not receiving power or not communicating |
 
