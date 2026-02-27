@@ -213,7 +213,7 @@ This passes the entire event body through to the server's `.qi` notefile.
 | **Fleets** | Select your **client fleet** only |
 | **Notefiles** | `telemetry.qo`, `alarm.qo`, `daily.qo`, `unload.qo`, `serial_log.qo`, `serial_ack.qo`, `config_ack.qo`, `location_response.qo`, `relay_forward.qo` |
 
-> **⚡ Tip:** The `[filebase]` placeholder variable is a reserved Blues Notehub string that extracts the base name of the Notefile to the left of the first non-alphanumeric, non-underscore character. So `telemetry.qo` becomes `telemetry`, `relay_forward.qo` becomes `relay_forward`, and so on. The URL appends `.qi` — resulting in the note being added to (e.g.) `telemetry.qi` on the server. See the [Blues placeholder docs](https://dev.blues.io/notehub/notehub-walkthrough/#using-placeholder-variable-substitution-interpolation) for the full list of reserved placeholder strings.
+> **⚡ Tip:** The `[filebase]` placeholder variable is a reserved Blues Notehub string that strips the file extension and any characters after the first dot in the Notefile name. So `telemetry.qo` becomes `telemetry`, `relay_forward.qo` becomes `relay_forward`, and so on. The URL appends `.qi` — resulting in the note being added to (e.g.) `telemetry.qi` on the server. See the [Blues placeholder docs](https://dev.blues.io/notehub/notehub-walkthrough/#using-placeholder-variable-substitution-interpolation) for the full list of reserved placeholder strings.
 
 > **⚡ Important:** Do not include `config.qo` — it does not exist. Config is delivered to clients via `command.qo` with `_type: config`, and clients acknowledge via `config_ack.qo`.
 
