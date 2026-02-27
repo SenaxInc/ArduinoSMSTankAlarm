@@ -989,6 +989,11 @@ static bool pinMatches(const char *pin) {
   return (diff == 0);
 }
 
+// Forward declaration for addServerSerialLog (full declaration with defaults is in the forward
+// declarations block below; this early declaration is needed because isValidClientUid calls
+// addServerSerialLog before the main forward declaration block)
+static void addServerSerialLog(const char *message, const char *level, const char *source);
+
 // Validate that a client UID will fit in our buffers without truncation
 // and has the expected Notecard device UID format (dev: prefix).
 // Returns false if UID is empty, too long, or missing the dev: prefix.
