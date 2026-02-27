@@ -7105,6 +7105,15 @@ static uint8_t purgePendingConfigNotes(const char *clientUid) {
 
   // Now delete each stale config note
   for (uint8_t i = 0; i < toDelete; i++) {
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+    // Each note.delete is a blocking I2C round-trip; kick watchdog to
+    // prevent starvation when purging many stale config notes.
+    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+      mbedWatchdog.kick();
+    #else
+      IWatchdog.reload();
+    #endif
+#endif
     J *delReq = notecard.newRequest("note.delete");
     if (!delReq) continue;
     JAddStringToObject(delReq, "file", COMMAND_OUTBOX_FILE);
@@ -7249,6 +7258,15 @@ static void dispatchPendingConfigs() {
     if (!gClientConfigs[i].pendingDispatch) continue;
     if (gClientConfigs[i].payload[0] == '\0') continue;
 
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+    // sendConfigViaNotecard chains purgePendingConfigNotes + note.add;
+    // kick watchdog before each client to prevent starvation.
+    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+      mbedWatchdog.kick();
+    #else
+      IWatchdog.reload();
+    #endif
+#endif
     Serial.print(F("Auto-retrying config dispatch for "));
     Serial.println(gClientConfigs[i].uid);
 

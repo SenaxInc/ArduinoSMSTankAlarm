@@ -469,84 +469,38 @@ static bool clearOutboundNotes() {
   }
 
   Serial.println();
-  Serial.println(F("Discovering outbound notefiles..."));
+  Serial.println(F("Clearing all outbound (.qo) notefiles..."));
 
-  // Step 1: Use note.changes to find notefiles with pending notes
-  J *changesReq = notecard.newRequest("note.changes");
-  if (!changesReq) {
-    Serial.println(F("Failed to create note.changes request."));
-    return false;
-  }
+  // All known TankAlarm outbound notefiles (from TankAlarm_Common.h)
+  static const char * const qoFiles[] = {
+    TELEMETRY_OUTBOX_FILE,          // "telemetry.qo"
+    ALARM_OUTBOX_FILE,              // "alarm.qo"
+    DAILY_OUTBOX_FILE,              // "daily.qo"
+    UNLOAD_OUTBOX_FILE,             // "unload.qo"
+    CONFIG_ACK_OUTBOX_FILE,         // "config_ack.qo"
+    COMMAND_OUTBOX_FILE,            // "command.qo"
+    RELAY_FORWARD_OUTBOX_FILE,      // "relay_forward.qo"
+    SERIAL_LOG_OUTBOX_FILE,         // "serial_log.qo"
+    SERIAL_ACK_OUTBOX_FILE,         // "serial_ack.qo"
+    LOCATION_RESPONSE_OUTBOX_FILE,  // "location_response.qo"
+    VIEWER_SUMMARY_OUTBOX_FILE,     // "viewer_summary.qo"
+    HEALTH_OUTBOX_FILE,             // "health.qo"
+    DIAG_OUTBOX_FILE,               // "diag.qo"
+  };
+  static const size_t qoCount = sizeof(qoFiles) / sizeof(qoFiles[0]);
 
-  J *changesRsp = notecard.requestAndResponse(changesReq);
-  if (!changesRsp) {
-    Serial.println(F("note.changes returned null response (I2C failure?)"));
-    return false;
-  }
-
-  const char *changesErr = JGetString(changesRsp, "err");
-  if (changesErr && changesErr[0] != '\0') {
-    Serial.print(F("note.changes error: "));
-    Serial.println(changesErr);
-    notecard.deleteResponse(changesRsp);
-    return false;
-  }
-
-  // Enumerate notefiles from the "changes" object
-  J *changes = JGetObject(changesRsp, "changes");
-  if (!changes) {
-    Serial.println(F("No notefiles with pending changes found."));
-    notecard.deleteResponse(changesRsp);
-    return true;
-  }
-
-  // Collect .qo (queued outbound) notefile names
-  // Use a fixed-size buffer since memory is constrained
-  static const size_t kMaxFiles = 16;
-  static const size_t kMaxNameLen = 48;
-  char qoFiles[kMaxFiles][kMaxNameLen];
-  size_t qoCount = 0;
-
-  J *item = changes->child;
-  while (item && qoCount < kMaxFiles) {
-    const char *name = item->string;
-    if (name) {
-      size_t len = strlen(name);
-      // Match notefiles ending in ".qo" (queued outbound)
-      if (len >= 3 && strcmp(name + len - 3, ".qo") == 0) {
-        strncpy(qoFiles[qoCount], name, kMaxNameLen - 1);
-        qoFiles[qoCount][kMaxNameLen - 1] = '\0';
-        ++qoCount;
-      }
-    }
-    item = item->next;
-  }
-
-  notecard.deleteResponse(changesRsp);
-
-  if (qoCount == 0) {
-    Serial.println(F("No outbound (.qo) notefiles with pending notes."));
-    return true;
-  }
-
-  Serial.print(F("Found "));
-  Serial.print((unsigned int)qoCount);
-  Serial.println(F(" outbound notefile(s). Draining..."));
-
-  // Step 2: For each .qo notefile, drain notes using note.get with delete:true
   uint32_t totalDeleted = 0;
   bool anyError = false;
 
   for (size_t f = 0; f < qoCount; ++f) {
-    Serial.print(F("  "));
-    Serial.print(qoFiles[f]);
-    Serial.print(F(": "));
-
     uint32_t fileDeleted = 0;
+
+    // Drain all notes from this notefile using note.get with delete:true.
+    // When the file is empty the Notecard returns an error string
+    // (e.g. "note does not exist"), which signals us to move on.
     while (true) {
       J *getReq = notecard.newRequest("note.get");
       if (!getReq) {
-        Serial.println(F("alloc failed"));
         anyError = true;
         break;
       }
@@ -556,14 +510,13 @@ static bool clearOutboundNotes() {
 
       J *getRsp = notecard.requestAndResponse(getReq);
       if (!getRsp) {
-        Serial.println(F("null response"));
         anyError = true;
         break;
       }
 
       const char *getErr = JGetString(getRsp, "err");
       if (getErr && getErr[0] != '\0') {
-        // "note does not exist" means the notefile is empty — not a real error
+        // Notefile empty or doesn't exist — not a real error
         notecard.deleteResponse(getRsp);
         break;
       }
@@ -572,15 +525,24 @@ static bool clearOutboundNotes() {
       ++fileDeleted;
     }
 
-    Serial.print(fileDeleted);
-    Serial.println(F(" note(s) deleted"));
-    totalDeleted += fileDeleted;
+    if (fileDeleted > 0) {
+      Serial.print(F("  "));
+      Serial.print(qoFiles[f]);
+      Serial.print(F(": "));
+      Serial.print(fileDeleted);
+      Serial.println(F(" note(s) deleted"));
+      totalDeleted += fileDeleted;
+    }
   }
 
-  Serial.print(F("Clear complete. Total notes deleted: "));
-  Serial.println(totalDeleted);
+  if (totalDeleted == 0) {
+    Serial.println(F("No pending outbound notes found."));
+  } else {
+    Serial.print(F("Clear complete. Total notes deleted: "));
+    Serial.println(totalDeleted);
+  }
   if (anyError) {
-    Serial.println(F("WARNING: Some errors occurred during clearing."));
+    Serial.println(F("WARNING: Some I2C/alloc errors occurred during clearing."));
   }
   return !anyError;
 }

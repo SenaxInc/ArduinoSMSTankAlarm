@@ -5979,8 +5979,28 @@ static void flushBufferedNotes() {
     }
     
     bool wroteFailures = false;
+    uint8_t flushCount = 0;
     char lineBuffer[1024];  // Larger buffer to accommodate payload data
     while (fgets(lineBuffer, sizeof(lineBuffer), src) != nullptr) {
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+      // Each note.add is a blocking I2C transaction; kick watchdog per iteration
+      // to prevent starvation when many notes are buffered.
+      #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+        mbedWatchdog.kick();
+      #else
+        IWatchdog.reload();
+      #endif
+#endif
+      // Cap per-call flushes to avoid monopolizing the loop
+      if (++flushCount > 20) {
+        // Re-write remaining unprocessed lines to the tmp file
+        fprintf(tmp, "%s", lineBuffer); // current line (still has newline)
+        while (fgets(lineBuffer, sizeof(lineBuffer), src) != nullptr) {
+          fprintf(tmp, "%s", lineBuffer);
+        }
+        wroteFailures = true;
+        break;
+      }
       // Check if line was truncated (no newline at end of non-empty buffer)
       size_t len = strlen(lineBuffer);
       if (len == sizeof(lineBuffer) - 1 && lineBuffer[len - 1] != '\n') {
@@ -6069,7 +6089,25 @@ static void flushBufferedNotes() {
     }
 
     bool wroteFailures = false;
+    uint8_t flushCount = 0;
     while (src.available()) {
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+      // Each note.add is a blocking I2C transaction; kick watchdog per iteration
+      #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+        mbedWatchdog.kick();
+      #else
+        IWatchdog.reload();
+      #endif
+#endif
+      // Cap per-call flushes to avoid monopolizing the loop
+      if (++flushCount > 20) {
+        // Copy remaining data to tmp
+        while (src.available()) {
+          tmp.write(src.read());
+        }
+        wroteFailures = true;
+        break;
+      }
       // Read line into fixed buffer instead of Arduino String
       char lineBuffer[1024];
       size_t lineLen = 0;
@@ -6698,7 +6736,15 @@ static void addSerialLog(const char *message) {
 
 static void pollForSerialRequests() {
   // Check for serial log requests from server
-  while (true) {
+  uint8_t processed = 0;
+  while (processed < 5) {  // Cap iterations to avoid watchdog starvation
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+      mbedWatchdog.kick();
+    #else
+      IWatchdog.reload();
+    #endif
+#endif
     J *req = notecard.newRequest("note.get");
     if (!req) {
       return;
@@ -6728,6 +6774,7 @@ static void pollForSerialRequests() {
     }
 
     notecard.deleteResponse(rsp);
+    processed++;
   }
 }
 
