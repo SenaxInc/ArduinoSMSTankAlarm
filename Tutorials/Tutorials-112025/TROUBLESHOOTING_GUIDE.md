@@ -207,7 +207,7 @@ Look for at startup:
 
 ```cpp
 // In serial monitor, check for I2C errors
-// Expansion uses I2C address 0x52 typically
+// Expansion uses I2C address 0x64 (for 4-20mA current loop reads)
 ```
 
 **4. Inspect for Damage**
@@ -221,8 +221,67 @@ Look for at startup:
 - **Poor seating**: Remove and firmly reseat expansion
 - **Bent pins**: Carefully straighten with needle-nose pliers
 - **Wrong orientation**: Match pin 1 markers on both boards
-- **Hardware failure**: Replace Analog Expansion (AFX00006)
+- **Hardware failure**: Replace Analog Expansion (AFX00007)
 - **Incompatible firmware**: Verify expansion firmware version matches requirements
+
+---
+
+### Expansion Module Channel LED Indicators
+
+**Symptoms / Question:**
+- Yellow LEDs are lit on the Analog Expansion module (e.g., LED 2 and LED 4)
+- Unsure whether this is an error or expected behavior
+
+**Explanation:**
+
+The Opta Ext A0602 has one yellow LED indicator per input channel (CH0–CH7). These LEDs are numbered 1–8, corresponding to channels CH0–CH7 respectively:
+
+| LED Number | Channel | Typical Use |
+|------------|---------|-------------|
+| LED 1 | CH0 | Tank A sensor |
+| LED 2 | CH1 | Tank B sensor |
+| LED 3 | CH2 | Tank C sensor |
+| LED 4 | CH3 | Tank D sensor |
+| LED 5 | CH4 | Tank E sensor |
+| LED 6 | CH5 | Tank F sensor |
+| LED 7 | CH6 | Tank G sensor |
+| LED 8 | CH7 | Tank H sensor |
+
+A yellow LED **lit** means the expansion module is detecting an active signal on that channel:
+- **4-20mA mode**: A valid current (≥4 mA) is flowing through the sensor loop on that channel
+- **0-10V mode**: A voltage above the detection threshold is present on that channel
+
+**LED 2 and LED 4 lit = Desired State** if sensors are connected to CH1 and CH3. This is normal and expected when:
+- Tank B's sensor is wired to CH1 (LED 2 lights up)
+- Tank D's sensor is wired to CH3 (LED 4 lights up)
+
+**Does updating the client config change the LEDs?**
+
+No. The channel LEDs are **hardware-only** indicators — they respond to the electrical signal on the physical terminal, not to the firmware or software configuration. Changing which tanks are configured, adding or removing sensors in the config, or pushing a new config from the server has no effect on these LEDs. Only physically connecting or disconnecting a sensor (or the sensor providing/losing current) changes the LED state.
+
+**How many LEDs will be lit with one sensor?**
+
+Exactly **one** — only the channel that has an active sensor wired to it will illuminate. If you have a single gas sensor connected to CH0, only LED 1 will be lit. Unused channels with nothing wired to them will remain off (in 4-20mA mode, an open circuit = no current = LED off).
+
+**Can the LEDs be disabled to conserve energy?**
+
+No. The channel indicator LEDs on the A0602 are built into the expansion module's hardware circuit and **cannot be controlled or disabled via firmware**. There is no software API to turn them off. The energy draw is very small (typically 1–3 mA per lit LED) and is unlikely to be a meaningful power concern in most installations. If power is extremely constrained, the only option would be to physically cover the LEDs on the board (not recommended, as they are useful status indicators during troubleshooting).
+
+**When to investigate:**
+
+| LED Behavior | Meaning |
+|--------------|---------|
+| LED lit, matching a wired sensor channel | ✅ Normal — sensor is active and providing a signal |
+| LED lit, but no sensor wired to that channel | ⚠️ Unexpected — check for loose wiring connected to that channel, or floating inputs |
+| LED off for a channel that should have a sensor | ⚠️ Problem — sensor not providing signal; check wiring, sensor power, and 4-20mA loop |
+| All LEDs off | ⚠️ Problem — expansion not receiving power or not communicating |
+
+**If LEDs are lit on unexpected channels:**
+
+1. Verify no wires are accidentally connected to those channels
+2. Check for wiring shorts between adjacent channels
+3. In 4-20mA mode: ensure unused channel terminals are left open (not shorted)
+4. In 0-10V mode: ensure unused channel inputs are not floating (can pick up noise)
 
 ---
 

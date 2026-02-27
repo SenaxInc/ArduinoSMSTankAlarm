@@ -803,7 +803,7 @@ Client 1:
   Opta Serial: ABX00049-YYYYY
   Notecard Serial: YYYYYYYYYYYY
   Notecard IMEI: 864475044012345
-  Analog Expansion: AFX00006-ZZZZZ
+  Analog Expansion: AFX00007-ZZZZZ
   Sensors: CH0 (4-20mA Fuel Level)
   Installation Date: 2025-07-01
 
