@@ -2808,13 +2808,25 @@ static void initializeNotecard() {
       const char *uid = JGetString(rsp, "device");
       if (uid && uid[0] != '\0') {
         strlcpy(gDeviceUID, uid, sizeof(gDeviceUID));
+        // Persist UID in config so it survives reboot even if the Notecard
+        // hasn't synced yet on next startup (avoids phantom client IDs).
+        if (strcmp(gConfig.deviceUid, uid) != 0) {
+          strlcpy(gConfig.deviceUid, uid, sizeof(gConfig.deviceUid));
+          gConfigDirty = true;
+        }
       }
       notecard.deleteResponse(rsp);
     }
   }
 
+  // Fallback chain: persisted UID from config → deviceLabel → hardcoded default
+  if (gDeviceUID[0] == '\0' && gConfig.deviceUid[0] != '\0') {
+    strlcpy(gDeviceUID, gConfig.deviceUid, sizeof(gDeviceUID));
+    Serial.println(F("Device UID loaded from config (Notecard not ready)"));
+  }
   if (gDeviceUID[0] == '\0') {
     strlcpy(gDeviceUID, gConfig.deviceLabel, sizeof(gDeviceUID));
+    Serial.println(F("Warning: Using deviceLabel as UID fallback"));
   }
 
   Serial.print(F("Device UID: "));
@@ -2867,6 +2879,28 @@ static bool checkNotecardHealth() {
   gNotecardAvailable = true;
   gNotecardFailureCount = 0;
   gLastSuccessfulNotecardComm = millis();
+
+  // Deferred UID resolution: if the Notecard wasn't ready at boot, the device
+  // UID may still be a fallback (deviceLabel).  Now that the Notecard is
+  // healthy, retry hub.get to obtain the real UID and persist it.
+  if (gConfig.deviceUid[0] == '\0') {
+    J *uidReq = notecard.newRequest("hub.get");
+    if (uidReq) {
+      J *uidRsp = notecard.requestAndResponse(uidReq);
+      if (uidRsp) {
+        const char *uid = JGetString(uidRsp, "device");
+        if (uid && uid[0] != '\0') {
+          strlcpy(gDeviceUID, uid, sizeof(gDeviceUID));
+          strlcpy(gConfig.deviceUid, uid, sizeof(gConfig.deviceUid));
+          gConfigDirty = true;
+          Serial.print(F("Device UID resolved: "));
+          Serial.println(uid);
+        }
+        notecard.deleteResponse(uidRsp);
+      }
+    }
+  }
+
   flushBufferedNotes();
   return true;
 }

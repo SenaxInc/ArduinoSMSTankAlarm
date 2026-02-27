@@ -156,6 +156,8 @@ You'll need the Notecard device UIDs for your Server and Viewer devices. Find th
 2. Click **Devices** in the left sidebar
 3. Note the **Device UID** for each device (format: `dev:XXXXXXXXXXXX`)
 
+> **⚠️ Case-sensitive:** Device UIDs must use lowercase `dev:` — not `Dev:` or `DEV:`. Notehub treats these as different devices. A route configured with `Dev:860322068056529` will return a **404 "could not find device"** error even though `dev:860322068056529` exists. Always copy-paste the UID directly from the Notehub Devices page to avoid capitalization mistakes.
+
 Write them down:
 
 | Role | Device UID | Fleet |
@@ -431,7 +433,7 @@ Save the route and re-route a failed event from Route Logs to confirm the fix.
 | Error Code | Meaning | Fix |
 |-----------|---------|-----|
 | 401 | Unauthorized | Check your Personal Access Token is correct and not expired. Create PATs from your profile menu → API Access. Do **not** use OAuth tokens from Programmatic API Access (they expire every 30 minutes). For `X-SESSION-TOKEN`, paste the raw PAT only — **do not prefix with `Bearer `**. Also check that the header value has no extra whitespace. |
-| 404 | Device not found | Verify the device UID is correct and the device exists in the project. Also check that the URL placeholder is `[filebase]` (not `{{notefile_base}}`). |
+| 404 | Device not found | Verify the device UID is correct and the device exists in the project. Device UIDs are **case-sensitive** — `Dev:` ≠ `dev:` (must be lowercase). Also check that the URL placeholder is `[filebase]` (not `{{notefile_base}}`). |
 | 400 | Bad request | Check the request body format — must be valid JSON with a `body` field |
 
 ### "Notes not appearing on target device"
