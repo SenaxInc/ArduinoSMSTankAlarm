@@ -57,6 +57,7 @@ static bool runHubSet();
 static bool runHubSync();
 static bool resetI2CAddressToDefault();
 static bool runCardRestore();
+static bool clearOutboundNotes();
 static void printStatus();
 static bool readLine(char *buffer, size_t bufferSize, unsigned long timeoutMs);
 static bool parseHexAddress(const char *text, uint8_t &addressOut);
@@ -158,6 +159,10 @@ void loop() {
       resetI2CAddressToDefault();
       break;
 
+    case 'c':
+      clearOutboundNotes();
+      break;
+
     case 'x':
       runCardRestore();
       break;
@@ -192,6 +197,7 @@ static void printMenu() {
   Serial.println(F("  d       - Run Notecard diagnostics (hub.get, card.version, card.wireless)"));
   Serial.println(F("  u       - Send hub.set using PRODUCT_UID / DEVICE_FLEET / HUB_MODE"));
   Serial.println(F("  y       - Send hub.sync"));
+  Serial.println(F("  c       - Clear all pending outbound notes from Notecard"));
   Serial.println(F("  r       - Reset Notecard I2C address to default (card.io i2c:-1)"));
   Serial.println(F("  x       - Factory restore Notecard (card.restore delete:true) [DESTRUCTIVE]"));
   Serial.println();
@@ -454,6 +460,129 @@ static bool resetI2CAddressToDefault() {
   Serial.println(F("card.io succeeded. Re-attaching at default address 0x17..."));
   safeSleep(200);
   return attachNotecard(DEFAULT_NOTECARD_ADDRESS);
+}
+
+static bool clearOutboundNotes() {
+  if (!gAttached) {
+    Serial.println(F("Notecard is not attached. Use 'a' or 'n' first."));
+    return false;
+  }
+
+  Serial.println();
+  Serial.println(F("Discovering outbound notefiles..."));
+
+  // Step 1: Use note.changes to find notefiles with pending notes
+  J *changesReq = notecard.newRequest("note.changes");
+  if (!changesReq) {
+    Serial.println(F("Failed to create note.changes request."));
+    return false;
+  }
+
+  J *changesRsp = notecard.requestAndResponse(changesReq);
+  if (!changesRsp) {
+    Serial.println(F("note.changes returned null response (I2C failure?)"));
+    return false;
+  }
+
+  const char *changesErr = JGetString(changesRsp, "err");
+  if (changesErr && changesErr[0] != '\0') {
+    Serial.print(F("note.changes error: "));
+    Serial.println(changesErr);
+    notecard.deleteResponse(changesRsp);
+    return false;
+  }
+
+  // Enumerate notefiles from the "changes" object
+  J *changes = JGetObject(changesRsp, "changes");
+  if (!changes) {
+    Serial.println(F("No notefiles with pending changes found."));
+    notecard.deleteResponse(changesRsp);
+    return true;
+  }
+
+  // Collect .qo (queued outbound) notefile names
+  // Use a fixed-size buffer since memory is constrained
+  static const size_t kMaxFiles = 16;
+  static const size_t kMaxNameLen = 48;
+  char qoFiles[kMaxFiles][kMaxNameLen];
+  size_t qoCount = 0;
+
+  J *item = changes->child;
+  while (item && qoCount < kMaxFiles) {
+    const char *name = item->string;
+    if (name) {
+      size_t len = strlen(name);
+      // Match notefiles ending in ".qo" (queued outbound)
+      if (len >= 3 && strcmp(name + len - 3, ".qo") == 0) {
+        strncpy(qoFiles[qoCount], name, kMaxNameLen - 1);
+        qoFiles[qoCount][kMaxNameLen - 1] = '\0';
+        ++qoCount;
+      }
+    }
+    item = item->next;
+  }
+
+  notecard.deleteResponse(changesRsp);
+
+  if (qoCount == 0) {
+    Serial.println(F("No outbound (.qo) notefiles with pending notes."));
+    return true;
+  }
+
+  Serial.print(F("Found "));
+  Serial.print((unsigned int)qoCount);
+  Serial.println(F(" outbound notefile(s). Draining..."));
+
+  // Step 2: For each .qo notefile, drain notes using note.get with delete:true
+  uint32_t totalDeleted = 0;
+  bool anyError = false;
+
+  for (size_t f = 0; f < qoCount; ++f) {
+    Serial.print(F("  "));
+    Serial.print(qoFiles[f]);
+    Serial.print(F(": "));
+
+    uint32_t fileDeleted = 0;
+    while (true) {
+      J *getReq = notecard.newRequest("note.get");
+      if (!getReq) {
+        Serial.println(F("alloc failed"));
+        anyError = true;
+        break;
+      }
+
+      JAddStringToObject(getReq, "file", qoFiles[f]);
+      JAddBoolToObject(getReq, "delete", true);
+
+      J *getRsp = notecard.requestAndResponse(getReq);
+      if (!getRsp) {
+        Serial.println(F("null response"));
+        anyError = true;
+        break;
+      }
+
+      const char *getErr = JGetString(getRsp, "err");
+      if (getErr && getErr[0] != '\0') {
+        // "note does not exist" means the notefile is empty — not a real error
+        notecard.deleteResponse(getRsp);
+        break;
+      }
+
+      notecard.deleteResponse(getRsp);
+      ++fileDeleted;
+    }
+
+    Serial.print(fileDeleted);
+    Serial.println(F(" note(s) deleted"));
+    totalDeleted += fileDeleted;
+  }
+
+  Serial.print(F("Clear complete. Total notes deleted: "));
+  Serial.println(totalDeleted);
+  if (anyError) {
+    Serial.println(F("WARNING: Some errors occurred during clearing."));
+  }
+  return !anyError;
 }
 
 static bool runCardRestore() {

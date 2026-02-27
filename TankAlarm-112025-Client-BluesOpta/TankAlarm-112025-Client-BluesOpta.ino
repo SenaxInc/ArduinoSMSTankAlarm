@@ -1356,6 +1356,16 @@ void setup() {
   // However, unconfigured solar-only clients (monitorCount == 0) DO send
   // a registration note at boot because there is no other way for the
   // server to discover them and push an initial configuration.
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  // Reset watchdog before boot telemetry — the Notecard I2C transaction
+  // inside publishNote() can block for up to 30 s, which combined with
+  // post-watchdog-enable init could exceed the watchdog window.
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
+#endif
   if (gConfig.monitorCount > 0) {
     if (!isSolarOnlyActive()) {
       Serial.println(F("Sending boot telemetry..."));
@@ -5751,6 +5761,16 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
   }
 
   JAddItemToObject(req, "body", body);
+
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  // Kick watchdog before the potentially long-blocking I2C transaction
+  // with the Notecard (can take up to 30 s if the modem is busy).
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
+#endif
 
   // Use requestAndResponse to capture the Notecard's error message (if any)
   J *rsp = notecard.requestAndResponse(req);

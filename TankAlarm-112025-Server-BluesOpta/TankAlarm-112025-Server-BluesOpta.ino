@@ -2416,6 +2416,15 @@ void setup() {
   Serial.println(F("----------------------------------"));
   
   // Initial voltage and DFU check
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  // Reset watchdog before blocking Notecard I2C calls — card.voltage and
+  // dfu.status can each block for several seconds if the modem is busy.
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
+#endif
   checkServerVoltage();
   checkForFirmwareUpdate();
   
