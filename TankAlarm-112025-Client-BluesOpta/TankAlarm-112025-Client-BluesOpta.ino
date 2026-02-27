@@ -3901,7 +3901,11 @@ static void sampleTanks() {
   if (isSolarOnlyActive() && !isSensorVoltageGateOpen()) {
     return;  // Voltage too low for reliable sensor readings
   }
-  
+
+  // Trim the telemetry outbox once per sampling pass (before any sendTelemetry calls)
+  // so repeated monitors do not each issue a note.changes query on the I2C bus.
+  trimTelemetryOutbox();
+
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
     float inches = readTankSensor(i);
     
@@ -4129,7 +4133,6 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   doc["r"] = reason;
   doc["t"] = currentEpoch();
 
-  trimTelemetryOutbox();
   publishNote(TELEMETRY_FILE, doc, syncNow);
 }
 
@@ -5727,6 +5730,11 @@ static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankInd
 // If more are pending, the oldest notes are deleted to make room for the new one.
 // This prevents unbounded queue growth when the Notecard cannot sync for an extended period.
 // The loop retries if the initial collection window was exceeded (large backlog recovery).
+// A hard pass limit and zero-deletion guard ensure the function exits gracefully if the
+// Notecard returns errors so the main loop is never blocked indefinitely.
+#ifndef TELEMETRY_TRIM_MAX_PASSES
+#define TELEMETRY_TRIM_MAX_PASSES 10  // Max retry iterations when draining a large backlog
+#endif
 static void trimTelemetryOutbox() {
   if (!gNotecardAvailable) {
     return;
@@ -5738,11 +5746,15 @@ static void trimTelemetryOutbox() {
 
   uint8_t totalDeleted = 0;
   bool overflowed = true;  // start true to enter the loop at least once
+  uint8_t passes = 0;
 
   // Retry if the queue exceeded MAX_IDS on the previous pass so that a large
   // backlog (e.g., after a long outage) is fully drained to the target limit.
-  while (overflowed) {
+  // TELEMETRY_TRIM_MAX_PASSES caps iterations so a persistent Notecard error
+  // (e.g., I2C failure) cannot block the main loop indefinitely.
+  while (overflowed && passes < TELEMETRY_TRIM_MAX_PASSES) {
     overflowed = false;
+    passes++;
 
     J *req = notecard.newRequest("note.changes");
     if (!req) {
@@ -5791,6 +5803,7 @@ static void trimTelemetryOutbox() {
     // count == 15: toDelete = 1 → 14 pending → after add = 15 ✓
     // count == 17: toDelete = 3 → 14 pending → after add = 15 ✓
     uint8_t toDelete = count - TELEMETRY_OUTBOX_MAX_PENDING + 1;
+    uint8_t deletedThisPass = 0;
     for (uint8_t i = 0; i < toDelete; i++) {
       J *delReq = notecard.newRequest("note.delete");
       if (!delReq) {
@@ -5804,9 +5817,16 @@ static void trimTelemetryOutbox() {
         const char *delErr = JGetString(delRsp, "err");
         if (!delErr || delErr[0] == '\0') {
           totalDeleted++;
+          deletedThisPass++;
         }
         notecard.deleteResponse(delRsp);
       }
+    }
+    // If no deletions succeeded this pass, the Notecard is not accepting deletes;
+    // stop retrying to avoid spinning until TELEMETRY_TRIM_MAX_PASSES is exhausted.
+    if (deletedThisPass == 0) {
+      Serial.println(F("trimTelemetryOutbox: note.delete failed, aborting trim"));
+      break;
     }
   }
 
