@@ -795,7 +795,12 @@ struct ClientConfigSnapshot {
   char lastAckStatus[16];    // Last ACK status: "applied", "rejected", "parse_error"
   uint8_t dispatchAttempts;  // Number of times this config has been dispatched/retried
   double lastDispatchEpoch;  // When the most recent dispatch attempt occurred
-};\n\n// Maximum number of config dispatch retries before auto-cancel\n#ifndef MAX_CONFIG_DISPATCH_RETRIES\n#define MAX_CONFIG_DISPATCH_RETRIES 5\n#endif
+};
+
+// Maximum number of config dispatch retries before auto-cancel
+#ifndef MAX_CONFIG_DISPATCH_RETRIES
+#define MAX_CONFIG_DISPATCH_RETRIES 5
+#endif
 
 // Enum for client config dispatch status
 enum class ConfigDispatchStatus {

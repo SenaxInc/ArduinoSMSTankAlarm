@@ -2935,7 +2935,7 @@ static bool checkNotecardHealth() {
       (millis() - gLastSuccessfulNoteSend) > NOTECARD_MODEM_STALL_MS) {
     Serial.println(F("WARNING: Modem stall detected — card.wireless OK but no notes sent in 4+ hours"));
     Serial.println(F("Issuing card.restart to reset modem..."));
-    addSerialLog("Modem stall: card.restart issued", "warn");
+    addSerialLog("Modem stall: card.restart issued");
     J *restartReq = notecard.newRequest("card.restart");
     if (restartReq) {
       notecard.sendRequest(restartReq);  // Fire and forget
