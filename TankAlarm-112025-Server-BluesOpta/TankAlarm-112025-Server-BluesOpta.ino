@@ -368,6 +368,18 @@ struct ClientMetadata {
   char firmwareVersion[16];  // Firmware version string from client telemetry/daily
   // Stale alerting state
   bool staleAlertSent;       // Whether a stale alert has been sent for this client
+  // Cellular signal strength (from client daily reports)
+  int8_t signalBars;         // 0-4 bars, -1 = unknown
+  int16_t signalRssi;        // RSSI in dBm
+  int16_t signalRsrp;        // RSRP in dBm (LTE reference signal power)
+  int16_t signalRsrq;        // RSRQ in dB  (LTE reference signal quality)
+  char signalRat[8];         // Radio access technology (e.g., "lte", "catm")
+  double signalEpoch;        // When signal data was last updated
+  // Daily report part tracking (runtime only — not persisted)
+  double dailyReportEpoch;    // Epoch of most recent daily report batch
+  uint8_t dailyPartsReceived; // Bitmask of parts received (bits 0-7)
+  bool dailyComplete;         // True when final part (m=false) received
+  uint8_t dailyExpectedParts; // Part number of final part + 1
 };
 
 struct SerialLogEntry {
@@ -781,7 +793,9 @@ struct ClientConfigSnapshot {
   char configVersion[16];    // Config version hash for ACK tracking
   double lastAckEpoch;       // When last config ACK was received from client
   char lastAckStatus[16];    // Last ACK status: "applied", "rejected", "parse_error"
-};
+  uint8_t dispatchAttempts;  // Number of times this config has been dispatched/retried
+  double lastDispatchEpoch;  // When the most recent dispatch attempt occurred
+};\n\n// Maximum number of config dispatch retries before auto-cancel\n#ifndef MAX_CONFIG_DISPATCH_RETRIES\n#define MAX_CONFIG_DISPATCH_RETRIES 5\n#endif
 
 // Enum for client config dispatch status
 enum class ConfigDispatchStatus {
@@ -1290,7 +1304,7 @@ static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html 
   <div style="display:flex;gap:8px;"><button type="submit" form="generatorForm">Save to Device</button>
   <button type="button" id="downloadBtn" class="secondary">Download JSON</button></div>
 </div>
-<div id="configStatus" style="display:none;padding:12px;margin-bottom:16px;border-radius:var(--radius);background:#e6f2ff;border:1px solid #b3d9ff;color:#0066cc;"></div><form id="generatorForm"><div class="form-grid"><label class="field"><span>Product UID <span class="tooltip-icon" tabindex="0" data-tooltip="Blues Notehub Product UID. Must match the server's Product UID for client-server communication.">?</span></span><input id="productUid" type="text" placeholder="com.company.product:project" required></label><label class="field"><span>Device UID</span><input id="clientUid" type="text" placeholder="dev:xxxxxxxx"></label><label class="field"><span>Site Name</span><input id="siteName" type="text" placeholder="Site Name" required></label><label class="field"><span>Device Label</span><input id="deviceLabel" type="text" placeholder="Device Label" required></label><label class="field"><span>Client Fleet</span><input id="clientFleet" type="text" placeholder="Client Fleet"></label><label class="field"><span>Server Fleet</span><input id="serverFleet" type="text" value="tankalarm-server"></label><label class="field"><span>Sample Minutes</span><input id="sampleMinutes" type="number" value="30" min="1" max="1440"></label><label class="field"><span>Report Time</span><input id="reportTime" type="time" value="05:00"></label><label class="field"><span>Daily Report Email Recipient</span><input id="dailyEmail" type="email"></label></div><h3>Power Configuration</h3><div class="form-grid"><label class="field"><span>Power Source<span class="tooltip-icon" tabindex="0" data-tooltip="Select the primary power source for this installation.">?</span></span><select id="powerSource" onchange="updatePowerConfigInfo()"><option value="grid">Grid-Tied (AC Power Only)</option><option value="grid_battery">Grid-Tied + Battery Backup</option><option value="grid_battery_vin">Grid-Tied + Battery Backup + Vin Monitor</option><option value="solar">Solar + Battery (Basic)</option><option value="solar_vin">Solar + Battery + Vin Monitor</option><option value="solar_mppt">Solar + Battery + MPPT (No Monitor)</option><option value="solar_modbus_mppt">Solar + Modbus MPPT (RS-485 Monitor)</option><option value="solar_nobat">Solar Only — No Battery</option><option value="solar_nobat_vin">Solar Only — No Battery + Vin Monitor</option></select></label></div><div id="powerConfigInfo" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-bottom:16px;font-size:0.9rem;color:var(--muted);"><strong>Hardware Requirement:</strong> Modbus MPPT requires the Arduino Opta with RS-485 expansion module.</div><div id="vinConfigSection" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-bottom:16px;border-radius:var(--radius);"><strong style="display:block;margin-bottom:8px;">Vin Monitor — Voltage Divider Configuration</strong><p style="font-size:0.85rem;color:var(--muted);margin:0 0 12px;">Wire a voltage divider from the battery to an Opta analog input: Battery+ → R1 → Pin → R2 → GND</p><div class="form-grid"><label class="field"><span>Analog Pin</span><select id="vinPin"><option value="0">A0</option><option value="1">A1</option><option value="2">A2</option><option value="3">A3</option><option value="4">A4</option><option value="5">A5</option><option value="6">A6</option><option value="7">A7</option></select></label><label class="field"><span>R1 High-side (kΩ)</span><input id="vinR1" type="number" value="22" min="1" max="1000" step="0.1" onchange="updateVinCalc()"></label><label class="field"><span>R2 Low-side (kΩ)</span><input id="vinR2" type="number" value="47" min="1" max="1000" step="0.1" onchange="updateVinCalc()"></label></div><div id="vinCalcInfo" style="margin-top:8px;font-size:0.85rem;color:var(--muted);"></div></div><div id="solarOnlyConfigSection" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-bottom:16px;border-radius:var(--radius);"><strong style="display:block;margin-bottom:8px;">Solar-Only (No Battery) Settings</strong><p style="font-size:0.85rem;color:var(--muted);margin:0 0 12px;">This device is powered directly by a solar panel without battery backup. It will only operate during daylight hours.</p><div class="form-grid"><label class="field" id="solarOnlyDebounceVField"><span>Startup Debounce Voltage (V)<span class="tooltip-icon" tabindex="0" data-tooltip="Minimum Vin voltage before the system considers power stable enough to start. Only applies when Vin divider is connected.">?</span></span><input id="solarOnlyDebounceV" type="number" value="10" min="5" max="20" step="0.5"></label><label class="field" id="solarOnlyDebounceSField"><span>Debounce Duration (sec)<span class="tooltip-icon" tabindex="0" data-tooltip="Number of seconds the voltage must remain above the debounce threshold. Only applies when Vin divider is connected.">?</span></span><input id="solarOnlyDebounceSec" type="number" value="30" min="5" max="300"></label><label class="field" id="solarOnlyWarmupField"><span>Startup Warmup (sec)<span class="tooltip-icon" tabindex="0" data-tooltip="Fixed warmup timer used when no Vin divider is installed. The device waits this long after boot before reading sensors.">?</span></span><input id="solarOnlyWarmupSec" type="number" value="60" min="10" max="600"></label><label class="field" id="solarOnlySensorGateField"><span>Sensor Gate Voltage (V)<span class="tooltip-icon" tabindex="0" data-tooltip="Minimum Vin voltage required before sensor readings are taken. 4-20mA sensors typically need at least 11V excitation. Only applies when Vin divider is connected.">?</span></span><input id="solarOnlySensorGateV" type="number" value="11" min="5" max="20" step="0.5"></label><label class="field" id="solarOnlySunsetVField"><span>Sunset Voltage (V)<span class="tooltip-icon" tabindex="0" data-tooltip="When Vin drops below this and continues declining, the device saves state and prepares for power loss. Only applies when Vin divider is connected.">?</span></span><input id="solarOnlySunsetV" type="number" value="10" min="5" max="20" step="0.5"></label><label class="field"><span>Sunset Confirm Duration (sec)<span class="tooltip-icon" tabindex="0" data-tooltip="How long voltage must be declining below sunset threshold before triggering shutdown save.">?</span></span><input id="solarOnlySunsetSec" type="number" value="120" min="30" max="600"></label><label class="field"><span>Opportunistic Report (hours)<span class="tooltip-icon" tabindex="0" data-tooltip="If more than this many hours have passed since the last daily report, send one immediately on startup. For solar-only, reports cannot be scheduled at a fixed time.">?</span></span><input id="solarOnlyReportHours" type="number" value="20" min="6" max="48"></label></div><div id="solarOnlyBatFailSection" style="display:none;margin-top:12px;border-top:1px solid var(--card-border);padding-top:12px;"><label style="display:flex;align-items:center;gap:8px;font-size:0.9rem;margin-bottom:8px;"><input type="checkbox" id="solarOnlyBatFail"> Enable battery failure fallback<span class="tooltip-icon" tabindex="0" data-tooltip="For solar+battery setups: if the battery voltage stays critically low for extended time, automatically switch to solar-only behaviors (opportunistic reporting, sunset protocol).">?</span></label><label class="field"><span>Failure Threshold (readings)<span class="tooltip-icon" tabindex="0" data-tooltip="Number of consecutive critical-voltage readings before declaring battery failure.">?</span></span><input id="solarOnlyBatFailCount" type="number" value="10" min="3" max="50"></label></div></div><h3>Sensors</h3><div id="sensorsContainer"></div><div class="actions" style="margin-bottom: 24px;"><button type="button" id="addSensorBtn" class="secondary">+ Add Sensor</button></div><h3>Inputs (Buttons &amp; Switches)</h3><p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 12px;">Configure physical inputs for actions like clearing relay alarms.</p><div id="inputsContainer"></div><div class="actions" style="margin-bottom: 24px;"><button type="button" id="addInputBtn" class="secondary">+ Add Input</button></div><div class="actions"><button type="submit" id="sendConfigBtn">Save Configuration to Device</button><button type="button" id="retryConfigBtn" class="secondary" style="display:none">Retry Send to Notecard</button></div></form></div></main><div id="toast"></div><div id="pinModal" class="modal hidden"><div class="modal-card"><div class="modal-badge" id="pinSessionBadge">Locked</div><h2 id="pinModalTitle">Enter Admin PIN</h2><p id="pinModalDescription">Enter the admin PIN.</p><form id="pinForm"><label class="field"><span>PIN</span><input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits"></label><div class="actions"><button type="submit" id="pinSubmit">Unlock</button><button type="button" class="secondary" id="pinCancel">Cancel</button></div></form></div></div><div id="selectClientModal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2>Load Configuration</h2><button class="modal-close" onclick="closeSelectClientModal()">&times;</button></div><div id="clientList" class="client-list"><div class="empty-state">Loading clients...</div></div></div></div><datalist id="relayTargetSuggestions"></datalist><input type="file" id="importFileInput" accept=".json" style="display:none" />
+<div id="configStatus" style="display:none;padding:12px;margin-bottom:16px;border-radius:var(--radius);background:#e6f2ff;border:1px solid #b3d9ff;color:#0066cc;"></div><form id="generatorForm"><div class="form-grid"><label class="field"><span>Product UID <span class="tooltip-icon" tabindex="0" data-tooltip="Blues Notehub Product UID. Must match the server's Product UID for client-server communication.">?</span></span><input id="productUid" type="text" placeholder="com.company.product:project" required></label><label class="field"><span>Device UID</span><input id="clientUid" type="text" placeholder="dev:xxxxxxxx"></label><label class="field"><span>Site Name</span><input id="siteName" type="text" placeholder="Site Name" required></label><label class="field"><span>Device Label</span><input id="deviceLabel" type="text" placeholder="Device Label" required></label><label class="field"><span>Client Fleet</span><input id="clientFleet" type="text" placeholder="Client Fleet"></label><label class="field"><span>Server Fleet</span><input id="serverFleet" type="text" value="tankalarm-server"></label><label class="field"><span>Sample Minutes</span><input id="sampleMinutes" type="number" value="30" min="1" max="1440"></label><label class="field"><span>Report Time</span><input id="reportTime" type="time" value="05:00"></label><label class="field"><span>Daily Report Email Recipient</span><input id="dailyEmail" type="email"></label></div><h3>Power Configuration</h3><div class="form-grid"><label class="field"><span>Power Source<span class="tooltip-icon" tabindex="0" data-tooltip="Select the primary power source for this installation.">?</span></span><select id="powerSource" onchange="updatePowerConfigInfo()"><option value="grid">Grid-Tied (AC Power Only)</option><option value="grid_battery">Grid-Tied + Battery Backup</option><option value="grid_battery_vin">Grid-Tied + Battery Backup + Vin Monitor</option><option value="solar">Solar + Battery (Basic)</option><option value="solar_vin">Solar + Battery + Vin Monitor</option><option value="solar_mppt">Solar + Battery + MPPT (No Monitor)</option><option value="solar_modbus_mppt">Solar + Modbus MPPT (RS-485 Monitor)</option><option value="solar_nobat">Solar Only — No Battery</option><option value="solar_nobat_vin">Solar Only — No Battery + Vin Monitor</option></select></label></div><div id="powerConfigInfo" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-bottom:16px;font-size:0.9rem;color:var(--muted);"><strong>Hardware Requirement:</strong> Modbus MPPT requires the Arduino Opta with RS-485 expansion module.</div><div id="vinConfigSection" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-bottom:16px;border-radius:var(--radius);"><strong style="display:block;margin-bottom:8px;">Vin Monitor — Voltage Divider Configuration</strong><p style="font-size:0.85rem;color:var(--muted);margin:0 0 12px;">Wire a voltage divider from the battery to an Opta analog input: Battery+ → R1 → Pin → R2 → GND</p><div class="form-grid"><label class="field"><span>Analog Pin</span><select id="vinPin"><option value="0">A0</option><option value="1">A1</option><option value="2">A2</option><option value="3">A3</option><option value="4">A4</option><option value="5">A5</option><option value="6">A6</option><option value="7">A7</option></select></label><label class="field"><span>R1 High-side (kΩ)</span><input id="vinR1" type="number" value="22" min="1" max="1000" step="0.1" onchange="updateVinCalc()"></label><label class="field"><span>R2 Low-side (kΩ)</span><input id="vinR2" type="number" value="47" min="1" max="1000" step="0.1" onchange="updateVinCalc()"></label></div><div id="vinCalcInfo" style="margin-top:8px;font-size:0.85rem;color:var(--muted);"></div></div><div id="solarOnlyConfigSection" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-bottom:16px;border-radius:var(--radius);"><strong style="display:block;margin-bottom:8px;">Solar-Only (No Battery) Settings</strong><p style="font-size:0.85rem;color:var(--muted);margin:0 0 12px;">This device is powered directly by a solar panel without battery backup. It will only operate during daylight hours.</p><div class="form-grid"><label class="field" id="solarOnlyDebounceVField"><span>Startup Debounce Voltage (V)<span class="tooltip-icon" tabindex="0" data-tooltip="Minimum Vin voltage before the system considers power stable enough to start. Only applies when Vin divider is connected.">?</span></span><input id="solarOnlyDebounceV" type="number" value="10" min="5" max="20" step="0.5"></label><label class="field" id="solarOnlyDebounceSField"><span>Debounce Duration (sec)<span class="tooltip-icon" tabindex="0" data-tooltip="Number of seconds the voltage must remain above the debounce threshold. Only applies when Vin divider is connected.">?</span></span><input id="solarOnlyDebounceSec" type="number" value="30" min="5" max="300"></label><label class="field" id="solarOnlyWarmupField"><span>Startup Warmup (sec)<span class="tooltip-icon" tabindex="0" data-tooltip="Fixed warmup timer used when no Vin divider is installed. The device waits this long after boot before reading sensors.">?</span></span><input id="solarOnlyWarmupSec" type="number" value="60" min="10" max="600"></label><label class="field" id="solarOnlySensorGateField"><span>Sensor Gate Voltage (V)<span class="tooltip-icon" tabindex="0" data-tooltip="Minimum Vin voltage required before sensor readings are taken. 4-20mA sensors typically need at least 11V excitation. Only applies when Vin divider is connected.">?</span></span><input id="solarOnlySensorGateV" type="number" value="11" min="5" max="20" step="0.5"></label><label class="field" id="solarOnlySunsetVField"><span>Sunset Voltage (V)<span class="tooltip-icon" tabindex="0" data-tooltip="When Vin drops below this and continues declining, the device saves state and prepares for power loss. Only applies when Vin divider is connected.">?</span></span><input id="solarOnlySunsetV" type="number" value="10" min="5" max="20" step="0.5"></label><label class="field"><span>Sunset Confirm Duration (sec)<span class="tooltip-icon" tabindex="0" data-tooltip="How long voltage must be declining below sunset threshold before triggering shutdown save.">?</span></span><input id="solarOnlySunsetSec" type="number" value="120" min="30" max="600"></label><label class="field"><span>Opportunistic Report (hours)<span class="tooltip-icon" tabindex="0" data-tooltip="If more than this many hours have passed since the last daily report, send one immediately on startup. For solar-only, reports cannot be scheduled at a fixed time.">?</span></span><input id="solarOnlyReportHours" type="number" value="20" min="6" max="48"></label></div><div id="solarOnlyBatFailSection" style="display:none;margin-top:12px;border-top:1px solid var(--card-border);padding-top:12px;"><label style="display:flex;align-items:center;gap:8px;font-size:0.9rem;margin-bottom:8px;"><input type="checkbox" id="solarOnlyBatFail"> Enable battery failure fallback<span class="tooltip-icon" tabindex="0" data-tooltip="For solar+battery setups: if the battery voltage stays critically low for extended time, automatically switch to solar-only behaviors (opportunistic reporting, sunset protocol).">?</span></label><label class="field"><span>Failure Threshold (readings)<span class="tooltip-icon" tabindex="0" data-tooltip="Number of consecutive critical-voltage readings before declaring battery failure.">?</span></span><input id="solarOnlyBatFailCount" type="number" value="10" min="3" max="50"></label></div></div><h3>Sensors</h3><div id="sensorsContainer"></div><div class="actions" style="margin-bottom: 24px;"><button type="button" id="addSensorBtn" class="secondary">+ Add Sensor</button></div><h3>Inputs (Buttons &amp; Switches)</h3><p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 12px;">Configure physical inputs for actions like clearing relay alarms.</p><div id="inputsContainer"></div><div class="actions" style="margin-bottom: 24px;"><button type="button" id="addInputBtn" class="secondary">+ Add Input</button></div><div class="actions"><button type="submit" id="sendConfigBtn">Save Configuration to Device</button><button type="button" id="retryConfigBtn" class="secondary" style="display:none">Retry Send to Notecard</button><button type="button" id="syncRequestBtn" class="secondary" style="display:none" title="Force the client Notecard to sync inbound notes (useful for weak signal)">Request Client Sync</button></div></form></div></main><div id="toast"></div><div id="pinModal" class="modal hidden"><div class="modal-card"><div class="modal-badge" id="pinSessionBadge">Locked</div><h2 id="pinModalTitle">Enter Admin PIN</h2><p id="pinModalDescription">Enter the admin PIN.</p><form id="pinForm"><label class="field"><span>PIN</span><input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits"></label><div class="actions"><button type="submit" id="pinSubmit">Unlock</button><button type="button" class="secondary" id="pinCancel">Cancel</button></div></form></div></div><div id="selectClientModal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2>Load Configuration</h2><button class="modal-close" onclick="closeSelectClientModal()">&times;</button></div><div id="clientList" class="client-list"><div class="empty-state">Loading clients...</div></div></div></div><datalist id="relayTargetSuggestions"></datalist><input type="file" id="importFileInput" accept=".json" style="display:none" />
 <script>
 (() => {
 const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}
@@ -1348,9 +1362,12 @@ const inputCards=document.querySelectorAll('#inputsContainer .sensor-card');let 
 /* SUBMIT & DOWNLOAD */
 let lastSubmitPin='';
 const retryBtn=document.getElementById('retryConfigBtn');
-async function submitConfig(e){e.preventDefault();requestPin(async(pin)=>{try{lastSubmitPin=pin;const clientUid=(els.clientUid&&els.clientUid.value?els.clientUid.value:'').trim();if(!clientUid){showToast('Device UID is required to send config',true);return;}const cfg=collectConfig();if(!cfg)return;const res=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin,client:clientUid,config:cfg})});const resText=await res.text();if(res.status===200){if(resText&&resText.includes('WARNING')){showToast(resText,'warn',6000);}else{showToast('Configuration saved and queued for device');}retryBtn.style.display='none';}else if(res.status===202){showToast(resText||'Config saved locally — Notecard send failed');retryBtn.style.display='inline-block';}else{showToast('Error: '+(resText||res.statusText),true);}}catch(err){showToast('Error: '+err.message,true);}});}
+async function submitConfig(e){e.preventDefault();requestPin(async(pin)=>{try{lastSubmitPin=pin;const clientUid=(els.clientUid&&els.clientUid.value?els.clientUid.value:'').trim();if(!clientUid){showToast('Device UID is required to send config',true);return;}const cfg=collectConfig();if(!cfg)return;const res=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin,client:clientUid,config:cfg})});const resText=await res.text();if(res.status===200){if(resText&&resText.includes('WARNING')){showToast(resText,'warn',6000);}else{showToast('Configuration saved and queued for device');}retryBtn.style.display='none';if(syncBtn)syncBtn.style.display='inline-block';}else if(res.status===202){showToast(resText||'Config saved locally — Notecard send failed');retryBtn.style.display='inline-block';if(syncBtn)syncBtn.style.display='inline-block';}else{showToast('Error: '+(resText||res.statusText),true);}}catch(err){showToast('Error: '+err.message,true);}});}
 async function retryConfig(){const clientUid=(els.clientUid&&els.clientUid.value?els.clientUid.value:'').trim();const pin=lastSubmitPin;if(!pin){showToast('Please save config first (need PIN)',true);return;}try{const res=await fetch('/api/config/retry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin,client:clientUid||undefined})});const t=await res.text();if(res.ok){showToast(t||'Config dispatched');retryBtn.style.display='none';}else{showToast(t||'Retry failed — check serial monitor',true);}}catch(err){showToast('Error: '+err.message,true);}}
 retryBtn.addEventListener('click',retryConfig);
+const syncBtn=document.getElementById('syncRequestBtn');
+async function requestSync(){const clientUid=(els.clientUid&&els.clientUid.value?els.clientUid.value:'').trim();const pin=lastSubmitPin;if(!pin){showToast('Please save config first (need PIN)',true);return;}if(!clientUid){showToast('Device UID required',true);return;}try{const res=await fetch('/api/sync-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin,client:clientUid})});const t=await res.text();if(res.ok){showToast(t||'Sync request sent');syncBtn.style.display='none';}else{showToast(t||'Sync request failed',true);}}catch(err){showToast('Error: '+err.message,true);}}
+if(syncBtn)syncBtn.addEventListener('click',requestSync);
 if(els.form)els.form.addEventListener('submit',submitConfig);
 document.getElementById('downloadBtn').addEventListener('click',()=>{const cfg=collectConfig();if(!cfg)return;const blob=new Blob([JSON.stringify(cfg,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='client_config.json';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);});
 /* LOAD CONFIG */
@@ -1430,10 +1447,11 @@ async funct)HTML" R"HTML(ion loadHistoricalData(){const tankIdx=document.getElem
 window.refreshData=funct)HTML" R"HTML(ion(){loadHistoricalData();showToast('Data refreshed');};window.exportData=funct)HTML" R"HTML(ion(){const{tanks,cutoff,cutoffEnd}=getFilteredData();let csv='Site,Tank,Timestamp,Level (inches)\n';tanks.forEach(tank=>{tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).forEach(r=>{csv+=`"${tank.site}","${tank.label}",${new Date(r.timestamp*1000).toISOString()},${r.level.toFixed(2)}\n`;});});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='tank_history.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');};document.getElementById('siteFilter').addEventListener('change',renderLevelChart);document.getElementById('tankFilter').addEventListener('change',function(){loadHistoricalData();});document.getElementById('rangeSelect').addEventListener('change',function(){const sd=document.getElementById('startDate');const ed=document.getElementById('endDate');if(this.value==='custom'){sd.style.display='';ed.style.display='';if(!sd.value){const d=new Date();d.setDate(d.getDate()-7);sd.value=d.toISOString().split('T')[0];}if(!ed.value){ed.value=new Date().toISOString().split('T')[0];}}else{sd.style.display='none';ed.style.display='none';}loadHistoricalData();});loadHistoricalData();})();})();
 </script></body></html>)HTML";
 
-static const char TRANSMISSION_LOG_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Transmission Log - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Outbound Transmission Log</h2><p style="color:var(--muted);margin-bottom:16px;">Log of messages sent from the server to clients and external services via Notehub. Shows the most recent 100 transmissions.</p><div class="controls"><button id="refreshBtn">Refresh</button><select id="typeFilter"><option value="all">All Types</option><option value="sms">SMS</option><option value="email">Email</option><option value="config">Config</option><option value="relay">Relay</option><option value="relay_clear">Relay Clear</option><option value="viewer_summary">Viewer Summary</option><option value="serial_request">Serial Request</option><option value="location_request">Location Request</option></select><select id="statusFilter"><option value="all">All Statuses</option><option value="outbox">Outbox</option><option value="sent">Sent</option><option value="failed">Failed</option></select><input type="text" id="searchInput" placeholder="Filter by site or client..." style="max-width:250px;"><button class="secondary" id="exportBtn">Export CSV</button></div><table><thead><tr><th>Date/Time</th><th>Site</th><th>Client ID</th><th>Type</th><th>Status</th><th>Detail</th></tr></thead><tbody id="logBody"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody></table></div></main><div id="toast"></div><script>(()=>{const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;})HTML"
-R"HTML(const toast=document.getElementById('toast');const logBody=document.getElementById('logBody');const typeFilter=document.getElementById('typeFilter');const statusFilter=document.getElementById('statusFilter');const searchInput=document.getElementById('searchInput');let allEntries=[];function showToast(m,e){toast.textContent=m;toast.style.background=e?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}function escapeHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}function formatEpoch(e){if(!e)return'--';const d=new Date(e*1000);if(isNaN(d.getTime()))return'--';return d.toLocaleString(undefined,{month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true});}function statusBadge(s){const colors={outbox:'#fef3c7;color:#92400e',sent:'#d1fae5;color:#065f46',failed:'#fee2e2;color:#991b1b'};const bg=colors[s]||'#e5e7eb;color:#374151';return `<span style="display:inline-block;padding:2px 8px;font-size:0.75rem;font-weight:600;background:${bg};border-radius:var(--radius);">${escapeHtml(s)}</span>`;})HTML"
-R"HTML(function typeBadge(t){const colors={sms:'#dbeafe;color:#1e40af',email:'#fce7f3;color:#9d174d',config:'#e0e7ff;color:#3730a3',relay:'#fef3c7;color:#92400e',relay_clear:'#fef3c7;color:#92400e',viewer_summary:'#d1fae5;color:#065f46',serial_request:'#f3e8ff;color:#6b21a8',location_request:'#ccfbf1;color:#0f766e'};const bg=colors[t]||'#e5e7eb;color:#374151';return `<span style="display:inline-block;padding:2px 8px;font-size:0.75rem;font-weight:600;background:${bg};border-radius:var(--radius);">${escapeHtml(t)}</span>`;}function renderTable(){const tf=typeFilter.value;const sf=statusFilter.value;const search=searchInput.value.toLowerCase().trim();let filtered=allEntries;if(tf!=='all')filtered=filtered.filter(e=>e.type===tf);if(sf!=='all')filtered=filtered.filter(e=>e.status===sf);if(search)filtered=filtered.filter(e=>(e.site||'').toLowerCase().includes(search)||(e.client||'').toLowerCase().includes(search)||(e.detail||'').toLowerCase().includes(search));if(filtered.length===0){logBody.innerHTML='<tr><td colspan="6" class="empty-state">No matching transmissions found.</td></tr>';return;}logBody.innerHTML=filtered.map(e=>`<tr><td style="white-space:nowrap;">${formatEpoch(e.timestamp)}</td><td>${escapeHtml(e.site||'--')}</td><td style="font-size:0.85rem;font-family:ui-monospace,monospace;">${escapeHtml(e.client||'--')}</td><td>${typeBadge(e.type)}</td><td>${statusBadge(e.status)}</td><td style="font-size:0.85rem;">${escapeHtml(e.detail||'')}</td></tr>`).join('');}async function loadLog(){try{const res=await fetch('/api/transmission-log');if(!res.ok)throw new Error('Failed to load');const data=await res.json();allEntries=data.entries||[];renderTable();}catch(err){logBody.innerHTML='<tr><td colspan="6" class="empty-state">Error: '+escapeHtml(err.message)+'</td></tr>';}}document.getElementById('refreshBtn').addEventListener('click',loadLog);typeFilter.addEventListener('change',renderTable);statusFilter.addEventListener('change',renderTable);searchInput.addEventListener('input',renderTable);)HTML"
-R"HTML(document.getElementById('exportBtn').addEventListener('click',()=>{let csv='Date/Time,Site,Client ID,Type,Status,Detail\n';const tf=typeFilter.value;const sf=statusFilter.value;const search=searchInput.value.toLowerCase().trim();let filtered=allEntries;if(tf!=='all')filtered=filtered.filter(e=>e.type===tf);if(sf!=='all')filtered=filtered.filter(e=>e.status===sf);if(search)filtered=filtered.filter(e=>(e.site||'').toLowerCase().includes(search)||(e.client||'').toLowerCase().includes(search));filtered.forEach(e=>{const dt=e.timestamp?new Date(e.timestamp*1000).toISOString():'';csv+=`"${dt}","${e.site||''}","${e.client||''}","${e.type||''}","${e.status||''}","${(e.detail||'').replace(/"/g,'""')}"\n`;});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='transmission_log.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');});loadLog();setInterval(loadLog,15000);})();</script></body></html>)HTML";
+static const char TRANSMISSION_LOG_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Transmission Log - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="localStorage.removeItem('tankalarm_token');window.location.href='/login'">Logout</button></div></div></header><main><div class="card"><h2>Outbound Transmission Log</h2><p style="color:var(--muted);margin-bottom:16px;">Log of messages sent from the server to clients and external services via Notehub. Shows the most recent 100 transmissions.</p><div class="controls"><button id="refreshBtn">Refresh</button><select id="typeFilter"><option value="all">All Types</option><option value="sms">SMS</option><option value="email">Email</option><option value="config">Config</option><option value="relay">Relay</option><option value="relay_clear">Relay Clear</option><option value="viewer_summary">Viewer Summary</option><option value="serial_request">Serial Request</option><option value="location_request">Location Request</option></select><select id="statusFilter"><option value="all">All Statuses</option><option value="outbox">Outbox</option><option value="sent">Sent</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select><input type="text" id="searchInput" placeholder="Filter by site or client..." style="max-width:250px;"><button class="secondary" id="exportBtn">Export CSV</button><button class="secondary" id="cancelAllBtn" style="display:none;background:#fee2e2;color:#991b1b;border-color:#fca5a5;">Cancel All Pending</button></div><table><thead><tr><th>Date/Time</th><th>Site</th><th>Client ID</th><th>Type</th><th>Status</th><th>Detail</th><th style="width:80px;">Actions</th></tr></thead><tbody id="logBody"><tr><td colspan="7" class="empty-state">Loading...</td></tr></tbody></table></div></main><div id="toast"></div><script>(()=>{const token=localStorage.getItem('tankalarm_token');if(!token){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;})HTML"
+R"HTML(const toast=document.getElementById('toast');const logBody=document.getElementById('logBody');const typeFilter=document.getElementById('typeFilter');const statusFilter=document.getElementById('statusFilter');const searchInput=document.getElementById('searchInput');let allEntries=[];function showToast(m,e){toast.textContent=m;toast.style.background=e?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}function escapeHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}function formatEpoch(e){if(!e)return'--';const d=new Date(e*1000);if(isNaN(d.getTime()))return'--';return d.toLocaleString(undefined,{month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true});}function statusBadge(s){const colors={outbox:'#fef3c7;color:#92400e',sent:'#d1fae5;color:#065f46',failed:'#fee2e2;color:#991b1b',cancelled:'#e5e7eb;color:#6b7280'};const bg=colors[s]||'#e5e7eb;color:#374151';return `<span style="display:inline-block;padding:2px 8px;font-size:0.75rem;font-weight:600;background:${bg};border-radius:var(--radius);">${escapeHtml(s)}</span>`;})HTML"
+R"HTML(function typeBadge(t){const colors={sms:'#dbeafe;color:#1e40af',email:'#fce7f3;color:#9d174d',config:'#e0e7ff;color:#3730a3',relay:'#fef3c7;color:#92400e',relay_clear:'#fef3c7;color:#92400e',viewer_summary:'#d1fae5;color:#065f46',serial_request:'#f3e8ff;color:#6b21a8',location_request:'#ccfbf1;color:#0f766e'};const bg=colors[t]||'#e5e7eb;color:#374151';return `<span style="display:inline-block;padding:2px 8px;font-size:0.75rem;font-weight:600;background:${bg};border-radius:var(--radius);">${escapeHtml(t)}</span>`;}function renderTable(){const tf=typeFilter.value;const sf=statusFilter.value;const search=searchInput.value.toLowerCase().trim();let filtered=allEntries;if(tf!=='all')filtered=filtered.filter(e=>e.type===tf);if(sf!=='all')filtered=filtered.filter(e=>e.status===sf);if(search)filtered=filtered.filter(e=>(e.site||'').toLowerCase().includes(search)||(e.client||'').toLowerCase().includes(search)||(e.detail||'').toLowerCase().includes(search));if(filtered.length===0){logBody.innerHTML='<tr><td colspan="7" class="empty-state">No matching transmissions found.</td></tr>';return;}logBody.innerHTML=filtered.map(e=>{const cancelBtn=(e.type==='config'&&e.status==='outbox'&&e.client)?`<button onclick="cancelPendingConfig('${escapeHtml(e.client)}')" style="padding:2px 8px;font-size:0.75rem;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:var(--radius);cursor:pointer;">Cancel</button>`:'';return `<tr><td style="white-space:nowrap;">${formatEpoch(e.timestamp)}</td><td>${escapeHtml(e.site||'--')}</td><td style="font-size:0.85rem;font-family:ui-monospace,monospace;">${escapeHtml(e.client||'--')}</td><td>${typeBadge(e.type)}</td><td>${statusBadge(e.status)}</td><td style="font-size:0.85rem;">${escapeHtml(e.detail||'')}</td><td>${cancelBtn}</td></tr>`;}).join('');const cab=document.getElementById('cancelAllBtn');if(cab){const hasPending=allEntries.some(e=>e.type==='config'&&e.status==='outbox');cab.style.display=hasPending?'inline-block':'none';}}async function loadLog(){try{const res=await fetch('/api/transmission-log');if(!res.ok)throw new Error('Failed to load');const data=await res.json();allEntries=data.entries||[];renderTable();}catch(err){logBody.innerHTML='<tr><td colspan="7" class="empty-state">Error: '+escapeHtml(err.message)+'</td></tr>';}}document.getElementById('refreshBtn').addEventListener('click',loadLog);typeFilter.addEventListener('change',renderTable);statusFilter.addEventListener('change',renderTable);searchInput.addEventListener('input',renderTable);)HTML"
+R"HTML(document.getElementById('exportBtn').addEventListener('click',()=>{let csv='Date/Time,Site,Client ID,Type,Status,Detail\n';const tf=typeFilter.value;const sf=statusFilter.value;const search=searchInput.value.toLowerCase().trim();let filtered=allEntries;if(tf!=='all')filtered=filtered.filter(e=>e.type===tf);if(sf!=='all')filtered=filtered.filter(e=>e.status===sf);if(search)filtered=filtered.filter(e=>(e.site||'').toLowerCase().includes(search)||(e.client||'').toLowerCase().includes(search));filtered.forEach(e=>{const dt=e.timestamp?new Date(e.timestamp*1000).toISOString():'';csv+=`"${dt}","${e.site||''}","${e.client||''}","${e.type||''}","${e.status||''}","${(e.detail||'').replace(/"/g,'""')}"\n`;});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='transmission_log.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');});document.getElementById('cancelAllBtn').addEventListener('click',cancelAllPendingConfigs);)HTML"
+R"HTML(async function cancelPendingConfig(clientUid){if(!confirm('Cancel pending config dispatch for '+clientUid+'? This will stop auto-retries and purge unsent notes from the Notecard outbox.'))return;try{const res=await fetch('/api/config/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:token,client:clientUid})});const text=await res.text();if(res.ok){showToast(text||'Config dispatch cancelled');}else{showToast(text||'Cancel failed',true);}await loadLog();}catch(err){showToast('Error: '+err.message,true);}}async function cancelAllPendingConfigs(){if(!confirm('Cancel ALL pending config dispatches? This will stop all auto-retries.'))return;try{const res=await fetch('/api/config/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:token})});const text=await res.text();if(res.ok){showToast(text||'All pending configs cancelled');}else{showToast(text||'Cancel failed',true);}await loadLog();}catch(err){showToast('Error: '+err.message,true);}}loadLog();setInterval(loadLog,15000);})();</script></body></html>)HTML";
 
 static const char LOGIN_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TankAlarm Login</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><div id="loading-overlay"><div class="spinner"></div></div><script>setTimeout(function(){var o=document.getElementById('loading-overlay');if(o)o.style.display='none'},5000)</script><main><h1 class="login-title"><span class="brand">TankAlarm</span> Login</h1><p>Enter your PIN to access the dashboard.</p><form id="loginForm" class="login-form"><input type="password" id="pin" class="pin-input" placeholder="Enter PIN" required autocomplete="current-password" pattern="\d{4}" title="4-digit PIN"><button type="submit" class="login-button">Login</button><div id="error" class="error">Invalid PIN</div></form></main><script>window.addEventListener('load',()=>{const ov=document.getElementById('loading-overlay');if(ov){ov.style.display='none';ov.classList.add('hidden');}});document.getElementById("loginForm").addEventListener("submit",async(e)=>{e.preventDefault();const pin=document.getElementById("pin").value;try{const res=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin})});if(res.ok){localStorage.setItem("tankalarm_token",pin);const params=new URLSearchParams(window.location.search);window.location.href=params.get("redirect")||"/";}else{document.getElementById("error").textContent="Invalid PIN";document.getElementById("error").style.display="block";}}catch(err){document.getElementById("error").textContent="Connection failed: "+err.message;document.getElementById("error").style.display="block";}});</script></body></html>)HTML";
 
@@ -1573,13 +1591,14 @@ const els ={telemetryContainer:document.getElementById('telemetryContainer'),new
 function showToast(message,isError){if(els.toast)els.toast.textContent= message;if(els.toast)els.toast.style.background = isError ? '#dc2626':'#0284c7';if(els.toast)els.toast.classList.add('show');setTimeout(()=>{if(els.toast)els.toast.classList.remove('show')},2500);}
 function formatNumber(value){return(typeof value === 'number' && isFinite(value))? value.toFixed(1):'--';}
 function formatEpoch(epoch){if(!epoch)return '--';const date = new Date(epoch * 1000);if(isNaN(date.getTime()))return '--';return date.toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});}
-function renderTelemetry(){if(!els.telemetryContainer)return;els.telemetryContainer.innerHTML = '';if(!state.data || !state.data.clients)return;const sites ={};state.data.clients.forEach(client =>{const siteName = client.site || 'Unknown Site';if(!sites[siteName])sites[siteName]=[];sites[siteName].push(client);});Object.keys(sites).sort().forEach(siteName =>{const tanks = sites[siteName];const siteCard = document.createElement('div');siteCard.className = 'site-card';const header = document.createElement('div');header.className = 'site-header';header.innerHTML = `<span>${escapeHtml(siteName)}</span><span style="display:flex;align-items:center;gap:8px;"><span style="font-size:0.8rem;font-weight:400;color:var(--muted)">${tanks.length} device${tanks.length===1?'':'s'}</span><a class="pill secondary" href="/site-config?site=${encodeURIComponent(siteName)}" style="font-size:0.75rem;padding:3px 10px;">Manage Site</a></span>`;siteCard.appendChild(header);const grid = document.createElement('div');grid.className = 'site-tanks';tanks.forEach(tank =>{const tankDiv = document.createElement('div');tankDiv.className = 'site-tank';if(tank.alarm)tankDiv.classList.add('alarm');if(!tank.lastUpdate){tankDiv.style.opacity='0.7';tankDiv.innerHTML = `<div class="tank-meta"><strong>Configured Client</strong><code>${escapeHtml(tank.client)}</code></div><div class="tank-value" style="font-size:0.85rem;color:var(--muted);">Awaiting first report</div><div class="tank-footer"><button type="button" class="secondary" style="padding:2px 10px;font-size:0.8rem;" onclick="window.location.href='/config-generator?uid=${encodeURIComponent(tank.client)}'">Edit Config</button></div>`;}else{const ot=tank.objectType||'tank';const tlbl=tank.label||(ot==='tank'?'Tank':'Sensor');const tmu=tank.measurementUnit||'inches';const muMap={inches:'in',psi:'psi',rpm:'rpm',gpm:'gpm'};const tUnit=muMap[tmu]||tmu||'in';tankDiv.innerHTML = `<div class="tank-meta"><strong>${escapeHtml(tlbl)}${tank.tank?' #'+tank.tank:''}</strong><code>${escapeHtml(tank.client).substring(0,8)}...</code></div><div class="tank-value">${formatNumber(tank.levelInches)} <small style="font-size:0.7em;color:var(--muted)">${tUnit}</small></div><div class="tank-footer">${tank.alarm ? `<span style="color:var(--danger);font-weight:600">ALARM: ${escapeHtml(tank.alarmType)}</span>`:'Normal'}<span style="float:right">${formatEpoch(tank.lastUpdate)}</span></div>`;}grid.appendChild(tankDiv);});siteCard.appendChild(grid);els.telemetryContainer.appendChild(siteCard);});}
+function signalIcon(sig){if(!sig||sig.bars==null||sig.bars<0)return'';const b=sig.bars;const c=b<=1?'#dc2626':b<=2?'#f59e0b':'#10b981';const lbl=b<=1?'Weak':b<=2?'Fair':b<=3?'Good':'Strong';return' <span title="'+lbl+' signal: '+b+'/4 bars'+(sig.rsrp?', RSRP: '+sig.rsrp+'dBm':'')+'" style="color:'+c+';font-size:0.7rem;font-weight:600;">&#x25A0;'+b+'/4</span>';}
+function renderTelemetry(){if(!els.telemetryContainer)return;els.telemetryContainer.innerHTML = '';if(!state.data || !state.data.clients)return;const sites ={};state.data.clients.forEach(client =>{const siteName = client.site || 'Unknown Site';if(!sites[siteName])sites[siteName]=[];sites[siteName].push(client);});Object.keys(sites).sort().forEach(siteName =>{const tanks = sites[siteName];const siteCard = document.createElement('div');siteCard.className = 'site-card';const header = document.createElement('div');header.className = 'site-header';header.innerHTML = `<span>${escapeHtml(siteName)}</span><span style="display:flex;align-items:center;gap:8px;"><span style="font-size:0.8rem;font-weight:400;color:var(--muted)">${tanks.length} device${tanks.length===1?'':'s'}</span><a class="pill secondary" href="/site-config?site=${encodeURIComponent(siteName)}" style="font-size:0.75rem;padding:3px 10px;">Manage Site</a></span>`;siteCard.appendChild(header);const grid = document.createElement('div');grid.className = 'site-tanks';tanks.forEach(tank =>{const tankDiv = document.createElement('div');tankDiv.className = 'site-tank';if(tank.alarm)tankDiv.classList.add('alarm');if(!tank.lastUpdate){tankDiv.style.opacity='0.7';tankDiv.innerHTML = `<div class="tank-meta"><strong>Configured Client</strong><code>${escapeHtml(tank.client)}</code></div><div class="tank-value" style="font-size:0.85rem;color:var(--muted);">Awaiting first report</div><div class="tank-footer"><button type="button" class="secondary" style="padding:2px 10px;font-size:0.8rem;" onclick="window.location.href='/config-generator?uid=${encodeURIComponent(tank.client)}'">Edit Config</button></div>`;}else{const ot=tank.objectType||'tank';const tlbl=tank.label||(ot==='tank'?'Tank':'Sensor');const tmu=tank.measurementUnit||'inches';const muMap={inches:'in',psi:'psi',rpm:'rpm',gpm:'gpm'};const tUnit=muMap[tmu]||tmu||'in';tankDiv.innerHTML = `<div class="tank-meta"><strong>${escapeHtml(tlbl)}${tank.tank?' #'+tank.tank:''}</strong><code>${escapeHtml(tank.client).substring(0,8)}...</code>${signalIcon(tank.signal)}</div><div class="tank-value">${formatNumber(tank.levelInches)} <small style="font-size:0.7em;color:var(--muted)">${tUnit}</small></div><div class="tank-footer">${tank.alarm ? `<span style="color:var(--danger);font-weight:600">ALARM: ${escapeHtml(tank.alarmType)}</span>`:'Normal'}<span style="float:right">${formatEpoch(tank.lastUpdate)}</span></div>`;}grid.appendChild(tankDiv);});siteCard.appendChild(grid);els.telemetryContainer.appendChild(siteCard);});}
 function renderNewSites(){if(!els.newSitesContainer)return;els.newSitesContainer.innerHTML='';if(!state.data||!state.data.clients){els.newSitesContainer.innerHTML='<div class="empty-state">No clients detected yet.</div>';return;}const unconfigured=state.data.clients.filter(client=>{if(!client.lastUpdate)return false;const hasNoSite=!client.site||client.site.trim()===''||client.site==='Unknown Site';const hasNoLabel=!client.label||client.label.trim()==='';const hasDefaultLabel=client.label&&(client.label==='Client-112025'||client.label==='Unconfigured Client'||client.label.includes('Tank A'));return hasNoSite||(hasNoLabel||hasDefaultLabel);});if(unconfigured.length===0){els.newSitesContainer.innerHTML='<div class="empty-state">No unconfigured clients detected.</div>';return;}unconfigured.forEach(client=>{const card=document.createElement('div');card.className='site-card';card.style.borderLeft='4px solid var(--warning)';const firmwareVersion=client.firmwareVersion||client.version||'unknown';const lastSeenEpoch=client.lastUpdate||0;const now=Date.now()/1000;const ageSeconds=now-lastSeenEpoch;let lastSeenDisplay='';if(ageSeconds<120){lastSeenDisplay='<span style="color:#10b981;">&#x2714; Active now</span>';}else if(ageSeconds<3600){const mins=Math.floor(ageSeconds/60);lastSeenDisplay=`Last seen ${mins} min${mins!==1?'s':''} ago`;}else if(ageSeconds<86400){const hours=Math.floor(ageSeconds/3600);lastSeenDisplay=`Last seen ${hours} hour${hours!==1?'s':''} ago`;}else{const days=Math.floor(ageSeconds/86400);lastSeenDisplay=`Last seen ${days} day${days!==1?'s':''} ago - ${formatEpoch(lastSeenEpoch)}`;}card.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;"><div><strong style="color:var(--warning)">&#x26A0; Unconfigured Client</strong><div style="font-size:0.85rem;color:var(--muted);margin-top:4px;">UID: <code>${escapeHtml(client.client)}</code></div><div style="font-size:0.85rem;margin-top:4px;">${lastSeenDisplay}</div><div style="font-size:0.85rem;margin-top:4px;color:var(--muted);">Firmware: ${escapeHtml(firmwareVersion)}</div></div><button type="button" class="configure-btn" style="white-space:nowrap;">Configure &#x2192;</button></div>`;card.querySelector)HTML" R"HTML(('.configure-btn').addEventListener('click',()=>{window.location.href='/config-generator?uid='+encodeURIComponent(client.client);});els.newSitesContainer.appendChild(card);});}
 function ensureOption(uid,label){let option = Array.from(els.clientSelect.options).find(opt => opt.value === uid);if(!option){option = document.createElement('option');option.value = uid;els.clientSelect.appendChild(option);}option.textContent = label;}
 function populateClientSelect(){els.clientSelect.innerHTML = '';if(!state.data || !state.data.clients)return;state.data.clients.forEach(client =>{const site=escapeHtml(client.site||'Unknown Site');const devLabel=escapeHtml(client.label||'');const uid=client.client||'';const shortUid=uid.length>12?uid.substring(uid.length-8):uid;const label=devLabel?`${site} — ${devLabel} (${shortUid})`:`${site} (${shortUid})`;ensureOption(client.client,label);});if(state.data.configs){state.data.configs.forEach(entry =>{const site=escapeHtml(entry.site||'Site');const uid=entry.client||'';const shortUid=uid.length>12?uid.substring(uid.length-8):uid;ensureOption(entry.client,`${site} — Stored config (${shortUid})`);});}if(!state.selected && els.clientSelect.options.length){state.selected = els.clientSelect.options[0].value;}if(state.selected){els.clientSelect.value = state.selected;}updateClientDetails(state.selected);}
 function lookupClient(uid){if(!state.data || !state.data.clients)return null;return state.data.clients.find(c => c.client === uid)|| null;}
 function updateClientDetails(uid){if(!uid){els.clientDetails.textContent='Select a client';return;}const client = lookupClient(uid);const detailParts = [];if(client){detailParts.push(`<strong>Site:</strong> ${escapeHtml(client.site || 'Unknown')}`);const dtLbl=client.label||(client.objectType==='tank'||!client.objectType?'Tank':'Sensor');detailParts.push(`<strong>Latest:</strong> ${escapeHtml(dtLbl)}${client.tank?' #'+escapeHtml(client.tank):''}at ${formatNumber(client.levelInches)}${client.measurementUnit||'in'}`);}else{detailParts.push('Client not in telemetry data');}detailParts.push(`<strong>UID:</strong><code>${uid}</code>`);detailParts.push(`<button type="button" class="secondary" style="padding:4px 12px;font-size:0.85rem;" onclick="window.location.href='/config-generator?uid=${encodeURIComponent(uid)}'">Edit Configuration</button>`);els.clientDetails.innerHTML = detailParts.join(' - ');}
-function normalizeApiData(data){var srv=data.srv||{};var result={server:{name:srv.n||'',smsPrimary:srv.sp||'',smsSecondary:srv.ss||'',productUid:srv.pu||'',pinConfigured:!!srv.pc,dailyEmail:srv.de||''},serverUid:data.si||'',nextDailyEmailEpoch:data.nde||0,clients:(data.cs||[]).map(function(c){return{client:c.c||'',site:c.s||'',label:c.n||'',tank:c.k||'',alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,levelInches:c.l,vinVoltage:c.v,firmwareVersion:c.fv||'',objectType:c.ot||'',measurementUnit:c.mu||'',tanks:(c.ts||[]).map(function(t){return{label:t.n||'',tank:t.k||'',levelInches:t.l,heightInches:t.h,alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,objectType:t.ot||'',measurementUnit:t.mu||''};})};})};result.configs=(data.cfgs||[]).map(function(cfg){return{client:cfg.c||'',site:cfg.s||'',configJson:cfg.cj||''};});return result;}
+function normalizeApiData(data){var srv=data.srv||{};var result={server:{name:srv.n||'',smsPrimary:srv.sp||'',smsSecondary:srv.ss||'',productUid:srv.pu||'',pinConfigured:!!srv.pc,dailyEmail:srv.de||''},serverUid:data.si||'',nextDailyEmailEpoch:data.nde||0,clients:(data.cs||[]).map(function(c){return{client:c.c||'',site:c.s||'',label:c.n||'',tank:c.k||'',alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,levelInches:c.l,vinVoltage:c.v,firmwareVersion:c.fv||'',objectType:c.ot||'',measurementUnit:c.mu||'',signal:c.sig||null,tanks:(c.ts||[]).map(function(t){return{label:t.n||'',tank:t.k||'',levelInches:t.l,heightInches:t.h,alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,objectType:t.ot||'',measurementUnit:t.mu||''};})};})};result.configs=(data.cfgs||[]).map(function(cfg){return{client:cfg.c||'',site:cfg.s||'',configJson:cfg.cj||''};});return result;}
 function applyServerData(data,preferredUid){try{state.data=normalizeApiData(data);if(preferredUid){state.selected=preferredUid;}renderTelemetry();renderNewSites();populateClientSelect();}catch(e){console.error('applyServerData error:',e);if(els.telemetryContainer)els.telemetryContainer.innerHTML='<div class="empty-state" style="color:var(--danger);">Render error: '+e.message+'</div>';}}
 async function refreshData(preferredUid){try{const query=preferredUid?'&client='+encodeURIComponent(preferredUid):'';const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),10000);const res=await fetch('/api/clients?summary=1'+query,{signal:ac.signal,headers:{'Cache-Control':'no-cache'}});clearTimeout(tid);if(!res.ok){throw new Error('Failed to fetch server data');}const data=await res.json();console.log('API response: cs=',data.cs?data.cs.length:0,'clients, cfgs=',data.cfgs?data.cfgs.length:0);applyServerData(data,preferredUid||state.selected);}catch(err){const msg=err.name==='AbortError'?'Request timed out (server busy)':err.message||'Initialization failed';console.error('refreshData error:',err);showToast(msg,true);if(els.telemetryContainer)els.telemetryContainer.innerHTML='<div class="empty-state" style="color:var(--danger);">'+escapeHtml(msg)+'</div>';}}
 async function triggerManualRefresh(targetUid){const payload = targetUid ?{client:targetUid,pin:token}:{pin:token};try{const res = await fetch('/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text = await res.text();throw new Error(text || 'Refresh failed');}const data = await res.json();applyServerData(data,targetUid || state.selected);showToast(targetUid ? 'Selected site updated':'All sites updated');}catch(err){showToast(err.message || 'Refresh failed',true);}}
@@ -1696,6 +1715,8 @@ static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
 static bool sendConfigViaNotecard(const char *clientUid, const char *jsonPayload);
 static void dispatchPendingConfigs();
 static void handleConfigRetryPost(EthernetClient &client, const String &body);
+static void handleConfigCancelPost(EthernetClient &client, const String &body);
+static void handleSyncRequestPost(EthernetClient &client, const String &body);
 static float convertMaToLevelWithTemp(const char *clientUid, uint8_t tankNumber, float mA, float currentTempF);
 static float convertVoltageToLevel(const char *clientUid, uint8_t tankNumber, float voltage);
 static ClientMetadata *findClientMetadata(const char *clientUid);
@@ -5736,6 +5757,7 @@ static void handleWebRequests() {
   } else if (method == "GET" && path == "/api/calibration") {
     handleCalibrationGet(client);
   } else if (method == "GET" && path == "/api/contacts") {
+    // Note: PII (phone/email) exposed on LAN — add auth if ever internet-exposed
     handleContactsGet(client);
   } else if (method == "GET" && path == "/api/email-format") {
     handleEmailFormatGet(client);
@@ -5806,6 +5828,18 @@ static void handleWebRequests() {
       respondStatus(client, 413, "Payload Too Large");
     } else {
       handleConfigRetryPost(client, body);
+    }
+  } else if (method == "POST" && path == "/api/config/cancel") {
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleConfigCancelPost(client, body);
+    }
+  } else if (method == "POST" && path == "/api/sync-request") {
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleSyncRequestPost(client, body);
     }
   } else if (method == "POST" && path == "/api/pin") {
     if (contentLength > 256) {
@@ -5886,7 +5920,10 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
   body = "";
   bodyTooLarge = false;
 
-  String line;
+  // Fixed buffer for header line parsing — avoids heap-fragmenting String concatenation.
+  // 514 bytes: 512 max header line + CR + NUL.
+  static char lineBuf[514];
+  size_t lineLen = 0;
   bool firstLine = true;
 
   unsigned long start = millis();
@@ -5901,30 +5938,39 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
       continue;
     }
     if (c == '\n') {
-      if (line.length() == 0) {
+      lineBuf[lineLen] = '\0';
+      if (lineLen == 0) {
         break; // end of headers
       }
       if (firstLine) {
-        int space = line.indexOf(' ');
-        if (space < 0) {
+        // Parse: "METHOD /path HTTP/1.1"
+        char *sp1 = strchr(lineBuf, ' ');
+        if (!sp1) {
           return false;
         }
-        method = line.substring(0, space);
-        int nextSpace = line.indexOf(' ', space + 1);
-        if (nextSpace < 0) {
+        *sp1 = '\0';
+        method = lineBuf;
+        char *pathStart = sp1 + 1;
+        char *sp2 = strchr(pathStart, ' ');
+        if (!sp2) {
           return false;
         }
-        path = line.substring(space + 1, nextSpace);
+        *sp2 = '\0';
+        path = pathStart;
         firstLine = false;
       } else {
-        int colonPos = line.indexOf(':');
-        if (colonPos > 0) {
-          String headerKey = line.substring(0, colonPos);
-          headerKey.trim();
-          String headerValue = line.substring(colonPos + 1);
-          headerValue.trim();
-          if (headerKey.equalsIgnoreCase("Content-Length")) {
-            contentLength = headerValue.toInt();
+        // Parse header: "Key: Value"
+        char *colon = strchr(lineBuf, ':');
+        if (colon && colon > lineBuf) {
+          *colon = '\0';
+          // Trim key (in-place, key is short)
+          char *key = lineBuf;
+          // Trim value
+          char *val = colon + 1;
+          while (*val == ' ') val++;
+          // Check Content-Length (case-insensitive)
+          if (strcasecmp(key, "Content-Length") == 0) {
+            contentLength = (size_t)atol(val);
             if (contentLength > MAX_HTTP_BODY_BYTES) {
               bodyTooLarge = true;
               contentLength = MAX_HTTP_BODY_BYTES;
@@ -5932,11 +5978,12 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
           }
         }
       }
-      line = "";
+      lineLen = 0;
     } else {
-      line += c;
-      if (line.length() > 512) {
-        return false;
+      if (lineLen < sizeof(lineBuf) - 1) {
+        lineBuf[lineLen++] = c;
+      } else {
+        return false;  // Header line too long
       }
     }
   }
@@ -6422,6 +6469,16 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
       if (meta && meta->firmwareVersion[0] != '\0') {
         clientObj["fv"] = meta->firmwareVersion;
       }
+      // Add cellular signal strength from client metadata
+      if (meta && meta->signalBars >= 0) {
+        JsonObject sigObj = clientObj["sig"].to<JsonObject>();
+        sigObj["bars"] = meta->signalBars;
+        if (meta->signalRssi != 0) sigObj["rssi"] = meta->signalRssi;
+        if (meta->signalRsrp != 0) sigObj["rsrp"] = meta->signalRsrp;
+        if (meta->signalRsrq != 0) sigObj["rsrq"] = meta->signalRsrq;
+        if (meta->signalRat[0] != '\0') sigObj["rat"] = meta->signalRat;
+        sigObj["epoch"] = meta->signalEpoch;
+      }
     }
 
     const char *existingSite = clientObj["s"] ? clientObj["s"].as<const char *>() : nullptr;
@@ -6548,6 +6605,13 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
     cfgEntry["s"] = snap.site;
     cfgEntry["cj"] = snap.payload;
     cfgEntry["pd"] = snap.pendingDispatch;
+    if (snap.dispatchAttempts > 0) {
+      cfgEntry["da"] = snap.dispatchAttempts;
+      cfgEntry["mr"] = MAX_CONFIG_DISPATCH_RETRIES;
+    }
+    if (snap.lastDispatchEpoch > 0.0) {
+      cfgEntry["de"] = snap.lastDispatchEpoch;
+    }
     if (snap.configVersion[0] != '\0') {
       cfgEntry["cv"] = snap.configVersion;
     }
@@ -6733,6 +6797,137 @@ static void handleConfigRetryPost(EthernetClient &client, const String &body) {
     snprintf(msg, sizeof(msg), "%d dispatched, %d still failed — check serial monitor", dispatched, stillPending);
     respondStatus(client, 202, msg);
   }
+}
+
+// POST /api/config/cancel  { "pin": "1234", "client": "uid" } → cancel one client
+// POST /api/config/cancel  { "pin": "1234" }                  → cancel all pending
+static void handleConfigCancelPost(EthernetClient &client, const String &body) {
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) return;
+
+  const char *clientUid = doc["client"].as<const char *>();
+  if (clientUid && clientUid[0] != '\0') {
+    // Cancel specific client
+    ClientConfigSnapshot *snap = findClientConfigSnapshot(clientUid);
+    if (!snap) {
+      respondStatus(client, 404, F("No cached config for this client"));
+      return;
+    }
+    snap->pendingDispatch = false;
+    snap->dispatchAttempts = 0;
+    saveClientConfigSnapshots();
+    // Purge any pending config notes from Notecard outbox
+    uint8_t purged = purgePendingConfigNotes(clientUid);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Config dispatch cancelled for %s (%u note(s) purged from outbox)", clientUid, purged);
+    Serial.println(msg);
+    logTransmission(clientUid, "", "config", "cancelled", "Pending config dispatch cancelled by user");
+    respondStatus(client, 200, msg);
+    return;
+  }
+
+  // Cancel all pending
+  uint8_t cancelled = 0;
+  for (uint8_t i = 0; i < gClientConfigCount; ++i) {
+    if (gClientConfigs[i].pendingDispatch) {
+      gClientConfigs[i].pendingDispatch = false;
+      gClientConfigs[i].dispatchAttempts = 0;
+      purgePendingConfigNotes(gClientConfigs[i].uid);
+      logTransmission(gClientConfigs[i].uid, "", "config", "cancelled", "Pending config dispatch cancelled by user");
+      cancelled++;
+    }
+  }
+  saveClientConfigSnapshots();
+
+  char msg[64];
+  snprintf(msg, sizeof(msg), "Cancelled %u pending config dispatch(es)", cancelled);
+  Serial.println(msg);
+  respondStatus(client, 200, msg);
+}
+
+// ============================================================================
+// POST /api/sync-request — Request Sync-on-Demand (Phase 3)
+// ============================================================================
+// Sends a sync command to a specific client via command.qo → sync_request.qi
+// to force the client's Notecard to perform an immediate hub.sync.
+// This helps push pending inbound notes (config, relay) through weak cellular links.
+static void handleSyncRequestPost(EthernetClient &client, const String &body) {
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) return;
+
+  const char *clientUid = doc["client"].as<const char *>();
+  if (!clientUid || clientUid[0] == '\0') {
+    respondStatus(client, 400, F("Missing 'client' UID"));
+    return;
+  }
+
+  // Verify the product UID is set (required for routing)
+  if (gConfig.productUid[0] == '\0') {
+    respondStatus(client, 500, F("Product UID not configured — cannot send sync request"));
+    return;
+  }
+
+  // Send sync command via command.qo with _type = "sync_request"
+  J *req = notecard.newRequest("note.add");
+  if (!req) {
+    respondStatus(client, 500, F("Failed to create Notecard request"));
+    return;
+  }
+
+  JAddStringToObject(req, "file", COMMAND_OUTBOX_FILE);
+  JAddBoolToObject(req, "sync", true);
+
+  J *cmdBody = JCreateObject();
+  if (!cmdBody) {
+    JDelete(req);
+    respondStatus(client, 500, F("Failed to create command body"));
+    return;
+  }
+  JAddStringToObject(cmdBody, "_target", clientUid);
+  JAddStringToObject(cmdBody, "_type", "sync_request");
+  JAddStringToObject(cmdBody, "request", "sync");
+  JAddItemToObject(req, "body", cmdBody);
+
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    respondStatus(client, 500, F("No response from Notecard"));
+    return;
+  }
+
+  const char *err = JGetString(rsp, "err");
+  if (err && err[0] != '\0') {
+    notecard.deleteResponse(rsp);
+    respondStatus(client, 500, F("Notecard error sending sync request"));
+    return;
+  }
+
+  notecard.deleteResponse(rsp);
+
+  Serial.print(F("Sync request sent to client "));
+  Serial.println(clientUid);
+  logTransmission(clientUid, "", "sync_request", "outbox", "Sync-on-demand request sent");
+
+  // Log signal strength for context
+  ClientMetadata *meta = findClientMetadata(clientUid);
+  if (meta && meta->signalBars >= 0) {
+    char detail[48];
+    snprintf(detail, sizeof(detail), "Client signal: %d/4 bars", meta->signalBars);
+    Serial.println(detail);
+  }
+
+  respondStatus(client, 200, F("Sync request sent to client"));
 }
 
 static void sendPinResponse(EthernetClient &client, const __FlashStringHelper *message) {
@@ -7252,7 +7447,20 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
     }
     snprintf(snapPre->configVersion, sizeof(snapPre->configVersion), "%08lX", (unsigned long)hash);
     snapPre->pendingDispatch = true;
+    snapPre->dispatchAttempts = 1;           // First dispatch attempt
+    snapPre->lastDispatchEpoch = currentEpoch();
     saveClientConfigSnapshots();
+  }
+
+  // Phase 2: Log signal strength warning for weak-signal clients
+  ClientMetadata *meta = findClientMetadata(clientUid);
+  if (meta && meta->signalBars >= 0 && meta->signalBars <= 1) {
+    Serial.print(F("WARNING: Client "));
+    Serial.print(clientUid);
+    Serial.print(F(" has weak signal ("));
+    Serial.print(meta->signalBars);
+    Serial.println(F("/4 bars) — config delivery may be delayed or fail"));
+    addServerSerialLog("Config pushed to weak-signal client", "warn", "config");
   }
 
   // Attempt to send via Notecard
@@ -7276,6 +7484,22 @@ static void dispatchPendingConfigs() {
     if (!gClientConfigs[i].pendingDispatch) continue;
     if (gClientConfigs[i].payload[0] == '\0') continue;
 
+    // Phase 2: Auto-cancel after max retry attempts to prevent infinite retry loops
+    // This protects against low-signal clients that can never receive inbound notes.
+    if (gClientConfigs[i].dispatchAttempts >= MAX_CONFIG_DISPATCH_RETRIES) {
+      Serial.print(F("AUTO-CANCEL: Config dispatch for "));
+      Serial.print(gClientConfigs[i].uid);
+      Serial.print(F(" failed after "));
+      Serial.print(gClientConfigs[i].dispatchAttempts);
+      Serial.println(F(" attempts — check client signal strength"));
+      gClientConfigs[i].pendingDispatch = false;
+      logTransmission(gClientConfigs[i].uid, gClientConfigs[i].site, "config", "failed",
+                       "Auto-cancelled: max retries exceeded (weak signal?)");
+      addServerSerialLog("Config auto-cancelled: delivery failed", "warn", "config");
+      saveClientConfigSnapshots();
+      continue;
+    }
+
 #ifdef TANKALARM_WATCHDOG_AVAILABLE
     // sendConfigViaNotecard chains purgePendingConfigNotes + note.add;
     // kick watchdog before each client to prevent starvation.
@@ -7286,13 +7510,27 @@ static void dispatchPendingConfigs() {
     #endif
 #endif
     Serial.print(F("Auto-retrying config dispatch for "));
-    Serial.println(gClientConfigs[i].uid);
+    Serial.print(gClientConfigs[i].uid);
+    Serial.print(F(" (attempt "));
+    Serial.print(gClientConfigs[i].dispatchAttempts + 1);
+    Serial.print(F("/"));
+    Serial.print(MAX_CONFIG_DISPATCH_RETRIES);
+    Serial.println(F(")"));
+
+    // Increment attempt counter BEFORE sending so it advances even on failure.
+    // This ensures auto-cancel triggers even if the Notecard I2C is down.
+    gClientConfigs[i].dispatchAttempts++;
+    gClientConfigs[i].lastDispatchEpoch = currentEpoch();
 
     if (sendConfigViaNotecard(gClientConfigs[i].uid, gClientConfigs[i].payload)) {
       // pendingDispatch stays true until config ACK received from client
       Serial.print(F("SUCCESS: Dispatched pending config for "));
       Serial.println(gClientConfigs[i].uid);
+    } else {
+      Serial.print(F("WARNING: Config dispatch failed for "));
+      Serial.println(gClientConfigs[i].uid);
     }
+    saveClientConfigSnapshots();
   }
 }
 
@@ -7695,6 +7933,7 @@ static ClientMetadata *findOrCreateClientMetadata(const char *clientUid) {
     memset(meta, 0, sizeof(ClientMetadata));
     strlcpy(meta->clientUid, clientUid, sizeof(meta->clientUid));
     meta->cachedTemperatureF = TEMPERATURE_UNAVAILABLE;  // Initialize to sentinel value
+    meta->signalBars = -1;  // Unknown until daily report with signal data arrives
     gClientMetadataDirty = true;
     return meta;
   }
@@ -7759,6 +7998,78 @@ static void handleDaily(JsonDocument &doc, double epoch) {
       Serial.print(vinVoltage);
       Serial.println(F(" V"));
       gClientMetadataDirty = true;
+    }
+  }
+
+  // Extract cellular signal strength from daily report (part 0 only)
+  JsonObject sigObj = doc["sig"];
+  if (isFirstPart && !sigObj.isNull()) {
+    ClientMetadata *meta = findOrCreateClientMetadata(clientUid);
+    if (meta) {
+      int bars = sigObj["bars"] | -1;
+      if (bars >= 0 && bars <= 4) meta->signalBars = (int8_t)bars;
+      int rssi = sigObj["rssi"] | 0;
+      if (rssi != 0) meta->signalRssi = (int16_t)rssi;
+      int rsrp = sigObj["rsrp"] | 0;
+      if (rsrp != 0) meta->signalRsrp = (int16_t)rsrp;
+      int rsrq = sigObj["rsrq"] | 0;
+      if (rsrq != 0) meta->signalRsrq = (int16_t)rsrq;
+      const char *rat = sigObj["rat"] | "";
+      if (rat && rat[0] != '\0') strlcpy(meta->signalRat, rat, sizeof(meta->signalRat));
+      meta->signalEpoch = (epoch > 0.0) ? epoch : currentEpoch();
+      gClientMetadataDirty = true;
+
+      Serial.print(F("Signal strength from "));
+      Serial.print(clientUid);
+      Serial.print(F(": "));
+      Serial.print(bars);
+      Serial.print(F(" bars, RSRP="));
+      Serial.print(meta->signalRsrp);
+      Serial.println(F(" dBm"));
+
+      // Warn on weak signal
+      if (bars >= 0 && bars <= 1) {
+        Serial.print(F("WARNING: Weak cellular signal for "));
+        Serial.print(clientUid);
+        Serial.println(F(" — inbound note delivery may be unreliable"));
+        addServerSerialLog("Weak signal warning", "warn", "signal");
+      }
+    }
+  }
+
+  // Process alarm summary from daily report (backup notification path).
+  // If the original alarm note was lost due to weak signal, detect active
+  // alarms here and cross-reference with server-side TankRecord state.
+  JsonArray dailyAlarms = doc["alarms"];
+  if (isFirstPart && dailyAlarms) {
+    for (JsonObject a : dailyAlarms) {
+      uint8_t tankNum = a["k"] | 0;
+      bool hiAlarm = a["hi"] | false;
+      bool loAlarm = a["lo"] | false;
+      if (hiAlarm || loAlarm) {
+        // Check if server already knows about this alarm (search without upserting)
+        TankRecord *rec = nullptr;
+        for (uint8_t ri = 0; ri < gTankRecordCount; ++ri) {
+          if (strcmp(gTankRecords[ri].clientUid, clientUid) == 0 && gTankRecords[ri].tankNumber == tankNum) {
+            rec = &gTankRecords[ri];
+            break;
+          }
+        }
+        if (rec && !rec->alarmActive) {
+          Serial.print(F("WARNING: Client "));
+          Serial.print(clientUid);
+          Serial.print(F(" tank "));
+          Serial.print(tankNum);
+          Serial.print(hiAlarm ? F(" has HIGH alarm") : F(" has LOW alarm"));
+          Serial.println(F(" — server was unaware (alarm note may have been lost)"));
+          addServerSerialLog("Missed alarm detected via daily report", "warn", "alarm");
+          // Update server's alarm state from daily report backup data
+          rec->alarmActive = true;
+          strlcpy(rec->alarmType, hiAlarm ? "high" : "low", sizeof(rec->alarmType));
+          rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
+          gTankRegistryDirty = true;
+        }
+      }
     }
   }
 
@@ -7872,6 +8183,56 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     if (newLevel > 0.0f) {
       recordTelemetrySnapshot(clientUid, siteName, tankNumber,
                               rec->levelInches, newLevel, vinVoltage);
+    }
+  }
+
+  // --- Daily report part-loss detection ---
+  // Track which parts arrive to detect gaps caused by weak cellular signal.
+  bool moreParts = doc["m"] | false;
+  ClientMetadata *partMeta = findOrCreateClientMetadata(clientUid);
+  if (partMeta) {
+    double reportTime = doc["t"] | 0.0;
+    if (reportTime <= 0.0) reportTime = (epoch > 0.0) ? epoch : currentEpoch();
+
+    // Detect new report batch: if report time differs by >30 min from last, reset tracking
+    if (partMeta->dailyReportEpoch == 0.0 ||
+        (reportTime - partMeta->dailyReportEpoch) > 1800.0) {
+      // Check if previous batch was incomplete
+      if (partMeta->dailyReportEpoch > 0.0 && !partMeta->dailyComplete && partMeta->dailyPartsReceived > 0) {
+        Serial.print(F("WARNING: Previous daily report from "));
+        Serial.print(clientUid);
+        Serial.print(F(" was incomplete (received parts mask: 0x"));
+        Serial.print(partMeta->dailyPartsReceived, HEX);
+        Serial.println(F(")"));
+        addServerSerialLog("Daily report incomplete - parts missing", "warn", "daily");
+      }
+      partMeta->dailyReportEpoch = reportTime;
+      partMeta->dailyPartsReceived = 0;
+      partMeta->dailyComplete = false;
+      partMeta->dailyExpectedParts = 0;
+    }
+
+    // Mark this part as received (bits 0-7 for parts 0-7)
+    if (part < 8) {
+      partMeta->dailyPartsReceived |= (1 << part);
+    }
+
+    // If this is the final part (m=false), check completeness
+    if (!moreParts) {
+      partMeta->dailyComplete = true;
+      partMeta->dailyExpectedParts = part + 1;
+
+      // Verify all parts 0..part were received
+      uint8_t expectedMask = (uint8_t)((1 << (part + 1)) - 1);
+      if ((partMeta->dailyPartsReceived & expectedMask) != expectedMask) {
+        Serial.print(F("WARNING: Daily report from "));
+        Serial.print(clientUid);
+        Serial.print(F(" missing parts! Expected mask=0x"));
+        Serial.print(expectedMask, HEX);
+        Serial.print(F(", received=0x"));
+        Serial.println(partMeta->dailyPartsReceived, HEX);
+        addServerSerialLog("Daily report missing parts", "warn", "daily");
+      }
     }
   }
 }
@@ -8298,6 +8659,16 @@ static void sendDailyEmail() {
     Serial.println(F("Daily email JSON parse failed"));
     return;
   }
+
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  // Kick watchdog before the potentially long Notecard transaction:
+  // JSON construction + I2C note.add can exceed 30s with many tanks.
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
+#endif
   JAddItemToObject(req, "body", body);
 
   J *emailRsp = notecard.requestAndResponse(req);
@@ -8751,6 +9122,14 @@ static void saveClientMetadataCache() {
       if (meta.firmwareVersion[0] != '\0') {
         obj["fv"] = meta.firmwareVersion;
       }
+      if (meta.signalBars >= 0) {
+        obj["sb"] = meta.signalBars;
+        obj["sr"] = meta.signalRssi;
+        obj["sp"] = meta.signalRsrp;
+        obj["sq"] = meta.signalRsrq;
+        if (meta.signalRat[0] != '\0') obj["sn"] = meta.signalRat;
+        obj["se"] = meta.signalEpoch;
+      }
       // Note: cachedTemperatureF and staleAlertSent are runtime-only, not persisted
     }
     
@@ -8832,6 +9211,12 @@ static void loadClientMetadataCache() {
       meta.nwsGridY = obj["gy"] | 0;
       meta.nwsGridValid = (meta.nwsGridOffice[0] != '\0');
       strlcpy(meta.firmwareVersion, obj["fv"] | "", sizeof(meta.firmwareVersion));
+      meta.signalBars = obj["sb"] | (int)-1;
+      meta.signalRssi = obj["sr"] | (int)0;
+      meta.signalRsrp = obj["sp"] | (int)0;
+      meta.signalRsrq = obj["sq"] | (int)0;
+      strlcpy(meta.signalRat, obj["sn"] | "", sizeof(meta.signalRat));
+      meta.signalEpoch = obj["se"] | 0.0;
       meta.cachedTemperatureF = TEMPERATURE_UNAVAILABLE;
       meta.staleAlertSent = false;
     }
@@ -8921,6 +9306,7 @@ static void handleConfigAck(JsonDocument &doc, double epoch) {
   // If config version matches, clear pending flag
   if (version[0] != '\0' && strcmp(version, snap->configVersion) == 0) {
     snap->pendingDispatch = false;
+    snap->dispatchAttempts = 0;  // Reset retry counter on successful delivery
   }
   
   Serial.print(F("Config ACK received from "));
@@ -9094,14 +9480,14 @@ static void loadClientConfigSnapshots() {
         snap.site[0] = '\0';
       }
       
-      // Parse extended fields (pendingDispatch, configVersion, lastAckEpoch, lastAckStatus)
+      // Parse extended fields (pendingDispatch, configVersion, lastAckEpoch, lastAckStatus, dispatchAttempts, lastDispatchEpoch)
       // These are appended as additional tab-separated fields after the payload
       int sep2 = json.indexOf('\t');
       if (sep2 > 0) {
         // Trim payload to remove extended fields
         snap.payload[sep2] = '\0';
         String extended = json.substring(sep2 + 1);
-        // Format: pendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus
+        // Format: pendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus[\tdispatchAttempts\tlastDispatchEpoch]
         int s1 = extended.indexOf('\t');
         if (s1 >= 0) {
           snap.pendingDispatch = (extended.substring(0, s1) == "1");
@@ -9113,7 +9499,23 @@ static void loadClientConfigSnapshots() {
             int s3 = rest2.indexOf('\t');
             if (s3 >= 0) {
               snap.lastAckEpoch = rest2.substring(0, s3).toDouble();
-              strlcpy(snap.lastAckStatus, rest2.substring(s3 + 1).c_str(), sizeof(snap.lastAckStatus));
+              String rest3 = rest2.substring(s3 + 1);
+              // Check for dispatchAttempts and lastDispatchEpoch (v3.1+ format)
+              int s4 = rest3.indexOf('\t');
+              if (s4 >= 0) {
+                strlcpy(snap.lastAckStatus, rest3.substring(0, s4).c_str(), sizeof(snap.lastAckStatus));
+                String rest4 = rest3.substring(s4 + 1);
+                int s5 = rest4.indexOf('\t');
+                if (s5 >= 0) {
+                  snap.dispatchAttempts = (uint8_t)rest4.substring(0, s5).toInt();
+                  snap.lastDispatchEpoch = rest4.substring(s5 + 1).toDouble();
+                } else {
+                  snap.dispatchAttempts = (uint8_t)rest4.toInt();
+                }
+              } else {
+                // Old format: no dispatch fields, rest3 is just lastAckStatus
+                strlcpy(snap.lastAckStatus, rest3.c_str(), sizeof(snap.lastAckStatus));
+              }
             }
           }
         }
@@ -9164,7 +9566,7 @@ static void loadClientConfigSnapshots() {
         snap.site[0] = '\0';
       }
       
-      // Parse extended fields (pendingDispatch, configVersion, lastAckEpoch, lastAckStatus)
+      // Parse extended fields (pendingDispatch, configVersion, lastAckEpoch, lastAckStatus, dispatchAttempts, lastDispatchEpoch)
       int sep2 = json.indexOf('\t');
       if (sep2 > 0) {
         snap.payload[sep2] = '\0';
@@ -9180,7 +9582,23 @@ static void loadClientConfigSnapshots() {
             int s3 = rest2.indexOf('\t');
             if (s3 >= 0) {
               snap.lastAckEpoch = rest2.substring(0, s3).toDouble();
-              strlcpy(snap.lastAckStatus, rest2.substring(s3 + 1).c_str(), sizeof(snap.lastAckStatus));
+              String rest3 = rest2.substring(s3 + 1);
+              // Check for dispatchAttempts and lastDispatchEpoch (v3.1+ format)
+              int s4 = rest3.indexOf('\t');
+              if (s4 >= 0) {
+                strlcpy(snap.lastAckStatus, rest3.substring(0, s4).c_str(), sizeof(snap.lastAckStatus));
+                String rest4 = rest3.substring(s4 + 1);
+                int s5 = rest4.indexOf('\t');
+                if (s5 >= 0) {
+                  snap.dispatchAttempts = (uint8_t)rest4.substring(0, s5).toInt();
+                  snap.lastDispatchEpoch = rest4.substring(s5 + 1).toDouble();
+                } else {
+                  snap.dispatchAttempts = (uint8_t)rest4.toInt();
+                }
+              } else {
+                // Old format: no dispatch fields, rest3 is just lastAckStatus
+                strlcpy(snap.lastAckStatus, rest3.c_str(), sizeof(snap.lastAckStatus));
+              }
             }
           }
         }
@@ -9201,9 +9619,10 @@ static void saveClientConfigSnapshots() {
     
     // Accumulate output into a buffer first, then write atomically.
     // Each line: uid(32) + tab + payload(~512) + tab + flag(1) + tab
-    //            + version(16) + tab + epoch(12) + tab + status(16) + newline
-    // ≈ 600 bytes per entry. Reserve generously.
-    const size_t bufSize = (size_t)gClientConfigCount * 640 + 64;
+    //            + version(16) + tab + epoch(12) + tab + status(16)
+    //            + tab + dispatchAttempts(3) + tab + dispatchEpoch(12) + newline
+    // ≈ 620 bytes per entry. Reserve generously.
+    const size_t bufSize = (size_t)gClientConfigCount * 680 + 64;
     char *buf = (char *)malloc(bufSize);
     if (!buf) {
       Serial.println(F("ERROR: Cannot allocate config cache buffer"));
@@ -9212,14 +9631,16 @@ static void saveClientConfigSnapshots() {
 
     size_t pos = 0;
     for (uint8_t i = 0; i < gClientConfigCount; ++i) {
-      // Format: uid\tpayload\tpendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus
-      int n = snprintf(buf + pos, bufSize - pos, "%s\t%s\t%d\t%s\t%.0f\t%s\n",
+      // Format: uid\tpayload\tpendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus\tdispatchAttempts\tlastDispatchEpoch
+      int n = snprintf(buf + pos, bufSize - pos, "%s\t%s\t%d\t%s\t%.0f\t%s\t%u\t%.0f\n",
                        gClientConfigs[i].uid,
                        gClientConfigs[i].payload,
                        gClientConfigs[i].pendingDispatch ? 1 : 0,
                        gClientConfigs[i].configVersion,
                        gClientConfigs[i].lastAckEpoch,
-                       gClientConfigs[i].lastAckStatus);
+                       gClientConfigs[i].lastAckStatus,
+                       (unsigned)gClientConfigs[i].dispatchAttempts,
+                       gClientConfigs[i].lastDispatchEpoch);
       if (n < 0 || pos + (size_t)n >= bufSize) {
         Serial.println(F("Config cache buffer overflow"));
         break;
@@ -9234,17 +9655,19 @@ static void saveClientConfigSnapshots() {
   #else
     // LittleFS branch: accumulate into String, then atomic write
     String output;
-    output.reserve(gClientConfigCount * 640);
+    output.reserve(gClientConfigCount * 680);
     for (uint8_t i = 0; i < gClientConfigCount; ++i) {
-      // Format: uid\tpayload\tpendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus
-      char line[640];
-      snprintf(line, sizeof(line), "%s\t%s\t%d\t%s\t%lu\t%s\n",
+      // Format: uid\tpayload\tpendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus\tdispatchAttempts\tlastDispatchEpoch
+      char line[680];
+      snprintf(line, sizeof(line), "%s\t%s\t%d\t%s\t%lu\t%s\t%u\t%.0f\n",
                gClientConfigs[i].uid,
                gClientConfigs[i].payload,
                gClientConfigs[i].pendingDispatch ? 1 : 0,
                gClientConfigs[i].configVersion,
                (unsigned long)gClientConfigs[i].lastAckEpoch,
-               gClientConfigs[i].lastAckStatus);
+               gClientConfigs[i].lastAckStatus,
+               (unsigned)gClientConfigs[i].dispatchAttempts,
+               gClientConfigs[i].lastDispatchEpoch);
       output += line;
     }
     tankalarm_littlefs_write_file_atomic(CLIENT_CONFIG_CACHE_PATH,

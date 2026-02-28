@@ -219,6 +219,13 @@
 #define DIAG_OUTBOX_FILE "diag.qo"             // All sketches send diagnostic events
 #endif
 
+// --- Sync request (server-to-client on-demand sync trigger) ---
+// Server sends via command.qo with _type:"sync_request"
+// Route #2 delivers to client's sync_request.qi
+#ifndef SYNC_REQUEST_FILE
+#define SYNC_REQUEST_FILE "sync_request.qi"     // Client receives sync request from server
+#endif
+
 // ============================================================================
 // DFU (Device Firmware Update) Check Interval
 // ============================================================================

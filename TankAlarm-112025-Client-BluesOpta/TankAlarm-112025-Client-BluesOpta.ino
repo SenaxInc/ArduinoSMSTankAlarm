@@ -655,9 +655,18 @@ static bool gHardwareSummaryPrinted = false;
 
 // Network failure handling
 static unsigned long gLastSuccessfulNotecardComm = 0;
+static unsigned long gLastSuccessfulNoteSend = 0;  // Last successful note.add (separate from card.wireless)
 static uint8_t gNotecardFailureCount = 0;
 static bool gNotecardAvailable = true;
 #define NOTECARD_RETRY_INTERVAL 60000UL  // Retry after 60 seconds
+#define NOTECARD_MODEM_STALL_MS (4UL * 60UL * 60UL * 1000UL)  // 4 hours without note send = modem stall
+
+// Cellular signal strength cache (updated by checkNotecardHealth via card.wireless)
+static int8_t gSignalBars = -1;     // 0-4 bars, -1 = unknown
+static int16_t gSignalRssi = 0;     // RSSI in dBm
+static int16_t gSignalRsrp = 0;     // RSRP in dBm (LTE reference signal power)
+static int16_t gSignalRsrq = 0;     // RSRQ in dB  (LTE reference signal quality)
+static char gSignalRat[8] = {0};    // Radio access technology (e.g., "lte", "catm")
 
 // I2C bus error tracking (current loop / A0602)
 // Non-static: extern-linked via TankAlarm_I2C.h shared functions
@@ -1085,6 +1094,7 @@ static void clearAllRelayAlarms();
 static void addSerialLog(const char *message);
 static void pollForSerialRequests();
 static void pollForLocationRequests();
+static void pollForSyncRequests();
 static void sendSerialLogs();
 static void sendSerialAck(const char *status);
 static void evaluateUnload(uint8_t idx);
@@ -1594,6 +1604,13 @@ void loop() {
       gLastLocationRequestCheckMillis = now;
       pollForLocationRequests();
     }
+
+    // Check for server-requested sync (helps push pending inbound notes
+    // through weak cellular links — see Phase 3 sync-on-demand)
+    if (now - gLastConfigCheckMillis < 2000UL) {
+      // Poll sync_request.qi right after config check (same cadence, minimal overhead)
+      pollForSyncRequests();
+    }
   }
 
   // Check for momentary relay timeout (30 minutes) — skip in CRITICAL (relays are off)
@@ -1718,6 +1735,18 @@ void loop() {
     } else {
       // Standard scheduled reporting
       reportDue = (gNextDailyReportEpoch > 0.0 && currentEpoch() >= gNextDailyReportEpoch);
+
+      // Fallback: if Notecard time never syncs (no cellular/GPS), fire daily
+      // report based on millis() every 24h to avoid permanent blackout.
+      if (!reportDue && currentEpoch() <= 0.0 && millis() > 24UL * 60UL * 60UL * 1000UL) {
+        static unsigned long lastFallbackReportMillis = 0;
+        if (lastFallbackReportMillis == 0 ||
+            (millis() - lastFallbackReportMillis) >= 24UL * 60UL * 60UL * 1000UL) {
+          Serial.println(F("WARNING: No time sync — sending daily report via millis fallback"));
+          reportDue = true;
+          lastFallbackReportMillis = millis();
+        }
+      }
     }
 
     if (reportDue) {
@@ -2868,6 +2897,24 @@ static bool checkNotecardHealth() {
     return false;
   }
   
+  // Extract cellular signal strength from card.wireless response
+  J *net = JGetObject(rsp, "net");
+  if (net) {
+    int bars = JGetInt(rsp, "bars");
+    if (bars >= 0 && bars <= 4) gSignalBars = (int8_t)bars;
+    int rssi = JGetInt(net, "rssi");
+    if (rssi != 0) gSignalRssi = (int16_t)rssi;
+    int rsrp = JGetInt(net, "rsrp");
+    if (rsrp != 0) gSignalRsrp = (int16_t)rsrp;
+    int rsrq = JGetInt(net, "rsrq");
+    if (rsrq != 0) gSignalRsrq = (int16_t)rsrq;
+    const char *rat = JGetString(net, "rat");
+    if (rat && rat[0] != '\0') strlcpy(gSignalRat, rat, sizeof(gSignalRat));
+  } else {
+    // Fallback: some Notecard firmware versions put bars at top level
+    int bars = JGetInt(rsp, "bars");
+    if (bars >= 0 && bars <= 4) gSignalBars = (int8_t)bars;
+  }
   notecard.deleteResponse(rsp);
   
   // Notecard is responding — reinitialize Notecard I2C binding if recovering
@@ -2879,6 +2926,24 @@ static bool checkNotecardHealth() {
   gNotecardAvailable = true;
   gNotecardFailureCount = 0;
   gLastSuccessfulNotecardComm = millis();
+
+  // Modem stall detection: card.wireless responds (I2C OK) but no note has
+  // been successfully sent in 4+ hours. This indicates the modem may be stuck
+  // internally (e.g., locked in a bad cellular state). Issue card.restart to
+  // reset the modem and re-establish the cellular connection.
+  if (gLastSuccessfulNoteSend > 0 &&
+      (millis() - gLastSuccessfulNoteSend) > NOTECARD_MODEM_STALL_MS) {
+    Serial.println(F("WARNING: Modem stall detected — card.wireless OK but no notes sent in 4+ hours"));
+    Serial.println(F("Issuing card.restart to reset modem..."));
+    addSerialLog("Modem stall: card.restart issued", "warn");
+    J *restartReq = notecard.newRequest("card.restart");
+    if (restartReq) {
+      notecard.sendRequest(restartReq);  // Fire and forget
+    }
+    gLastSuccessfulNoteSend = millis();  // Reset to avoid repeated restarts
+    gNotecardAvailable = false;  // Mark unavailable until next health check confirms recovery
+    return true;  // Health check itself succeeded
+  }
 
   // Deferred UID resolution: if the Notecard wasn't ready at boot, the device
   // UID may still be a fallback (deviceLabel).  Now that the Notecard is
@@ -5648,6 +5713,38 @@ static void sendDailyReport() {
           powerObj["stateDurSec"] = (millis() - gPowerStateChangeMillis) / 1000UL;
         }
       }
+      // Include cellular signal strength (from last card.wireless check)
+      if (gSignalBars >= 0) {
+        JsonObject sigObj = doc["sig"].to<JsonObject>();
+        sigObj["bars"] = gSignalBars;
+        if (gSignalRssi != 0) sigObj["rssi"] = gSignalRssi;
+        if (gSignalRsrp != 0) sigObj["rsrp"] = gSignalRsrp;
+        if (gSignalRsrq != 0) sigObj["rsrq"] = gSignalRsrq;
+        if (gSignalRat[0] != '\0') sigObj["rat"] = gSignalRat;
+      }
+      // Include active alarm summary as backup notification path.
+      // If the original alarm note was lost due to weak signal, the server
+      // can detect active alarms from this daily report instead.
+      {
+        bool anyAlarmActive = false;
+        for (uint8_t ai = 0; ai < gConfig.monitorCount; ++ai) {
+          if (gMonitorState[ai].highAlarmLatched || gMonitorState[ai].lowAlarmLatched) {
+            anyAlarmActive = true;
+            break;
+          }
+        }
+        if (anyAlarmActive) {
+          JsonArray alarmsArr = doc["alarms"].to<JsonArray>();
+          for (uint8_t ai = 0; ai < gConfig.monitorCount; ++ai) {
+            if (gMonitorState[ai].highAlarmLatched || gMonitorState[ai].lowAlarmLatched) {
+              JsonObject a = alarmsArr.add<JsonObject>();
+              a["k"] = gConfig.monitors[ai].monitorNumber;
+              a["hi"] = gMonitorState[ai].highAlarmLatched;
+              a["lo"] = gMonitorState[ai].lowAlarmLatched;
+            }
+          }
+        }
+      }
     }
 
     JsonArray tanks = doc["tanks"].to<JsonArray>();
@@ -5947,6 +6044,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
     } else {
       notecard.deleteResponse(rsp);
       gLastSuccessfulNotecardComm = millis();
+      gLastSuccessfulNoteSend = millis();
       gNotecardFailureCount = 0;
       flushBufferedNotes();
     }
@@ -6967,6 +7065,53 @@ static void pollForLocationRequests() {
         }
       }
     }
+  }
+
+  notecard.deleteResponse(rsp);
+}
+
+// ============================================================================
+// Server-Requested Sync (Phase 3: Sync-on-Demand)
+// ============================================================================
+// The server can send a "sync" command via command.qo → sync_request.qi to
+// force this client to perform an immediate Notecard sync (hub.sync).
+// This is critical for low-signal clients where inbound notes are stuck
+// "Pending sync to Notecard" — the forced sync increases the chance of
+// pulling pending config/relay notes through a marginal cellular link.
+
+static void pollForSyncRequests() {
+  J *req = notecard.newRequest("note.get");
+  if (!req) return;
+
+  JAddStringToObject(req, "file", SYNC_REQUEST_FILE);
+  JAddBoolToObject(req, "delete", true);
+
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) return;
+
+  J *body = JGetObject(rsp, "body");
+  if (!body) {
+    notecard.deleteResponse(rsp);
+    return;
+  }
+
+  const char *request = JGetString(body, "request");
+  if (request && strcmp(request, "sync") == 0) {
+    Serial.println(F("Sync request received from server — forcing hub.sync"));
+    addSerialLog("Server-requested hub.sync initiated");
+
+    notecard.deleteResponse(rsp);
+
+    // Execute hub.sync to force immediate Notecard sync with Notehub
+    J *syncReq = notecard.newRequest("hub.sync");
+    if (syncReq) {
+      if (notecard.sendRequest(syncReq)) {
+        Serial.println(F("hub.sync command sent to Notecard"));
+      } else {
+        Serial.println(F("hub.sync command failed"));
+      }
+    }
+    return;
   }
 
   notecard.deleteResponse(rsp);
