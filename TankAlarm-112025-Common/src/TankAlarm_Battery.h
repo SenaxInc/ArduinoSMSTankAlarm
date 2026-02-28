@@ -86,7 +86,9 @@ enum BatteryAlertType : uint8_t {
 struct BatteryData {
   // Current measurements
   float voltage;              // Current battery voltage (V)
-  const char* mode;           // Voltage mode state (usb/high/normal/low/dead)
+  char mode[16];              // Voltage mode state (usb/high/normal/low/dead)
+                              // BugFix 02282026: Was const char* pointing into freed Notecard
+                              // JSON response memory — now a fixed buffer copied via strlcpy.
   bool usbPowered;            // True if USB power connected
   uint32_t uptimeMinutes;     // Device uptime in minutes
   

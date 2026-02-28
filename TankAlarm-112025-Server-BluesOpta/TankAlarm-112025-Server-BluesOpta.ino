@@ -2391,6 +2391,7 @@ void setup() {
   printHardwareRequirements();
 
   Wire.begin();
+  Wire.setTimeout(I2C_WIRE_TIMEOUT_MS);  // Guard against indefinite blocking on bus hang
 
   // I2C bus scan: verify Notecard is present
   {
@@ -4351,7 +4352,10 @@ static void pruneHotTierIfNeeded() {
       }
     }
     
-    // Update count (ring buffer handles the rest)
+    // Update count — this is correct because timestamps are monotonically
+    // increasing, so all pruned entries are contiguous at the start of the
+    // logical sequence. Reducing snapshotCount shifts the logical start
+    // forward while writeIndex remains valid for the next write.
     hist.snapshotCount = newCount;
   }
   
@@ -4732,9 +4736,11 @@ static void rollupDailySummaries() {
     if (sz > 0 && sz < 8192) {
       char *buf = (char *)malloc(sz + 1);
       if (buf) {
-        fread(buf, 1, sz, existing);
-        buf[sz] = '\0';
-        deserializeJson(monthDoc, buf);
+        size_t bytesRead = fread(buf, 1, sz, existing);
+        buf[bytesRead] = '\0';
+        if (bytesRead == (size_t)sz) {
+          deserializeJson(monthDoc, buf);
+        }
         free(buf);
       }
     }
@@ -4852,9 +4858,13 @@ static bool loadDailySummaryMonth(uint16_t year, uint8_t month, JsonDocument &do
   char *buf = (char *)malloc(sz + 1);
   if (!buf) { fclose(f); return false; }
   
-  fread(buf, 1, sz, f);
+  size_t bytesRead = fread(buf, 1, sz, f);
   fclose(f);
-  buf[sz] = '\0';
+  if (bytesRead != (size_t)sz) {
+    free(buf);
+    return false;
+  }
+  buf[bytesRead] = '\0';
   
   DeserializationError err = deserializeJson(doc, buf);
   free(buf);
@@ -4983,9 +4993,13 @@ static void loadHotTierSnapshot() {
   char *buf = (char *)malloc(sz + 1);
   if (!buf) { fclose(f); return; }
   
-  fread(buf, 1, sz, f);
+  size_t bytesRead = fread(buf, 1, sz, f);
   fclose(f);
-  buf[sz] = '\0';
+  if (bytesRead != (size_t)sz) {
+    free(buf);
+    return;
+  }
+  buf[bytesRead] = '\0';
   
   JsonDocument doc;
   if (deserializeJson(doc, buf) != DeserializationError::Ok) {
@@ -6002,7 +6016,8 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
   if (contentLength > 0) {
     body.reserve(contentLength);  // Pre-allocate to avoid O(n²) reallocation
     size_t readBytes = 0;
-    while (readBytes < contentLength && client.connected()) {
+    unsigned long bodyStart = millis();
+    while (readBytes < contentLength && client.connected() && millis() - bodyStart < 5000UL) {
       while (client.available() && readBytes < contentLength) {
         char c = client.read();
         body += c;
@@ -6011,6 +6026,9 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
       if (readBytes >= MAX_HTTP_BODY_BYTES) {
         bodyTooLarge = true;
         break;
+      }
+      if (readBytes < contentLength) {
+        safeSleep(1);  // Yield CPU + kick watchdog while waiting for more data
       }
     }
   }

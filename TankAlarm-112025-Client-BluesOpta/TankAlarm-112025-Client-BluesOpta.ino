@@ -1196,6 +1196,7 @@ void setup() {
   printHardwareRequirements(gConfig);
 
   Wire.begin();
+  Wire.setTimeout(I2C_WIRE_TIMEOUT_MS);  // Guard against indefinite blocking on bus hang
 
   uint8_t configuredCurrentLoopAddr = gConfig.currentLoopI2cAddress;
   if (configuredCurrentLoopAddr < 0x08 || configuredCurrentLoopAddr > 0x77 || configuredCurrentLoopAddr == NOTECARD_I2C_ADDRESS) {
@@ -3224,6 +3225,7 @@ static void reinitializeHardware() {
   Wire.end();
   delay(10);
   Wire.begin();
+  Wire.setTimeout(I2C_WIRE_TIMEOUT_MS);  // Guard against indefinite blocking on bus hang
 
   // Reinitialize all tank sensors with new configuration
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
@@ -4498,8 +4500,17 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
         Serial.println(F(")"));
       } else if (shouldDeactivateRelay) {
         triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
+        // Clear per-relay activation times using the stored mask (not tank index)
+        // BugFix 02282026: Was gRelayActivationTime[idx] which used the tank index
+        // instead of iterating the relay bitmask — relay timeouts were not properly
+        // cleared for tanks whose relay mask didn't coincidentally match their index.
+        for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+          if (gRelayActiveMaskForTank[idx] & (1 << r)) {
+            gRelayActivationTime[r] = 0;
+          }
+        }
         gRelayActiveForTank[idx] = false;
-        gRelayActivationTime[idx] = 0;
+        gRelayActiveMaskForTank[idx] = 0;
         Serial.println(F("Relay deactivated on alarm clear"));
       }
     }
@@ -4858,7 +4869,10 @@ static bool pollBatteryVoltage(BatteryData &data, const BatteryConfig &cfg) {
     data.voltage += cfg.calibrationOffset;
   }
   
-  data.mode = JGetString(rsp, "mode");
+  // BugFix 02282026: Copy mode string into fixed buffer before deleteResponse()
+  // frees the JSON memory. Was: data.mode = JGetString(rsp, "mode");
+  const char *modeStr = JGetString(rsp, "mode");
+  strlcpy(data.mode, (modeStr && modeStr[0] != '\0') ? modeStr : "unknown", sizeof(data.mode));
   data.usbPowered = JGetBool(rsp, "usb");
   data.uptimeMinutes = (uint32_t)JGetNumber(rsp, "minutes");
   
@@ -4924,7 +4938,7 @@ static void checkBatteryAlerts(const BatteryData &data, const BatteryConfig &cfg
     alert = BATTERY_ALERT_DECLINING;
   } else if (data.voltage >= cfg.normalVoltage && gLastBatteryAlert != BATTERY_ALERT_NONE) {
     // Battery recovered to normal
-    if (cfg.alertOnRecovery && gLastBatteryAlert == BATTERY_ALERT_LOW) {
+    if (cfg.alertOnRecovery) {
       alert = BATTERY_ALERT_RECOVERED;
     }
   }
@@ -5630,16 +5644,12 @@ static void updatePowerState() {
         saveSolarStateToFlash();
       }
     } else if (gPowerState < POWER_STATE_CRITICAL_HIBERNATE) {
-      // Battery exited CRITICAL — reset failure counter.
-      // A battery oscillating between CRITICAL and LOW_POWER should not
-      // accumulate false counts — reset as soon as voltage improves enough
-      // to leave CRITICAL (requires POWER_CRITICAL_EXIT_VOLTAGE hysteresis).
-      if (gSolarOnlyBatFailCount > 0) {
-        gSolarOnlyBatFailCount = 0;
-      }
-      // Time-based decay: if the counter hasn't been incremented in 24 hours,
-      // decay it to zero. This prevents slow accumulation over days/weeks of
-      // borderline voltage from eventually triggering a false state transition.
+      // Battery exited CRITICAL — apply time-based decay instead of immediate reset.
+      // A battery oscillating between CRITICAL and LOW_POWER within 24 hours will
+      // correctly accumulate counts toward the failure threshold. Only decay the
+      // counter after 24 hours without a CRITICAL reading, preventing slow
+      // accumulation over days/weeks of borderline voltage from triggering a false
+      // state transition.
       if (gSolarOnlyBatFailCount > 0 && 
           (millis() - gSolarOnlyBatFailLastIncrMillis >= SOLAR_BAT_FAIL_DECAY_MS)) {
         Serial.println(F("Solar bat-fail counter decayed (24h without increment)"));
@@ -7295,7 +7305,22 @@ static void safeSleep(unsigned long ms) {
     remaining -= chunk;
   }
 #else
-  delay(ms);
+  // Non-Mbed fallback: chunked sleep with watchdog kick to avoid WDT reset
+  if (ms == 0) return;
+  #ifdef TANKALARM_WATCHDOG_AVAILABLE
+    const unsigned long maxChunk = (WATCHDOG_TIMEOUT_SECONDS * 1000UL) / 2;
+  #else
+    const unsigned long maxChunk = ms;
+  #endif
+  unsigned long remaining = ms;
+  while (remaining > 0) {
+    unsigned long chunk = (remaining > maxChunk) ? maxChunk : remaining;
+    delay(chunk);
+    #ifdef TANKALARM_WATCHDOG_AVAILABLE
+      IWatchdog.reload();
+    #endif
+    remaining -= chunk;
+  }
 #endif
 }
 

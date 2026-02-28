@@ -226,6 +226,7 @@ void setup() {
   Serial.println(F(")"));
 
   Wire.begin();
+  Wire.setTimeout(I2C_WIRE_TIMEOUT_MS);  // Guard against indefinite blocking on bus hang
 
   // I2C bus scan: verify Notecard is present
   {
@@ -536,7 +537,8 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
 
   if (contentLength > 0) {
     size_t readBytes = 0;
-    while (readBytes < contentLength && client.connected()) {
+    unsigned long bodyStart = millis();
+    while (readBytes < contentLength && client.connected() && millis() - bodyStart < 5000UL) {
       while (client.available() && readBytes < contentLength) {
         char c = client.read();
         body += c;
@@ -545,6 +547,9 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
       if (readBytes >= MAX_HTTP_BODY_BYTES) {
         bodyTooLarge = true;
         break;
+      }
+      if (readBytes < contentLength) {
+        safeSleep(1);  // Yield CPU + kick watchdog while waiting for more data
       }
     }
   }

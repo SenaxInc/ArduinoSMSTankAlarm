@@ -126,6 +126,13 @@
 #define NOTECARD_HEALTH_CHECK_BASE_INTERVAL_MS 300000UL  // 5 minutes
 #endif
 
+// Wire library timeout (ms) for I2C transactions.
+// Prevents indefinite blocking if SDA/SCL lines are physically disconnected
+// mid-transaction.  Applied via Wire.setTimeout() after every Wire.begin().
+#ifndef I2C_WIRE_TIMEOUT_MS
+#define I2C_WIRE_TIMEOUT_MS 25
+#endif
+
 // 24-hour I2C error count threshold that triggers an alarm note
 #ifndef I2C_ERROR_ALERT_THRESHOLD
 #define I2C_ERROR_ALERT_THRESHOLD 50

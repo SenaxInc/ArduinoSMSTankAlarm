@@ -116,6 +116,7 @@ static inline void tankalarm_recoverI2CBus(
 
   // Reinitialize Wire (stays at 100 kHz default — see OPTA_I2C_COMMUNICATION.md)
   Wire.begin();
+  Wire.setTimeout(I2C_WIRE_TIMEOUT_MS);  // Guard against indefinite blocking on bus hang
 
   gI2cBusRecoveryCount++;
   Serial.print(F("I2C bus recovery complete (count="));
