@@ -1055,6 +1055,9 @@ static void respondStatus(EthernetClient &client, int status, const String &mess
 static bool performFtpBackup(char *errorOut = nullptr, size_t errorSize = 0);
 static bool performFtpRestore(char *errorOut = nullptr, size_t errorSize = 0);
 
+// Forward declaration for purgePendingConfigNotes (defined in Notecard Config Dispatch section)
+static uint8_t purgePendingConfigNotes(const char *clientUid);
+
 // Check if authentication is currently rate-limited (non-blocking)
 // Returns true if rate-limited, and responds with 429 status
 static bool isAuthRateLimited(EthernetClient &client) {
