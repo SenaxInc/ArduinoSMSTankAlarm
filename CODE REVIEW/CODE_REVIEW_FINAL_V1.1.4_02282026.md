@@ -259,22 +259,22 @@ Server RAM at 50% is the tightest constraint. The `respondHtml()` triple-copy pa
 - [x] **#5 Client: Watchdog kick in `trimTelemetryOutbox()`** — Kicks added at outer while-loop top and inner `note.delete` for-loop
 - [x] **#6 I2C Utility: `Wire.setTimeout()` after `Wire.begin()`** — `Wire.setTimeout(I2C_WIRE_TIMEOUT_MS)` added for consistency
 
-### P2 — Consider ❌ Not Implemented (Deferred to v1.1.5+)
+### P2 — Consider (3 of 5 Implemented)
 
-- [ ] **#7 Server: `respondHtml()` triple-copy memory pattern** — Requires compile-time HTML injection refactor; no crash observed
+- [x] **#7 Server: `respondHtml()` triple-copy memory pattern** — Rewritten to stream body inline with overlay injection; eliminates ~3x peak RAM
 - [ ] **#8 Server: JSON API response builders use String concatenation** — Low-frequency endpoints; migrate to `JsonDocument` or `snprintf`
-- [ ] **#9 Client: Duplicated monitor config parsing (~180 lines)** — Maintenance risk, not a runtime issue; extract shared helper
+- [x] **#9 Client: Duplicated monitor config parsing (~180 lines)** — Extracted `initMonitorDefaults()` + `parseMonitorFromJson()` shared helpers
 - [ ] **#10 Client: Last remaining `String` usage in `pruneNoteBufferIfNeeded()`** — Single heap allocation per prune cycle; negligible impact
 - [ ] **#11 Viewer: Add `X-Content-Type-Options: nosniff` header** — Read-only LAN kiosk; low attack surface
 
-### P3 — Deferred ❌ Not Implemented (Deferred to v1.2+)
+### P3 — Deferred (1 of 7 Implemented)
 
 - [ ] **#12 Server: GET endpoints expose data without authentication** — Acceptable for LAN-only; must fix before internet exposure
 - [ ] **#13 Server: Fresh-install login accepts blank PIN** — First-time setup UX trade-off
 - [ ] **#14 Server: PIN-in-localStorage bearer pattern** — Standard for embedded LAN UIs; consider session tokens later
 - [ ] **#15 Monolithic file architecture** — Arduino IDE constraints; shared library approach working well
 - [ ] **#16 I2C transaction timing telemetry** — Pending field data from new I2C diagnostics
-- [ ] **#17 Extract `readTankSensor` helper functions** — Code quality; no runtime impact
+- [x] **#17 Extract `readTankSensor` helper functions** — Extracted 4 sensor-type helpers; `readTankSensor()` is now a thin dispatch
 - [ ] **#18 Auto relay de-energize on CRITICAL_HIBERNATE** — Requires hardware requirement verification
 
 ### Release Tasks ✅ All Complete

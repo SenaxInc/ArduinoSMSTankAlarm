@@ -1639,6 +1639,7 @@ static void enableDfuMode();
 static void handleWebRequests();
 static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge);
 static void respondHtml(EthernetClient &client, const String &body);
+static void sendStringRange(EthernetClient &client, const String &str, size_t start, size_t end);
 static void respondJson(EthernetClient &client, const String &body, int status);
 static bool respondJson(EthernetClient &client, const JsonDocument &doc, int status);
 static void respondJson(EthernetClient &client, const String &body);
@@ -6091,56 +6092,95 @@ static String getQueryParam(const String &query, const char *key) {
   return String();
 }
 
+/**
+ * Stream a substring of a String to the client in 512-byte chunks.
+ * Avoids creating a temporary String copy for the substring.
+ */
+static void sendStringRange(EthernetClient &client, const String &str, size_t start, size_t end) {
+  const size_t chunkSize = 512;
+  const char *data = str.c_str();
+  size_t offset = start;
+  while (offset < end) {
+    size_t toSend = end - offset;
+    if (toSend > chunkSize) toSend = chunkSize;
+    client.write((const uint8_t*)(data + offset), toSend);
+    offset += toSend;
+  }
+}
+
+/**
+ * Send an HTML response, injecting the loading-overlay spinner inline.
+ *
+ * Previous implementation created up to 3 String copies (output = body,
+ * rebuilt = reassembled, output = rebuilt). This version streams the
+ * original body directly, injecting the overlay and hide-script between
+ * chunks so peak RAM stays at ~1x body size instead of ~3x.
+ */
 static void respondHtml(EthernetClient &client, const String &body) {
-  String output = body;
-  if (output.indexOf("loading-overlay") < 0) {
-    const char *overlayMarkup = "<div id=\"loading-overlay\"><div class=\"spinner\"></div></div>";
-    const char *hideScript = "<script>setTimeout(function(){var o=document.getElementById('loading-overlay');if(o)o.style.display='none'},5000);window.addEventListener('load',()=>{const ov=document.getElementById('loading-overlay');if(ov){ov.style.display='none';ov.classList.add('hidden');}});</script>";
+  const char *overlayMarkup = "<div id=\"loading-overlay\"><div class=\"spinner\"></div></div>";
+  const char *hideScript = "<script>setTimeout(function(){var o=document.getElementById('loading-overlay');if(o)o.style.display='none'},5000);window.addEventListener('load',()=>{const ov=document.getElementById('loading-overlay');if(ov){ov.style.display='none';ov.classList.add('hidden');}});</script>";
 
-    int bodyStart = output.indexOf("<body");
-    int bodyEnd = (bodyStart >= 0) ? output.indexOf('>', bodyStart) : -1;
-    int bodyClose = output.lastIndexOf("</body>");
+  const size_t overlayLen = strlen(overlayMarkup);
+  const size_t scriptLen  = strlen(hideScript);
 
-    if (bodyEnd >= 0 && bodyClose > bodyEnd) {
-      String rebuilt;
-      rebuilt.reserve(output.length() + strlen(overlayMarkup) + strlen(hideScript) + 8);
-      rebuilt += output.substring(0, bodyEnd + 1);
-      rebuilt += overlayMarkup;
-      rebuilt += output.substring(bodyEnd + 1, bodyClose);
-      rebuilt += hideScript;
-      rebuilt += output.substring(bodyClose);
-      output = rebuilt;
-    } else if (bodyEnd >= 0) {
-      String rebuilt;
-      rebuilt.reserve(output.length() + strlen(overlayMarkup) + strlen(hideScript) + 8);
-      rebuilt += output.substring(0, bodyEnd + 1);
-      rebuilt += overlayMarkup;
-      rebuilt += output.substring(bodyEnd + 1);
-      rebuilt += hideScript;
-      output = rebuilt;
+  // Check if overlay is already embedded (e.g. by update_html.py)
+  bool needsOverlay = (body.indexOf("loading-overlay") < 0);
+
+  // Find injection points in the original body
+  int bodyStart = -1, bodyEnd = -1, bodyClose = -1;
+  if (needsOverlay) {
+    bodyStart = body.indexOf("<body");
+    bodyEnd   = (bodyStart >= 0) ? body.indexOf('>', bodyStart) : -1;
+    bodyClose = body.lastIndexOf("</body>");
+  }
+
+  // Calculate total content length without building a new String
+  size_t totalLen = body.length();
+  bool injectBoth  = (bodyEnd >= 0 && bodyClose > bodyEnd);
+  bool injectAfter = (bodyEnd >= 0 && bodyClose <= bodyEnd);  // <body> but no </body>
+  if (needsOverlay) {
+    if (injectBoth) {
+      totalLen += overlayLen + scriptLen;
+    } else if (injectAfter) {
+      totalLen += overlayLen + scriptLen;
     } else {
-      output += hideScript;
+      totalLen += scriptLen;  // append script at end
     }
   }
 
+  // Send HTTP headers
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: text/html"));
   client.println(F("Connection: close"));
   client.println(F("Cache-Control: no-store"));
   client.print(F("Content-Length: "));
-  client.println(output.length());
+  client.println(totalLen);
   client.println();
-  
-  // Send in chunks to avoid memory issues with large strings
-  const size_t chunkSize = 512;
-  size_t remaining = output.length();
-  size_t offset = 0;
-  
-  while (remaining > 0) {
-    size_t toSend = (remaining < chunkSize) ? remaining : chunkSize;
-    client.write((const uint8_t*)output.c_str() + offset, toSend);
-    offset += toSend;
-    remaining -= toSend;
+
+  // Stream body parts, injecting overlay inline
+  if (needsOverlay && injectBoth) {
+    // Part 1: everything up to and including <body...>
+    sendStringRange(client, body, 0, (size_t)(bodyEnd + 1));
+    // Part 2: overlay markup (from flash-string literal)
+    client.write((const uint8_t*)overlayMarkup, overlayLen);
+    // Part 3: content between <body...> and </body>
+    sendStringRange(client, body, (size_t)(bodyEnd + 1), (size_t)bodyClose);
+    // Part 4: hide script
+    client.write((const uint8_t*)hideScript, scriptLen);
+    // Part 5: </body> onwards
+    sendStringRange(client, body, (size_t)bodyClose, body.length());
+  } else if (needsOverlay && injectAfter) {
+    sendStringRange(client, body, 0, (size_t)(bodyEnd + 1));
+    client.write((const uint8_t*)overlayMarkup, overlayLen);
+    sendStringRange(client, body, (size_t)(bodyEnd + 1), body.length());
+    client.write((const uint8_t*)hideScript, scriptLen);
+  } else if (needsOverlay) {
+    // No <body> tag found — just append the script
+    sendStringRange(client, body, 0, body.length());
+    client.write((const uint8_t*)hideScript, scriptLen);
+  } else {
+    // Overlay already present — stream as-is
+    sendStringRange(client, body, 0, body.length());
   }
 }
 

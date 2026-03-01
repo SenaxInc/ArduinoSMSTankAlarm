@@ -785,6 +785,8 @@ static void initializeStorage();
 static void ensureConfigLoaded();
 static void createDefaultConfig(ClientConfig &cfg);
 static bool loadConfigFromFlash(ClientConfig &cfg);
+static void initMonitorDefaults(MonitorConfig &mon, uint8_t index);
+static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t index);
 static bool saveConfigToFlash(const ClientConfig &cfg);
 static void printHardwareRequirements(const ClientConfig &cfg);
 static bool i2cAck(uint8_t address);
@@ -801,6 +803,10 @@ static void applyConfigUpdate(const JsonDocument &doc);
 static void sendConfigAck(bool success, const char *message, const char *configVersion);
 static void persistConfigIfDirty();
 static void sampleTanks();
+static float readDigitalSensor(const MonitorConfig &cfg, uint8_t idx);
+static float readAnalogSensor(const MonitorConfig &cfg, uint8_t idx);
+static float readCurrentLoopSensor(const MonitorConfig &cfg, uint8_t idx);
+static float readPulseSensor(const MonitorConfig &cfg, uint8_t idx);
 static float readTankSensor(uint8_t idx);
 
 // ============================================================================
@@ -2045,6 +2051,281 @@ static void createDefaultConfig(ClientConfig &cfg) {
   initSolarOnlyConfig(&cfg.solarOnlyConfig);                 // Disabled by default
 }
 
+// ============================================================================
+// Monitor Config Parsing Helpers
+// ============================================================================
+// Shared by loadConfigFromFlash() and applyConfigUpdate() to eliminate
+// ~150 lines of duplicated per-monitor JSON field parsing.
+//
+// Usage:
+//   loadConfigFromFlash:  initMonitorDefaults(mon, i);  parseMonitorFromJson(mon, t, i);
+//   applyConfigUpdate:    parseMonitorFromJson(mon, t, i);  // keeps existing values
+// ============================================================================
+
+/**
+ * Initialize a MonitorConfig with sensible defaults before JSON parsing.
+ * Called during loadConfigFromFlash; not needed for applyConfigUpdate
+ * (which preserves existing values for absent fields).
+ */
+static void initMonitorDefaults(MonitorConfig &mon, uint8_t index) {
+  // Identity
+  mon.id = 'A' + index;
+  strlcpy(mon.name, "Tank", sizeof(mon.name));
+  mon.contents[0] = '\0';
+  mon.monitorNumber = index + 1;
+  mon.objectType = OBJECT_TANK;
+
+  // Sensor hardware
+  mon.sensorInterface = SENSOR_ANALOG;
+  mon.primaryPin = 0;
+  mon.secondaryPin = -1;
+  mon.currentLoopChannel = -1;
+  mon.pulsePin = -1;
+  mon.pulsesPerUnit = 1;
+  mon.hallEffectType = HALL_EFFECT_UNIPOLAR;
+  mon.hallEffectDetection = HALL_DETECT_PULSE;
+  mon.pulseSampleDurationMs = RPM_SAMPLE_DURATION_MS;
+  mon.pulseAccumulatedMode = false;
+  mon.expectedPulseRate = 0.0f;
+
+  // Alarm thresholds
+  mon.highAlarmThreshold = 100.0f;
+  mon.lowAlarmThreshold = 20.0f;
+  mon.hysteresisValue = 2.0f;
+
+  // Notifications
+  mon.enableDailyReport = true;
+  mon.enableAlarmSms = true;
+  mon.enableServerUpload = true;
+
+  // Relay control
+  mon.relayTargetClient[0] = '\0';
+  mon.relayMask = 0;
+  mon.relayTrigger = RELAY_TRIGGER_ANY;
+  mon.relayMode = RELAY_MODE_MOMENTARY;
+  for (uint8_t r = 0; r < 4; ++r) {
+    mon.relayMomentarySeconds[r] = 0;
+  }
+
+  // Digital sensor
+  mon.digitalTrigger[0] = '\0';
+  strlcpy(mon.digitalSwitchMode, "NO", sizeof(mon.digitalSwitchMode));
+
+  // Current loop
+  mon.currentLoopType = CURRENT_LOOP_PRESSURE;
+  mon.sensorMountHeight = 0.0f;
+
+  // Sensor range
+  mon.sensorRangeMin = 0.0f;
+  mon.sensorRangeMax = 5.0f;
+  strlcpy(mon.sensorRangeUnit, "PSI", sizeof(mon.sensorRangeUnit));
+  mon.analogVoltageMin = 0.0f;
+  mon.analogVoltageMax = 10.0f;
+
+  // Unload tracking
+  mon.trackUnloads = false;
+  mon.unloadEmptyHeight = UNLOAD_DEFAULT_EMPTY_HEIGHT;
+  mon.unloadDropThreshold = 0.0f;
+  mon.unloadDropPercent = UNLOAD_DEFAULT_DROP_PERCENT;
+  mon.unloadAlarmSms = false;
+  mon.unloadAlarmEmail = true;
+}
+
+/**
+ * Parse monitor configuration fields from a JSON object into a MonitorConfig.
+ * Uses "update if present" semantics: fields absent from JSON are left unchanged.
+ * This allows the same function to serve both:
+ *   - loadConfigFromFlash: MonitorConfig is pre-initialized via initMonitorDefaults()
+ *   - applyConfigUpdate:   MonitorConfig already holds live values
+ *
+ * Supports both old and new JSON field name variants for backwards compatibility:
+ *   sensorInterface / sensor,  pulsePin / rpmPin,  pulsesPerUnit / pulsesPerRev,
+ *   pulseSampleDurationMs / rpmSampleDurationMs,  pulseAccumulatedMode / rpmAccumulatedMode
+ */
+static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t index) {
+  // ---- Identity ----
+  const char *idStr = t["id"].as<const char *>();
+  if (idStr) mon.id = idStr[0];
+
+  const char *nameStr = t["name"].as<const char *>();
+  if (nameStr) strlcpy(mon.name, nameStr, sizeof(mon.name));
+
+  const char *contentsStr = t["contents"].as<const char *>();
+  if (contentsStr) strlcpy(mon.contents, contentsStr, sizeof(mon.contents));
+
+  if (t["number"].is<uint8_t>()) mon.monitorNumber = t["number"].as<uint8_t>();
+
+  // Object type (what is being monitored)
+  const char *objType = t["objectType"].as<const char *>();
+  if (objType) {
+    if (strcmp(objType, "engine") == 0)      mon.objectType = OBJECT_ENGINE;
+    else if (strcmp(objType, "pump") == 0)   mon.objectType = OBJECT_PUMP;
+    else if (strcmp(objType, "gas") == 0)    mon.objectType = OBJECT_GAS;
+    else if (strcmp(objType, "flow") == 0)   mon.objectType = OBJECT_FLOW;
+    else                                     mon.objectType = OBJECT_TANK;
+  }
+
+  // ---- Sensor interface ----
+  // Support both "sensorInterface" (preferred) and legacy "sensor" field names
+  const char *sensor = t["sensorInterface"].as<const char *>();
+  if (!sensor) sensor = t["sensor"].as<const char *>();
+  if (sensor) {
+    if (strcmp(sensor, "digital") == 0) {
+      mon.sensorInterface = SENSOR_DIGITAL;
+    } else if (strcmp(sensor, "current") == 0 || strcmp(sensor, "currentLoop") == 0) {
+      mon.sensorInterface = SENSOR_CURRENT_LOOP;
+    } else if (strcmp(sensor, "rpm") == 0 || strcmp(sensor, "pulse") == 0) {
+      mon.sensorInterface = SENSOR_PULSE;
+    } else {
+      mon.sensorInterface = SENSOR_ANALOG;
+    }
+  }
+
+  // ---- Pin assignments ----
+  if (t["primaryPin"].is<int>()) {
+    mon.primaryPin = t["primaryPin"].as<int>();
+  } else if (mon.sensorInterface == SENSOR_DIGITAL && mon.primaryPin <= 0) {
+    // Default digital sensor to pin 2 when not explicitly configured
+    mon.primaryPin = 2;
+  }
+  if (t["secondaryPin"].is<int>()) mon.secondaryPin = t["secondaryPin"].as<int>();
+  if (t["loopChannel"].is<int>()) mon.currentLoopChannel = t["loopChannel"].as<int>();
+
+  // Support both "pulsePin" (preferred) and legacy "rpmPin"
+  if (t["pulsePin"].is<int>()) {
+    mon.pulsePin = t["pulsePin"].as<int>();
+  } else if (t["rpmPin"].is<int>()) {
+    mon.pulsePin = t["rpmPin"].as<int>();
+  }
+
+  // Support both "pulsesPerUnit" (preferred) and legacy "pulsesPerRev"
+  if (t["pulsesPerUnit"].is<uint8_t>()) {
+    mon.pulsesPerUnit = max((uint8_t)1, t["pulsesPerUnit"].as<uint8_t>());
+  } else if (t["pulsesPerRev"].is<uint8_t>()) {
+    mon.pulsesPerUnit = max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>());
+  }
+
+  // ---- Hall effect config ----
+  const char *hallType = t["hallEffectType"].as<const char *>();
+  if (hallType) {
+    if (strcmp(hallType, "bipolar") == 0)        mon.hallEffectType = HALL_EFFECT_BIPOLAR;
+    else if (strcmp(hallType, "omnipolar") == 0)  mon.hallEffectType = HALL_EFFECT_OMNIPOLAR;
+    else if (strcmp(hallType, "analog") == 0)     mon.hallEffectType = HALL_EFFECT_ANALOG;
+    else                                          mon.hallEffectType = HALL_EFFECT_UNIPOLAR;
+  }
+
+  const char *hallDetect = t["hallEffectDetection"].as<const char *>();
+  if (hallDetect) {
+    if (strcmp(hallDetect, "time") == 0) mon.hallEffectDetection = HALL_DETECT_TIME_BASED;
+    else                                 mon.hallEffectDetection = HALL_DETECT_PULSE;
+  }
+
+  // ---- Pulse sampling ----
+  // Support both "pulseSampleDurationMs" (preferred) and legacy "rpmSampleDurationMs"
+  if (t["pulseSampleDurationMs"].is<uint32_t>()) {
+    mon.pulseSampleDurationMs = t["pulseSampleDurationMs"].as<uint32_t>();
+  } else if (t["rpmSampleDurationMs"].is<uint32_t>()) {
+    mon.pulseSampleDurationMs = t["rpmSampleDurationMs"].as<uint32_t>();
+  }
+
+  // Support both "pulseAccumulatedMode" (preferred) and legacy "rpmAccumulatedMode"
+  if (t["pulseAccumulatedMode"].is<bool>()) {
+    mon.pulseAccumulatedMode = t["pulseAccumulatedMode"].as<bool>();
+  } else if (t["rpmAccumulatedMode"].is<bool>()) {
+    mon.pulseAccumulatedMode = t["rpmAccumulatedMode"].as<bool>();
+  }
+
+  if (t["expectedPulseRate"].is<float>()) mon.expectedPulseRate = t["expectedPulseRate"].as<float>();
+
+  // ---- Alarm thresholds ----
+  if (t["highAlarm"].is<float>()) mon.highAlarmThreshold = t["highAlarm"].as<float>();
+  if (t["lowAlarm"].is<float>()) mon.lowAlarmThreshold = t["lowAlarm"].as<float>();
+  if (t["hysteresis"].is<float>()) mon.hysteresisValue = t["hysteresis"].as<float>();
+
+  // ---- Notification flags ----
+  if (t["daily"].is<bool>()) mon.enableDailyReport = t["daily"].as<bool>();
+  if (t["alarmSms"].is<bool>()) mon.enableAlarmSms = t["alarmSms"].as<bool>();
+  if (t["upload"].is<bool>()) mon.enableServerUpload = t["upload"].as<bool>();
+
+  // ---- Relay control ----
+  const char *relayTarget = t["relayTargetClient"].as<const char *>();
+  if (relayTarget) strlcpy(mon.relayTargetClient, relayTarget, sizeof(mon.relayTargetClient));
+
+  if (t["relayMask"].is<uint8_t>()) mon.relayMask = t["relayMask"].as<uint8_t>();
+
+  const char *relayTriggerStr = t["relayTrigger"].as<const char *>();
+  if (relayTriggerStr) {
+    if (strcmp(relayTriggerStr, "high") == 0)       mon.relayTrigger = RELAY_TRIGGER_HIGH;
+    else if (strcmp(relayTriggerStr, "low") == 0)    mon.relayTrigger = RELAY_TRIGGER_LOW;
+    else                                             mon.relayTrigger = RELAY_TRIGGER_ANY;
+  }
+
+  const char *relayModeStr = t["relayMode"].as<const char *>();
+  if (relayModeStr) {
+    if (strcmp(relayModeStr, "until_clear") == 0)       mon.relayMode = RELAY_MODE_UNTIL_CLEAR;
+    else if (strcmp(relayModeStr, "manual_reset") == 0)  mon.relayMode = RELAY_MODE_MANUAL_RESET;
+    else                                                 mon.relayMode = RELAY_MODE_MOMENTARY;
+  }
+
+  if (!t["relayMomentaryDurations"].isNull()) {
+    JsonArrayConst durations = t["relayMomentaryDurations"].as<JsonArrayConst>();
+    for (uint8_t r = 0; r < 4 && r < durations.size(); r++) {
+      uint16_t dur = durations[r].as<uint16_t>();
+      mon.relayMomentarySeconds[r] = (dur > 86400) ? (uint16_t)86400 : dur;
+    }
+  }
+
+  // ---- Digital sensor ----
+  const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
+  if (digitalTriggerStr) strlcpy(mon.digitalTrigger, digitalTriggerStr, sizeof(mon.digitalTrigger));
+
+  const char *digitalSwitchModeStr = t["digitalSwitchMode"].as<const char *>();
+  if (digitalSwitchModeStr) {
+    if (strcmp(digitalSwitchModeStr, "NC") == 0) {
+      strlcpy(mon.digitalSwitchMode, "NC", sizeof(mon.digitalSwitchMode));
+    } else {
+      strlcpy(mon.digitalSwitchMode, "NO", sizeof(mon.digitalSwitchMode));
+    }
+  }
+
+  // ---- Current loop / sensor calibration ----
+  const char *currentLoopTypeStr = t["currentLoopType"].as<const char *>();
+  if (currentLoopTypeStr) {
+    if (strcmp(currentLoopTypeStr, "ultrasonic") == 0)  mon.currentLoopType = CURRENT_LOOP_ULTRASONIC;
+    else                                                mon.currentLoopType = CURRENT_LOOP_PRESSURE;
+  }
+
+  if (t["sensorMountHeight"].is<float>()) {
+    mon.sensorMountHeight = fmaxf(0.0f, t["sensorMountHeight"].as<float>());
+  }
+
+  // ---- Sensor range ----
+  if (t["sensorRangeMin"].is<float>()) mon.sensorRangeMin = t["sensorRangeMin"].as<float>();
+  if (t["sensorRangeMax"].is<float>()) mon.sensorRangeMax = t["sensorRangeMax"].as<float>();
+
+  const char *rangeUnitStr = t["sensorRangeUnit"].as<const char *>();
+  if (rangeUnitStr) strlcpy(mon.sensorRangeUnit, rangeUnitStr, sizeof(mon.sensorRangeUnit));
+
+  // ---- Analog voltage range ----
+  if (t["analogVoltageMin"].is<float>()) mon.analogVoltageMin = t["analogVoltageMin"].as<float>();
+  if (t["analogVoltageMax"].is<float>()) mon.analogVoltageMax = t["analogVoltageMax"].as<float>();
+
+  // ---- Unload tracking ----
+  if (t["trackUnloads"].is<bool>()) mon.trackUnloads = t["trackUnloads"].as<bool>();
+  if (t["unloadEmptyHeight"].is<float>()) {
+    mon.unloadEmptyHeight = fmaxf(0.0f, t["unloadEmptyHeight"].as<float>());
+  }
+  if (t["unloadDropThreshold"].is<float>()) {
+    mon.unloadDropThreshold = fmaxf(0.0f, t["unloadDropThreshold"].as<float>());
+  }
+  if (t["unloadDropPercent"].is<float>()) {
+    float pct = t["unloadDropPercent"].as<float>();
+    mon.unloadDropPercent = constrain(pct, 10.0f, 95.0f);
+  }
+  if (t["unloadAlarmSms"].is<bool>()) mon.unloadAlarmSms = t["unloadAlarmSms"].as<bool>();
+  if (t["unloadAlarmEmail"].is<bool>()) mon.unloadAlarmEmail = t["unloadAlarmEmail"].as<bool>();
+}
+
 static bool loadConfigFromFlash(ClientConfig &cfg) {
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -2266,151 +2547,9 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
   cfg.monitorCount = monitorsArray ? min<uint8_t>(monitorsArray.size(), MAX_TANKS) : 0;
 
   for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
-    JsonObject t = monitorsArray[i];
-    cfg.monitors[i].id = t["id"].as<const char *>() ? t["id"].as<const char *>()[0] : ('A' + i);
-    strlcpy(cfg.monitors[i].name, t["name"].as<const char *>() ? t["name"].as<const char *>() : "Tank", sizeof(cfg.monitors[i].name));
-    strlcpy(cfg.monitors[i].contents, t["contents"].as<const char *>() ? t["contents"].as<const char *>() : "", sizeof(cfg.monitors[i].contents));
-    cfg.monitors[i].monitorNumber = t["number"].is<uint8_t>() ? t["number"].as<uint8_t>() : (i + 1);
-    
-    // Load object type (what is being monitored)
-    const char *objType = t["objectType"].as<const char *>();
-    if (objType && strcmp(objType, "engine") == 0) {
-      cfg.monitors[i].objectType = OBJECT_ENGINE;
-    } else if (objType && strcmp(objType, "pump") == 0) {
-      cfg.monitors[i].objectType = OBJECT_PUMP;
-    } else if (objType && strcmp(objType, "gas") == 0) {
-      cfg.monitors[i].objectType = OBJECT_GAS;
-    } else if (objType && strcmp(objType, "flow") == 0) {
-      cfg.monitors[i].objectType = OBJECT_FLOW;
-    } else {
-      cfg.monitors[i].objectType = OBJECT_TANK; // Default
-    }
-    
-    // Load sensor interface (how measurement is taken)
-    // Support both old "sensor" and new "sensorInterface" field names
-    const char *sensor = t["sensorInterface"].as<const char *>();
-    if (!sensor) sensor = t["sensor"].as<const char *>();
-    if (sensor && strcmp(sensor, "digital") == 0) {
-      cfg.monitors[i].sensorInterface = SENSOR_DIGITAL;
-    } else if (sensor && (strcmp(sensor, "current") == 0 || strcmp(sensor, "currentLoop") == 0)) {
-      cfg.monitors[i].sensorInterface = SENSOR_CURRENT_LOOP;
-    } else if (sensor && (strcmp(sensor, "rpm") == 0 || strcmp(sensor, "pulse") == 0)) {
-      cfg.monitors[i].sensorInterface = SENSOR_PULSE;
-    } else {
-      cfg.monitors[i].sensorInterface = SENSOR_ANALOG;
-    }
-    cfg.monitors[i].primaryPin = t["primaryPin"].is<int>() ? t["primaryPin"].as<int>() : (cfg.monitors[i].sensorInterface == SENSOR_DIGITAL ? 2 : 0);
-    cfg.monitors[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : -1;
-    cfg.monitors[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : -1;
-    // Support both old "rpmPin" and new "pulsePin" field names
-    cfg.monitors[i].pulsePin = t["pulsePin"].is<int>() ? t["pulsePin"].as<int>() : 
-                               (t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : -1);
-    // Support both old "pulsesPerRev" and new "pulsesPerUnit" field names
-    cfg.monitors[i].pulsesPerUnit = t["pulsesPerUnit"].is<uint8_t>() ? max((uint8_t)1, t["pulsesPerUnit"].as<uint8_t>()) :
-                                    (t["pulsesPerRev"].is<uint8_t>() ? max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>()) : 1);
-    // Load hall effect sensor type
-    const char *hallType = t["hallEffectType"].as<const char *>();
-    if (hallType && strcmp(hallType, "bipolar") == 0) {
-      cfg.monitors[i].hallEffectType = HALL_EFFECT_BIPOLAR;
-    } else if (hallType && strcmp(hallType, "omnipolar") == 0) {
-      cfg.monitors[i].hallEffectType = HALL_EFFECT_OMNIPOLAR;
-    } else if (hallType && strcmp(hallType, "analog") == 0) {
-      cfg.monitors[i].hallEffectType = HALL_EFFECT_ANALOG;
-    } else if (hallType && strcmp(hallType, "unipolar") == 0) {
-      cfg.monitors[i].hallEffectType = HALL_EFFECT_UNIPOLAR;
-    } else {
-      cfg.monitors[i].hallEffectType = HALL_EFFECT_UNIPOLAR; // Default
-    }
-    // Load hall effect detection method
-    const char *hallDetect = t["hallEffectDetection"].as<const char *>();
-    if (hallDetect && strcmp(hallDetect, "time") == 0) {
-      cfg.monitors[i].hallEffectDetection = HALL_DETECT_TIME_BASED;
-    } else if (hallDetect && strcmp(hallDetect, "pulse") == 0) {
-      cfg.monitors[i].hallEffectDetection = HALL_DETECT_PULSE;
-    } else {
-      cfg.monitors[i].hallEffectDetection = HALL_DETECT_PULSE; // Default
-    }
-    // Load RPM sampling configuration
-    cfg.monitors[i].pulseSampleDurationMs = t["pulseSampleDurationMs"].is<uint32_t>() ? 
-        t["pulseSampleDurationMs"].as<uint32_t>() : 
-        (t["rpmSampleDurationMs"].is<uint32_t>() ? t["rpmSampleDurationMs"].as<uint32_t>() : RPM_SAMPLE_DURATION_MS);
-    cfg.monitors[i].pulseAccumulatedMode = t["pulseAccumulatedMode"].is<bool>() ? 
-        t["pulseAccumulatedMode"].as<bool>() : 
-        (t["rpmAccumulatedMode"].is<bool>() ? t["rpmAccumulatedMode"].as<bool>() : false);
-    // Expected pulse rate for baseline comparison (by object type)
-    cfg.monitors[i].expectedPulseRate = t["expectedPulseRate"].is<float>() ? 
-        t["expectedPulseRate"].as<float>() : 0.0f;
-    cfg.monitors[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : 100.0f;
-    cfg.monitors[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : 20.0f;
-    cfg.monitors[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : 2.0f;
-    cfg.monitors[i].enableDailyReport = t["daily"].is<bool>() ? t["daily"].as<bool>() : true;
-    cfg.monitors[i].enableAlarmSms = t["alarmSms"].is<bool>() ? t["alarmSms"].as<bool>() : true;
-    cfg.monitors[i].enableServerUpload = t["upload"].is<bool>() ? t["upload"].as<bool>() : true;
-    // Load relay control settings
-    const char *relayTarget = t["relayTargetClient"].as<const char *>();
-    strlcpy(cfg.monitors[i].relayTargetClient, relayTarget ? relayTarget : "", sizeof(cfg.monitors[i].relayTargetClient));
-    cfg.monitors[i].relayMask = t["relayMask"].is<uint8_t>() ? t["relayMask"].as<uint8_t>() : 0;
-    // Load relay trigger condition (defaults to 'any' for backwards compatibility)
-    const char *relayTriggerStr = t["relayTrigger"].as<const char *>();
-    if (relayTriggerStr && strcmp(relayTriggerStr, "high") == 0) {
-      cfg.monitors[i].relayTrigger = RELAY_TRIGGER_HIGH;
-    } else if (relayTriggerStr && strcmp(relayTriggerStr, "low") == 0) {
-      cfg.monitors[i].relayTrigger = RELAY_TRIGGER_LOW;
-    } else {
-      cfg.monitors[i].relayTrigger = RELAY_TRIGGER_ANY;
-    }
-    // Load relay mode (defaults to momentary for backwards compatibility)
-    const char *relayModeStr = t["relayMode"].as<const char *>();
-    if (relayModeStr && strcmp(relayModeStr, "until_clear") == 0) {
-      cfg.monitors[i].relayMode = RELAY_MODE_UNTIL_CLEAR;
-    } else if (relayModeStr && strcmp(relayModeStr, "manual_reset") == 0) {
-      cfg.monitors[i].relayMode = RELAY_MODE_MANUAL_RESET;
-    } else {
-      cfg.monitors[i].relayMode = RELAY_MODE_MOMENTARY;
-    }
-    // Load per-relay momentary durations (0 = use default 30 min)
-    JsonArrayConst durations = t["relayMomentaryDurations"].as<JsonArrayConst>();
-    for (uint8_t r = 0; r < 4; ++r) {
-      if (durations && r < durations.size()) {
-        cfg.monitors[i].relayMomentarySeconds[r] = durations[r].as<uint16_t>();
-      } else {
-        cfg.monitors[i].relayMomentarySeconds[r] = 0; // Default
-      }
-    }
-    // Load digital sensor trigger state (for float switches)
-    const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
-    strlcpy(cfg.monitors[i].digitalTrigger, digitalTriggerStr ? digitalTriggerStr : "", sizeof(cfg.monitors[i].digitalTrigger));
-    // Load digital switch mode (NO = normally-open, NC = normally-closed)
-    const char *digitalSwitchModeStr = t["digitalSwitchMode"].as<const char *>();
-    if (digitalSwitchModeStr && strcmp(digitalSwitchModeStr, "NC") == 0) {
-      strlcpy(cfg.monitors[i].digitalSwitchMode, "NC", sizeof(cfg.monitors[i].digitalSwitchMode));
-    } else {
-      strlcpy(cfg.monitors[i].digitalSwitchMode, "NO", sizeof(cfg.monitors[i].digitalSwitchMode)); // Default: normally-open
-    }
-    // Load 4-20mA current loop sensor type (pressure or ultrasonic)
-    const char *currentLoopTypeStr = t["currentLoopType"].as<const char *>();
-    if (currentLoopTypeStr && strcmp(currentLoopTypeStr, "ultrasonic") == 0) {
-      cfg.monitors[i].currentLoopType = CURRENT_LOOP_ULTRASONIC;
-    } else {
-      cfg.monitors[i].currentLoopType = CURRENT_LOOP_PRESSURE; // Default: pressure sensor
-    }
-    // Load sensor mount height (for calibration) - validate non-negative
-    cfg.monitors[i].sensorMountHeight = t["sensorMountHeight"].is<float>() ? fmaxf(0.0f, t["sensorMountHeight"].as<float>()) : 0.0f;
-    // Load sensor native range settings
-    cfg.monitors[i].sensorRangeMin = t["sensorRangeMin"].is<float>() ? t["sensorRangeMin"].as<float>() : 0.0f;
-    cfg.monitors[i].sensorRangeMax = t["sensorRangeMax"].is<float>() ? t["sensorRangeMax"].as<float>() : 5.0f;
-    const char *rangeUnitStr = t["sensorRangeUnit"].as<const char *>();
-    strlcpy(cfg.monitors[i].sensorRangeUnit, rangeUnitStr ? rangeUnitStr : "PSI", sizeof(cfg.monitors[i].sensorRangeUnit));
-    // Load analog voltage range settings (for 0-10V, 1-5V, etc. sensors)
-    cfg.monitors[i].analogVoltageMin = t["analogVoltageMin"].is<float>() ? t["analogVoltageMin"].as<float>() : 0.0f;
-    cfg.monitors[i].analogVoltageMax = t["analogVoltageMax"].is<float>() ? t["analogVoltageMax"].as<float>() : 10.0f;
-    // Load tank unload tracking settings
-    cfg.monitors[i].trackUnloads = t["trackUnloads"].is<bool>() ? t["trackUnloads"].as<bool>() : false;
-    cfg.monitors[i].unloadEmptyHeight = t["unloadEmptyHeight"].is<float>() ? t["unloadEmptyHeight"].as<float>() : UNLOAD_DEFAULT_EMPTY_HEIGHT;
-    cfg.monitors[i].unloadDropThreshold = t["unloadDropThreshold"].is<float>() ? t["unloadDropThreshold"].as<float>() : 0.0f;
-    cfg.monitors[i].unloadDropPercent = t["unloadDropPercent"].is<float>() ? t["unloadDropPercent"].as<float>() : UNLOAD_DEFAULT_DROP_PERCENT;
-    cfg.monitors[i].unloadAlarmSms = t["unloadAlarmSms"].is<bool>() ? t["unloadAlarmSms"].as<bool>() : false;
-    cfg.monitors[i].unloadAlarmEmail = t["unloadAlarmEmail"].is<bool>() ? t["unloadAlarmEmail"].as<bool>() : true;
+    JsonObjectConst t = monitorsArray[i];
+    initMonitorDefaults(cfg.monitors[i], i);
+    parseMonitorFromJson(cfg.monitors[i], t, i);
   }
 
   return true;
@@ -3419,186 +3558,19 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     gConfig.monitorCount = min<uint8_t>(tanks.size(), MAX_TANKS);
     for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
       JsonObjectConst t = tanks[i];
-      gConfig.monitors[i].id = t["id"].as<const char *>() ? t["id"].as<const char *>()[0] : ('A' + i);
-      strlcpy(gConfig.monitors[i].name, t["name"].as<const char *>() ? t["name"].as<const char *>() : "Tank", sizeof(gConfig.monitors[i].name));
-      strlcpy(gConfig.monitors[i].contents, t["contents"].as<const char *>() ? t["contents"].as<const char *>() : "", sizeof(gConfig.monitors[i].contents));
-      gConfig.monitors[i].monitorNumber = t["number"].is<uint8_t>() ? t["number"].as<uint8_t>() : (i + 1);
-      const char *sensor = t["sensor"].as<const char *>();
-      if (sensor && strcmp(sensor, "digital") == 0) {
-        gConfig.monitors[i].sensorInterface = SENSOR_DIGITAL;
-      } else if (sensor && strcmp(sensor, "current") == 0) {
-        gConfig.monitors[i].sensorInterface = SENSOR_CURRENT_LOOP;
-      } else if (sensor && strcmp(sensor, "rpm") == 0) {
-        gConfig.monitors[i].sensorInterface = SENSOR_PULSE;
-      } else {
-        gConfig.monitors[i].sensorInterface = SENSOR_ANALOG;
-      }
-      gConfig.monitors[i].primaryPin = t["primaryPin"].is<int>() ? t["primaryPin"].as<int>() : gConfig.monitors[i].primaryPin;
-      gConfig.monitors[i].secondaryPin = t["secondaryPin"].is<int>() ? t["secondaryPin"].as<int>() : gConfig.monitors[i].secondaryPin;
-      gConfig.monitors[i].currentLoopChannel = t["loopChannel"].is<int>() ? t["loopChannel"].as<int>() : gConfig.monitors[i].currentLoopChannel;
-      gConfig.monitors[i].pulsePin = t["rpmPin"].is<int>() ? t["rpmPin"].as<int>() : gConfig.monitors[i].pulsePin;
-      if (!t["pulsesPerRev"].isNull()) {
-        gConfig.monitors[i].pulsesPerUnit = max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>());
-      }
-      // Update hall effect sensor type if provided
-      if (!t["hallEffectType"].isNull()) {
-        const char *hallType = t["hallEffectType"].as<const char *>();
-        if (hallType && strcmp(hallType, "bipolar") == 0) {
-          gConfig.monitors[i].hallEffectType = HALL_EFFECT_BIPOLAR;
-        } else if (hallType && strcmp(hallType, "omnipolar") == 0) {
-          gConfig.monitors[i].hallEffectType = HALL_EFFECT_OMNIPOLAR;
-        } else if (hallType && strcmp(hallType, "analog") == 0) {
-          gConfig.monitors[i].hallEffectType = HALL_EFFECT_ANALOG;
-        } else if (hallType && strcmp(hallType, "unipolar") == 0) {
-          gConfig.monitors[i].hallEffectType = HALL_EFFECT_UNIPOLAR;
-        }
-      }
-      // Update hall effect detection method if provided
-      if (!t["hallEffectDetection"].isNull()) {
-        const char *hallDetect = t["hallEffectDetection"].as<const char *>();
-        if (hallDetect && strcmp(hallDetect, "time") == 0) {
-          gConfig.monitors[i].hallEffectDetection = HALL_DETECT_TIME_BASED;
-        } else if (hallDetect && strcmp(hallDetect, "pulse") == 0) {
-          gConfig.monitors[i].hallEffectDetection = HALL_DETECT_PULSE;
-        }
-      }
-      // Update RPM sampling configuration if provided
-      if (!t["pulseSampleDurationMs"].isNull()) {
-        gConfig.monitors[i].pulseSampleDurationMs = t["pulseSampleDurationMs"].as<uint32_t>();
-      }
-      if (!t["pulseAccumulatedMode"].isNull()) {
-        gConfig.monitors[i].pulseAccumulatedMode = t["pulseAccumulatedMode"].as<bool>();
-        // Reset accumulated state when mode changes (use atomic access)
+      parseMonitorFromJson(gConfig.monitors[i], t, i);
+
+      // Side effect: reset accumulated state when pulse mode config changes
+      if (!t["pulseAccumulatedMode"].isNull() || !t["rpmAccumulatedMode"].isNull()) {
         atomicResetPulses(i);
         gRpmAccumulatedStartMillis[i] = millis();
         gRpmAccumulatedInitialized[i] = false;
       }
-      // Expected pulse rate for baseline (by object type: RPM for engines, GPM for flow, etc.)
-      if (!t["expectedPulseRate"].isNull()) {
-        gConfig.monitors[i].expectedPulseRate = t["expectedPulseRate"].as<float>();
-      }
-      gConfig.monitors[i].highAlarmThreshold = t["highAlarm"].is<float>() ? t["highAlarm"].as<float>() : gConfig.monitors[i].highAlarmThreshold;
-      gConfig.monitors[i].lowAlarmThreshold = t["lowAlarm"].is<float>() ? t["lowAlarm"].as<float>() : gConfig.monitors[i].lowAlarmThreshold;
-      gConfig.monitors[i].hysteresisValue = t["hysteresis"].is<float>() ? t["hysteresis"].as<float>() : gConfig.monitors[i].hysteresisValue;
-      if (!t["daily"].isNull()) {
-        gConfig.monitors[i].enableDailyReport = t["daily"].as<bool>();
-      }
-      if (!t["alarmSms"].isNull()) {
-        gConfig.monitors[i].enableAlarmSms = t["alarmSms"].as<bool>();
-      }
-      if (!t["upload"].isNull()) {
-        gConfig.monitors[i].enableServerUpload = t["upload"].as<bool>();
-      }
-      if (!t["relayTargetClient"].isNull()) {
-        const char *relayTargetStr = t["relayTargetClient"].as<const char *>();
-        strlcpy(gConfig.monitors[i].relayTargetClient, 
-                relayTargetStr ? relayTargetStr : "", 
-                sizeof(gConfig.monitors[i].relayTargetClient));
-      }
-      if (!t["relayMask"].isNull()) {
-        gConfig.monitors[i].relayMask = t["relayMask"].as<uint8_t>();
-      }
-      if (!t["relayTrigger"].isNull()) {
-        const char *triggerStr = t["relayTrigger"].as<const char *>();
-        if (triggerStr && strcmp(triggerStr, "high") == 0) {
-          gConfig.monitors[i].relayTrigger = RELAY_TRIGGER_HIGH;
-        } else if (triggerStr && strcmp(triggerStr, "low") == 0) {
-          gConfig.monitors[i].relayTrigger = RELAY_TRIGGER_LOW;
-        } else {
-          gConfig.monitors[i].relayTrigger = RELAY_TRIGGER_ANY;
-        }
-      }
-      if (!t["relayMode"].isNull()) {
-        const char *modeStr = t["relayMode"].as<const char *>();
-        if (modeStr && strcmp(modeStr, "until_clear") == 0) {
-          gConfig.monitors[i].relayMode = RELAY_MODE_UNTIL_CLEAR;
-        } else if (modeStr && strcmp(modeStr, "manual_reset") == 0) {
-          gConfig.monitors[i].relayMode = RELAY_MODE_MANUAL_RESET;
-        } else {
-          gConfig.monitors[i].relayMode = RELAY_MODE_MOMENTARY;
-        }
-      }
-      // Handle per-relay momentary durations (in seconds)
-      if (!t["relayMomentaryDurations"].isNull()) {
-        JsonArrayConst durations = t["relayMomentaryDurations"].as<JsonArrayConst>();
-        for (size_t r = 0; r < 4 && r < durations.size(); r++) {
-          uint16_t dur = durations[r].as<uint16_t>();
-          // Enforce minimum of 1 second, max of 86400 (24 hours)
-          gConfig.monitors[i].relayMomentarySeconds[r] = constrain(dur, 1, 86400);
-        }
-      }
-      // Handle digital sensor trigger state (for float switches)
-      if (!t["digitalTrigger"].isNull()) {
-        const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
-        strlcpy(gConfig.monitors[i].digitalTrigger,
-                digitalTriggerStr ? digitalTriggerStr : "",
-                sizeof(gConfig.monitors[i].digitalTrigger));
-      }
-      // Handle digital switch mode (NO/NC) for float switches
-      if (!t["digitalSwitchMode"].isNull()) {
-        const char *digitalSwitchModeStr = t["digitalSwitchMode"].as<const char *>();
-        if (digitalSwitchModeStr && strcmp(digitalSwitchModeStr, "NC") == 0) {
-          strlcpy(gConfig.monitors[i].digitalSwitchMode, "NC", sizeof(gConfig.monitors[i].digitalSwitchMode));
-        } else {
-          strlcpy(gConfig.monitors[i].digitalSwitchMode, "NO", sizeof(gConfig.monitors[i].digitalSwitchMode));
-        }
-      }
-      // Handle 4-20mA current loop sensor type (pressure or ultrasonic)
-      if (!t["currentLoopType"].isNull()) {
-        const char *currentLoopTypeStr = t["currentLoopType"].as<const char *>();
-        if (currentLoopTypeStr && strcmp(currentLoopTypeStr, "ultrasonic") == 0) {
-          gConfig.monitors[i].currentLoopType = CURRENT_LOOP_ULTRASONIC;
-        } else {
-          gConfig.monitors[i].currentLoopType = CURRENT_LOOP_PRESSURE;
-        }
-      }
-      // Handle sensor mount height (for calibration) - validate non-negative
-      if (!t["sensorMountHeight"].isNull()) {
-        gConfig.monitors[i].sensorMountHeight = fmaxf(0.0f, t["sensorMountHeight"].as<float>());
-      }
-      // Handle sensor native range settings
-      if (!t["sensorRangeMin"].isNull()) {
-        gConfig.monitors[i].sensorRangeMin = t["sensorRangeMin"].as<float>();
-      }
-      if (!t["sensorRangeMax"].isNull()) {
-        gConfig.monitors[i].sensorRangeMax = t["sensorRangeMax"].as<float>();
-      }
-      if (!t["sensorRangeUnit"].isNull()) {
-        const char *unitStr = t["sensorRangeUnit"].as<const char *>();
-        strlcpy(gConfig.monitors[i].sensorRangeUnit, unitStr ? unitStr : "PSI", sizeof(gConfig.monitors[i].sensorRangeUnit));
-      }
-      // Handle analog voltage range settings
-      if (!t["analogVoltageMin"].isNull()) {
-        gConfig.monitors[i].analogVoltageMin = t["analogVoltageMin"].as<float>();
-      }
-      if (!t["analogVoltageMax"].isNull()) {
-        gConfig.monitors[i].analogVoltageMax = t["analogVoltageMax"].as<float>();
-      }
-      // Handle tank unload tracking settings
-      if (!t["trackUnloads"].isNull()) {
-        gConfig.monitors[i].trackUnloads = t["trackUnloads"].as<bool>();
-        // Reset unload tracking state when config changes
-        if (gConfig.monitors[i].trackUnloads) {
-          gMonitorState[i].unloadTracking = false;
-          gMonitorState[i].unloadPeakInches = 0.0f;
-          gMonitorState[i].unloadPeakEpoch = 0.0;
-        }
-      }
-      if (!t["unloadEmptyHeight"].isNull()) {
-        gConfig.monitors[i].unloadEmptyHeight = fmaxf(0.0f, t["unloadEmptyHeight"].as<float>());
-      }
-      if (!t["unloadDropThreshold"].isNull()) {
-        gConfig.monitors[i].unloadDropThreshold = fmaxf(0.0f, t["unloadDropThreshold"].as<float>());
-      }
-      if (!t["unloadDropPercent"].isNull()) {
-        float pct = t["unloadDropPercent"].as<float>();
-        gConfig.monitors[i].unloadDropPercent = constrain(pct, 10.0f, 95.0f);  // Clamp to 10-95%
-      }
-      if (!t["unloadAlarmSms"].isNull()) {
-        gConfig.monitors[i].unloadAlarmSms = t["unloadAlarmSms"].as<bool>();
-      }
-      if (!t["unloadAlarmEmail"].isNull()) {
-        gConfig.monitors[i].unloadAlarmEmail = t["unloadAlarmEmail"].as<bool>();
+      // Side effect: reset unload tracking when trackUnloads is enabled
+      if (!t["trackUnloads"].isNull() && gConfig.monitors[i].trackUnloads) {
+        gMonitorState[i].unloadTracking = false;
+        gMonitorState[i].unloadPeakInches = 0.0f;
+        gMonitorState[i].unloadPeakEpoch = 0.0;
       }
     }
   }
@@ -3843,6 +3815,170 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   return true;
 }
 
+// ============================================================================
+// Sensor Type Helper Functions (extracted from readTankSensor for clarity)
+// ============================================================================
+
+/**
+ * Read a digital (float switch) sensor.
+ * The digitalSwitchMode field controls how the hardware is interpreted:
+ * - "NO" (normally-open): Switch is open by default, closes when fluid is present
+ *   - With INPUT_PULLUP: HIGH = switch open (no fluid), LOW = switch closed (fluid present)
+ *   - activated when pin is LOW
+ * - "NC" (normally-closed): Switch is closed by default, opens when fluid is present
+ *   - With INPUT_PULLUP: LOW = switch closed (no fluid), HIGH = switch open (fluid present)
+ *   - activated when pin is HIGH
+ * Returns DIGITAL_SENSOR_ACTIVATED_VALUE or DIGITAL_SENSOR_NOT_ACTIVATED_VALUE.
+ */
+static float readDigitalSensor(const MonitorConfig &cfg, uint8_t idx) {
+  int pin = (cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx);
+  pinMode(pin, INPUT_PULLUP);
+  int level = digitalRead(pin);
+
+  bool isNormallyClosed = (strcmp(cfg.digitalSwitchMode, "NC") == 0);
+
+  // For NO switches: LOW = activated (switch closed, fluid present)
+  // For NC switches: HIGH = activated (switch opened, fluid present)
+  bool isActivated;
+  if (isNormallyClosed) {
+    isActivated = (level == HIGH); // NC switch opens (goes HIGH) when activated
+  } else {
+    isActivated = (level == LOW);  // NO switch closes (goes LOW) when activated
+  }
+
+  return isActivated ? DIGITAL_SENSOR_ACTIVATED_VALUE : DIGITAL_SENSOR_NOT_ACTIVATED_VALUE;
+}
+
+/**
+ * Read an analog voltage sensor (e.g., Dwyer 626 with 0-10V, 1-5V, 0-5V output).
+ * Uses pressure-to-height conversion based on sensor native range.
+ *
+ * Configuration:
+ * - analogVoltageMin/Max: Voltage output range (e.g., 0-10V, 1-5V)
+ * - sensorRangeMin/Max: Pressure range in sensorRangeUnit (e.g., 0-5 PSI)
+ * - sensorMountHeight: Height of sensor above tank bottom (inches)
+ *
+ * Returns liquid height in inches.
+ */
+static float readAnalogSensor(const MonitorConfig &cfg, uint8_t idx) {
+  // Use explicit bounds check for channel (A0602 has channels 0-7)
+  int channel = (cfg.primaryPin >= 0 && cfg.primaryPin < 8) ? cfg.primaryPin : 0;
+
+  // Validate that we have a valid sensor range configured
+  if (cfg.sensorRangeMax <= cfg.sensorRangeMin || cfg.analogVoltageMax <= cfg.analogVoltageMin) {
+    return 0.0f; // Invalid configuration
+  }
+
+  // Read voltage (Opta A0602 analog inputs: 0-10V mapped to 0-4095)
+  float total = 0.0f;
+  const uint8_t samples = 8;
+  for (uint8_t s = 0; s < samples; ++s) {
+    int raw = analogRead(channel);
+    total += (float)raw / 4095.0f * 10.0f; // Convert to 0-10V
+    delay(2);
+  }
+  float voltage = total / samples;
+
+  // Store raw voltage reading for telemetry
+  gMonitorState[idx].currentSensorVoltage = voltage;
+
+  // Map voltage to sensor's native pressure units
+  float pressure = linearMap(voltage, cfg.analogVoltageMin, cfg.analogVoltageMax,
+                             cfg.sensorRangeMin, cfg.sensorRangeMax);
+
+  // Convert pressure to liquid height in inches using appropriate conversion factor
+  float conversionFactor = getPressureConversionFactorByName(cfg.sensorRangeUnit);
+  float liquidAboveSensor = pressure * conversionFactor;
+
+  // Total height from tank bottom = liquid above sensor + sensor mount height
+  float levelInches = liquidAboveSensor + cfg.sensorMountHeight;
+
+  // Clamp: minimum is 0 (empty tank)
+  if (levelInches < 0.0f) levelInches = 0.0f;
+
+  return levelInches;
+}
+
+/**
+ * Read a 4-20mA current loop sensor (pressure or ultrasonic).
+ * Handles both pressure sensors (mounted near bottom) and ultrasonic sensors
+ * (mounted on top) via the currentLoopType configuration.
+ * Returns liquid height in inches.
+ */
+static float readCurrentLoopSensor(const MonitorConfig &cfg, uint8_t idx) {
+  // Use explicit bounds check for current loop channel
+  int16_t channel = (cfg.currentLoopChannel >= 0 && cfg.currentLoopChannel < 8) ? cfg.currentLoopChannel : 0;
+  // Validate that we have a valid sensor range configured
+  if (cfg.sensorRangeMax <= cfg.sensorRangeMin) {
+    gMonitorState[idx].currentSensorMa = 0.0f;
+    return 0.0f;
+  }
+  float milliamps = readCurrentLoopMilliamps(channel);
+  if (milliamps < 0.0f) {
+    return gMonitorState[idx].currentInches; // keep previous on failure
+  }
+
+  // Store raw mA reading for telemetry
+  gMonitorState[idx].currentSensorMa = milliamps;
+
+  // Handle different 4-20mA sensor types using native sensor range
+  float levelInches;
+  if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
+    // Ultrasonic sensor mounted on TOP of tank (e.g., Siemens Sitrans LU240)
+    // 4mA = minimum distance (sensorRangeMin), 20mA = maximum distance (sensorRangeMax)
+    // sensorMountHeight = distance from sensor to tank bottom when empty
+
+    float distanceNative = linearMap(milliamps, 4.0f, 20.0f,
+                                     cfg.sensorRangeMin, cfg.sensorRangeMax);
+    float distanceInches = distanceNative * getDistanceConversionFactorByName(cfg.sensorRangeUnit);
+
+    // Calculate liquid level: tank height - distance from sensor to surface
+    levelInches = cfg.sensorMountHeight - distanceInches;
+    if (levelInches < 0.0f) levelInches = 0.0f;
+  } else {
+    // Pressure sensor mounted near BOTTOM of tank (e.g., Dwyer 626-06-CB-P1-E5-S1)
+    // 4mA = sensorRangeMin (e.g., 0 PSI), 20mA = sensorRangeMax (e.g., 5 PSI)
+    // sensorMountHeight = height of sensor above tank bottom (usually 0-2 inches)
+
+    float pressure = linearMap(milliamps, 4.0f, 20.0f,
+                               cfg.sensorRangeMin, cfg.sensorRangeMax);
+    float conversionFactor = getPressureConversionFactorByName(cfg.sensorRangeUnit);
+    float liquidAboveSensor = pressure * conversionFactor;
+
+    // Total height from tank bottom = liquid above sensor + sensor mount height
+    levelInches = liquidAboveSensor + cfg.sensorMountHeight;
+    if (levelInches < 0.0f) levelInches = 0.0f;
+  }
+  return levelInches;
+}
+
+/**
+ * Read a pulse/RPM sensor via cooperative state machine.
+ * Each call does a short polling burst then returns.
+ * When the configured sample duration elapses, the result is finalized.
+ * Between samples, the last computed reading is returned immediately.
+ */
+static float readPulseSensor(const MonitorConfig &cfg, uint8_t idx) {
+  initPulseSamplers();
+
+  PulseSamplerContext &pctx = gPulseSampler[idx];
+
+  // Start a new sample if idle
+  if (pctx.state == PULSE_STATE_IDLE) {
+    startPulseSample(idx, cfg);
+  }
+
+  // Poll the sampler (non-blocking burst)
+  pollPulseSampler(idx);
+
+  // Return the best available reading
+  return readPulseSensorResult(idx);
+}
+
+// ============================================================================
+// readTankSensor — dispatches to sensor-type-specific helpers
+// ============================================================================
+
 static float readTankSensor(uint8_t idx) {
   if (idx >= gConfig.monitorCount) {
     return 0.0f;
@@ -3851,159 +3987,11 @@ static float readTankSensor(uint8_t idx) {
   const MonitorConfig &cfg = gConfig.monitors[idx];
 
   switch (cfg.sensorInterface) {
-    case SENSOR_DIGITAL: {
-      // Float switch sensor - returns activated/not-activated state
-      // The digitalSwitchMode field controls how the hardware is interpreted:
-      // - "NO" (normally-open): Switch is open by default, closes when fluid is present
-      //   - With INPUT_PULLUP: HIGH = switch open (no fluid), LOW = switch closed (fluid present)
-      //   - activated when pin is LOW
-      // - "NC" (normally-closed): Switch is closed by default, opens when fluid is present
-      //   - With INPUT_PULLUP: LOW = switch closed (no fluid), HIGH = switch open (fluid present)
-      //   - activated when pin is HIGH
-      int pin = (cfg.primaryPin >= 0 && cfg.primaryPin < 255) ? cfg.primaryPin : (2 + idx);
-      pinMode(pin, INPUT_PULLUP);
-      int level = digitalRead(pin);
-      
-      // Determine if switch is configured as normally-closed
-      bool isNormallyClosed = (strcmp(cfg.digitalSwitchMode, "NC") == 0);
-      
-      // For NO switches: LOW = activated (switch closed, fluid present)
-      // For NC switches: HIGH = activated (switch opened, fluid present)
-      bool isActivated;
-      if (isNormallyClosed) {
-        isActivated = (level == HIGH); // NC switch opens (goes HIGH) when activated
-      } else {
-        isActivated = (level == LOW);  // NO switch closes (goes LOW) when activated
-      }
-      
-      return isActivated ? DIGITAL_SENSOR_ACTIVATED_VALUE : DIGITAL_SENSOR_NOT_ACTIVATED_VALUE;
-    }
-    case SENSOR_ANALOG: {
-      // Analog voltage sensor (e.g., Dwyer 626 with 0-10V, 1-5V, 0-5V output)
-      // Uses pressure-to-height conversion based on sensor native range
-      // 
-      // Configuration:
-      // - analogVoltageMin/Max: Voltage output range (e.g., 0-10V, 1-5V)
-      // - sensorRangeMin/Max: Pressure range in sensorRangeUnit (e.g., 0-5 PSI)
-      // - sensorMountHeight: Height of sensor above tank bottom (inches)
-      
-      // Use explicit bounds check for channel (A0602 has channels 0-7)
-      int channel = (cfg.primaryPin >= 0 && cfg.primaryPin < 8) ? cfg.primaryPin : 0;
-      
-      // Validate that we have a valid sensor range configured
-      if (cfg.sensorRangeMax <= cfg.sensorRangeMin || cfg.analogVoltageMax <= cfg.analogVoltageMin) {
-        return 0.0f; // Invalid configuration
-      }
-      
-      // Read voltage (Opta A0602 analog inputs: 0-10V mapped to 0-4095)
-      float total = 0.0f;
-      const uint8_t samples = 8;
-      for (uint8_t i = 0; i < samples; ++i) {
-        int raw = analogRead(channel);
-        total += (float)raw / 4095.0f * 10.0f; // Convert to 0-10V
-        delay(2);
-      }
-      float voltage = total / samples;
-      
-      // Store raw voltage reading for telemetry
-      gMonitorState[idx].currentSensorVoltage = voltage;
-      
-      // Map voltage to sensor's native pressure units
-      float pressure = linearMap(voltage, cfg.analogVoltageMin, cfg.analogVoltageMax,
-                                 cfg.sensorRangeMin, cfg.sensorRangeMax);
-      
-      // Convert pressure to liquid height in inches using appropriate conversion factor
-      float conversionFactor = getPressureConversionFactorByName(cfg.sensorRangeUnit);
-      float liquidAboveSensor = pressure * conversionFactor;
-      
-      // Total height from tank bottom = liquid above sensor + sensor mount height
-      float levelInches = liquidAboveSensor + cfg.sensorMountHeight;
-      
-      // Clamp: minimum is 0 (empty tank)
-      if (levelInches < 0.0f) levelInches = 0.0f;
-      
-      return levelInches;
-    }
-    case SENSOR_CURRENT_LOOP: {
-      // Use explicit bounds check for current loop channel
-      int16_t channel = (cfg.currentLoopChannel >= 0 && cfg.currentLoopChannel < 8) ? cfg.currentLoopChannel : 0;
-      // Validate that we have a valid sensor range configured
-      if (cfg.sensorRangeMax <= cfg.sensorRangeMin) {
-        gMonitorState[idx].currentSensorMa = 0.0f;
-        return 0.0f;
-      }
-      float milliamps = readCurrentLoopMilliamps(channel);
-      if (milliamps < 0.0f) {
-        return gMonitorState[idx].currentInches; // keep previous on failure
-      }
-      
-      // Store raw mA reading for telemetry
-      gMonitorState[idx].currentSensorMa = milliamps;
-      
-      // Handle different 4-20mA sensor types using native sensor range
-      float levelInches;
-      if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
-        // Ultrasonic sensor mounted on TOP of tank (e.g., Siemens Sitrans LU240)
-        // 4mA = minimum distance (sensorRangeMin), 20mA = maximum distance (sensorRangeMax)
-        // sensorMountHeight = distance from sensor to tank bottom when empty
-        // The sensor measures distance from sensor to liquid surface in native units
-        
-        // Convert mA to sensor's native distance units
-        float distanceNative = linearMap(milliamps, 4.0f, 20.0f, 
-                                         cfg.sensorRangeMin, cfg.sensorRangeMax);
-        
-        // Convert distance to inches based on sensorRangeUnit
-        float distanceInches = distanceNative * getDistanceConversionFactorByName(cfg.sensorRangeUnit);
-        
-        // Calculate liquid level: tank height - distance from sensor to surface
-        levelInches = cfg.sensorMountHeight - distanceInches;
-        
-        // Clamp to valid range (0 minimum)
-        if (levelInches < 0.0f) levelInches = 0.0f;
-      } else {
-        // Pressure sensor mounted near BOTTOM of tank (e.g., Dwyer 626-06-CB-P1-E5-S1)
-        // 4mA = sensorRangeMin (e.g., 0 PSI), 20mA = sensorRangeMax (e.g., 5 PSI)
-        // sensorMountHeight = height of sensor above tank bottom (usually 0-2 inches)
-        // The sensor measures liquid pressure above the sensor
-        
-        // Convert mA to sensor's native pressure units
-        float pressure = linearMap(milliamps, 4.0f, 20.0f,
-                                   cfg.sensorRangeMin, cfg.sensorRangeMax);
-        
-        // Convert pressure to liquid height in inches using appropriate conversion factor
-        float conversionFactor = getPressureConversionFactorByName(cfg.sensorRangeUnit);
-        float liquidAboveSensor = pressure * conversionFactor;
-        
-        // Total height from tank bottom = liquid above sensor + sensor mount height
-        levelInches = liquidAboveSensor + cfg.sensorMountHeight;
-        
-        // Clamp: minimum is 0 (empty tank)
-        if (levelInches < 0.0f) levelInches = 0.0f;
-      }
-      return levelInches;
-    }
-    case SENSOR_PULSE: {
-      // Non-blocking RPM sensor via cooperative state machine.
-      // Each call does a short polling burst (PULSE_POLL_BURST_MS) then returns.
-      // When the configured sample duration elapses, the result is finalized.
-      // Between samples, the last computed RPM is returned immediately.
-      initPulseSamplers();
-      
-      PulseSamplerContext &pctx = gPulseSampler[idx];
-      
-      // Start a new sample if idle
-      if (pctx.state == PULSE_STATE_IDLE) {
-        startPulseSample(idx, cfg);
-      }
-      
-      // Poll the sampler (non-blocking burst)
-      pollPulseSampler(idx);
-      
-      // Return the best available reading
-      return readPulseSensorResult(idx);
-    }
-    default:
-      return 0.0f;
+    case SENSOR_DIGITAL:      return readDigitalSensor(cfg, idx);
+    case SENSOR_ANALOG:       return readAnalogSensor(cfg, idx);
+    case SENSOR_CURRENT_LOOP: return readCurrentLoopSensor(cfg, idx);
+    case SENSOR_PULSE:        return readPulseSensor(cfg, idx);
+    default:                  return 0.0f;
   }
 }
 
