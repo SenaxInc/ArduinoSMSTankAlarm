@@ -234,20 +234,54 @@ Server RAM at 50% is the tightest constraint. The `respondHtml()` triple-copy pa
 
 ---
 
-## Recommended v1.1.4 Release Checklist
+## Implementation Status Checklist
 
-- [ ] Bump `FIRMWARE_VERSION` to `"1.1.4"` in `TankAlarm_Common.h`
-- [ ] Bump `version=1.1.4` in `library.properties`
-- [ ] Update all stale version comments (Server L2, Viewer L3, Client L3)
-- [ ] Update `README.md` version references (L1, L4, L342)
-- [ ] Update `TankAlarm-112025-BillOfMaterials.md` version
-- [ ] Update `VERSION_LOCATIONS.md` (Current Version + table entries)
-- [ ] Fix P1 #3: Viewer watchdog kick in I2C recovery
-- [ ] Fix P1 #4: Viewer watchdog kick in `fetchViewerSummary()` loop
-- [ ] Fix P1 #5: Client watchdog kick in `trimTelemetryOutbox()`
-- [ ] Fix P1 #6: I2C Utility `Wire.setTimeout()` after `Wire.begin()`
-- [ ] Compile all 4 sketches — verify exit code 0
-- [ ] Create `V1.1.4_RELEASE_NOTES.md`
+### P0 — Must-Fix ✅ All Implemented
+
+- [x] **#1 Version String Updates** — All 10 locations bumped to `1.1.4`
+  - [x] `TankAlarm_Common.h` L17 — `FIRMWARE_VERSION "1.1.4"`
+  - [x] `library.properties` L2 — `version=1.1.4`
+  - [x] Server `.ino` L2 — `// Version: 1.1.4`
+  - [x] Viewer `.ino` L3 — `Version: 1.1.4`
+  - [x] Client `.ino` L3 — `Version: 1.1.4`
+  - [x] `README.md` L1 — title heading `v1.1.4`
+  - [x] `README.md` L4 — version badge `1.1.4`
+  - [x] `README.md` L342 — deployment checklist `1.1.4`
+  - [x] `README.md` L362 — deployment step `v1.1.4`
+  - [x] `TankAlarm-112025-BillOfMaterials.md` L3 — `1.1.4`
+- [x] **#2 VERSION_LOCATIONS.md updated** — Current version, date, and all table entries
+
+### P1 — Should-Fix ✅ All Implemented
+
+- [x] **#3 Viewer: Watchdog kick callback in I2C recovery** — Lambda passed to `tankalarm_recoverI2CBus()` matching Client pattern
+- [x] **#3 (also) Server: Watchdog kick callback in I2C recovery** — Same fix applied to Server sketch
+- [x] **#4 Viewer: Watchdog kick in `fetchViewerSummary()` drain loop** — Per-iteration `mbedWatchdog.kick()` + 20-note safety cap added
+- [x] **#5 Client: Watchdog kick in `trimTelemetryOutbox()`** — Kicks added at outer while-loop top and inner `note.delete` for-loop
+- [x] **#6 I2C Utility: `Wire.setTimeout()` after `Wire.begin()`** — `Wire.setTimeout(I2C_WIRE_TIMEOUT_MS)` added for consistency
+
+### P2 — Consider ❌ Not Implemented (Deferred to v1.1.5+)
+
+- [ ] **#7 Server: `respondHtml()` triple-copy memory pattern** — Requires compile-time HTML injection refactor; no crash observed
+- [ ] **#8 Server: JSON API response builders use String concatenation** — Low-frequency endpoints; migrate to `JsonDocument` or `snprintf`
+- [ ] **#9 Client: Duplicated monitor config parsing (~180 lines)** — Maintenance risk, not a runtime issue; extract shared helper
+- [ ] **#10 Client: Last remaining `String` usage in `pruneNoteBufferIfNeeded()`** — Single heap allocation per prune cycle; negligible impact
+- [ ] **#11 Viewer: Add `X-Content-Type-Options: nosniff` header** — Read-only LAN kiosk; low attack surface
+
+### P3 — Deferred ❌ Not Implemented (Deferred to v1.2+)
+
+- [ ] **#12 Server: GET endpoints expose data without authentication** — Acceptable for LAN-only; must fix before internet exposure
+- [ ] **#13 Server: Fresh-install login accepts blank PIN** — First-time setup UX trade-off
+- [ ] **#14 Server: PIN-in-localStorage bearer pattern** — Standard for embedded LAN UIs; consider session tokens later
+- [ ] **#15 Monolithic file architecture** — Arduino IDE constraints; shared library approach working well
+- [ ] **#16 I2C transaction timing telemetry** — Pending field data from new I2C diagnostics
+- [ ] **#17 Extract `readTankSensor` helper functions** — Code quality; no runtime impact
+- [ ] **#18 Auto relay de-energize on CRITICAL_HIBERNATE** — Requires hardware requirement verification
+
+### Release Tasks ✅ All Complete
+
+- [x] Compile all 4 sketches — verified exit code 0
+- [x] Create `V1.1.4_RELEASE_NOTES.md`
+- [x] Add v1.1.4 release notes link to `README.md`
 - [ ] Tag release on GitHub
 
 ---
