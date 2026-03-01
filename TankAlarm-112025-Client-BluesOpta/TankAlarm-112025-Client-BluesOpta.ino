@@ -1,6 +1,6 @@
 /*
   Tank Alarm Client 112025 - Arduino Opta + Blues Notecard
-  Version: 1.1.3
+  Version: 1.1.4
 
   Hardware:
   - Arduino Opta Lite (STM32H747XI dual-core)
@@ -5904,6 +5904,13 @@ static void trimTelemetryOutbox() {
   // TELEMETRY_TRIM_MAX_PASSES caps iterations so a persistent Notecard error
   // (e.g., I2C failure) cannot block the main loop indefinitely.
   while (overflowed && passes < TELEMETRY_TRIM_MAX_PASSES) {
+    // Kick watchdog at top of each trim pass — each pass performs multiple
+    // blocking I2C transactions (note.changes + N × note.delete).
+    #ifdef TANKALARM_WATCHDOG_AVAILABLE
+      #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+        mbedWatchdog.kick();
+      #endif
+    #endif
     overflowed = false;
     passes++;
 
@@ -5956,6 +5963,11 @@ static void trimTelemetryOutbox() {
     uint8_t toDelete = count - TELEMETRY_OUTBOX_MAX_PENDING + 1;
     uint8_t deletedThisPass = 0;
     for (uint8_t i = 0; i < toDelete; i++) {
+      #ifdef TANKALARM_WATCHDOG_AVAILABLE
+        #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+          mbedWatchdog.kick();
+        #endif
+      #endif
       J *delReq = notecard.newRequest("note.delete");
       if (!delReq) {
         overflowed = false;  // stop retrying if allocations fail

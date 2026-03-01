@@ -77,6 +77,7 @@ void setup() {
   }
 
   Wire.begin();
+  Wire.setTimeout(I2C_WIRE_TIMEOUT_MS);  // Guard against indefinite blocking on bus hang
   safeSleep(50);
 
   printBanner();

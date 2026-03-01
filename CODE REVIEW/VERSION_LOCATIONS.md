@@ -1,7 +1,7 @@
 # Version Number Locations
 
-**Current Version:** 1.1.2  
-**Last Updated:** February 23, 2026
+**Current Version:** 1.1.4  
+**Last Updated:** February 28, 2026
 
 This document lists every place a version number appears across the codebase and project files, so bumping the version in a future release is straightforward.
 
@@ -11,11 +11,11 @@ This document lists every place a version number appears across the codebase and
 
 | File | Location | Type |
 |------|----------|------|
-| `TankAlarm-112025-Common/src/TankAlarm_Common.h` | Line ~17 — `#define FIRMWARE_VERSION "1.1.2"` | **Primary definition** — all runtime version strings derive from this |
-| `TankAlarm-112025-Common/library.properties` | Line 2 — `version=1.1.2` | Arduino library version |
-| `TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino` | Line 2 — `// Version: 1.1.2` | File header comment |
-| `TankAlarm-112025-Client-BluesOpta/TankAlarm-112025-Client-BluesOpta.ino` | Line 3 — `Version: 1.1.2` | File header comment |
-| `TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino` | Line 3 — `Version: 1.1.2` | File header comment |
+| `TankAlarm-112025-Common/src/TankAlarm_Common.h` | Line ~17 — `#define FIRMWARE_VERSION "1.1.4"` | **Primary definition** — all runtime version strings derive from this |
+| `TankAlarm-112025-Common/library.properties` | Line 2 — `version=1.1.4` | Arduino library version |
+| `TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino` | Line 2 — `// Version: 1.1.4` | File header comment |
+| `TankAlarm-112025-Client-BluesOpta/TankAlarm-112025-Client-BluesOpta.ino` | Line 3 — `Version: 1.1.4` | File header comment |
+| `TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino` | Line 3 — `Version: 1.1.4` | File header comment |
 
 ---
 
@@ -23,11 +23,11 @@ This document lists every place a version number appears across the codebase and
 
 | File | Location | Notes |
 |------|----------|-------|
-| `README.md` | Line 1 — title heading `# TankAlarm v1.1.2` | Main project title |
-| `README.md` | Line 4 — `**Version:** 1.1.2` | Version badge |
-| `README.md` | Line ~342 — `Firmware version 1.1.2 confirmed` | Deployment checklist item |
-| `README.md` | Line ~362 — `Flash all devices with v1.1.2 firmware` | Deployment step 1 |
-| `TankAlarm-112025-BillOfMaterials.md` | Line 3 — `**Version:** 1.1.2` | BOM header |
+| `README.md` | Line 1 — title heading `# TankAlarm v1.1.4` | Main project title |
+| `README.md` | Line 4 — `**Version:** 1.1.4` | Version badge |
+| `README.md` | Line ~342 — `Firmware version 1.1.4 confirmed` | Deployment checklist item |
+| `README.md` | Line ~362 — `Flash all devices with v1.1.4 firmware` | Deployment step 1 |
+| `TankAlarm-112025-BillOfMaterials.md` | Line 3 — `**Version:** 1.1.4` | BOM header |
 
 ---
 

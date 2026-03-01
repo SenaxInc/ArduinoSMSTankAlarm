@@ -1,6 +1,6 @@
 /*
   Tank Alarm Viewer 112025 - Arduino Opta + Blues Notecard
-  Version: 1.1.2
+  Version: 1.1.4
 
   Purpose:
   - Read-only kiosk that renders the server dashboard without exposing control paths
@@ -302,7 +302,11 @@ void loop() {
         } else {
           gNotecardFailureCount++;
           if (gNotecardFailureCount >= I2C_NOTECARD_RECOVERY_THRESHOLD) {
-            tankalarm_recoverI2CBus(gDfuInProgress);
+            tankalarm_recoverI2CBus(gDfuInProgress, [](){
+              #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+                mbedWatchdog.kick();
+              #endif
+            });
             Serial.print(F("I2C recovery event (trigger=HEALTH_CHECK, count="));
             Serial.print(gI2cBusRecoveryCount);
             Serial.println(F(")"));
@@ -667,7 +671,19 @@ static void sendTankJson(EthernetClient &client) {
 }
 
 static void fetchViewerSummary() {
+  uint8_t notesProcessed = 0;
   while (true) {
+    // Kick watchdog between iterations — each note.get is a blocking I2C transaction
+    #ifdef TANKALARM_WATCHDOG_AVAILABLE
+      #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+        mbedWatchdog.kick();
+      #endif
+    #endif
+    // Safety cap: don't drain more than 20 notes per call to stay responsive
+    if (++notesProcessed > 20) {
+      Serial.println(F("fetchViewerSummary: cap reached, will drain remaining next cycle"));
+      break;
+    }
     J *req = notecard.newRequest("note.get");
     if (!req) {
       gNotecardFailureCount++;

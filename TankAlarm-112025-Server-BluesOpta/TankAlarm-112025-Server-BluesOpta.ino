@@ -1,5 +1,5 @@
 // Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
-// Version: 1.1.2
+// Version: 1.1.4
 // NOTE: Save this file as UTF-8 without BOM to avoid stray character compile errors.
 //
 // Hardware:
@@ -2534,7 +2534,11 @@ void loop() {
         } else {
           gNotecardFailureCount++;
           if (gNotecardFailureCount >= I2C_NOTECARD_RECOVERY_THRESHOLD) {
-            tankalarm_recoverI2CBus(gDfuInProgress);
+            tankalarm_recoverI2CBus(gDfuInProgress, [](){
+              #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+                mbedWatchdog.kick();
+              #endif
+            });
             Serial.print(F("I2C recovery event (trigger=HEALTH_CHECK, count="));
             Serial.print(gI2cBusRecoveryCount);
             Serial.println(F(")"));
