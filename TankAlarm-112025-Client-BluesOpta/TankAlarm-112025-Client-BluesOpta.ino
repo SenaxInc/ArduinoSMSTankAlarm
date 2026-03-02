@@ -1691,11 +1691,12 @@ void loop() {
       gLastDfuCheckMillis = now;
       if (!gDfuInProgress && gNotecardAvailable) {
         checkForFirmwareUpdate();
-        // NOTE: Auto-DFU disabled for safety — firmware updates should be applied
-        // deliberately via the server. Uncomment below to auto-apply.
-        // if (gDfuUpdateAvailable) {
-        //   enableDfuMode();
-        // }
+        // Auto-apply firmware updates when available (pushed via Notehub DFU)
+        // Guarded by: power state <= ECO, Notecard available, DFU not in progress
+        if (gDfuUpdateAvailable) {
+          Serial.println(F("Auto-DFU: Applying available firmware update..."));
+          enableDfuMode();
+        }
       }
     }
   }

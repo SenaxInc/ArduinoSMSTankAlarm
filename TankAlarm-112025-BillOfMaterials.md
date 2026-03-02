@@ -99,6 +99,57 @@ Qty | Component | Link | Notes
 1 | Deep Cycle Battery | [Walmart](https://www.walmart.com/ip/OPTIMA-YellowTop-Dual-Purpose-Battery-Group-d31t/579876980) | Optima D31T or equivalent
 1 | Solar Panel Mounting Hardware | Various | Ground or pole mount
 
+### External Antenna System (Optional — Recommended for Metal Enclosures)
+
+The Blues Wireless for Opta includes **two SMA connectors** with **two LTE cellular antennas**. These are:
+
+| Connector | Purpose | Required? |
+|-----------|---------|----------|
+| **MAIN** | Primary LTE cellular antenna (transmit + receive) | Yes — required for cellular operation |
+| **DIV** | Diversity receive antenna (improves LTE Cat-1 downlink) | Optional — recommended for best signal |
+
+> **Important:** Neither antenna is for Bluetooth or WiFi. Both are LTE cellular antennas. The Opta WiFi model has its own onboard Bluetooth radio that is separate from the Blues expansion module. GPS is integrated into the Notecard module itself and is not exposed via an external SMA connector on the Wireless for Opta.
+
+The included stub antennas work well in open environments, but for installations inside **metal NEMA enclosures** or in **areas with weak cellular signal**, mounting external antennas on a pole significantly improves reliability. The Wireless for Opta uses a **wideband LTE Cat-1 Notecard** (Quectel EG91-NAX for North America) covering:
+
+- **LTE Bands:** B2, B4, B5, B12, B13, B25, B26
+- **WCDMA Bands:** B2, B4, B5
+- **Frequency Range:** 698 MHz – 2700 MHz
+
+External antennas should cover the full **698–2700 MHz** range for North American LTE.
+
+#### Recommended Pole-Mount Omnidirectional LTE Antennas
+
+Qty | Component | Frequency | Gain | Connector | Link | Notes
+--- | --------- | --------- | ---- | --------- | ---- | -----
+1-2 | Taoglas Barracuda OMB.698.B13N2 | 698–2700 MHz | 3–5 dBi | N-Female | [Taoglas](https://www.taoglas.com/product/barracuda-omni-698mhz-2-7ghz/) | Fiberglass radome, outdoor rated, pole mount ~$40-60
+1-2 | Laird Connectivity MA950 | 698–2700 MHz | 2–3 dBi | N-Female | [Laird](https://www.lairdconnect.com/antennas/multiband-antennas) | Compact multiband omni, pole mount ~$25-45
+1-2 | Panorama LPMM / LGMM Series | 698–2700 MHz | 2–5 dBi | N-Female | [Panorama](https://www.panorama-antennas.com/) | Wideband omni, IP67, pole mount ~$30-60
+1-2 | Wilson Electronics 304421 | 700–2700 MHz | 3–5 dBi | N-Female | [Wilson](https://www.weboost.com/antennas) | Outdoor omni, pole mount ~$20-40
+1-2 | PCTEL MLPV Series | 698–3100 MHz | 2–3 dBi | N-Female | [PCTEL](https://www.pctel.com/antenna-products/) | Permanent outdoor mount ~$35-55
+
+> **Note:** You need **two** external antennas if you want full MAIN + DIV diversity. At minimum, one external antenna on the MAIN connector is required; the DIV antenna can be omitted (with reduced receive performance) or left as the included stub inside the enclosure.
+
+#### SMA-to-N Adapter Chain
+
+The Wireless for Opta has **SMA female** connectors. Most outdoor pole-mount antennas use **N-type** connectors. The recommended adapter chain from the Wireless for Opta SMA port to an external N-type antenna is:
+
+```
+[Wireless for Opta SMA-F] → SMA-M Pigtail Cable → SMA-F Bulkhead (enclosure wall)
+    → SMA-M to N-M Adapter → N-M to N-M Coax Cable (LMR-400) → [Antenna N-F]
+```
+
+Qty | Component | Link | Notes
+--- | --------- | ---- | -----
+2 | SMA Male to SMA Female Bulkhead Adapter | [Mouser](https://www.mouser.com/) / [Digi-Key](https://www.digikey.com/) | Panel-mount pass-through for enclosure wall, IP67 rated ~$5-8 each
+2 | SMA Male to SMA Male Pigtail Cable (6-12") | [Mouser](https://www.mouser.com/) / [Digi-Key](https://www.digikey.com/) | RG316 or LMR-195, connects Opta SMA to bulkhead ~$5-10 each
+2 | SMA Female to N Male Adapter | [Mouser](https://www.mouser.com/) / [Digi-Key](https://www.digikey.com/) | Direct adapter, outdoor side of bulkhead ~$5-8 each
+2 | N Male to N Male Coax Cable (LMR-400) | [Mouser](https://www.mouser.com/) / [Digi-Key](https://www.digikey.com/) | Low-loss cable, length as needed for pole run (3-25 ft) ~$15-40 each
+
+> **Cable Selection:** Use **LMR-400** (or equivalent like Times Microwave LMR-400, CommScope CNT-400) for runs over 3 feet. LMR-400 has ~1.5 dB loss per 10 feet at 2 GHz vs. ~5 dB/10ft for RG-58. For short runs under 3 feet, LMR-195 or RG-316 is acceptable. Minimize total cable length to preserve signal quality.
+
+> **Weatherproofing:** Apply self-amalgamating tape or weatherproof boots on all outdoor N-type connections to prevent moisture ingress.
+
 ---
 
 ## Blues Wireless Service
@@ -143,6 +194,16 @@ Cellular Data Plan | [Blues Wireless](https://blues.io/pricing/) | Pay-as-you-go
 - Mounting Hardware: $50
 - **Subtotal: ~$440-510**
 
+### Optional External Antenna System (per system in metal enclosure)
+- Outdoor LTE Omni Antenna (x2): $40-120
+- SMA Bulkhead Adapters (x2): $10-16
+- SMA Pigtail Cables (x2): $10-20
+- SMA-to-N Adapters (x2): $10-16
+- N-Male Coax Cable LMR-400 (x2): $30-80
+- Weatherproofing tape/boots: $5-10
+- **Subtotal: ~$105-262** (for 2-antenna system)
+- **Subtotal: ~$55-135** (for 1-antenna MAIN-only system)
+
 **Note:** Prices shown are from USA vendors and do not include shipping or sales tax. International pricing may vary. Check vendor websites for current pricing and availability.
 
 ---
@@ -158,6 +219,15 @@ Cellular Data Plan | [Blues Wireless](https://blues.io/pricing/) | Pay-as-you-go
 - **NOTE-NBGL-500** - North America (LTE-M/NB-IoT)
 - **NOTE-WBEX-500** - Global (LTE-M/NB-IoT)
 - **NOTE-CELL-500** - Global (2G/3G fallback)
+
+### Blues Wireless for Opta Antenna Details
+- The Wireless for Opta includes **2 SMA connectors** and **2 LTE stub antennas** (MAIN + DIV)
+- **MAIN** antenna: Required for cellular operation (transmit + receive)
+- **DIV** antenna: Optional diversity receive antenna — improves LTE Cat-1 downlink signal
+- **Neither antenna is Bluetooth or WiFi** — both are LTE cellular only
+- **GPS** is integrated into the Notecard module (u.FL on the M.2 card); not exposed as external SMA on the Wireless for Opta
+- The Notecard inside is a **wideband LTE Cat-1** module (NOTE-WBNA / Quectel EG91-NAX for North America)
+- For installations in metal enclosures or weak-signal areas, replace included stub antennas with external pole-mount antennas via SMA→N adapter chain (see Optional Components section)
 
 ### Sensor Compatibility
 The system supports multiple sensor types:
