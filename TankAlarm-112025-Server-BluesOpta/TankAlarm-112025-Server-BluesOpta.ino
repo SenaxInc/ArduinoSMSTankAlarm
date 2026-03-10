@@ -1723,6 +1723,7 @@ static void cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
 static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
 static bool sendConfigViaNotecard(const char *clientUid, const char *jsonPayload);
 static uint8_t purgePendingConfigNotes(const char *clientUid);
+static void pruneOrphanedTankRecords(const char *clientUid);
 static void dispatchPendingConfigs();
 static void handleConfigRetryPost(EthernetClient &client, const String &body);
 static void handleConfigCancelPost(EthernetClient &client, const String &body);
