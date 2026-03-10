@@ -7508,6 +7508,9 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
   // Always cache locally first so config is preserved even if Notecard is down
   cacheClientConfigFromBuffer(clientUid, buffer);
   
+  // Prune orphaned tank records that are no longer in the new config
+  pruneOrphanedTankRecords(clientUid);
+  
   // Generate config version hash for ACK tracking
   // Simple hash of the payload to create a short version identifier
   ClientConfigSnapshot *snapPre = findClientConfigSnapshot(clientUid);
@@ -7716,7 +7719,39 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   if (objectType && strlen(objectType) > 0) {
     strlcpy(rec->objectType, objectType, sizeof(rec->objectType));
   } else if (rec->objectType[0] == '\0') {
-    strlcpy(rec->objectType, "tank", sizeof(rec->objectType)); // Default
+    // Fallback: look up from cached client config
+    ClientConfigSnapshot *cfgSnap = findClientConfigSnapshot(clientUid);
+    if (cfgSnap && cfgSnap->payload[0] != '\0') {
+      JsonDocument cfgDoc;
+      if (deserializeJson(cfgDoc, cfgSnap->payload) == DeserializationError::Ok) {
+        JsonArray cfgTanks = cfgDoc["tanks"].as<JsonArray>();
+        if (cfgTanks) {
+          for (JsonVariant ct : cfgTanks) {
+            uint8_t ctn = ct["number"] | ct["tankNumber"] | 0;
+            if (ctn == tankNumber) {
+              const char *cfgOt = ct["monitorType"] | ct["objectType"] | "";
+              if (cfgOt && strlen(cfgOt) > 0) {
+                strlcpy(rec->objectType, cfgOt, sizeof(rec->objectType));
+              }
+              const char *cfgMu = ct["sensorRangeUnit"] | "";
+              const char *cfgMt = ct["monitorType"] | "";
+              // Derive measurement unit from config context
+              if (rec->measurementUnit[0] == '\0') {
+                if (strcmp(cfgMt, "gas") == 0 && cfgMu[0] != '\0') {
+                  strlcpy(rec->measurementUnit, cfgMu, sizeof(rec->measurementUnit));
+                } else if (strcmp(cfgMt, "rpm") == 0) {
+                  strlcpy(rec->measurementUnit, "rpm", sizeof(rec->measurementUnit));
+                }
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+    if (rec->objectType[0] == '\0') {
+      strlcpy(rec->objectType, "tank", sizeof(rec->objectType)); // Final default
+    }
   }
   
   // Store sensor interface type if provided (digital, analog, currentLoop, pulse)
@@ -8925,7 +8960,8 @@ static float convertMaToLevelWithTemp(const char *clientUid, uint8_t tankNumber,
   }
   
   for (JsonVariant t : tanks) {
-    uint8_t tn = t["tankNumber"] | 0;
+    // Support both "number" (config generator) and "tankNumber" (legacy)
+    uint8_t tn = t["number"] | t["tankNumber"] | 0;
     if (tn == tankNumber) {
       // Found the tank - get sensor range settings
       float rangeMin = t["sensorRangeMin"] | 0.0f;
@@ -8988,7 +9024,8 @@ static float convertVoltageToLevel(const char *clientUid, uint8_t tankNumber, fl
   }
   
   for (JsonVariant t : tanks) {
-    uint8_t tn = t["tankNumber"] | 0;
+    // Support both "number" (config generator) and "tankNumber" (legacy)
+    uint8_t tn = t["number"] | t["tankNumber"] | 0;
     if (tn == tankNumber) {
       // Found the tank - get sensor range settings
       float voltageMin = t["analogVoltageMin"] | 0.0f;   // e.g., 0V or 1V
@@ -9353,6 +9390,84 @@ static void checkStaleClients() {
 }
 
 // ============================================================================
+// Orphaned Tank Record Pruning
+// ============================================================================
+// When a client's config changes (e.g., sensors removed), stale TankRecords
+// for removed tank numbers persist in the registry. This function parses the
+// cached config payload, extracts valid tank numbers, and removes any
+// TankRecords whose tankNumber is no longer in the active config.
+
+static void pruneOrphanedTankRecords(const char *clientUid) {
+  ClientConfigSnapshot *snap = findClientConfigSnapshot(clientUid);
+  if (!snap || snap->payload[0] == '\0') return;
+
+  // Parse the cached config JSON to extract valid tank numbers
+  JsonDocument cfgDoc;
+  if (deserializeJson(cfgDoc, snap->payload) != DeserializationError::Ok) {
+    return;  // Can't parse — skip pruning
+  }
+
+  JsonArray tanks = cfgDoc["tanks"].as<JsonArray>();
+  if (!tanks) return;  // No tanks array — skip
+
+  // Build a set of valid tank numbers from the config
+  // MAX_TANK_RECORDS is the upper bound; typical configs have 1-8 sensors
+  uint8_t validNumbers[MAX_TANK_RECORDS];
+  uint8_t validCount = 0;
+  for (JsonVariant t : tanks) {
+    uint8_t num = t["number"] | 0;
+    if (num > 0 && validCount < MAX_TANK_RECORDS) {
+      validNumbers[validCount++] = num;
+    }
+  }
+
+  if (validCount == 0) return;  // Config has no numbered tanks — don't prune
+
+  // Remove tank records for this client whose tankNumber is not in the valid set
+  uint8_t writeIdx = 0;
+  uint8_t pruned = 0;
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    bool keep = true;
+    if (strcmp(gTankRecords[i].clientUid, clientUid) == 0) {
+      // Check if this tank number is still in the config
+      bool found = false;
+      for (uint8_t v = 0; v < validCount; ++v) {
+        if (gTankRecords[i].tankNumber == validNumbers[v]) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        keep = false;
+        pruned++;
+        Serial.print(F("Pruned orphaned tank record: "));
+        Serial.print(gTankRecords[i].label);
+        Serial.print(F(" #"));
+        Serial.println(gTankRecords[i].tankNumber);
+      }
+    }
+    if (keep) {
+      if (writeIdx != i) {
+        memcpy(&gTankRecords[writeIdx], &gTankRecords[i], sizeof(TankRecord));
+      }
+      writeIdx++;
+    }
+  }
+
+  if (pruned > 0) {
+    gTankRecordCount = writeIdx;
+    rebuildTankHashTable();
+    gTankRegistryDirty = true;
+
+    char detail[64];
+    snprintf(detail, sizeof(detail), "Pruned %u orphaned sensor(s) after config update", pruned);
+    Serial.println(detail);
+    addServerSerialLog(detail, "info", "config");
+    logTransmission(clientUid, snap->site, "config", "pruned", detail);
+  }
+}
+
+// ============================================================================
 // Config ACK Handler
 // ============================================================================
 
@@ -9390,6 +9505,11 @@ static void handleConfigAck(JsonDocument &doc, double epoch) {
   }
   Serial.println();
   
+  // Prune orphaned tank records when config is successfully applied
+  if (strcmp(status, "applied") == 0) {
+    pruneOrphanedTankRecords(clientUid);
+  }
+
   addServerSerialLog("Config ACK received", "info", "config");
   saveClientConfigSnapshots();
 }

@@ -2157,12 +2157,15 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
   if (t["number"].is<uint8_t>()) mon.monitorNumber = t["number"].as<uint8_t>();
 
   // Object type (what is being monitored)
+  // Support both "objectType" (preferred) and "monitorType" (config generator)
   const char *objType = t["objectType"].as<const char *>();
+  if (!objType) objType = t["monitorType"].as<const char *>();
   if (objType) {
     if (strcmp(objType, "engine") == 0)      mon.objectType = OBJECT_ENGINE;
     else if (strcmp(objType, "pump") == 0)   mon.objectType = OBJECT_PUMP;
     else if (strcmp(objType, "gas") == 0)    mon.objectType = OBJECT_GAS;
     else if (strcmp(objType, "flow") == 0)   mon.objectType = OBJECT_FLOW;
+    else if (strcmp(objType, "rpm") == 0)    mon.objectType = OBJECT_ENGINE;
     else                                     mon.objectType = OBJECT_TANK;
   }
 
@@ -2306,6 +2309,40 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
 
   const char *rangeUnitStr = t["sensorRangeUnit"].as<const char *>();
   if (rangeUnitStr) strlcpy(mon.sensorRangeUnit, rangeUnitStr, sizeof(mon.sensorRangeUnit));
+
+  // ---- Measurement unit (for display/reporting) ----
+  // Explicit field takes priority; otherwise derive from object type and sensor config
+  const char *muStr = t["measurementUnit"].as<const char *>();
+  if (muStr && muStr[0] != '\0') {
+    strlcpy(mon.measurementUnit, muStr, sizeof(mon.measurementUnit));
+  } else if (mon.measurementUnit[0] == '\0') {
+    // Derive from context if not already set
+    switch (mon.objectType) {
+      case OBJECT_GAS:
+        // Gas pressure: use sensor range unit (PSI, bar, etc.)
+        if (mon.sensorRangeUnit[0] != '\0') {
+          strlcpy(mon.measurementUnit, mon.sensorRangeUnit, sizeof(mon.measurementUnit));
+        } else {
+          strlcpy(mon.measurementUnit, "psi", sizeof(mon.measurementUnit));
+        }
+        break;
+      case OBJECT_ENGINE:
+        strlcpy(mon.measurementUnit, "rpm", sizeof(mon.measurementUnit));
+        break;
+      case OBJECT_FLOW:
+        strlcpy(mon.measurementUnit, "gpm", sizeof(mon.measurementUnit));
+        break;
+      default:
+        // Tank and others: use sensor range unit if non-tank, otherwise inches
+        if (mon.sensorInterface == SENSOR_CURRENT_LOOP && mon.sensorRangeUnit[0] != '\0'
+            && strcmp(mon.sensorRangeUnit, "PSI") != 0) {
+          // Current loop with non-default range unit
+          strlcpy(mon.measurementUnit, mon.sensorRangeUnit, sizeof(mon.measurementUnit));
+        }
+        // For tanks with PSI pressure sensors, leave empty — server converts PSI→inches
+        break;
+    }
+  }
 
   // ---- Analog voltage range ----
   if (t["analogVoltageMin"].is<float>()) mon.analogVoltageMin = t["analogVoltageMin"].as<float>();
@@ -4202,8 +4239,19 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   doc["c"] = gDeviceUID;
   doc["s"] = gConfig.siteName;
   doc["k"] = cfg.monitorNumber;
-  // Note: object type (ot), measurement unit (mu), and monitor id (i) are
-  // omitted from telemetry to reduce payload — server already knows these from config/daily.
+  doc["n"] = cfg.name;
+
+  // Include object type and measurement unit so server/dashboard can display correctly
+  switch (cfg.objectType) {
+    case OBJECT_ENGINE: doc["ot"] = "engine"; break;
+    case OBJECT_PUMP:   doc["ot"] = "pump";   break;
+    case OBJECT_GAS:    doc["ot"] = "gas";    break;
+    case OBJECT_FLOW:   doc["ot"] = "flow";   break;
+    default:            doc["ot"] = "tank";   break;
+  }
+  if (cfg.measurementUnit[0] != '\0') {
+    doc["mu"] = cfg.measurementUnit;
+  }
   
   // Include sensor interface type and type-specific raw data only
   // Server converts to display units using its stored config
@@ -4402,7 +4450,17 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     doc["s"] = gConfig.siteName;
     doc["k"] = cfg.monitorNumber;
     doc["y"] = alarmType;
-    // Note: object type (ot) and measurement unit (mu) omitted — server knows from config/daily.
+    // Include object type and measurement unit for correct dashboard display
+    switch (cfg.objectType) {
+      case OBJECT_ENGINE: doc["ot"] = "engine"; break;
+      case OBJECT_PUMP:   doc["ot"] = "pump";   break;
+      case OBJECT_GAS:    doc["ot"] = "gas";    break;
+      case OBJECT_FLOW:   doc["ot"] = "flow";   break;
+      default:            doc["ot"] = "tank";   break;
+    }
+    if (cfg.measurementUnit[0] != '\0') {
+      doc["mu"] = cfg.measurementUnit;
+    }
     
     // Send sensor-type-appropriate raw data only
     if (cfg.sensorInterface == SENSOR_CURRENT_LOOP) {
