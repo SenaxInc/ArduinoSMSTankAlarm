@@ -12312,11 +12312,32 @@ static void handleDfuCheckPost(EthernetClient &client) {
   // Trigger an immediate firmware update check against the Notecard
   Serial.println(F("Manual DFU check triggered via web UI"));
   
-  // If Notecard is in error state, reset DFU before re-checking.
-  // This clears stale errors from previous failed downloads so the
-  // Notecard can discover newly uploaded firmware on Notehub.
+  // If Notecard is in error state, clear the failed DFU then re-enable.
+  // Step 1: dfu.status {"stop":true} aborts/clears the error state
+  // Step 2: card.dfu off/on re-enables outboard DFU
+  // Step 3: hub.sync forces the Notecard to pull fresh firmware catalog
   if (strcmp(gDfuMode, "error") == 0) {
-    Serial.println(F("DFU in error state - resetting outboard DFU..."));
+    Serial.println(F("DFU in error state - clearing and resetting..."));
+    
+    // Step 1: Stop/clear the failed DFU operation
+    J *stopReq = notecard.newRequest("dfu.status");
+    if (stopReq) {
+      JAddBoolToObject(stopReq, "stop", true);
+      J *stopRsp = notecard.requestAndResponse(stopReq);
+      if (stopRsp) {
+        const char *stopErr = JGetString(stopRsp, "err");
+        if (stopErr && stopErr[0] != '\0') {
+          Serial.print(F("dfu.status stop error: "));
+          Serial.println(stopErr);
+        } else {
+          Serial.println(F("DFU error state cleared via dfu.status stop"));
+        }
+        notecard.deleteResponse(stopRsp);
+      }
+    }
+    delay(1000);
+    
+    // Step 2: Disable then re-enable outboard DFU
     J *offReq = notecard.newRequest("card.dfu");
     if (offReq) {
       JAddStringToObject(offReq, "name", "stm32");
@@ -12337,13 +12358,28 @@ static void handleDfuCheckPost(EthernetClient &client) {
           Serial.println(err);
         } else {
           Serial.println(F("Outboard DFU re-enabled successfully"));
-          strlcpy(gDfuMode, "idle", sizeof(gDfuMode));
-          gDfuError[0] = '\0';
         }
         notecard.deleteResponse(onRsp);
       }
     }
     delay(500);
+    
+    // Step 3: Force sync so Notecard pulls fresh firmware info from Notehub
+    J *syncReq = notecard.newRequest("hub.sync");
+    if (syncReq) {
+      J *syncRsp = notecard.requestAndResponse(syncReq);
+      if (syncRsp) {
+        Serial.println(F("hub.sync triggered for fresh firmware catalog"));
+        notecard.deleteResponse(syncRsp);
+      }
+    }
+    delay(2000);
+    
+    // Reset local state
+    strlcpy(gDfuMode, "idle", sizeof(gDfuMode));
+    gDfuError[0] = '\0';
+    gDfuUpdateAvailable = false;
+    gDfuVersion[0] = '\0';
   }
   
   checkForFirmwareUpdate();
