@@ -9173,13 +9173,43 @@ static void loadTankRegistry() {
     initTankHashTable();
     
     JsonArray arr = doc.as<JsonArray>();
+    uint8_t dupsMerged = 0;
     for (JsonObject obj : arr) {
       if (gTankRecordCount >= MAX_TANK_RECORDS) break;
       
+      const char *loadedUid = obj["c"] | "";
+      uint8_t loadedTankNum = obj["k"] | 0;
+      double loadedEpoch = obj["u"] | 0.0;
+      
+      // Deduplicate: if a record with this clientUid+tankNumber already exists,
+      // keep the one with the most recent lastUpdateEpoch and merge fields.
+      TankRecord *existing = findTankByHash(loadedUid, loadedTankNum);
+      if (existing) {
+        if (loadedEpoch > existing->lastUpdateEpoch) {
+          // Newer record — overwrite into the existing slot
+          strlcpy(existing->site, obj["s"] | "", sizeof(existing->site));
+          strlcpy(existing->label, obj["n"] | "", sizeof(existing->label));
+          strlcpy(existing->contents, obj["cn"] | "", sizeof(existing->contents));
+          strlcpy(existing->objectType, obj["ot"] | "", sizeof(existing->objectType));
+          strlcpy(existing->sensorType, obj["st"] | "", sizeof(existing->sensorType));
+          strlcpy(existing->measurementUnit, obj["mu"] | "", sizeof(existing->measurementUnit));
+          existing->levelInches = obj["l"] | 0.0f;
+          existing->sensorMa = obj["ma"] | 0.0f;
+          existing->sensorVoltage = obj["vt"] | 0.0f;
+          existing->alarmActive = obj["a"] | false;
+          strlcpy(existing->alarmType, obj["at"] | "", sizeof(existing->alarmType));
+          existing->lastUpdateEpoch = loadedEpoch;
+          existing->previousLevelInches = obj["pl"] | 0.0f;
+          existing->previousLevelEpoch = obj["pe"] | 0.0;
+        }
+        dupsMerged++;
+        continue;  // Skip — already have this clientUid+tankNumber
+      }
+      
       TankRecord &rec = gTankRecords[gTankRecordCount];
       memset(&rec, 0, sizeof(TankRecord));
-      strlcpy(rec.clientUid, obj["c"] | "", sizeof(rec.clientUid));
-      rec.tankNumber = obj["k"] | 0;
+      strlcpy(rec.clientUid, loadedUid, sizeof(rec.clientUid));
+      rec.tankNumber = loadedTankNum;
       strlcpy(rec.site, obj["s"] | "", sizeof(rec.site));
       strlcpy(rec.label, obj["n"] | "", sizeof(rec.label));
       strlcpy(rec.contents, obj["cn"] | "", sizeof(rec.contents));
@@ -9191,7 +9221,7 @@ static void loadTankRegistry() {
       rec.sensorVoltage = obj["vt"] | 0.0f;
       rec.alarmActive = obj["a"] | false;
       strlcpy(rec.alarmType, obj["at"] | "", sizeof(rec.alarmType));
-      rec.lastUpdateEpoch = obj["u"] | 0.0;
+      rec.lastUpdateEpoch = loadedEpoch;
       rec.previousLevelInches = obj["pl"] | 0.0f;
       rec.previousLevelEpoch = obj["pe"] | 0.0;
       rec.lastSmsAlertEpoch = 0.0;
@@ -9199,6 +9229,13 @@ static void loadTankRegistry() {
       
       insertTankIntoHash(gTankRecordCount);
       gTankRecordCount++;
+    }
+    
+    if (dupsMerged > 0) {
+      Serial.print(F("Tank registry: merged "));
+      Serial.print(dupsMerged);
+      Serial.println(F(" duplicate records"));
+      gTankRegistryDirty = true;  // Re-save to clean the file
     }
     
     Serial.print(F("Tank registry loaded: "));
