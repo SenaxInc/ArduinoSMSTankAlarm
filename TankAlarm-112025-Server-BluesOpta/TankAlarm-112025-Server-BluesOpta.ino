@@ -729,15 +729,17 @@ static void generateSessionToken() {
   uint32_t a3 = (uint32_t)analogRead(ENTROPY_ADC_PIN_3);
   uint32_t t1 = micros();         // Second timing sample after ADC reads captures jitter
   uint32_t currentMillis = millis();
-  // Mix all sources; prime-valued shifts reduce correlation between mixed terms,
-  // spreading entropy uniformly across all 32 bits.
-  uint32_t seed = t0                    ^ (currentMillis << 13) ^ (currentMillis >> 19)
-                ^ (a0 << 5)  ^ (a0 >> 27)
-                ^ (a1 << 11) ^ (a2 << 21)
-                ^ (a3 << 7)  ^ (t1 << 17);
+  // Build a 64-bit seed by placing independent entropy sources in the high and
+  // low halves; prime-valued shifts reduce correlation between mixed terms.
+  // 64-bit state gives 2^64 possible seeds, making brute-force infeasible.
+  // Cast to uint64_t before shifting to avoid truncating bits in 32-bit arithmetic.
+  uint64_t seedHigh = (uint64_t)t0 ^ ((uint64_t)currentMillis << 13) ^ ((uint64_t)a0 << 5) ^ ((uint64_t)a1 << 11);
+  uint64_t seedLow  = (uint64_t)t1 ^ ((uint64_t)currentMillis >> 19) ^ ((uint64_t)a0 >> 27) ^ ((uint64_t)a2 << 21) ^ ((uint64_t)a3 << 7);
+  uint64_t seed = (seedHigh << 32) | seedLow;
+  // 64-bit LCG constants from Knuth (MMIX) — full-period over 2^64.
   for (int i = 0; i < 16; i++) {
-    seed = seed * 1664525UL + 1013904223UL;  // Numerical Recipes LCG constants
-    gSessionToken[i] = "0123456789abcdef"[(seed >> 28) & 0xF];  // Top bits have best quality
+    seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+    gSessionToken[i] = "0123456789abcdef"[(seed >> 60) & 0xF];  // Top 4 bits of 64-bit state
   }
   gSessionToken[16] = '\0';
 }
@@ -957,7 +959,7 @@ static unsigned long gLastVoltageCheckMillis = 0;
 #ifndef VIN_ANALOG_ENABLED
 #define VIN_ANALOG_ENABLED false  // Set true when voltage divider hardware is connected
 #endif
-// VIN_ANALOG_PIN is defined earlier (before generateSessionToken) to avoid forward-reference.
+// VIN_ANALOG_PIN is defined earlier (before generateSessionToken) so it is available for preprocessing/macro expansion.
 #ifndef VIN_DIVIDER_RATIO
 #define VIN_DIVIDER_RATIO 0.6812f   // R2/(R1+R2) — default for R1=22K, R2=47K
 #endif
