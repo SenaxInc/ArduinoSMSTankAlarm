@@ -1702,7 +1702,7 @@ static void checkServerVoltage();
 static void checkForFirmwareUpdate();
 static void enableDfuMode();
 static void handleWebRequests();
-static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge);
+static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge, char *sessionHdr, size_t sessionHdrSize);
 static void respondHtml(EthernetClient &client, const String &body);
 static void sendStringRange(EthernetClient &client, const String &str, size_t start, size_t end);
 static void respondJson(EthernetClient &client, const String &body, int status);
