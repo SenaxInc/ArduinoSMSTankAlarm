@@ -1739,6 +1739,7 @@ static void publishViewerSummary();
 static void saveTankRegistry();
 static void loadTankRegistry();
 static uint8_t deduplicateTankRecordsLinear();
+static void handleDebugTanks(EthernetClient &client, const String &method, const String &body);
 static void saveClientMetadataCache();
 static void loadClientMetadataCache();
 // Stale client alerting
@@ -12433,6 +12434,7 @@ static void handleDebugTanks(EthernetClient &client, const String &method, const
   respondJson(client, responseStr);
 }
 
+static void handleDfuCheckPost(EthernetClient &client) {
   // Trigger an immediate firmware update check against the Notecard
   Serial.println(F("Manual DFU check triggered via web UI"));
   
