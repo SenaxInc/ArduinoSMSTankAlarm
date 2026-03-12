@@ -1687,7 +1687,7 @@ static void handleContactsPost(EthernetClient &client, const String &body);
 static void handleEmailFormatGet(EthernetClient &client);
 static void handleEmailFormatPost(EthernetClient &client, const String &body);
 static void handleDfuStatusGet(EthernetClient &client);
-static void handleDfuCheckPost(EthernetClient &client);
+static void handleDfuCheckPost(EthernetClient &client, const String &body);
 static void handleDfuEnablePost(EthernetClient &client, const String &body);
 static void handleNotecardStatusGet(EthernetClient &client);
 static void handleLocationRequestPost(EthernetClient &client, const String &body);
@@ -1739,6 +1739,7 @@ static void publishViewerSummary();
 static void saveTankRegistry();
 static void loadTankRegistry();
 static uint8_t deduplicateTankRecordsLinear();
+static void handleDebugTanks(EthernetClient &client, const String &method, const String &body, const String &queryString);
 static void saveClientMetadataCache();
 static void loadClientMetadataCache();
 // Stale client alerting
@@ -5935,10 +5936,15 @@ static void handleWebRequests() {
     handleNotecardStatusGet(client);
   } else if (method == "GET" && path == "/api/dfu/status") {
     handleDfuStatusGet(client);
-  } else if (path == "/api/debug/tanks") {
-    handleDebugTanks(client, method, body);
+  } else if (path.startsWith("/api/debug/tanks")) {
+    String queryString = "";
+    int queryStart = path.indexOf('?');
+    if (queryStart >= 0) {
+      queryString = path.substring(queryStart + 1);
+    }
+    handleDebugTanks(client, method, body, queryString);
   } else if (method == "POST" && path == "/api/dfu/check") {
-    handleDfuCheckPost(client);
+    handleDfuCheckPost(client, body);
   } else if (method == "POST" && path == "/api/dfu/enable") {
     if (contentLength > 256) {
       respondStatus(client, 413, "Payload Too Large");
@@ -12388,25 +12394,37 @@ static uint8_t deduplicateTankRecordsLinear() {
   return removed;
 }
 
-// Debug endpoint: GET /api/debug/tanks — dump raw tank records
-// POST /api/debug/tanks with {"action":"dedup"} — force dedup
-static void handleDebugTanks(EthernetClient &client, const String &method, const String &body) {
+// Debug endpoint: GET /api/debug/tanks?pin=XXXX — dump raw tank records
+// POST /api/debug/tanks with {"pin":"XXXX","action":"dedup"} — force dedup
+static void handleDebugTanks(EthernetClient &client, const String &method, const String &body, const String &queryString) {
   if (method == "POST") {
     JsonDocument doc;
-    if (deserializeJson(doc, body) == DeserializationError::Ok) {
-      const char *action = doc["action"] | "";
-      if (strcmp(action, "dedup") == 0) {
-        uint8_t removed = deduplicateTankRecordsLinear();
-        if (removed > 0) {
-          saveTankRegistry();
-          gTankRegistryDirty = false;
-        }
-        String rsp = "{\"removed\":" + String(removed) + ",\"remaining\":" + String(gTankRecordCount) + "}";
-        respondJson(client, rsp);
-        return;
-      }
+    if (deserializeJson(doc, body)) {
+      respondStatus(client, 400, "Invalid JSON");
+      return;
     }
-    respondStatus(client, 400, "Use {\"action\":\"dedup\"}");
+    const char *pinValue = doc["pin"].as<const char *>();
+    if (!requireValidPin(client, pinValue)) {
+      return;
+    }
+    const char *action = doc["action"] | "";
+    if (strcmp(action, "dedup") == 0) {
+      uint8_t removed = deduplicateTankRecordsLinear();
+      if (removed > 0) {
+        saveTankRegistry();
+        gTankRegistryDirty = false;
+      }
+      String rsp = "{\"removed\":" + String(removed) + ",\"remaining\":" + String(gTankRecordCount) + "}";
+      respondJson(client, rsp);
+      return;
+    }
+    respondStatus(client, 400, "Use {\"pin\":\"XXXX\",\"action\":\"dedup\"}");
+    return;
+  }
+
+  // GET — require PIN from query string (?pin=XXXX)
+  String pinParam = getQueryParam(queryString, "pin");
+  if (!requireValidPin(client, pinParam.c_str())) {
     return;
   }
 
@@ -12432,6 +12450,17 @@ static void handleDebugTanks(EthernetClient &client, const String &method, const
   responseStr += "]}";
   respondJson(client, responseStr);
 }
+
+static void handleDfuCheckPost(EthernetClient &client, const String &body) {
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, "Invalid JSON");
+    return;
+  }
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
+    return;
+  }
 
   // Trigger an immediate firmware update check against the Notecard
   Serial.println(F("Manual DFU check triggered via web UI"));
@@ -12459,8 +12488,8 @@ static void handleDebugTanks(EthernetClient &client, const String &method, const
         notecard.deleteResponse(stopRsp);
       }
     }
-    delay(1000);
-    
+    safeSleep(1000);
+
     // Step 2: Disable then re-enable outboard DFU
     J *offReq = notecard.newRequest("card.dfu");
     if (offReq) {
@@ -12469,7 +12498,7 @@ static void handleDebugTanks(EthernetClient &client, const String &method, const
       J *offRsp = notecard.requestAndResponse(offReq);
       if (offRsp) notecard.deleteResponse(offRsp);
     }
-    delay(500);
+    safeSleep(500);
     J *onReq = notecard.newRequest("card.dfu");
     if (onReq) {
       JAddStringToObject(onReq, "name", "stm32");
@@ -12486,7 +12515,7 @@ static void handleDebugTanks(EthernetClient &client, const String &method, const
         notecard.deleteResponse(onRsp);
       }
     }
-    delay(500);
+    safeSleep(500);
     
     // Step 3: Force sync so Notecard pulls fresh firmware info from Notehub
     J *syncReq = notecard.newRequest("hub.sync");
@@ -12497,7 +12526,7 @@ static void handleDebugTanks(EthernetClient &client, const String &method, const
         notecard.deleteResponse(syncRsp);
       }
     }
-    delay(2000);
+    safeSleep(2000);
     
     // Reset local state
     strlcpy(gDfuMode, "idle", sizeof(gDfuMode));
