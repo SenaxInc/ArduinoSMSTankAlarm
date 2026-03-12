@@ -9690,8 +9690,11 @@ static void loadClientConfigSnapshots() {
       return;
     }
     
-    // Buffer size: uid + tab + payload + newline + null terminator
-    char lineBuffer[sizeof(((ClientConfigSnapshot*)0)->uid) + 1 + sizeof(((ClientConfigSnapshot*)0)->payload) + 2];
+    // Buffer size: uid + tab + payload + extended fields + newline + null terminator
+    // Extended fields: \tpd\tconfigVersion\tepoch\tackStatus\tdispatchAttempts\tdispatchEpoch
+    // Account for all struct field sizes plus tab separators to avoid silent truncation
+    static const size_t EXTENDED_FIELDS_MAX = 1 + 1 + 1 + 16 + 1 + 14 + 1 + 16 + 1 + 3 + 1 + 14;  // ~70 bytes
+    char lineBuffer[sizeof(((ClientConfigSnapshot*)0)->uid) + 1 + sizeof(((ClientConfigSnapshot*)0)->payload) + EXTENDED_FIELDS_MAX + 2];
     while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && gClientConfigCount < MAX_CLIENT_CONFIG_SNAPSHOTS) {
       // Check if line was truncated (no newline at end of non-empty buffer)
       size_t buflen = strlen(lineBuffer);
@@ -9872,11 +9875,11 @@ static void saveClientConfigSnapshots() {
     }
     
     // Accumulate output into a buffer first, then write atomically.
-    // Each line: uid(32) + tab + payload(~512) + tab + flag(1) + tab
-    //            + version(16) + tab + epoch(12) + tab + status(16)
-    //            + tab + dispatchAttempts(3) + tab + dispatchEpoch(12) + newline
-    // ≈ 620 bytes per entry. Reserve generously.
-    const size_t bufSize = (size_t)gClientConfigCount * 680 + 64;
+    // Each line: uid(48) + tab + payload(1536) + tab + flag(1) + tab
+    //            + version(16) + tab + epoch(14) + tab + status(16)
+    //            + tab + dispatchAttempts(3) + tab + dispatchEpoch(14) + newline
+    // ≈ 1660 bytes per entry. Reserve generously.
+    const size_t bufSize = (size_t)gClientConfigCount * 1700 + 64;
     char *buf = (char *)malloc(bufSize);
     if (!buf) {
       Serial.println(F("ERROR: Cannot allocate config cache buffer"));
@@ -9909,10 +9912,10 @@ static void saveClientConfigSnapshots() {
   #else
     // LittleFS branch: accumulate into String, then atomic write
     String output;
-    output.reserve(gClientConfigCount * 680);
+    output.reserve(gClientConfigCount * 1700);
     for (uint8_t i = 0; i < gClientConfigCount; ++i) {
       // Format: uid\tpayload\tpendingDispatch\tconfigVersion\tlastAckEpoch\tlastAckStatus\tdispatchAttempts\tlastDispatchEpoch
-      char line[680];
+      char line[1700];
       snprintf(line, sizeof(line), "%s\t%s\t%d\t%s\t%lu\t%s\t%u\t%.0f\n",
                gClientConfigs[i].uid,
                gClientConfigs[i].payload,
