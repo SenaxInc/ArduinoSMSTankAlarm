@@ -701,13 +701,43 @@ static const uint8_t AUTH_MAX_FAILURES = 5;  // Max failures before lockout
 // A new login invalidates any previous session token.
 static char gSessionToken[17] = "";  // 16 hex chars + null terminator
 
+// VIN_ANALOG_PIN must be defined before generateSessionToken() so the function
+// can use the configured pin rather than a hardcoded fallback.
+#ifndef VIN_ANALOG_PIN
+#define VIN_ANALOG_PIN A0           // Opta analog input pin (A0-A7, 0-10V range)
+#endif
+// Supplementary ADC pins sampled for thermal/shot noise during token generation.
+// Override if these pins are in use for other purposes on your hardware.
+#ifndef ENTROPY_ADC_PIN_1
+#define ENTROPY_ADC_PIN_1 A1
+#endif
+#ifndef ENTROPY_ADC_PIN_2
+#define ENTROPY_ADC_PIN_2 A2
+#endif
+#ifndef ENTROPY_ADC_PIN_3
+#define ENTROPY_ADC_PIN_3 A3
+#endif
+
 static void generateSessionToken() {
-  // Mix micros(), millis(), and ADC noise for entropy.
-  // Use A0 directly here; VIN_ANALOG_PIN is defined later in the file.
-  uint32_t seed = micros() ^ (millis() << 16) ^ ((uint32_t)analogRead(A0) << 8);
+  // Gather entropy from timing jitter and ADC noise across multiple pins.
+  // Multiple analogRead() calls add thermal/shot noise; timing samples taken
+  // before and after the ADC reads capture execution jitter.
+  uint32_t t0 = micros();
+  uint32_t a0 = (uint32_t)analogRead(VIN_ANALOG_PIN);
+  uint32_t a1 = (uint32_t)analogRead(ENTROPY_ADC_PIN_1);
+  uint32_t a2 = (uint32_t)analogRead(ENTROPY_ADC_PIN_2);
+  uint32_t a3 = (uint32_t)analogRead(ENTROPY_ADC_PIN_3);
+  uint32_t t1 = micros();         // Second timing sample after ADC reads captures jitter
+  uint32_t currentMillis = millis();
+  // Mix all sources; prime-valued shifts reduce correlation between mixed terms,
+  // spreading entropy uniformly across all 32 bits.
+  uint32_t seed = t0                    ^ (currentMillis << 13) ^ (currentMillis >> 19)
+                ^ (a0 << 5)  ^ (a0 >> 27)
+                ^ (a1 << 11) ^ (a2 << 21)
+                ^ (a3 << 7)  ^ (t1 << 17);
   for (int i = 0; i < 16; i++) {
-    seed = seed * 1103515245 + 12345;
-    gSessionToken[i] = "0123456789abcdef"[(seed >> 16) & 0xF];
+    seed = seed * 1664525UL + 1013904223UL;  // Numerical Recipes LCG constants
+    gSessionToken[i] = "0123456789abcdef"[(seed >> 28) & 0xF];  // Top bits have best quality
   }
   gSessionToken[16] = '\0';
 }
@@ -927,9 +957,7 @@ static unsigned long gLastVoltageCheckMillis = 0;
 #ifndef VIN_ANALOG_ENABLED
 #define VIN_ANALOG_ENABLED false  // Set true when voltage divider hardware is connected
 #endif
-#ifndef VIN_ANALOG_PIN
-#define VIN_ANALOG_PIN A0           // Opta analog input pin (A0-A7, 0-10V range)
-#endif
+// VIN_ANALOG_PIN is defined earlier (before generateSessionToken) to avoid forward-reference.
 #ifndef VIN_DIVIDER_RATIO
 #define VIN_DIVIDER_RATIO 0.6812f   // R2/(R1+R2) — default for R1=22K, R2=47K
 #endif
