@@ -1738,6 +1738,7 @@ static void publishViewerSummary();
 // Persistence: tank registry and client metadata
 static void saveTankRegistry();
 static void loadTankRegistry();
+static uint8_t deduplicateTankRecordsLinear();
 static void saveClientMetadataCache();
 static void loadClientMetadataCache();
 // Stale client alerting
@@ -2479,6 +2480,10 @@ void setup() {
 #endif
   checkServerVoltage();
   checkForFirmwareUpdate();
+  
+  // Dedup tank records after all boot-time data sources have loaded.
+  // Catches duplicates from corrupted registry files or Notecard note backlogs.
+  deduplicateTankRecordsLinear();
   
   addServerSerialLog("Server started", "info", "lifecycle");
 }
@@ -5930,6 +5935,8 @@ static void handleWebRequests() {
     handleNotecardStatusGet(client);
   } else if (method == "GET" && path == "/api/dfu/status") {
     handleDfuStatusGet(client);
+  } else if (path == "/api/debug/tanks") {
+    handleDebugTanks(client, method, body);
   } else if (method == "POST" && path == "/api/dfu/check") {
     handleDfuCheckPost(client);
   } else if (method == "POST" && path == "/api/dfu/enable") {
@@ -12345,7 +12352,87 @@ static void handleDfuStatusGet(EthernetClient &client) {
   respondJson(client, responseStr);
 }
 
-static void handleDfuCheckPost(EthernetClient &client) {
+// Brute-force dedup of tank records (linear scan — does not rely on hash table)
+// Keeps the most recently updated record for each clientUid+tankNumber pair.
+// Returns the number of duplicates removed.
+static uint8_t deduplicateTankRecordsLinear() {
+  uint8_t removed = 0;
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    for (uint8_t j = i + 1; j < gTankRecordCount; ) {
+      if (strcmp(gTankRecords[i].clientUid, gTankRecords[j].clientUid) == 0 &&
+          gTankRecords[i].tankNumber == gTankRecords[j].tankNumber) {
+        // Duplicate found — keep the one with the newer lastUpdateEpoch
+        if (gTankRecords[j].lastUpdateEpoch > gTankRecords[i].lastUpdateEpoch) {
+          memcpy(&gTankRecords[i], &gTankRecords[j], sizeof(TankRecord));
+        }
+        // Remove record j by moving last record into its slot
+        if (j < gTankRecordCount - 1) {
+          memcpy(&gTankRecords[j], &gTankRecords[gTankRecordCount - 1], sizeof(TankRecord));
+        }
+        gTankRecordCount--;
+        removed++;
+        // Don't increment j — re-check the slot we just moved into
+      } else {
+        j++;
+      }
+    }
+  }
+  if (removed > 0) {
+    rebuildTankHashTable();
+    gTankRegistryDirty = true;
+    Serial.print(F("Dedup removed "));
+    Serial.print(removed);
+    Serial.println(F(" duplicate tank records"));
+    addServerSerialLog("Duplicate tank records removed", "info", "registry");
+  }
+  return removed;
+}
+
+// Debug endpoint: GET /api/debug/tanks — dump raw tank records
+// POST /api/debug/tanks with {"action":"dedup"} — force dedup
+static void handleDebugTanks(EthernetClient &client, const String &method, const String &body) {
+  if (method == "POST") {
+    JsonDocument doc;
+    if (deserializeJson(doc, body) == DeserializationError::Ok) {
+      const char *action = doc["action"] | "";
+      if (strcmp(action, "dedup") == 0) {
+        uint8_t removed = deduplicateTankRecordsLinear();
+        if (removed > 0) {
+          saveTankRegistry();
+          gTankRegistryDirty = false;
+        }
+        String rsp = "{\"removed\":" + String(removed) + ",\"remaining\":" + String(gTankRecordCount) + "}";
+        respondJson(client, rsp);
+        return;
+      }
+    }
+    respondStatus(client, 400, "Use {\"action\":\"dedup\"}");
+    return;
+  }
+
+  // GET — dump all tank records for diagnosis
+  String responseStr = "{\"count\":" + String(gTankRecordCount) + ",\"records\":[";
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    const TankRecord &rec = gTankRecords[i];
+    if (i > 0) responseStr += ",";
+    responseStr += "{\"i\":" + String(i);
+    responseStr += ",\"c\":\"" + String(rec.clientUid) + "\"";
+    responseStr += ",\"k\":" + String(rec.tankNumber);
+    responseStr += ",\"n\":\"" + String(rec.label) + "\"";
+    responseStr += ",\"st\":\"" + String(rec.sensorType) + "\"";
+    responseStr += ",\"ot\":\"" + String(rec.objectType) + "\"";
+    responseStr += ",\"mu\":\"" + String(rec.measurementUnit) + "\"";
+    responseStr += ",\"l\":" + String(rec.levelInches, 3);
+    responseStr += ",\"ma\":" + String(rec.sensorMa, 2);
+    responseStr += ",\"a\":" + String(rec.alarmActive ? "true" : "false");
+    responseStr += ",\"at\":\"" + String(rec.alarmType) + "\"";
+    responseStr += ",\"u\":" + String(rec.lastUpdateEpoch, 0);
+    responseStr += "}";
+  }
+  responseStr += "]}";
+  respondJson(client, responseStr);
+}
+
   // Trigger an immediate firmware update check against the Notecard
   Serial.println(F("Manual DFU check triggered via web UI"));
   
