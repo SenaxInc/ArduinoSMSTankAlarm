@@ -702,8 +702,9 @@ static const uint8_t AUTH_MAX_FAILURES = 5;  // Max failures before lockout
 static char gSessionToken[17] = "";  // 16 hex chars + null terminator
 
 static void generateSessionToken() {
-  // Mix micros(), millis(), and ADC noise for entropy
-  uint32_t seed = micros() ^ (millis() << 16) ^ ((uint32_t)analogRead(VIN_ANALOG_PIN) << 8);
+  // Mix micros(), millis(), and ADC noise for entropy.
+  // Use A0 directly here; VIN_ANALOG_PIN is defined later in the file.
+  uint32_t seed = micros() ^ (millis() << 16) ^ ((uint32_t)analogRead(A0) << 8);
   for (int i = 0; i < 16; i++) {
     seed = seed * 1103515245 + 12345;
     gSessionToken[i] = "0123456789abcdef"[(seed >> 16) & 0xF];
