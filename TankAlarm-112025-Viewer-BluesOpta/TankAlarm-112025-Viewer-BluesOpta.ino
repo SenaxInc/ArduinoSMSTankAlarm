@@ -175,6 +175,7 @@ static void sendTankJson(EthernetClient &client);
 static void ensureTimeSync();
 static double currentEpoch();
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
+static void deriveMacFromUid();
 static void scheduleNextSummaryFetch();
 static void fetchViewerSummary();
 static void handleViewerSummary(JsonDocument &doc, double epoch);
