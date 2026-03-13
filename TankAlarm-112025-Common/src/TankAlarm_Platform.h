@@ -216,6 +216,49 @@ static inline bool tankalarm_posix_write_file_atomic(const char *path,
     return true;
 }
 
+/**
+ * Boot-time cleanup for orphaned .tmp files left by interrupted atomic writes.
+ *
+ * For each path in the list:
+ *  - If both path.tmp and path exist → remove .tmp (original is intact)
+ *  - If only path.tmp exists → complete the rename (only copy of data)
+ *
+ * Call once during setup(), after the filesystem is mounted.
+ *
+ * @param paths      Array of canonical file paths (e.g., "/fs/server_config.json")
+ * @param pathCount  Number of entries in the array
+ */
+static inline void tankalarm_posix_cleanup_tmp_files(const char * const paths[],
+                                                      size_t pathCount)
+{
+    for (size_t i = 0; i < pathCount; i++) {
+        size_t pathLen = strlen(paths[i]);
+        if (pathLen == 0 || pathLen > 250) continue;
+
+        char tmpPath[256];
+        memcpy(tmpPath, paths[i], pathLen);
+        memcpy(tmpPath + pathLen, ".tmp", 5);
+
+        if (!tankalarm_posix_file_exists(tmpPath)) continue;
+
+        if (tankalarm_posix_file_exists(paths[i])) {
+            // Original intact — discard orphaned temp
+            remove(tmpPath);
+            Serial.print(F("tmp cleanup: removed orphan "));
+            Serial.println(tmpPath);
+        } else {
+            // Only temp exists — complete the interrupted rename
+            if (rename(tmpPath, paths[i]) == 0) {
+                Serial.print(F("tmp cleanup: recovered "));
+                Serial.println(paths[i]);
+            } else {
+                Serial.print(F("tmp cleanup: rename failed "));
+                Serial.println(paths[i]);
+            }
+        }
+    }
+}
+
 #endif // TANKALARM_POSIX_FILE_IO_AVAILABLE
 
 // ============================================================================
@@ -264,6 +307,33 @@ static bool tankalarm_littlefs_write_file_atomic(const char *path,
     }
 
     return true;
+}
+
+/**
+ * Boot-time cleanup for orphaned .tmp files (LittleFS variant).
+ * Same logic as the POSIX version — see tankalarm_posix_cleanup_tmp_files().
+ */
+static void tankalarm_littlefs_cleanup_tmp_files(const char * const paths[],
+                                                  size_t pathCount)
+{
+    for (size_t i = 0; i < pathCount; i++) {
+        String tmpPath = String(paths[i]) + ".tmp";
+        if (!LittleFS.exists(tmpPath.c_str())) continue;
+
+        if (LittleFS.exists(paths[i])) {
+            LittleFS.remove(tmpPath.c_str());
+            Serial.print(F("tmp cleanup: removed orphan "));
+            Serial.println(tmpPath);
+        } else {
+            if (LittleFS.rename(tmpPath.c_str(), paths[i])) {
+                Serial.print(F("tmp cleanup: recovered "));
+                Serial.println(paths[i]);
+            } else {
+                Serial.print(F("tmp cleanup: rename failed "));
+                Serial.println(paths[i]);
+            }
+        }
+    }
 }
 
 #endif // TANKALARM_FILESYSTEM_AVAILABLE && !TANKALARM_POSIX_FILE_IO_AVAILABLE

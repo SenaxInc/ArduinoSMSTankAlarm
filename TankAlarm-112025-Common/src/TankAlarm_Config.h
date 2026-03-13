@@ -114,6 +114,19 @@
 #define I2C_SENSOR_RECOVERY_MAX_BACKOFF 8
 #endif
 
+// Maximum total sensor-only recovery attempts before circuit breaker trips.
+// With exponential backoff (1×, 2×, 4×, 8×, 8×), 5 attempts spans ~310 loops.
+// Resets to 0 when sensors recover. Prevents infinite recovery on dead hardware.
+#ifndef I2C_SENSOR_RECOVERY_MAX_ATTEMPTS
+#define I2C_SENSOR_RECOVERY_MAX_ATTEMPTS 5
+#endif
+
+// Minimum cooldown between relay commands (ms).
+// Prevents rapid toggling from stale queued Notes or route replays.
+#ifndef RELAY_COMMAND_COOLDOWN_MS
+#define RELAY_COMMAND_COOLDOWN_MS 5000UL
+#endif
+
 // Maximum backoff interval for Notecard health checks (ms)
 // Health check interval starts at 5 min, doubles after each failure,
 // and caps at this value. Resets to 5 min on successful recovery.

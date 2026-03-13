@@ -1512,6 +1512,7 @@ void loop() {
   {
     static uint16_t consecutiveSensorOnlyFailLoops = 0;
     static uint8_t sensorRecoveryBackoff = 1;
+    static uint8_t sensorRecoveryTotalAttempts = 0;
     if (gNotecardAvailable) {  // Notecard is OK — isolate to sensor bus
       bool allCurrentLoopFailed = false;
       uint8_t currentLoopCount = 0;
@@ -1529,27 +1530,37 @@ void loop() {
         consecutiveSensorOnlyFailLoops++;
         uint16_t effectiveThreshold = (uint16_t)I2C_SENSOR_ONLY_RECOVERY_THRESHOLD * sensorRecoveryBackoff;
         if (consecutiveSensorOnlyFailLoops >= effectiveThreshold) {
-          Serial.print(F("I2C: all current-loop sensors failing — bus recovery (backoff x"));
-          Serial.print(sensorRecoveryBackoff);
-          Serial.println(F(")"));
-          recoverI2CBus();
-          logI2CRecoveryEvent(I2C_RECOVERY_SENSOR_ONLY);
-          // Reset sensor failure counters to give them a fresh chance
-          for (uint8_t i = 0; i < gConfig.monitorCount; i++) {
-            if (gConfig.monitors[i].sensorInterface == SENSOR_CURRENT_LOOP) {
-              gMonitorState[i].consecutiveFailures = 0;
-              gMonitorState[i].sensorFailed = false;
+          if (sensorRecoveryTotalAttempts >= I2C_SENSOR_RECOVERY_MAX_ATTEMPTS) {
+            // Circuit breaker: stop retrying after max total attempts
+            if (sensorRecoveryTotalAttempts == I2C_SENSOR_RECOVERY_MAX_ATTEMPTS) {
+              Serial.println(F("I2C: sensor recovery attempts exhausted — permanent fault"));
+              sensorRecoveryTotalAttempts++;  // prevent repeat log
+            }
+          } else {
+            Serial.print(F("I2C: all current-loop sensors failing — bus recovery (backoff x"));
+            Serial.print(sensorRecoveryBackoff);
+            Serial.println(F(")"));
+            recoverI2CBus();
+            logI2CRecoveryEvent(I2C_RECOVERY_SENSOR_ONLY);
+            sensorRecoveryTotalAttempts++;
+            // Reset sensor failure counters to give them a fresh chance
+            for (uint8_t i = 0; i < gConfig.monitorCount; i++) {
+              if (gConfig.monitors[i].sensorInterface == SENSOR_CURRENT_LOOP) {
+                gMonitorState[i].consecutiveFailures = 0;
+                gMonitorState[i].sensorFailed = false;
+              }
+            }
+            // Exponential backoff: double threshold each time, capped
+            if (sensorRecoveryBackoff < I2C_SENSOR_RECOVERY_MAX_BACKOFF) {
+              sensorRecoveryBackoff *= 2;
             }
           }
           consecutiveSensorOnlyFailLoops = 0;
-          // Exponential backoff: double threshold each time, capped
-          if (sensorRecoveryBackoff < I2C_SENSOR_RECOVERY_MAX_BACKOFF) {
-            sensorRecoveryBackoff *= 2;
-          }
         }
       } else {
         consecutiveSensorOnlyFailLoops = 0;
         sensorRecoveryBackoff = 1;  // Reset backoff when sensors recover
+        sensorRecoveryTotalAttempts = 0;  // Reset circuit breaker on full recovery
       }
     } else {
       consecutiveSensorOnlyFailLoops = 0;  // dual-fail path handles this
@@ -5246,6 +5257,7 @@ static void loadSolarStateFromFlash() {
       gSolarOnlyLastReportEpoch = doc["lastReportEpoch"].is<double>() ? doc["lastReportEpoch"].as<double>() : 0.0;
       gSolarOnlyBootCount = doc["bootCount"].is<unsigned long>() ? doc["bootCount"].as<unsigned long>() : 0;
       gSolarOnlyBatteryFailed = doc["batteryFailed"].is<bool>() ? doc["batteryFailed"].as<bool>() : false;
+      gSolarOnlySunsetActive = doc["sunsetActive"].is<bool>() ? doc["sunsetActive"].as<bool>() : false;
       Serial.println(F("Solar state loaded from flash"));
     }
   #else
@@ -5269,6 +5281,7 @@ static void loadSolarStateFromFlash() {
       gSolarOnlyLastReportEpoch = doc["lastReportEpoch"].is<double>() ? doc["lastReportEpoch"].as<double>() : 0.0;
       gSolarOnlyBootCount = doc["bootCount"].is<unsigned long>() ? doc["bootCount"].as<unsigned long>() : 0;
       gSolarOnlyBatteryFailed = doc["batteryFailed"].is<bool>() ? doc["batteryFailed"].as<bool>() : false;
+      gSolarOnlySunsetActive = doc["sunsetActive"].is<bool>() ? doc["sunsetActive"].as<bool>() : false;
       Serial.println(F("Solar state loaded from flash (LittleFS)"));
     }
   #endif
@@ -5286,6 +5299,7 @@ static void saveSolarStateToFlash() {
     doc["lastReportEpoch"] = gSolarOnlyLastReportEpoch;
     doc["bootCount"] = gSolarOnlyBootCount;
     doc["batteryFailed"] = gSolarOnlyBatteryFailed;
+    doc["sunsetActive"] = gSolarOnlySunsetActive;
     
     char buf[256];
     size_t len = serializeJson(doc, buf, sizeof(buf));
@@ -5300,6 +5314,7 @@ static void saveSolarStateToFlash() {
     doc["lastReportEpoch"] = gSolarOnlyLastReportEpoch;
     doc["bootCount"] = gSolarOnlyBootCount;
     doc["batteryFailed"] = gSolarOnlyBatteryFailed;
+    doc["sunsetActive"] = gSolarOnlySunsetActive;
     
     char buf[256];
     size_t len = serializeJson(doc, buf, sizeof(buf));
@@ -5451,6 +5466,7 @@ static void checkSolarOnlySunsetProtocol(unsigned long now) {
     if (!gSolarOnlySunsetActive) {
       gSolarOnlySunsetActive = true;
       gSolarOnlySunsetStart = now;
+      saveSolarStateToFlash();  // Persist sunset-active flag for reboot recovery
       Serial.print(F("Solar-only: sunset protocol started (Vin="));
       Serial.print(gVinVoltage, 2);
       Serial.println(F("V)"));
@@ -6102,6 +6118,9 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
     return;
   }
 
+  // Stamp schema version for forward-compatibility detection
+  JAddNumberToObject(body, "_sv", NOTEFILE_SCHEMA_VERSION);
+
   JAddItemToObject(req, "body", body);
 
 #ifdef TANKALARM_WATCHDOG_AVAILABLE
@@ -6627,6 +6646,29 @@ static void pollForRelayCommands() {
 }
 
 static void processRelayCommand(const JsonDocument &doc) {
+  // Verify this command is targeted to this client (if target field present)
+  if (!doc["target"].isNull()) {
+    const char *targetUid = doc["target"].as<const char*>();
+    if (targetUid && targetUid[0] != '\0' && strcmp(targetUid, gDeviceUID) != 0) {
+      Serial.print(F("Relay command not for this device (target: "));
+      Serial.print(targetUid);
+      Serial.println(F(") — ignored"));
+      return;
+    }
+  }
+
+  // Rate limit: reject commands arriving faster than the minimum cooldown
+  // to prevent rapid toggling from stale queued Notes or route replays
+  {
+    static unsigned long lastRelayCommandMillis = 0;
+    unsigned long now = millis();
+    if (lastRelayCommandMillis != 0 && (now - lastRelayCommandMillis) < RELAY_COMMAND_COOLDOWN_MS) {
+      Serial.println(F("Relay command rate-limited — too soon after last command"));
+      return;
+    }
+    lastRelayCommandMillis = now;
+  }
+
   // Handle tank relay reset command from server first
   // Command format: { "relay_reset_tank": 0-7 }
   // This is a standalone command that doesn't require relay/state fields
