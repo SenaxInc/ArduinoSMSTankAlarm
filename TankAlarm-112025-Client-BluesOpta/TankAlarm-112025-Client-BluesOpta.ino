@@ -483,6 +483,8 @@ struct MonitorConfig {
   char measurementUnit[8]; // "inches", "psi", "rpm", "gpm", etc.
   // Expected pulse rate for baseline comparison (by object type)
   float expectedPulseRate; // Expected RPM for engines, GPM for flow, etc. (0 = not configured)
+  // Stuck sensor detection
+  bool stuckDetectionEnabled; // true = flag sensor as failed after 10 identical readings
   // Tank unload tracking configuration
   bool trackUnloads;          // true = this tank is regularly emptied, track unload events
   float unloadEmptyHeight;    // Default empty height when level drops to/below sensor height (inches)
@@ -2006,6 +2008,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.monitors[0].analogVoltageMax = 10.0f; // Default: 10V (for 0-10V sensors)
   strlcpy(cfg.monitors[0].measurementUnit, "inches", sizeof(cfg.monitors[0].measurementUnit)); // Default: inches
   cfg.monitors[0].expectedPulseRate = 0.0f; // Default: not configured (0 = no baseline)
+  cfg.monitors[0].stuckDetectionEnabled = true; // Default: detect stuck sensors
   // Tank unload tracking defaults (disabled)
   cfg.monitors[0].trackUnloads = false;     // Default: not a fill-and-empty tank
   cfg.monitors[0].unloadEmptyHeight = UNLOAD_DEFAULT_EMPTY_HEIGHT; // Default empty reading
@@ -2123,6 +2126,8 @@ static void initMonitorDefaults(MonitorConfig &mon, uint8_t index) {
   mon.analogVoltageMin = 0.0f;
   mon.analogVoltageMax = 10.0f;
 
+  // Stuck sensor detection
+  mon.stuckDetectionEnabled = true;
   // Unload tracking
   mon.trackUnloads = false;
   mon.unloadEmptyHeight = UNLOAD_DEFAULT_EMPTY_HEIGHT;
@@ -2315,13 +2320,14 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
   const char *muStr = t["measurementUnit"].as<const char *>();
   if (muStr && muStr[0] != '\0') {
     strlcpy(mon.measurementUnit, muStr, sizeof(mon.measurementUnit));
-  } else if (mon.measurementUnit[0] == '\0') {
-    // Derive from context if not already set
+  } else if (mon.measurementUnit[0] == '\0' || mon.objectType != OBJECT_TANK) {
+    // Derive from context if not already set, or if non-tank type still has default "inches"
     switch (mon.objectType) {
       case OBJECT_GAS:
-        // Gas pressure: use sensor range unit (PSI, bar, etc.)
+        // Gas pressure: use sensor range unit (PSI, bar, etc.), normalized to lowercase
         if (mon.sensorRangeUnit[0] != '\0') {
           strlcpy(mon.measurementUnit, mon.sensorRangeUnit, sizeof(mon.measurementUnit));
+          for (char *p = mon.measurementUnit; *p; ++p) *p = tolower((unsigned char)*p);
         } else {
           strlcpy(mon.measurementUnit, "psi", sizeof(mon.measurementUnit));
         }
@@ -2347,6 +2353,9 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
   // ---- Analog voltage range ----
   if (t["analogVoltageMin"].is<float>()) mon.analogVoltageMin = t["analogVoltageMin"].as<float>();
   if (t["analogVoltageMax"].is<float>()) mon.analogVoltageMax = t["analogVoltageMax"].as<float>();
+
+  // ---- Stuck sensor detection ----
+  if (t["stuckDetection"].is<bool>()) mon.stuckDetectionEnabled = t["stuckDetection"].as<bool>();
 
   // ---- Unload tracking ----
   if (t["trackUnloads"].is<bool>()) mon.trackUnloads = t["trackUnloads"].as<bool>();
@@ -2752,6 +2761,8 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     // Save analog voltage range settings
     t["analogVoltageMin"] = cfg.monitors[i].analogVoltageMin;
     t["analogVoltageMax"] = cfg.monitors[i].analogVoltageMax;
+    // Save stuck sensor detection setting
+    t["stuckDetection"] = cfg.monitors[i].stuckDetectionEnabled;
     // Save tank unload tracking settings
     t["trackUnloads"] = cfg.monitors[i].trackUnloads;
     t["unloadEmptyHeight"] = cfg.monitors[i].unloadEmptyHeight;
@@ -3807,7 +3818,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   }
 
   // Check for stuck sensor (same reading multiple times)
-  if (state.hasLastValidReading && fabs(reading - state.lastValidReading) < 0.05f) {
+  if (cfg.stuckDetectionEnabled && state.hasLastValidReading && fabs(reading - state.lastValidReading) < 0.05f) {
     state.stuckReadingCount++;
     if (state.stuckReadingCount >= SENSOR_STUCK_THRESHOLD) {
       if (!state.sensorFailed) {
@@ -4713,7 +4724,10 @@ static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, 
     if (state.currentSensorMa >= 4.0f) {
       doc["ema"] = roundTo(state.currentSensorMa, 2);
     }
-    // Note: sms/email flags and measurement unit omitted — server has config
+    // Include measurement unit so server can display correct units
+    if (cfg.measurementUnit[0] != '\0') {
+      doc["mu"] = cfg.measurementUnit;
+    }
 
     publishNote(UNLOAD_FILE, doc, true);
     Serial.println(F("Unload event sent to server"));
