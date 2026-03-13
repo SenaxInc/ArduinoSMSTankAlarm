@@ -1,7 +1,7 @@
-# TankAlarm v1.1.4 - Industrial Tank Monitoring System
+# TankAlarm v1.1.6 - Industrial Tank Monitoring System
 
-**Release Date:** February 28, 2026  
-**Version:** 1.1.4  
+**Release Date:** March 13, 2026  
+**Version:** 1.1.6  
 **Platform:** Arduino Opta + Blues Wireless Notecard
 
 A production-ready industrial monitoring system for remote tank level monitoring, alarm management, and fleet coordination using cellular IoT connectivity.
@@ -319,6 +319,8 @@ CLIENT                      BLUES NOTEHUB              SERVER
 - **Common Header Audit:** [CODE REVIEW/COMMON_HEADER_AUDIT_02192026.md](CODE%20REVIEW/COMMON_HEADER_AUDIT_02192026.md)
 
 ### Code Reviews & Release History
+- **v1.1.6 Release Notes:** [CODE REVIEW/V1.1.6_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.6_RELEASE_NOTES.md)
+- **v1.1.5 Release Notes:** [CODE REVIEW/V1.1.5_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.5_RELEASE_NOTES.md)
 - **v1.1.4 Release Notes:** [CODE REVIEW/V1.1.4_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.4_RELEASE_NOTES.md)
 - **v1.1.1 Release Notes:** [CODE REVIEW/V1.1.1_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.1_RELEASE_NOTES.md)
 - **v1.0 Release Summary:** [CODE REVIEW/V1.0_RELEASE_SUMMARY.md](CODE%20REVIEW/V1.0_RELEASE_SUMMARY.md)
@@ -340,7 +342,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
   - [ ] Ethernet connectivity stable
   
 - [ ] **Software Validation**
-  - [ ] Firmware version 1.1.4 confirmed
+  - [ ] Firmware version 1.1.6 confirmed
   - [ ] All clients reporting to server
   - [ ] Alarms triggering correctly
   - [ ] SMS/email alerts delivering
@@ -360,7 +362,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
 
 ### Deployment Checklist
 
-1. Flash all devices with v1.1.4 firmware
+1. Flash all devices with v1.1.6 firmware
 2. Configure Blues Notehub fleet assignments
 3. Set server IP address and network configuration
 4. Configure SMS/email recipients
@@ -473,4 +475,4 @@ ArduinoSMSTankAlarm/
 
 **Built with ❤️ for industrial IoT applications**
 
-*Last Updated: February 20, 2026*
+*Last Updated: March 13, 2026*
