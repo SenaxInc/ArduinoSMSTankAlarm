@@ -295,7 +295,7 @@ static bool isValidClientUid(const char *clientUid) {
 
 Updated critical path (upsertTankRecord):
 ```cpp
-static TankRecord *upsertTankRecord(const char *clientUid, uint8_t tankNumber) {
+static TankRecord *upsertTankRecord(const char *clientUid, uint8_t sensorIndex) {
   // ✅ Validate UID length to prevent silent truncation issues
   if (!isValidClientUid(clientUid)) {
     Serial.println(F("ERROR: Invalid client UID, skipping tank record"));

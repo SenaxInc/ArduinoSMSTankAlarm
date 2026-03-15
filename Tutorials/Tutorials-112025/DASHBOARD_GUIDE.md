@@ -1109,7 +1109,7 @@ See [Troubleshooting Guide](TROUBLESHOOTING_GUIDE.md) for detailed network diagn
       {
         "client": "dev:864475044012345",
         "site": "North Farm",
-        "tank": "A",
+        "sensorIndex": "A",
         "level": 48.5,
         "sensor": 12.3,
         "alarm": false,

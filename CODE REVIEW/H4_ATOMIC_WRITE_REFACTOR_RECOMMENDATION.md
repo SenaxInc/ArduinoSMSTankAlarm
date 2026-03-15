@@ -1451,7 +1451,7 @@ Apply the same pattern: remove the `LittleFS.remove()` call before `LittleFS.ren
     for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
       TankCalibration &cal = gTankCalibrations[i];
       fprintf(file, "%s\t%d\t%.6f\t%.2f\t%.4f\t%d\t%d\t%.0f\t%.6f\t%d\t%d\n",
-              cal.clientUid, cal.tankNumber, cal.learnedSlope, cal.learnedOffset,
+              cal.clientUid, cal.sensorIndex, cal.learnedSlope, cal.learnedOffset,
               cal.rSquared, cal.entryCount, cal.hasLearnedCalibration ? 1 : 0,
               cal.lastCalibrationEpoch, cal.learnedTempCoef, 
               cal.hasTempCompensation ? 1 : 0, cal.tempEntryCount);
@@ -1467,7 +1467,7 @@ Apply the same pattern: remove the `LittleFS.remove()` call before `LittleFS.ren
       TankCalibration &cal = gTankCalibrations[i];
       char line[128];
       snprintf(line, sizeof(line), "%s\t%d\t%.6f\t%.2f\t%.4f\t%d\t%d\t%.0f\t%.6f\t%d\t%d\n",
-               cal.clientUid, cal.tankNumber, cal.learnedSlope, cal.learnedOffset,
+               cal.clientUid, cal.sensorIndex, cal.learnedSlope, cal.learnedOffset,
                cal.rSquared, cal.entryCount, cal.hasLearnedCalibration ? 1 : 0,
                cal.lastCalibrationEpoch, cal.learnedTempCoef,
                cal.hasTempCompensation ? 1 : 0, cal.tempEntryCount);

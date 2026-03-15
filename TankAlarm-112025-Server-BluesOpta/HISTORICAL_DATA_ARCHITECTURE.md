@@ -186,7 +186,7 @@ Each tank shows:
 Query parameters:
 - `site`: Filter by site name
 - `client`: Filter by client UID
-- `tank`: Filter by tank number
+- `sensor`: Filter by sensor index
 - `range`: Time range (24h, 7d, 30d, 90d)
 - `type`: Data type (levels, alarms, voltage)
 
@@ -212,7 +212,7 @@ Response:
     {
       "client": "dev:client001",
       "site": "North Facility",
-      "tank": 1,
+      "sensorIndex": 1,
       "currentStats": { "min": 25.5, "max": 95.2, "avg": 62.3, "readings": 744 },
       "previousStats": { "available": false, "archivePath": "/history/2024/12/tanks.json" }
     }
@@ -225,7 +225,7 @@ Response:
 Year-over-year comparison for seasonal analysis.
 
 Query parameters:
-- `tank`: (optional) Specific tank in format "CLIENT_UID:TANK_NUMBER"
+- `sensor`: (optional) Specific sensor in format "CLIENT_UID:SENSOR_INDEX"
 - `years`: (optional) Number of years to compare (default: 3, max: 5)
 
 Response:
@@ -238,7 +238,7 @@ Response:
     {
       "client": "dev:client001",
       "site": "North Facility",
-      "tank": 1,
+      "sensorIndex": 1,
       "currentYear": { "min": 25.5, "max": 95.2, "avg": 62.3, "readings": 168 },
       "previousYears": [
         { "year": 2024, "available": false, "archivePath": "/history/2024/annual_summary.json" },

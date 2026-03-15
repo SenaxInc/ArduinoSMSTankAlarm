@@ -443,8 +443,7 @@ struct MonitorConfig {
   char id;                 // Friendly identifier (A, B, C ...)
   char name[24];           // Label shown in reports (e.g., "North Tank", "Main Pump")
   char contents[24];       // What the tank contains (e.g., "Diesel", "Water") - not used for RPM monitors
-  uint8_t sensorIndex;   // Numeric reference (1, 2, 3...)
-  uint8_t userNumber;    // Optional user-assigned display number (0 = unset)
+  uint8_t monitorNumber;   // Numeric reference (1, 2, 3...)
   ObjectType objectType;   // What is being monitored (tank, engine, pump, gas, flow)
   SensorInterface sensorInterface; // How measurement is taken (digital, analog, currentLoop, pulse)
   int16_t primaryPin;      // Digital pin or analog channel
@@ -1983,7 +1982,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.monitors[0].id = 'A';
   strlcpy(cfg.monitors[0].name, "Primary Tank", sizeof(cfg.monitors[0].name));
   cfg.monitors[0].contents[0] = '\0'; // Empty by default
-  cfg.monitors[0].sensorIndex = 1;
+  cfg.monitors[0].monitorNumber = 1;
   cfg.monitors[0].objectType = OBJECT_TANK;          // Default: tank level monitoring
   cfg.monitors[0].sensorInterface = SENSOR_ANALOG;   // Default: analog voltage sensor
   cfg.monitors[0].primaryPin = 0; // A0 on Opta Ext
@@ -2088,8 +2087,7 @@ static void initMonitorDefaults(MonitorConfig &mon, uint8_t index) {
   mon.id = 'A' + index;
   strlcpy(mon.name, "Tank", sizeof(mon.name));
   mon.contents[0] = '\0';
-  mon.sensorIndex = index + 1;
-  mon.userNumber = 0;
+  mon.monitorNumber = index + 1;
   mon.objectType = OBJECT_TANK;
 
   // Sensor hardware
@@ -2172,11 +2170,12 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
   const char *contentsStr = t["contents"].as<const char *>();
   if (contentsStr) strlcpy(mon.contents, contentsStr, sizeof(mon.contents));
 
-  if (t["number"].is<uint8_t>()) mon.sensorIndex = t["number"].as<uint8_t>();
-  if (t["userNumber"].is<uint8_t>()) mon.userNumber = t["userNumber"].as<uint8_t>();
+  if (t["number"].is<uint8_t>()) mon.monitorNumber = t["number"].as<uint8_t>();
 
   // Object type (what is being monitored)
-  const char *objType = t["monitorType"].as<const char *>();
+  // Support both "objectType" (preferred) and "monitorType" (config generator)
+  const char *objType = t["objectType"].as<const char *>();
+  if (!objType) objType = t["monitorType"].as<const char *>();
   if (objType) {
     if (strcmp(objType, "engine") == 0)      mon.objectType = OBJECT_ENGINE;
     else if (strcmp(objType, "pump") == 0)   mon.objectType = OBJECT_PUMP;
@@ -2187,7 +2186,9 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
   }
 
   // ---- Sensor interface ----
-  const char *sensor = t["sensor"].as<const char *>();
+  // Support both "sensorInterface" (preferred) and legacy "sensor" field names
+  const char *sensor = t["sensorInterface"].as<const char *>();
+  if (!sensor) sensor = t["sensor"].as<const char *>();
   if (sensor) {
     if (strcmp(sensor, "digital") == 0) {
       mon.sensorInterface = SENSOR_DIGITAL;
@@ -2210,11 +2211,17 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
   if (t["secondaryPin"].is<int>()) mon.secondaryPin = t["secondaryPin"].as<int>();
   if (t["loopChannel"].is<int>()) mon.currentLoopChannel = t["loopChannel"].as<int>();
 
-  if (t["rpmPin"].is<int>()) {
+  // Support both "pulsePin" (preferred) and legacy "rpmPin"
+  if (t["pulsePin"].is<int>()) {
+    mon.pulsePin = t["pulsePin"].as<int>();
+  } else if (t["rpmPin"].is<int>()) {
     mon.pulsePin = t["rpmPin"].as<int>();
   }
 
-  if (t["pulsesPerRev"].is<uint8_t>()) {
+  // Support both "pulsesPerUnit" (preferred) and legacy "pulsesPerRev"
+  if (t["pulsesPerUnit"].is<uint8_t>()) {
+    mon.pulsesPerUnit = max((uint8_t)1, t["pulsesPerUnit"].as<uint8_t>());
+  } else if (t["pulsesPerRev"].is<uint8_t>()) {
     mon.pulsesPerUnit = max((uint8_t)1, t["pulsesPerRev"].as<uint8_t>());
   }
 
@@ -2234,11 +2241,17 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
   }
 
   // ---- Pulse sampling ----
-  if (t["rpmSampleDurationMs"].is<uint32_t>()) {
+  // Support both "pulseSampleDurationMs" (preferred) and legacy "rpmSampleDurationMs"
+  if (t["pulseSampleDurationMs"].is<uint32_t>()) {
+    mon.pulseSampleDurationMs = t["pulseSampleDurationMs"].as<uint32_t>();
+  } else if (t["rpmSampleDurationMs"].is<uint32_t>()) {
     mon.pulseSampleDurationMs = t["rpmSampleDurationMs"].as<uint32_t>();
   }
 
-  if (t["rpmAccumulatedMode"].is<bool>()) {
+  // Support both "pulseAccumulatedMode" (preferred) and legacy "rpmAccumulatedMode"
+  if (t["pulseAccumulatedMode"].is<bool>()) {
+    mon.pulseAccumulatedMode = t["pulseAccumulatedMode"].as<bool>();
+  } else if (t["rpmAccumulatedMode"].is<bool>()) {
     mon.pulseAccumulatedMode = t["rpmAccumulatedMode"].as<bool>();
   }
 
@@ -2681,18 +2694,7 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     if (cfg.monitors[i].contents[0] != '\0') {
       t["contents"] = cfg.monitors[i].contents;
     }
-    t["number"] = cfg.monitors[i].sensorIndex;
-    if (cfg.monitors[i].userNumber > 0) {
-      t["userNumber"] = cfg.monitors[i].userNumber;
-    }
-    // Serialize object type (matches config generator key)
-    switch (cfg.monitors[i].objectType) {
-      case OBJECT_ENGINE: t["monitorType"] = "rpm"; break;
-      case OBJECT_PUMP:   t["monitorType"] = "pump"; break;
-      case OBJECT_GAS:    t["monitorType"] = "gas"; break;
-      case OBJECT_FLOW:   t["monitorType"] = "flow"; break;
-      default:            t["monitorType"] = "tank"; break;
-    }
+    t["number"] = cfg.monitors[i].monitorNumber;
     switch (cfg.monitors[i].sensorInterface) {
       case SENSOR_DIGITAL: t["sensor"] = "digital"; break;
       case SENSOR_CURRENT_LOOP: t["sensor"] = "current"; break;
@@ -2719,8 +2721,8 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
       default: t["hallEffectDetection"] = "pulse"; break;
     }
     // Save RPM sampling configuration
-    t["rpmSampleDurationMs"] = cfg.monitors[i].pulseSampleDurationMs;
-    t["rpmAccumulatedMode"] = cfg.monitors[i].pulseAccumulatedMode;
+    t["pulseSampleDurationMs"] = cfg.monitors[i].pulseSampleDurationMs;
+    t["pulseAccumulatedMode"] = cfg.monitors[i].pulseAccumulatedMode;
     if (cfg.monitors[i].expectedPulseRate > 0.0f) {
       t["expectedPulseRate"] = cfg.monitors[i].expectedPulseRate;
     }
@@ -3815,7 +3817,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
           JsonDocument doc;
           doc["c"] = gDeviceUID;
           doc["s"] = gConfig.siteName;
-          doc["k"] = cfg.sensorIndex;
+          doc["k"] = cfg.monitorNumber;
           doc["y"] = "sensor-fault";
           doc["rd"] = reading;
           doc["t"] = currentEpoch();
@@ -3839,7 +3841,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
           JsonDocument doc;
           doc["c"] = gDeviceUID;
           doc["s"] = gConfig.siteName;
-          doc["k"] = cfg.sensorIndex;
+          doc["k"] = cfg.monitorNumber;
           doc["y"] = "sensor-stuck";
           doc["rd"] = reading;
           doc["t"] = currentEpoch();
@@ -3862,7 +3864,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
     JsonDocument doc;
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
-    doc["k"] = cfg.sensorIndex;
+    doc["k"] = cfg.monitorNumber;
     doc["y"] = "sensor-recovered";
     doc["rd"] = reading;
     doc["t"] = currentEpoch();
@@ -4258,9 +4260,8 @@ static void sendTelemetry(uint8_t idx, const char *reason, bool syncNow) {
   JsonDocument doc;
   doc["c"] = gDeviceUID;
   doc["s"] = gConfig.siteName;
-  doc["k"] = cfg.sensorIndex;
+  doc["k"] = cfg.monitorNumber;
   doc["n"] = cfg.name;
-  if (cfg.userNumber > 0) doc["un"] = cfg.userNumber;
 
   // Include object type and measurement unit so server/dashboard can display correctly
   switch (cfg.objectType) {
@@ -4469,8 +4470,7 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     JsonDocument doc;
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
-    doc["k"] = cfg.sensorIndex;
-    if (cfg.userNumber > 0) doc["un"] = cfg.userNumber;
+    doc["k"] = cfg.monitorNumber;
     doc["y"] = alarmType;
     // Include object type and measurement unit for correct dashboard display
     switch (cfg.objectType) {
@@ -4721,7 +4721,7 @@ static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, 
     JsonDocument doc;
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
-    doc["k"] = cfg.sensorIndex;
+    doc["k"] = cfg.monitorNumber;
     // Note: "type" = "unload" omitted — routing is by file (unload.qi)
     doc["pk"] = roundTo(peakInches, 1);      // Peak height
     doc["em"] = roundTo(currentInches, 1);   // Empty/low height
@@ -5825,7 +5825,7 @@ static void sendDailyReport() {
           for (uint8_t ai = 0; ai < gConfig.monitorCount; ++ai) {
             if (gMonitorState[ai].highAlarmLatched || gMonitorState[ai].lowAlarmLatched) {
               JsonObject a = alarmsArr.add<JsonObject>();
-              a["k"] = gConfig.monitors[ai].sensorIndex;
+              a["k"] = gConfig.monitors[ai].monitorNumber;
               a["hi"] = gMonitorState[ai].highAlarmLatched;
               a["lo"] = gMonitorState[ai].lowAlarmLatched;
             }
@@ -5904,8 +5904,7 @@ static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankInd
 
   JsonObject t = array.add<JsonObject>();
   t["n"] = cfg.name;                              // label/name
-  t["k"] = cfg.sensorIndex;                     // monitor number
-  if (cfg.userNumber > 0) t["un"] = cfg.userNumber;
+  t["k"] = cfg.monitorNumber;                     // monitor number
   
   // Include object type in daily report (server's metadata refresh after restarts)
   switch (cfg.objectType) {

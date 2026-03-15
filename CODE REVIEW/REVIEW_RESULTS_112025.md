@@ -317,7 +317,7 @@ if (contentLength > 8192) {
 ```cpp
 for (uint8_t i = 0; i < gTankRecordCount; ++i) {
   if (strcmp(gTankRecords[i].clientUid, clientUid) == 0 &&
-      gTankRecords[i].tankNumber == tankNumber) {
+      gTankRecords[i].sensorIndex == sensorIndex) {
     return &gTankRecords[i];
   }
 }

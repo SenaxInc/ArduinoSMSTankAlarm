@@ -642,7 +642,7 @@ compliance_archive_2025.zip
       "user": "admin",
       "action": "calibration_add",
       "device": "dev:864475044012345",
-      "tank": "A",
+      "sensorIndex": "A",
       "point": {"sensor": 12.3, "height": 48.5}
     }
   ]

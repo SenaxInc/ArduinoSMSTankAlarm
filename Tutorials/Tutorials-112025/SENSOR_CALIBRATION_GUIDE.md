@@ -815,7 +815,7 @@ Point 5: 96"
 ```json
 {
   "device": "dev:864475044012345",
-  "tank": "A",
+  "sensorIndex": "A",
   "calibration": [
     {"sensor": 4.2, "height": 2.0},
     {"sensor": 12.3, "height": 48.5},
