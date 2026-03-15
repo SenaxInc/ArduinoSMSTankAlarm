@@ -1,6 +1,6 @@
 /*
   Tank Alarm Viewer 112025 - Arduino Opta + Blues Notecard
-  Version: 1.1.6
+  Version: 1.1.7
 
   Purpose:
   - Read-only kiosk that renders the server dashboard without exposing control paths

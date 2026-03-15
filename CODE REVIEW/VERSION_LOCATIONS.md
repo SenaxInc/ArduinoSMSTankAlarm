@@ -1,7 +1,7 @@
 # Version Number Locations
 
-**Current Version:** 1.1.6  
-**Last Updated:** March 13, 2026
+**Current Version:** 1.1.7  
+**Last Updated:** March 15, 2026
 
 This document lists every place a version number appears across the codebase and project files, so bumping the version in a future release is straightforward.
 

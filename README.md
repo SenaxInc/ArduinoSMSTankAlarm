@@ -1,7 +1,7 @@
-# TankAlarm v1.1.6 - Industrial Tank Monitoring System
+# TankAlarm v1.1.7 - Industrial Tank Monitoring System
 
-**Release Date:** March 13, 2026  
-**Version:** 1.1.6  
+**Release Date:** March 15, 2026  
+**Version:** 1.1.7  
 **Platform:** Arduino Opta + Blues Wireless Notecard
 
 A production-ready industrial monitoring system for remote tank level monitoring, alarm management, and fleet coordination using cellular IoT connectivity.
@@ -319,6 +319,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
 - **Common Header Audit:** [CODE REVIEW/COMMON_HEADER_AUDIT_02192026.md](CODE%20REVIEW/COMMON_HEADER_AUDIT_02192026.md)
 
 ### Code Reviews & Release History
+- **v1.1.7 Release Notes:** [CODE REVIEW/V1.1.7_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.7_RELEASE_NOTES.md)
 - **v1.1.6 Release Notes:** [CODE REVIEW/V1.1.6_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.6_RELEASE_NOTES.md)
 - **v1.1.5 Release Notes:** [CODE REVIEW/V1.1.5_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.5_RELEASE_NOTES.md)
 - **v1.1.4 Release Notes:** [CODE REVIEW/V1.1.4_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.4_RELEASE_NOTES.md)
@@ -342,7 +343,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
   - [ ] Ethernet connectivity stable
   
 - [ ] **Software Validation**
-  - [ ] Firmware version 1.1.6 confirmed
+  - [ ] Firmware version 1.1.7 confirmed
   - [ ] All clients reporting to server
   - [ ] Alarms triggering correctly
   - [ ] SMS/email alerts delivering
@@ -362,7 +363,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
 
 ### Deployment Checklist
 
-1. Flash all devices with v1.1.6 firmware
+1. Flash all devices with v1.1.7 firmware
 2. Configure Blues Notehub fleet assignments
 3. Set server IP address and network configuration
 4. Configure SMS/email recipients
@@ -426,6 +427,15 @@ ArduinoSMSTankAlarm/
 ---
 
 ## 📋 Changelog
+
+### v1.1.7 (March 15, 2026)
+- **Naming Refactor:** Complete elimination of tank-centric numbering from data model — `tankNumber` → `sensorIndex` with new optional `userNumber` display field
+- **API Consistency:** All JSON API keys, C++ locals, JS properties, and URL parameters updated from `"tank"` to `"sensorIndex"`/`"sensor"`
+- **Backward Compatibility Removal:** ~50 dual-key JSON parsing fallbacks removed across all three firmware files
+- **Bug Fix:** Client `saveConfigToFlash()` now serializes `monitorType` (was silently dropped)
+- **Bug Fix:** Client `serializeConfig()` fixed to emit `sensorIndex` correctly
+- **Documentation:** 8 docs updated to reflect new naming conventions
+- **URL Param Rename:** `/api/history?tank=` → `?sensor=`, `/api/history/yoy?tank=` → `?sensor=`
 
 ### v1.1.1 (February 20, 2026)
 - **Viewer Fleet:** Viewer devices now join dedicated `tankalarm-viewer` fleet for fleet-scoped DFU and routing
