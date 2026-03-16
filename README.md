@@ -1,7 +1,7 @@
-# TankAlarm v1.1.7 - Industrial Tank Monitoring System
+# TankAlarm v1.1.8 - Industrial Tank Monitoring System
 
-**Release Date:** March 15, 2026  
-**Version:** 1.1.7  
+**Release Date:** March 16, 2026  
+**Version:** 1.1.8  
 **Platform:** Arduino Opta + Blues Wireless Notecard
 
 A production-ready industrial monitoring system for remote tank level monitoring, alarm management, and fleet coordination using cellular IoT connectivity.
@@ -319,6 +319,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
 - **Common Header Audit:** [CODE REVIEW/COMMON_HEADER_AUDIT_02192026.md](CODE%20REVIEW/COMMON_HEADER_AUDIT_02192026.md)
 
 ### Code Reviews & Release History
+- **v1.1.8 Release Notes:** [CODE REVIEW/V1.1.8_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.8_RELEASE_NOTES.md)
 - **v1.1.7 Release Notes:** [CODE REVIEW/V1.1.7_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.7_RELEASE_NOTES.md)
 - **v1.1.6 Release Notes:** [CODE REVIEW/V1.1.6_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.6_RELEASE_NOTES.md)
 - **v1.1.5 Release Notes:** [CODE REVIEW/V1.1.5_RELEASE_NOTES.md](CODE%20REVIEW/V1.1.5_RELEASE_NOTES.md)
@@ -343,7 +344,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
   - [ ] Ethernet connectivity stable
   
 - [ ] **Software Validation**
-  - [ ] Firmware version 1.1.7 confirmed
+  - [ ] Firmware version 1.1.8 confirmed
   - [ ] All clients reporting to server
   - [ ] Alarms triggering correctly
   - [ ] SMS/email alerts delivering
@@ -363,7 +364,7 @@ CLIENT                      BLUES NOTEHUB              SERVER
 
 ### Deployment Checklist
 
-1. Flash all devices with v1.1.7 firmware
+1. Flash all devices with v1.1.8 firmware
 2. Configure Blues Notehub fleet assignments
 3. Set server IP address and network configuration
 4. Configure SMS/email recipients
@@ -427,6 +428,20 @@ ArduinoSMSTankAlarm/
 ---
 
 ## 📋 Changelog
+
+### v1.1.8 (March 16, 2026)
+- **Data Integrity:** Save all dirty data (registry, metadata, hot tier, history settings) before DFU/reboot — previously only saved config
+- **Dedup Daily Summaries:** Persist last rollup date and remove duplicates on reboot to prevent double-counted daily entries
+- **FTP Backup Expansion:** Added `tank_registry.json`, `client_metadata.json`, and `history_settings.json` to nightly FTP backup list
+- **Crash Recovery:** Added `hot_tier.json` and `archived_clients.json` to orphaned `.tmp` file recovery
+- **Warm Tier Fallback:** FTP monthly archives now aggregate warm tier daily summaries when hot tier has no data for the target month
+- **SMS Rate-Limit Persistence:** `lastSmsAlertEpoch` and `smsAlertsInLastHour` now survive reboots via tank registry
+- **FTP Sync Hour:** `ftpSyncHour` setting now actually controls when nightly FTP archive runs (was previously ignored)
+- **History Slots Warning:** Rate-limited warning logged when all 20 tank history slots are exhausted
+- **Default Fix:** `hotTierRetentionDays` default corrected from 730 to 90 to match actual ring buffer capacity
+- **Stale Sensor Pruning:** 3-layer auto-pruning system — config-based periodic, per-sensor orphan (72h), dead client removal (7d)
+- **FTP Archive Before Removal:** Clients active >30 days archived to FTP with date-stamped naming before deletion
+- **Archived Clients API:** New `/api/history/archived` endpoint and Historical Data page section for browsing archived client data
 
 ### v1.1.7 (March 15, 2026)
 - **Naming Refactor:** Complete elimination of tank-centric numbering from data model — `tankNumber` → `sensorIndex` with new optional `userNumber` display field

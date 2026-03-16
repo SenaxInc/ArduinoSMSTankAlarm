@@ -1,5 +1,5 @@
 // Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
-// Version: 1.1.7
+// Version: 1.1.8
 // NOTE: Save this file as UTF-8 without BOM to avoid stray character compile errors.
 //
 // Hardware:
@@ -144,6 +144,27 @@
 
 #ifndef STALE_CHECK_INTERVAL_MS
 #define STALE_CHECK_INTERVAL_MS 3600000UL  // Check every hour
+#endif
+
+// Orphaned sensor auto-prune threshold (72 hours / 3 days)
+// When a client has fresh AND stale sensors, sensors stale beyond this age
+// are considered orphans from a reconfiguration and are auto-pruned.
+#ifndef ORPHAN_SENSOR_PRUNE_SECONDS
+#define ORPHAN_SENSOR_PRUNE_SECONDS 259200UL  // 72 hours (3 days)
+#endif
+
+// Auto-remove fully stale clients threshold (7 days)
+// When ALL sensors for a client are stale beyond this threshold, the client's
+// records are automatically removed. Prevents replaced/decommissioned devices
+// from lingering indefinitely. Set to 0 to disable auto-removal.
+#ifndef STALE_CLIENT_PRUNE_SECONDS
+#define STALE_CLIENT_PRUNE_SECONDS 604800UL  // 7 days
+#endif
+
+// Minimum client age before archiving to FTP on removal (30 days)
+// Clients active for less than this duration are not worth archiving.
+#ifndef MIN_ARCHIVE_AGE_SECONDS
+#define MIN_ARCHIVE_AGE_SECONDS 2592000UL  // 30 days
 #endif
 
 // Persistence save interval (avoid writing flash on every telemetry update)
@@ -335,6 +356,7 @@ struct TankRecord {
   bool alarmActive;
   char alarmType[24];
   double lastUpdateEpoch;
+  double firstSeenEpoch;        // When this record was first created (for archive naming)
   // 24-hour change tracking (computed server-side)
   float previousLevelInches;  // Level reading from ~24h ago
   double previousLevelEpoch;  // When the previous level was recorded
@@ -543,10 +565,11 @@ static void sendUnloadSms(const UnloadLogEntry &entry);
 
 // Structure for hourly telemetry snapshots (hot tier)
 #ifndef MAX_HOURLY_HISTORY_PER_TANK
-#define MAX_HOURLY_HISTORY_PER_TANK 90   // ~3 months of daily data (older data archived to FTP warm tier)
+#define MAX_HOURLY_HISTORY_PER_TANK 90   // ~90 snapshots per tank (ring buffer). Warm tier on LittleFS extends to 3 months; cold tier on FTP extends further.
 #endif
-// NOTE: Reduced from 730 to fit in Opta's 512KB RAM. Full 2-year retention
-// planned via LittleFS-backed on-demand file storage (Phase 2 optimization).
+// NOTE: Ring buffer holds 90 snapshots per tank in RAM. Older data lives in
+// the warm tier (LittleFS daily summaries, 3 months) and cold tier (FTP
+// monthly archives, unlimited). Combined tiers provide long-term retention.
 
 #ifndef MAX_HISTORY_TANKS
 #define MAX_HISTORY_TANKS 20
@@ -594,7 +617,7 @@ struct MonthlyArchiveHeader {
 
 // History storage settings
 struct HistorySettings {
-  uint16_t hotTierRetentionDays;    // Days to keep snapshot data (default 730)
+  uint16_t hotTierRetentionDays;    // Days to keep in RAM ring buffer (max = MAX_HOURLY_HISTORY_PER_TANK snapshots)
   uint8_t warmTierRetentionMonths;  // Months to keep daily summaries (default 24)
   bool ftpArchiveEnabled;           // Whether to archive to FTP
   uint8_t ftpSyncHour;              // Hour to sync to FTP (default 3 AM)
@@ -606,7 +629,7 @@ struct HistorySettings {
 #define MAX_HISTORY_SETTINGS_FILE_SIZE 1024  // Max size for history settings JSON file
 
 static HistorySettings gHistorySettings = {
-  730,   // hotTierRetentionDays (~2 years)
+  90,    // hotTierRetentionDays (matches ring buffer: 90 snapshots)
   24,    // warmTierRetentionMonths
   false, // ftpArchiveEnabled (uses existing FTP config)
   3,     // ftpSyncHour
@@ -1528,7 +1551,7 @@ funct)HTML" R"HTML(ion updateCalibrationTable(){const tbody = document.getElemen
 funct)HTML" R"HTML(ion updateCalibrationLog(){const tbody = document.getElementById('logTableBody');const filter = document.getElementById('logTankFilter').value;tbody.innerHTML = '';let filtered = calibrationLogs;if(filter){const [clientUid,sensorIdx] = filter.split(':');filtered = calibrationLogs.filter(log => log.clientUid === clientUid && log.sensorIndex === parseInt(sensorIdx));}if(filtered.length === 0){tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);">No calibration entries found.</td></tr>';return;}filtered.sort((a,b)=> b.timestamp - a.timestamp);filtered.forEach(log =>{const tr = document.createElement('tr');const tankInfo = tanks.find(t => t.client === log.clientUid && t.sensorIndex === log.sensorIndex);const tankName = tankInfo ? `${tankInfo.site} - ${tankInfo.label || 'Sensor ' + log.sensorIndex}${tankInfo.userNumber?' #'+tankInfo.userNumber:''}`:`Sensor ${log.sensorIndex}`;const isValidReading = log.sensorReading >= 4 && log.sensorReading <= 20;const sensorDisplay = isValidReading ? log.sensorReading.toFixed(2)+ ' mA':(log.sensorReading ? `${log.sensorReading.toFixed(2)} mA (out of range)`:'-- (out of range)');const tempDisplay = log.temperatureF !== undefined && log.temperatureF !== null ? log.temperatureF.toFixed(1)+ '°F':'--';tr.innerHTML = ` <td>${formatEpoch(log.timestamp)}</td><td>${escapeHtml(tankName)}</td><td title="${isValidReading ? '':'Not used for calibration(outside 4-20mA range)'}">${sensorDisplay}</td><td>${formatLevel(log.verifiedLevelInches,getTankUnit(log.clientUid,log.sensorIndex))}</td><td>${tempDisplay}</td><td>${escapeHtml(log.notes || '--')}</td> `;if(!isValidReading){tr.style.opacity = '0.6';}tbody.appendChild(tr);});}document.getElementById('calibrationForm').addEventListener('submit',async(e)=>{e.preventDefault();const tankKey = document.getElementById('tankSelect').value;if(!tankKey){showToast('Please select a sensor',true);return;}const [clientUid,sensorIndex] = tankKey.split(':');const tank = tanks.find(t => `${t.client}:${t.sensorIndex}` === tankKey);const isTankMode=document.getElementById('levelInputTank').style.display!=='none';let totalValue;if(isTankMode){const levelFeet = parseInt(document.getElementById('levelFeet').value)|| 0;const levelInches = parseFloat(document.getElementById('levelInches').value)|| 0;totalValue = levelFeet * 12 + levelInches;}else{totalValue = parseFloat(document.getElementById('levelValue').value)||0;}const timestampInput = document.getElementById('readingTimestamp').value;const note)HTML" R"HTML(s = document.getElementById('notes').value.trim();if(totalValue < 0){showToast('Invalid level value',true);return;}const payload ={clientUid:clientUid,sensorIndex:parseInt(sensorIndex),verifiedLevelInches:totalValue,notes:notes};if(tank && tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20){payload.sensorReading = tank.sensorMa;}if(timestampInput){payload.timestamp = Math.floor(new Date(timestampInput).getTime()/ 1000);}try{const response = await fetch('/api/calibration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to submit calibration');}showToast('Calibration reading submitted successfully');document.getElementById('calibrationForm').reset();loadCalibrationData();}catch(err){console.error('Error submitting calibration:',err);showToast(err.message || 'Failed to submit calibration',true);}});document.getElementById('logTankFilter').addEventListener('change',updateCalibrationLog);const now = new Date();now.setMinutes(now.getMinutes()- now.getTimezoneOffset());document.getElementById('readingTimestamp').value = now.toISOString().slice(0,16);await loadTanks();await loadCalibrationData();setInterval(loadCalibrationData,30000);funct)HTML" R"HTML(ion viewTankPoints(tankKey){document.getElementById('logTankFilter').value = tankKey;updateCalibrationLog();document.getElementById('logTableBody').closest('.card').scrollIntoView({behavior:'smooth',block:'start'});showToast('Showing data points for selected tank');}async funct)HTML" R"HTML(ion resetCalibration(clientUid,sensorIndex){if(!confirm(`Reset calibration for sensor ${sensorIndex}? This will delete all calibration data for this sensor.`)){return;}try{const response = await fetch('/api/calibration',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid,sensorIndex:sensorIndex})});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to reset calibration');}showToast('Calibration reset successfully');loadCalibrationData();}catch(err){console.error('Error resetting calibration:',err);showToast(err.message || 'Failed to reset calibration',true);}}})();})();
 </script></body></html>)HTML";
 
-static const char HISTORICAL_DATA_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Historical Data - Tank Alarm Server</title><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Fleet Summary</h2><div class="stats-grid"><div class="stat-box"><div class="stat-value" id="statTotalTanks">0</div><div class="stat-label">Total Tanks</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsToday">0</div><div class="stat-label">Alarms Today</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsWeek">0</div><div class="stat-label">Alarms This Week</div></div></div><div id="dataSourceBanner" style="display:none;margin-top:12px;padding:8px 14px;border-radius:6px;font-size:0.85rem;background:#dbeafe;color:#1e40af;"></div></div><div class="card"><h2>Level Trends</h2><div class="controls"><select id="siteFilter"><option value="all")HTML" R"HTML(>All Sites</option></select><select id="tankFilter"><option value="all">All Tanks</option></select><select id="rangeSelect"><option value="24h">Last 24 Hours</option><option value="7d">Last 7 Days</option><option value="30d" selected>Last 30 Days</option><option value="90d">Last 90 Days</option><option value="6mo">Last 6 Months</option><option value="1yr">Last Year</option><option value="2yr">Last 2 Years</option><option value="custom">Custom Range</option></select><input type="date" id="startDate" style="display:none;" onchange="renderLevelChart()"><input type="date" id="endDate" style="display:none;" onchange="renderLevelChart()"><button onclick="refreshData()">Refresh</button><button class="secondary" onclick="exportData()">Export CSV</button></div><div class="chart-container"><canvas id="levelChart"></canvas></div></div><div class="card"><h2>Alarm Frequency</h2><div class="chart-container"><canvas id="alarmChart"></canvas></div></div><div class="card"><h2>Sites &amp; Tanks</h2><p style="color:var(--muted);margin-bottom:16px;">Click on a site to expand and view individual tank details with mini sparklines.</p><div id="sitesContainer"></div></div><div class="card"><h2>VIN Voltage History</h2><p style="color:var(--muted);margin-bottom:16px;">Track power supply voltage trends to detect battery degradation or power issues early.</p><div class="chart-container"><canvas id="voltageChart"></canvas></div></div></main><div id="toast"></div><script>(async () => {const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
+static const char HISTORICAL_DATA_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Historical Data - Tank Alarm Server</title><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Fleet Summary</h2><div class="stats-grid"><div class="stat-box"><div class="stat-value" id="statTotalTanks">0</div><div class="stat-label">Total Tanks</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsToday">0</div><div class="stat-label">Alarms Today</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsWeek">0</div><div class="stat-label">Alarms This Week</div></div></div><div id="dataSourceBanner" style="display:none;margin-top:12px;padding:8px 14px;border-radius:6px;font-size:0.85rem;background:#dbeafe;color:#1e40af;"></div></div><div class="card"><h2>Level Trends</h2><div class="controls"><select id="siteFilter"><option value="all")HTML" R"HTML(>All Sites</option></select><select id="tankFilter"><option value="all">All Tanks</option></select><select id="rangeSelect"><option value="24h">Last 24 Hours</option><option value="7d">Last 7 Days</option><option value="30d" selected>Last 30 Days</option><option value="90d">Last 90 Days</option><option value="6mo">Last 6 Months</option><option value="1yr">Last Year</option><option value="2yr">Last 2 Years</option><option value="custom">Custom Range</option></select><input type="date" id="startDate" style="display:none;" onchange="renderLevelChart()"><input type="date" id="endDate" style="display:none;" onchange="renderLevelChart()"><button onclick="refreshData()">Refresh</button><button class="secondary" onclick="exportData()">Export CSV</button></div><div class="chart-container"><canvas id="levelChart"></canvas></div></div><div class="card"><h2>Alarm Frequency</h2><div class="chart-container"><canvas id="alarmChart"></canvas></div></div><div class="card"><h2>Sites &amp; Tanks</h2><p style="color:var(--muted);margin-bottom:16px;">Click on a site to expand and view individual tank details with mini sparklines.</p><div id="sitesContainer"></div></div><div class="card"><h2>VIN Voltage History</h2><p style="color:var(--muted);margin-bottom:16px;">Track power supply voltage trends to detect battery degradation or power issues early.</p><div class="chart-container"><canvas id="voltageChart"></canvas></div></div><div class="card" id="archivedCard" style="display:none"><h2>Archived Clients</h2><p style="color:var(--muted);margin-bottom:16px;">Previously removed clients archived to FTP. Click to load and view historical data.</p><div id="archivedList"></div><div class="chart-container" id="archivedChartWrap" style="display:none"><canvas id="archivedChart"></canvas></div></div></main><div id="toast"></div><script>(async () => {const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
 const pause_state={paused:false};if(pause_els.btn)pause_els.btn.addEventListener('click',togglePauseFlow);if(pause_els.btn)pause_els.btn.addEventListener('mouseenter',()=>{if(pause_state.paused)pause_els.btn.textContent='Resume';});if(pause_els.btn)pause_els.btn.addEventListener('mouseleave',()=>{renderPauseBtn();});await fetch('/api/clients?summary=1').then(r=>r.json()).then(d=>{if(d&&d.srv){pause_state.paused=!!d.srv.ps;renderPauseBtn();}}).catch(e=>console.error('Failed to load pause state',e));
 funct)HTML" R"HTML(ion showPauseToast(message,isError){if(!pause_els.toast)return;const t=pause_els.toast;t.textContent=message;t.style.background=isError?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion renderPauseBtn(){const btn=pause_els.btn;if(!btn)return;if(pause_state.paused){btn.classList.add('paused');btn.style.display='';btn.textContent='Unpause';btn.title='Resume data flow';}else{btn.classList.remove('paused');btn.style.display='none';}}
@@ -1545,7 +1568,7 @@ funct)HTML" R"HTML(ion renderVoltageChart(){const ctx=document.getElementById('v
 funct)HTML" R"HTML(ion createSparkline(container,data){const width=container.clientWidth||100;const height=40;const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;container.appendChild(canvas);const ctx=canvas.getContext('2d');if(!data||data.length<2)return;const values=data.map(d=>d.level);const min=Math.min(...values);const max=Math.max(...values);const range=max-min||1;ctx.strokeStyle='#2563eb';ctx.lineWidth=1.5;ctx.beginPath();data.forEach((d,i)=>{const x=i/(data.length-1)*width;const y=height-(d.level-min)/range*height;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();}
 funct)HTML" R"HTML(ion renderSites(){const container=document.getElementById('sitesContainer');container.innerHTML='';Object.keys(historicalData.sites).sort().forEach(siteName=>{const tanks=historicalData.sites[siteName];const alarmCount=historicalData.alarms.filter(a=>a.site===siteName).length;const siteCard=document.createElement('div');siteCard.className='site-card';siteCard.innerHTML=`<div class="site-header" onclick="this.nextElementSibling.classList.toggle('expanded')"><h3>${siteName}</h3><div class="site-stats"><span>${tanks.length} Tank${tanks.length!==1?'s':''}</span>${alarmCount>0?`<span class="alarm-badge">${alarmCount} Alarms</span>`:''}</div></div><div class="site-content"><div class="tank-grid"></div></div>`;const grid=siteCard.querySelector('.tank-grid');tanks.forEach(tank=>{const change=tank.change24h||0;const changeClass=change>=0?'positive':'negative';const changeSign=change>=0?'+':'';const tankCard=document.createElement('div');tankCard.className='tank-card';tankCard.innerHTML=`<div class="tank-header"><div><div class="tank-name">${tank.label}</div><div class="tank-level">${formatLevel(tank.currentLevel)}</div></div><div class="tank-change ${changeClass}">${changeSign}${change.toFixed(1)}" 24h</div></div><div class="sparkline"></div><div class="tank-footer"><span>Updated: ${formatEpoch(tank.readings[tank.readings.length-1]?.timestamp)}</span></div>`;grid.appendChild(tankCard);const sparklineEl=tankCard.querySelector('.sparkline');const last24h=tank.readings.slice(-24);setTimeout(()=>createSparkline(sparklineEl,last24h),0);});container.appendChild(siteCard);});}
 async funct)HTML" R"HTML(ion loadHistoricalData(){const tankIdx=document.getElementById('tankFilter').value;const range=document.getElementById('rangeSelect').value;let apiDays=90;if(tankIdx!=='all'){apiDays=0;}else{const rangeDays={'24h':7,'7d':7,'30d':30,'90d':90,'6mo':180,'1yr':365,'2yr':730};apiDays=rangeDays[range]||90;}const url=apiDays>0?'/api/history?days='+apiDays:'/api/history';try{const res=await fetch(url);if(!res.ok)throw new Error('Failed to load historical data');const data=await res.json();if(data.tanks&&data.tanks.length>0){historicalData=data;}else{initEmptyData();}if(data.dataInfo){const banner=document.getElementById('dataSourceBanner');if(banner){let msg='Data: RAM ('+data.settings.hotTierDays+'d)';if(data.dataInfo.warmTierAvailable)msg+=' + Flash ('+data.settings.warmTierMonths+'mo)';if(data.dataInfo.coldTierAvailable)msg+=' + FTP Archive';else msg+=' | Enable FTP for full archive';if(data.dataInfo.rangeNote)msg+=' — '+data.dataInfo.rangeNote;banner.textContent=msg;banner.style.display='';banner.style.background=data.dataInfo.coldTierAvailable?'#d1fae5':'#fef3c7';banner.style.color=data.dataInfo.coldTierAvailable?'#065f46':'#92400e';}}updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}catch(err){console.warn('No historical data available:',err.message);initEmptyData();updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}}
-window.refreshData=funct)HTML" R"HTML(ion(){loadHistoricalData();showToast('Data refreshed');};window.exportData=funct)HTML" R"HTML(ion(){const{tanks,cutoff,cutoffEnd}=getFilteredData();let csv='Site,Tank,Timestamp,Level (inches)\n';tanks.forEach(tank=>{tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).forEach(r=>{csv+=`"${tank.site}","${tank.label}",${new Date(r.timestamp*1000).toISOString()},${r.level.toFixed(2)}\n`;});});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='tank_history.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');};document.getElementById('siteFilter').addEventListener('change',renderLevelChart);document.getElementById('tankFilter').addEventListener('change',function(){loadHistoricalData();});document.getElementById('rangeSelect').addEventListener('change',function(){const sd=document.getElementById('startDate');const ed=document.getElementById('endDate');if(this.value==='custom'){sd.style.display='';ed.style.display='';if(!sd.value){const d=new Date();d.setDate(d.getDate()-7);sd.value=d.toISOString().split('T')[0];}if(!ed.value){ed.value=new Date().toISOString().split('T')[0];}}else{sd.style.display='none';ed.style.display='none';}loadHistoricalData();});loadHistoricalData();})();})();
+window.refreshData=funct)HTML" R"HTML(ion(){loadHistoricalData();showToast('Data refreshed');};window.exportData=funct)HTML" R"HTML(ion(){const{tanks,cutoff,cutoffEnd}=getFilteredData();let csv='Site,Tank,Timestamp,Level (inches)\n';tanks.forEach(tank=>{tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).forEach(r=>{csv+=`"${tank.site}","${tank.label}",${new Date(r.timestamp*1000).toISOString()},${r.level.toFixed(2)}\n`;});});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='tank_history.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');};document.getElementById('siteFilter').addEventListener('change',renderLevelChart);document.getElementById('tankFilter').addEventListener('change',function(){loadHistoricalData();});document.getElementById('rangeSelect').addEventListener('change',function(){const sd=document.getElementById('startDate');const ed=document.getElementById('endDate');if(this.value==='custom'){sd.style.display='';ed.style.display='';if(!sd.value){const d=new Date();d.setDate(d.getDate()-7);sd.value=d.toISOString().split('T')[0];}if(!ed.value){ed.value=new Date().toISOString().split('T')[0];}}else{sd.style.display='none';ed.style.display='none';}loadHistoricalData();});loadHistoricalData();/* ARCHIVED CLIENTS */let archivedChart=null;async function loadArchivedClients(){try{const res=await fetch('/api/history/archived');if(!res.ok)return;const data=await res.json();const archives=data.archives||[];if(!archives.length)return;const card=document.getElementById('archivedCard');card.style.display='';const list=document.getElementById('archivedList');list.innerHTML='';archives.forEach((a,idx)=>{const div=document.createElement('div');div.className='site-card';div.style.cursor='pointer';div.style.padding='12px 16px';div.style.marginBottom='8px';const d1=a.firstSeenEpoch?new Date(a.firstSeenEpoch*1000).toLocaleDateString(undefined,{month:'short',year:'numeric'}):'?';const d2=a.lastUpdateEpoch?new Date(a.lastUpdateEpoch*1000).toLocaleDateString(undefined,{month:'short',year:'numeric'}):'?';div.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><div><strong>'+escHtml(a.displayLabel||a.site||a.clientUid)+'</strong><div style="font-size:0.85rem;color:var(--muted);margin-top:4px">'+a.sensorCount+' sensor'+(a.sensorCount!==1?'s':'')+' &bull; '+d1+' &mdash; '+d2+'</div></div><button class="pill secondary" style="font-size:0.8rem" data-idx="'+idx+'">Load Data</button></div>';div.querySelector('button').addEventListener('click',function(e){e.stopPropagation();loadArchivedData(a.ftpFile,a.displayLabel||a.site);});list.appendChild(div);});}catch(e){console.warn('Archived clients:',e.message);}}function escHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}async function loadArchivedData(ftpFile,label){try{showToast('Loading archived data from FTP...');const res=await fetch('/api/history/archived?file='+encodeURIComponent(ftpFile));if(!res.ok)throw new Error('Failed to load archive');const data=await res.json();const wrap=document.getElementById('archivedChartWrap');wrap.style.display='';const ctx=document.getElementById('archivedChart').getContext('2d');if(archivedChart)archivedChart.destroy();const datasets=[];const COLORS=['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899'];if(data.history&&data.history.length){data.history.forEach((h,i)=>{const pts=(h.readings||[]).map(r=>({x:new Date(r[0]*1000),y:r[1]}));if(pts.length)datasets.push({label:(data.site||'')+' Sensor '+h.sensorIndex,data:pts,borderColor:COLORS[i%COLORS.length],backgroundColor:COLORS[i%COLORS.length]+'20',fill:false,tension:0.3,pointRadius:0});});}if(!datasets.length){wrap.style.display='none';showToast('No chart data in archive',true);return;}archivedChart=new Chart(ctx,{type:'line',data:{datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{intersect:false,mode:'index'},scales:{x:{type:'time',time:{unit:'day'},grid:{color:'var(--chart-grid)'}},y:{title:{display:true,text:'Level (inches)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{position:'bottom'}}}});showToast('Loaded: '+label);}catch(e){showToast(e.message||'Archive load failed',true);}}loadArchivedClients();})();})();
 </script></body></html>)HTML";
 
 static const char TRANSMISSION_LOG_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Transmission Log - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Outbound Transmission Log</h2><p style="color:var(--muted);margin-bottom:16px;">Log of messages sent from the server to clients and external services via Notehub. Shows the most recent 100 transmissions.</p><div class="controls"><button id="refreshBtn">Refresh</button><select id="typeFilter"><option value="all">All Types</option><option value="sms">SMS</option><option value="email">Email</option><option value="config">Config</option><option value="relay">Relay</option><option value="relay_clear">Relay Clear</option><option value="viewer_summary">Viewer Summary</option><option value="serial_request">Serial Request</option><option value="location_request">Location Request</option></select><select id="statusFilter"><option value="all">All Statuses</option><option value="outbox">Outbox</option><option value="sent">Sent</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select><input type="text" id="searchInput" placeholder="Filter by site or client..." style="max-width:250px;"><button class="secondary" id="exportBtn">Export CSV</button><button class="secondary" id="cancelAllBtn" style="display:none;background:#fee2e2;color:#991b1b;border-color:#fca5a5;">Cancel All Pending</button></div><table><thead><tr><th>Date/Time</th><th>Site</th><th>Client ID</th><th>Type</th><th>Status</th><th>Detail</th><th style="width:80px;">Actions</th></tr></thead><tbody id="logBody"><tr><td colspan="7" class="empty-state">Loading...</td></tr></tbody></table></div></main><div id="toast"></div><script>(async ()=>{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);)HTML"
@@ -1772,6 +1795,7 @@ static void handleCalibrationDelete(EthernetClient &client, const String &body);
 static void sendHistoryJson(EthernetClient &client, const String &query = "");
 static void handleHistoryCompare(EthernetClient &client, const String &query);
 static void handleHistoryYearOverYear(EthernetClient &client, const String &query);
+static void handleArchivedClients(EthernetClient &client, const String &query);
 static void handleServerSettingsPost(EthernetClient &client, const String &body);
 static void handleContactsGet(EthernetClient &client);
 static void handleContactsPost(EthernetClient &client, const String &body);
@@ -1835,6 +1859,9 @@ static void saveClientMetadataCache();
 static void loadClientMetadataCache();
 // Stale client alerting
 static void checkStaleClients();
+static void pruneStaleOrphanSensors(const char *clientUid, double now);
+static bool removeClientData(const char *clientUid);
+static bool archiveClientToFtp(const char *clientUid);
 // Config push acknowledgment
 static void handleConfigAck(JsonDocument &doc, double epoch);
 // Client removal
@@ -2770,7 +2797,7 @@ void loop() {
     if (gHistorySettings.ftpArchiveEnabled && gConfig.ftpEnabled) {
       time_t nowTime = (time_t)epoch;
       struct tm *nowTm = gmtime(&nowTime);
-      if (nowTm) {
+      if (nowTm && nowTm->tm_hour == gHistorySettings.ftpSyncHour) {
         // Get previous month
         int archiveYear = nowTm->tm_year + 1900;
         int archiveMonth = nowTm->tm_mon;  // Current month (0-11), so this is prev month
@@ -2864,6 +2891,8 @@ static void recoverOrphanedTmpFiles() {
     "/fs/email_format.json",
     "/fs/history_settings.json",
     "/fs/server_heartbeat.json",
+    "/fs/history/hot_tier.json",
+    "/fs/archived_clients.json",
     nullptr
   };
 
@@ -3311,7 +3340,10 @@ static const BackupFileEntry kBackupFiles[] = {
   { "/email_format.json", "email_format.json" },
   { CLIENT_CONFIG_CACHE_PATH, "client_config_cache.txt" },
   { CALIBRATION_LOG_PATH, "calibration_log.txt" },
-  { "/calibration_data.txt", "calibration_data.txt" }
+  { "/calibration_data.txt", "calibration_data.txt" },
+  { TANK_REGISTRY_PATH, "tank_registry.json" },
+  { CLIENT_METADATA_CACHE_PATH, "client_metadata.json" },
+  { "/history_settings.json", "history_settings.json" }
 };
 
 static void buildLocalPath(const char *relativePath, char *out, size_t outSize) {
@@ -4432,6 +4464,16 @@ static TankHourlyHistory *findOrCreateTankHistory(const char *clientUid, uint8_t
 static void recordTelemetrySnapshot(const char *clientUid, const char *siteName, uint8_t sensorIndex, float heightInches, float level, float voltage) {
   TankHourlyHistory *hist = findOrCreateTankHistory(clientUid, sensorIndex);
   if (!hist) {
+    static unsigned long lastHistFullWarn = 0;
+    if (millis() - lastHistFullWarn > 300000UL) {
+      lastHistFullWarn = millis();
+      Serial.print(F("WARNING: History slots full ("));
+      Serial.print(MAX_HISTORY_TANKS);
+      Serial.print(F("/"));
+      Serial.print(MAX_HISTORY_TANKS);
+      Serial.println(F(") — new tank history dropped"));
+      addServerSerialLog("History slots full — tank history dropped", "warn", "history");
+    }
     return;
   }
   
@@ -4606,6 +4648,63 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
     tanksWithData++;
   }
   
+  // If hot tier had no data, try warm tier daily summaries for this month
+  if (tanksWithData == 0) {
+    JsonDocument warmDoc;
+    if (loadDailySummaryMonth(year, month, warmDoc) && warmDoc.is<JsonArray>()) {
+      // Aggregate daily summaries per tank into monthly summaries
+      struct WarmSummary { char clientUid[48]; uint8_t sensorIndex; float minL; float maxL; float sumL; float sumV; uint16_t count; uint16_t voltCount; };
+      WarmSummary warmed[MAX_HISTORY_TANKS];
+      uint8_t warmCount = 0;
+
+      for (JsonObject de : warmDoc.as<JsonArray>()) {
+        const char *wUid = de["c"] | "";
+        uint8_t wIdx = de["k"] | 0;
+        float dMin = de["mn"] | 999999.0f;
+        float dMax = de["mx"] | -999999.0f;
+        float dAvg = de["av"] | 0.0f;
+        float dVt  = de["vt"] | 0.0f;
+        uint16_t dN = de["n"] | (uint16_t)1;
+
+        // Find or create warm summary slot
+        WarmSummary *ws = nullptr;
+        for (uint8_t w = 0; w < warmCount; ++w) {
+          if (strcmp(warmed[w].clientUid, wUid) == 0 && warmed[w].sensorIndex == wIdx) { ws = &warmed[w]; break; }
+        }
+        if (!ws && warmCount < MAX_HISTORY_TANKS) {
+          ws = &warmed[warmCount++];
+          strlcpy(ws->clientUid, wUid, sizeof(ws->clientUid));
+          ws->sensorIndex = wIdx;
+          ws->minL = 999999.0f; ws->maxL = -999999.0f;
+          ws->sumL = 0.0f; ws->sumV = 0.0f;
+          ws->count = 0; ws->voltCount = 0;
+        }
+        if (!ws) continue;
+
+        if (dMin < ws->minL) ws->minL = dMin;
+        if (dMax > ws->maxL) ws->maxL = dMax;
+        ws->sumL += dAvg * dN;
+        ws->count += dN;
+        if (dVt > 0.0f) { ws->sumV += dVt * dN; ws->voltCount += dN; }
+      }
+
+      for (uint8_t w = 0; w < warmCount; ++w) {
+        WarmSummary &ws = warmed[w];
+        if (ws.count == 0) continue;
+        JsonObject tankObj = tanksArray.add<JsonObject>();
+        tankObj["clientUid"] = ws.clientUid;
+        tankObj["sensorIndex"] = ws.sensorIndex;
+        tankObj["minLevel"] = roundTo(ws.minL, 1);
+        tankObj["maxLevel"] = roundTo(ws.maxL, 1);
+        tankObj["avgLevel"] = roundTo(ws.sumL / ws.count, 1);
+        tankObj["avgVoltage"] = ws.voltCount > 0 ? roundTo(ws.sumV / ws.voltCount, 2) : 0.0f;
+        tankObj["readings"] = ws.count;
+        tankObj["dataSource"] = "warm";
+        tanksWithData++;
+      }
+    }
+  }
+
   doc["tanks"] = tanksWithData;
   
   // No data for this month — nothing to archive
@@ -4716,6 +4815,7 @@ static void populateHistorySettingsJson(JsonDocument &doc) {
   doc["lastSync"] = gHistorySettings.lastFtpSyncEpoch;
   doc["lastPrune"] = gHistorySettings.lastPruneEpoch;
   doc["pruned"] = gHistorySettings.totalRecordsPruned;
+  doc["lastRollup"] = gLastDailyRollupDate;
 }
 
 // Save history settings to LittleFS
@@ -4751,13 +4851,14 @@ static void saveHistorySettings() {
 
 // Helper to apply history settings from JSON document
 static void applyHistorySettingsFromJson(const JsonDocument &doc) {
-  gHistorySettings.hotTierRetentionDays = doc["hotDays"] | 730;
+  gHistorySettings.hotTierRetentionDays = doc["hotDays"] | 90;
   gHistorySettings.warmTierRetentionMonths = doc["warmMonths"] | 24;
   gHistorySettings.ftpArchiveEnabled = doc["ftpArchive"] | false;
   gHistorySettings.ftpSyncHour = doc["ftpHour"] | 3;
   gHistorySettings.lastFtpSyncEpoch = doc["lastSync"] | 0.0;
   gHistorySettings.lastPruneEpoch = doc["lastPrune"] | 0.0;
   gHistorySettings.totalRecordsPruned = doc["pruned"] | 0;
+  gLastDailyRollupDate = doc["lastRollup"] | (uint32_t)0;
 }
 
 // Load history settings from LittleFS
@@ -4900,6 +5001,13 @@ static void rollupDailySummaries() {
     monthDoc.to<JsonArray>();
   }
   JsonArray entries = monthDoc.as<JsonArray>();
+  
+  // Dedup: remove any existing entries for yesterdayDate (prevents duplicates on reboot)
+  for (int e = (int)entries.size() - 1; e >= 0; --e) {
+    if ((entries[e]["d"] | (uint32_t)0) == yesterdayDate) {
+      entries.remove(e);
+    }
+  }
   
   // For each tank in hot tier, compute yesterday's summary
   uint8_t addedCount = 0;
@@ -5604,11 +5712,22 @@ static void enableDfuMode() {
   strlcpy(gDfuMode, "applying", sizeof(gDfuMode));
   addServerSerialLog("DFU mode enabled - updating firmware", "info", "dfu");
   
-  // Save any pending config before rebooting
+  // Save all pending data before rebooting
   if (gConfigDirty) {
     saveConfig(gConfig);
     gConfigDirty = false;
   }
+  if (gTankRegistryDirty) {
+    saveTankRegistry();
+    gTankRegistryDirty = false;
+  }
+  if (gClientMetadataDirty) {
+    saveClientMetadataCache();
+    gClientMetadataDirty = false;
+  }
+  saveHotTierSnapshot();
+  saveClientConfigSnapshots();
+  saveHistorySettings();
   
   // Step 1: Ensure ODFU is enabled on the Notecard for host MCU (stm32)
   J *req = notecard.newRequest("card.dfu");
@@ -5945,6 +6064,13 @@ static void handleWebRequests() {
       queryString = path.substring(queryStart + 1);
     }
     handleHistoryCompare(client, queryString);
+  } else if (method == "GET" && path.startsWith("/api/history/archived")) {
+    String queryString = "";
+    int queryStart = path.indexOf('?');
+    if (queryStart >= 0) {
+      queryString = path.substring(queryStart + 1);
+    }
+    handleArchivedClients(client, queryString);
   } else if (method == "GET" && path.startsWith("/api/history/yoy")) {
     // Parse query params: ?year=YYYY or ?sensor=X&years=3
     String queryString = "";
@@ -8760,6 +8886,7 @@ static TankRecord *upsertTankRecord(const char *clientUid, uint8_t sensorIndex) 
   strlcpy(rec.clientUid, clientUid, sizeof(rec.clientUid));
   rec.sensorIndex = sensorIndex;
   rec.lastUpdateEpoch = currentEpoch();
+  rec.firstSeenEpoch = rec.lastUpdateEpoch;
   rec.lastSmsAlertEpoch = 0.0;
   rec.smsAlertsInLastHour = 0;
   for (uint8_t i = 0; i < 10; ++i) {
@@ -9340,9 +9467,15 @@ static void saveTankRegistry() {
       obj["a"] = rec.alarmActive;
       if (rec.alarmType[0] != '\0') obj["at"] = rec.alarmType;
       obj["u"] = rec.lastUpdateEpoch;
+      if (rec.firstSeenEpoch > 0.0) obj["fs"] = rec.firstSeenEpoch;
       if (rec.previousLevelEpoch > 0.0) {
         obj["pl"] = rec.previousLevelInches;
         obj["pe"] = rec.previousLevelEpoch;
+      }
+      // Persist SMS rate-limit state to survive reboots
+      if (rec.lastSmsAlertEpoch > 0.0) {
+        obj["se"] = rec.lastSmsAlertEpoch;
+        obj["sa"] = rec.smsAlertsInLastHour;
       }
     }
     
@@ -9440,6 +9573,11 @@ static void loadTankRegistry() {
           existing->previousLevelInches = obj["pl"] | 0.0f;
           existing->previousLevelEpoch = obj["pe"] | 0.0;
           existing->userNumber = obj["un"] | 0;
+          // Preserve the earliest firstSeenEpoch across duplicates
+          double loadedFs = obj["fs"] | 0.0;
+          if (loadedFs > 0.0 && (existing->firstSeenEpoch <= 0.0 || loadedFs < existing->firstSeenEpoch)) {
+            existing->firstSeenEpoch = loadedFs;
+          }
         }
         dupsMerged++;
         continue;  // Skip — already have this clientUid+sensorIndex
@@ -9464,8 +9602,9 @@ static void loadTankRegistry() {
       rec.lastUpdateEpoch = loadedEpoch;
       rec.previousLevelInches = obj["pl"] | 0.0f;
       rec.previousLevelEpoch = obj["pe"] | 0.0;
-      rec.lastSmsAlertEpoch = 0.0;
-      rec.smsAlertsInLastHour = 0;
+      rec.firstSeenEpoch = obj["fs"] | 0.0;
+      rec.lastSmsAlertEpoch = obj["se"] | 0.0;
+      rec.smsAlertsInLastHour = obj["sa"] | 0;
       
       insertTankIntoHash(gTankRecordCount);
       gTankRecordCount++;
@@ -9627,36 +9766,121 @@ static void loadClientMetadataCache() {
 }
 
 // ============================================================================
-// Stale Client Alerting
+// Stale Client Alerting & Auto-Pruning
 // ============================================================================
+
+// Prune individual stale sensors within an active client. Called when a client
+// has a mix of fresh and stale sensors, indicating that the client was
+// reconfigured and old sensor records are orphaned. Only prunes sensors that
+// have been stale for at least ORPHAN_SENSOR_PRUNE_SECONDS (default 72h).
+static void pruneStaleOrphanSensors(const char *clientUid, double now) {
+  // First, try config-based pruning (safe, reuses existing logic)
+  pruneOrphanedTankRecords(clientUid);
+
+  // Then, handle sensors stale beyond the orphan threshold even without
+  // config data (e.g., client was reflashed externally)
+  // Safety check: ensure client still has at least one fresh sensor
+  bool hasFresh = false;
+  for (uint8_t t = 0; t < gTankRecordCount; ++t) {
+    if (strcmp(gTankRecords[t].clientUid, clientUid) == 0) {
+      if (gTankRecords[t].lastUpdateEpoch > 0.0 &&
+          (now - gTankRecords[t].lastUpdateEpoch) < STALE_CLIENT_THRESHOLD_SECONDS) {
+        hasFresh = true;
+        break;
+      }
+    }
+  }
+  if (!hasFresh) return;  // All stale — handled by dead-client auto-removal
+
+  uint8_t writeIdx = 0;
+  uint8_t pruned = 0;
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    bool keep = true;
+    if (strcmp(gTankRecords[i].clientUid, clientUid) == 0) {
+      double age = (gTankRecords[i].lastUpdateEpoch > 0.0)
+                       ? (now - gTankRecords[i].lastUpdateEpoch)
+                       : now;  // Never reported — treat as maximally stale
+      if (age >= ORPHAN_SENSOR_PRUNE_SECONDS) {
+        keep = false;
+        pruned++;
+        Serial.print(F("Auto-pruned stale orphan sensor: "));
+        Serial.print(gTankRecords[i].label);
+        Serial.print(F(" #"));
+        Serial.println(gTankRecords[i].sensorIndex);
+      }
+    }
+    if (keep) {
+      if (writeIdx != i) {
+        memcpy(&gTankRecords[writeIdx], &gTankRecords[i], sizeof(TankRecord));
+      }
+      writeIdx++;
+    }
+  }
+
+  if (pruned > 0) {
+    gTankRecordCount = writeIdx;
+    rebuildTankHashTable();
+    gTankRegistryDirty = true;
+
+    char detail[96];
+    snprintf(detail, sizeof(detail),
+             "Auto-pruned %u stale orphan sensor(s) from active client %s",
+             pruned, clientUid);
+    Serial.println(detail);
+    addServerSerialLog(detail, "info", "stale");
+    logTransmission(clientUid, "", "stale", "pruned", detail);
+  }
+}
 
 static void checkStaleClients() {
   double now = currentEpoch();
   if (now <= 0.0) return;  // No time sync yet
-  
+
+  // Collect UIDs of clients to auto-remove after the main scan.
+  // Deferring removal avoids modifying the metadata array during iteration.
+  char clientsToRemove[MAX_CLIENT_METADATA][48];
+  uint8_t removeCount = 0;
+
   for (uint8_t i = 0; i < gClientMetadataCount; ++i) {
     ClientMetadata &meta = gClientMetadata[i];
     if (meta.clientUid[0] == '\0') continue;
-    
-    // Find the most recent update epoch across all tanks for this client
+
+    // --- Phase 1: Analyze per-sensor freshness for this client ---
     double latestUpdate = 0.0;
     const char *siteName = "";
+    uint8_t totalSensors = 0;
+    uint8_t staleSensors = 0;  // Stale beyond ORPHAN threshold (72h)
+
     for (uint8_t t = 0; t < gTankRecordCount; ++t) {
       if (strcmp(gTankRecords[t].clientUid, meta.clientUid) == 0) {
+        totalSensors++;
         if (gTankRecords[t].lastUpdateEpoch > latestUpdate) {
           latestUpdate = gTankRecords[t].lastUpdateEpoch;
           siteName = gTankRecords[t].site;
         }
+        double age = (gTankRecords[t].lastUpdateEpoch > 0.0)
+                         ? (now - gTankRecords[t].lastUpdateEpoch)
+                         : now;
+        if (age >= ORPHAN_SENSOR_PRUNE_SECONDS) {
+          staleSensors++;
+        }
       }
     }
-    
-    if (latestUpdate <= 0.0) continue;  // Never reported - skip
-    
+
+    if (totalSensors == 0 || latestUpdate <= 0.0) continue;
+
     double offlineSeconds = now - latestUpdate;
-    
+
+    // --- Phase 2: Per-sensor orphan pruning within active clients ---
+    // If some sensors are fresh and some are stale beyond the orphan
+    // threshold, the stale ones are likely orphans from a reconfiguration.
+    if (staleSensors > 0 && staleSensors < totalSensors) {
+      pruneStaleOrphanSensors(meta.clientUid, now);
+    }
+
+    // --- Phase 3: Existing stale client SMS alerting ---
     if (offlineSeconds >= STALE_CLIENT_THRESHOLD_SECONDS) {
       if (!meta.staleAlertSent) {
-        // Send stale client SMS alert
         char message[160];
         double hours = offlineSeconds / 3600.0;
         snprintf(message, sizeof(message),
@@ -9668,14 +9892,45 @@ static void checkStaleClients() {
         Serial.println(meta.clientUid);
         meta.staleAlertSent = true;
       }
+
+      // --- Phase 4: Auto-remove fully stale clients after extended period ---
+      if (STALE_CLIENT_PRUNE_SECONDS > 0 &&
+          offlineSeconds >= STALE_CLIENT_PRUNE_SECONDS &&
+          removeCount < MAX_CLIENT_METADATA) {
+        strlcpy(clientsToRemove[removeCount], meta.clientUid, 48);
+        removeCount++;
+      }
     } else {
-      // Client is reporting again - reset stale alert flag
+      // Client is reporting again — reset stale alert flag
       if (meta.staleAlertSent) {
         meta.staleAlertSent = false;
         Serial.print(F("Stale alert cleared for client: "));
         Serial.println(meta.clientUid);
       }
     }
+  }
+
+  // --- Phase 5: Execute deferred client removals ---
+  for (uint8_t r = 0; r < removeCount; ++r) {
+    char logMsg[128];
+    snprintf(logMsg, sizeof(logMsg),
+             "Auto-removed stale client %s (no data for >%lu days)",
+             clientsToRemove[r],
+             (unsigned long)(STALE_CLIENT_PRUNE_SECONDS / 86400UL));
+    Serial.println(logMsg);
+    addServerSerialLog(logMsg, "warn", "stale");
+    logTransmission(clientsToRemove[r], "", "stale", "auto-removed", logMsg);
+
+    archiveClientToFtp(clientsToRemove[r]);  // Archive to FTP before removal (if eligible)
+    removeClientData(clientsToRemove[r]);
+  }
+
+  // If any clients were removed, force persistence save
+  if (removeCount > 0) {
+    saveTankRegistry();
+    saveClientMetadataCache();
+    gTankRegistryDirty = false;
+    gClientMetadataDirty = false;
   }
 }
 
@@ -9805,6 +10060,300 @@ static void handleConfigAck(JsonDocument &doc, double epoch) {
 }
 
 // ============================================================================
+// Client Data FTP Archive
+// ============================================================================
+// Archives a client's tank records and hot-tier history to FTP before removal.
+// Only archives if: FTP is enabled, client has been active for >30 days, and
+// has at least one tank record. The archive filename includes the site name
+// and date range (first seen → last update) so archived entries are uniquely
+// identifiable even if a new client with the same name is created later.
+// File path: {ftpPath}/archived_clients/{Site}_{YYYYMM}-{YYYYMM}_{uid_suffix}.json
+
+static bool archiveClientToFtp(const char *clientUid) {
+  if (!gConfig.ftpEnabled) return false;
+
+  // Gather all tank records for this client
+  double earliestSeen = 1e18;
+  double latestUpdate = 0.0;
+  const char *siteName = "";
+  uint8_t sensorCount = 0;
+
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    if (strcmp(gTankRecords[i].clientUid, clientUid) != 0) continue;
+    sensorCount++;
+    if (gTankRecords[i].site[0] != '\0') siteName = gTankRecords[i].site;
+    double fs = gTankRecords[i].firstSeenEpoch;
+    if (fs <= 0.0) fs = gTankRecords[i].lastUpdateEpoch;  // Fallback for pre-upgrade records
+    if (fs < earliestSeen) earliestSeen = fs;
+    if (gTankRecords[i].lastUpdateEpoch > latestUpdate) {
+      latestUpdate = gTankRecords[i].lastUpdateEpoch;
+    }
+  }
+  if (sensorCount == 0 || latestUpdate <= 0.0) return false;
+
+  // Only archive clients active for at least MIN_ARCHIVE_AGE_SECONDS
+  double clientAge = latestUpdate - earliestSeen;
+  if (clientAge < (double)MIN_ARCHIVE_AGE_SECONDS) {
+    Serial.print(F("Skipping FTP archive (too new): "));
+    Serial.println(clientUid);
+    return false;
+  }
+
+  // Build date strings for filename (YYYYMM format)
+  char startYM[8], endYM[8];
+  {
+    time_t startT = (time_t)earliestSeen;
+    time_t endT = (time_t)latestUpdate;
+    struct tm *tmStart = gmtime(&startT);
+    snprintf(startYM, sizeof(startYM), "%04d%02d", tmStart->tm_year + 1900, tmStart->tm_mon + 1);
+    struct tm *tmEnd = gmtime(&endT);
+    snprintf(endYM, sizeof(endYM), "%04d%02d", tmEnd->tm_year + 1900, tmEnd->tm_mon + 1);
+  }
+
+  // Extract short UID suffix for filename (last 8 chars of clientUid)
+  const char *uidSuffix = clientUid;
+  size_t uidLen = strlen(clientUid);
+  if (uidLen > 8) uidSuffix = clientUid + uidLen - 8;
+
+  // Build JSON archive document
+  JsonDocument doc;
+  doc["clientUid"] = clientUid;
+  doc["site"] = siteName;
+  doc["archiveEpoch"] = currentEpoch();
+
+  // Human-readable date range label: "Site (Mar 2025 - Mar 2026)"
+  {
+    const char *monthNames[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+    time_t startT = (time_t)earliestSeen;
+    time_t endT = (time_t)latestUpdate;
+    struct tm *tsStart = gmtime(&startT);
+    int sy = tsStart->tm_year + 1900, sm = tsStart->tm_mon;
+    struct tm *tsEnd = gmtime(&endT);
+    int ey = tsEnd->tm_year + 1900, em = tsEnd->tm_mon;
+    char rangeLabel[64];
+    snprintf(rangeLabel, sizeof(rangeLabel), "%s (%s %d - %s %d)",
+             siteName, monthNames[sm], sy, monthNames[em], ey);
+    doc["displayLabel"] = rangeLabel;
+  }
+  doc["firstSeenEpoch"] = earliestSeen;
+  doc["lastUpdateEpoch"] = latestUpdate;
+
+  // Archive all tank records
+  JsonArray tanksArr = doc["tanks"].to<JsonArray>();
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    if (strcmp(gTankRecords[i].clientUid, clientUid) != 0) continue;
+    const TankRecord &rec = gTankRecords[i];
+    JsonObject obj = tanksArr.add<JsonObject>();
+    obj["sensorIndex"] = rec.sensorIndex;
+    if (rec.userNumber > 0) obj["userNumber"] = rec.userNumber;
+    obj["site"] = rec.site;
+    obj["label"] = rec.label;
+    if (rec.contents[0] != '\0') obj["contents"] = rec.contents;
+    if (rec.objectType[0] != '\0') obj["objectType"] = rec.objectType;
+    if (rec.sensorType[0] != '\0') obj["sensorType"] = rec.sensorType;
+    if (rec.measurementUnit[0] != '\0') obj["measurementUnit"] = rec.measurementUnit;
+    obj["lastLevel"] = roundTo(rec.levelInches, 1);
+    if (rec.sensorMa >= 4.0f) obj["lastSensorMa"] = roundTo(rec.sensorMa, 2);
+    if (rec.sensorVoltage > 0.0f) obj["lastSensorVoltage"] = roundTo(rec.sensorVoltage, 3);
+    obj["lastUpdateEpoch"] = rec.lastUpdateEpoch;
+    double fs = rec.firstSeenEpoch > 0.0 ? rec.firstSeenEpoch : rec.lastUpdateEpoch;
+    obj["firstSeenEpoch"] = fs;
+  }
+
+  // Archive hot-tier history snapshots for this client
+  JsonArray historyArr = doc["history"].to<JsonArray>();
+  for (uint8_t h = 0; h < gTankHistoryCount; ++h) {
+    TankHourlyHistory &hist = gTankHistory[h];
+    if (strcmp(hist.clientUid, clientUid) != 0) continue;
+    if (hist.snapshotCount == 0) continue;
+
+    JsonObject hObj = historyArr.add<JsonObject>();
+    hObj["sensorIndex"] = hist.sensorIndex;
+    hObj["heightInches"] = hist.heightInches;
+    JsonArray readings = hObj["readings"].to<JsonArray>();
+    for (uint16_t j = 0; j < hist.snapshotCount; ++j) {
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      TelemetrySnapshot &snap = hist.snapshots[idx];
+      JsonArray pt = readings.add<JsonArray>();
+      pt.add(snap.timestamp);
+      pt.add(roundTo(snap.level, 1));
+      pt.add(roundTo(snap.voltage, 2));
+    }
+  }
+
+  // Archive client metadata if available
+  ClientMetadata *meta = findClientMetadata(clientUid);
+  if (meta) {
+    JsonObject metaObj = doc["metadata"].to<JsonObject>();
+    if (meta->vinVoltage > 0.0f) metaObj["vinVoltage"] = roundTo(meta->vinVoltage, 2);
+    if (meta->firmwareVersion[0] != '\0') metaObj["firmwareVersion"] = meta->firmwareVersion;
+    if (meta->latitude != 0.0f) metaObj["latitude"] = meta->latitude;
+    if (meta->longitude != 0.0f) metaObj["longitude"] = meta->longitude;
+    if (meta->signalBars >= 0) metaObj["signalBars"] = meta->signalBars;
+  }
+
+  // Serialize to string
+  String jsonOut;
+  serializeJson(doc, jsonOut);
+
+  // Build sanitized site name for filename (replace spaces/special chars)
+  char safeSite[24];
+  {
+    size_t si = 0;
+    for (size_t c = 0; siteName[c] != '\0' && si < sizeof(safeSite) - 1; ++c) {
+      char ch = siteName[c];
+      if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+          (ch >= '0' && ch <= '9') || ch == '-' || ch == '_') {
+        safeSite[si++] = ch;
+      } else if (ch == ' ') {
+        safeSite[si++] = '_';
+      }
+    }
+    safeSite[si] = '\0';
+    if (si == 0) strlcpy(safeSite, "unknown", sizeof(safeSite));
+  }
+
+  // Upload to FTP: {ftpPath}/{serverUid}/archived_clients/{safeSite}_{startYM}-{endYM}_{uidSuffix}.json
+  char remotePath[256];
+  const char *base = (strlen(gConfig.ftpPath) > 0) ? gConfig.ftpPath : FTP_PATH_DEFAULT;
+  const char *uid = (strlen(gServerUid) > 0) ? gServerUid : "server";
+  snprintf(remotePath, sizeof(remotePath), "%s/%s/archived_clients/%s_%s-%s_%s.json",
+           base, uid, safeSite, startYM, endYM, uidSuffix);
+
+  FtpSession session;
+  char err[128];
+  if (!ftpConnectAndLogin(session, err, sizeof(err))) {
+    Serial.print(F("FTP archive client failed (login): "));
+    Serial.println(err);
+    return false;
+  }
+
+  bool ok = ftpStoreBuffer(session, remotePath,
+                           (const uint8_t *)jsonOut.c_str(), jsonOut.length(),
+                           err, sizeof(err));
+  ftpQuit(session);
+
+  if (ok) {
+    char detail[128];
+    snprintf(detail, sizeof(detail), "Archived client %s to FTP: %s", clientUid, remotePath);
+    Serial.println(detail);
+    addServerSerialLog(detail, "info", "archive");
+    logTransmission(clientUid, siteName, "archive", "sent", detail);
+
+    // Append entry to local archive manifest (/fs/archived_clients.json)
+    #ifdef FILESYSTEM_AVAILABLE
+    {
+      // Read existing manifest
+      JsonDocument manifest;
+      FILE *mf = fopen("/fs/archived_clients.json", "r");
+      if (mf) {
+        char buf[2048];
+        size_t nRead = fread(buf, 1, sizeof(buf) - 1, mf);
+        fclose(mf);
+        buf[nRead] = '\0';
+        deserializeJson(manifest, buf);
+      }
+      JsonArray entries = manifest["archives"].is<JsonArray>()
+                            ? manifest["archives"].as<JsonArray>()
+                            : manifest["archives"].to<JsonArray>();
+      JsonObject entry = entries.add<JsonObject>();
+      entry["clientUid"] = clientUid;
+      entry["site"] = siteName;
+      entry["displayLabel"] = doc["displayLabel"];
+      entry["firstSeenEpoch"] = earliestSeen;
+      entry["lastUpdateEpoch"] = latestUpdate;
+      entry["archiveEpoch"] = currentEpoch();
+      entry["ftpFile"] = remotePath;
+      entry["sensorCount"] = sensorCount;
+
+      // Write updated manifest
+      mf = fopen("/fs/archived_clients.json", "w");
+      if (mf) {
+        String manifestJson;
+        serializeJson(manifest, manifestJson);
+        fwrite(manifestJson.c_str(), 1, manifestJson.length(), mf);
+        fclose(mf);
+      }
+    }
+    #endif
+  } else {
+    Serial.print(F("FTP archive client failed (store): "));
+    Serial.println(err);
+  }
+
+  return ok;
+}
+
+// ============================================================================
+// Client Data Removal Helper
+// ============================================================================
+// Removes all data for a given client: tank records, metadata, config
+// snapshots, and serial buffers. Used by both the manual "Remove Client"
+// API and the automatic stale-client pruning system. Returns true if any
+// data was removed.
+
+static bool removeClientData(const char *clientUid) {
+  bool removedAny = false;
+
+  // Remove tank records for this client
+  uint8_t writeIdx = 0;
+  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+    if (strcmp(gTankRecords[i].clientUid, clientUid) != 0) {
+      if (writeIdx != i) {
+        memcpy(&gTankRecords[writeIdx], &gTankRecords[i], sizeof(TankRecord));
+      }
+      writeIdx++;
+    } else {
+      removedAny = true;
+    }
+  }
+  if (writeIdx != gTankRecordCount) {
+    gTankRecordCount = writeIdx;
+    rebuildTankHashTable();
+    gTankRegistryDirty = true;
+  }
+
+  // Remove client metadata
+  for (uint8_t i = 0; i < gClientMetadataCount; ++i) {
+    if (strcmp(gClientMetadata[i].clientUid, clientUid) == 0) {
+      for (uint8_t j = i; j < gClientMetadataCount - 1; ++j) {
+        memcpy(&gClientMetadata[j], &gClientMetadata[j + 1], sizeof(ClientMetadata));
+      }
+      gClientMetadataCount--;
+      gClientMetadataDirty = true;
+      removedAny = true;
+      break;
+    }
+  }
+
+  // Remove client config snapshot
+  for (uint8_t i = 0; i < gClientConfigCount; ++i) {
+    if (strcmp(gClientConfigs[i].uid, clientUid) == 0) {
+      for (uint8_t j = i; j < gClientConfigCount - 1; ++j) {
+        memcpy(&gClientConfigs[j], &gClientConfigs[j + 1], sizeof(ClientConfigSnapshot));
+      }
+      gClientConfigCount--;
+      saveClientConfigSnapshots();
+      removedAny = true;
+      break;
+    }
+  }
+
+  // Remove client serial buffer
+  for (uint8_t i = 0; i < gClientSerialBufferCount; ++i) {
+    if (strcmp(gClientSerialBuffers[i].clientUid, clientUid) == 0) {
+      for (uint8_t j = i; j < gClientSerialBufferCount - 1; ++j) {
+        memcpy(&gClientSerialBuffers[j], &gClientSerialBuffers[j + 1], sizeof(ClientSerialBuffer));
+      }
+      gClientSerialBufferCount--;
+      break;
+    }
+  }
+
+  return removedAny;
+}
+
+// ============================================================================
 // Client Removal (DELETE /api/client)
 // ============================================================================
 
@@ -9827,64 +10376,9 @@ static void handleClientDeleteRequest(EthernetClient &client, const String &body
     return;
   }
   
-  bool removedAny = false;
-  
-  // Remove tank records for this client
-  uint8_t writeIdx = 0;
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    if (strcmp(gTankRecords[i].clientUid, clientUid) != 0) {
-      if (writeIdx != i) {
-        memcpy(&gTankRecords[writeIdx], &gTankRecords[i], sizeof(TankRecord));
-      }
-      writeIdx++;
-    } else {
-      removedAny = true;
-    }
-  }
-  if (writeIdx != gTankRecordCount) {
-    gTankRecordCount = writeIdx;
-    rebuildTankHashTable();
-    gTankRegistryDirty = true;
-  }
-  
-  // Remove client metadata
-  for (uint8_t i = 0; i < gClientMetadataCount; ++i) {
-    if (strcmp(gClientMetadata[i].clientUid, clientUid) == 0) {
-      // Shift remaining entries down
-      for (uint8_t j = i; j < gClientMetadataCount - 1; ++j) {
-        memcpy(&gClientMetadata[j], &gClientMetadata[j + 1], sizeof(ClientMetadata));
-      }
-      gClientMetadataCount--;
-      gClientMetadataDirty = true;
-      removedAny = true;
-      break;
-    }
-  }
-  
-  // Remove client config snapshot
-  for (uint8_t i = 0; i < gClientConfigCount; ++i) {
-    if (strcmp(gClientConfigs[i].uid, clientUid) == 0) {
-      for (uint8_t j = i; j < gClientConfigCount - 1; ++j) {
-        memcpy(&gClientConfigs[j], &gClientConfigs[j + 1], sizeof(ClientConfigSnapshot));
-      }
-      gClientConfigCount--;
-      saveClientConfigSnapshots();
-      removedAny = true;
-      break;
-    }
-  }
-  
-  // Remove client serial buffer
-  for (uint8_t i = 0; i < gClientSerialBufferCount; ++i) {
-    if (strcmp(gClientSerialBuffers[i].clientUid, clientUid) == 0) {
-      for (uint8_t j = i; j < gClientSerialBufferCount - 1; ++j) {
-        memcpy(&gClientSerialBuffers[j], &gClientSerialBuffers[j + 1], sizeof(ClientSerialBuffer));
-      }
-      gClientSerialBufferCount--;
-      break;
-    }
-  }
-  
+  archiveClientToFtp(clientUid);  // Archive to FTP before removal (if eligible)
+  bool removedAny = removeClientData(clientUid);
+
   if (removedAny) {
     char logMsg[80];
     snprintf(logMsg, sizeof(logMsg), "Client removed: %s", clientUid);
@@ -10797,6 +11291,104 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   String jsonOut;
   serializeJson(doc, jsonOut);
   
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: application/json"));
+  client.println(F("Connection: close"));
+  client.print(F("Content-Length: "));
+  client.println(jsonOut.length());
+  client.println(F("Cache-Control: no-cache"));
+  client.println();
+  client.print(jsonOut);
+}
+
+// ============================================================================
+// Archived Clients API
+// ============================================================================
+// GET /api/history/archived         — Returns manifest of all archived clients
+// GET /api/history/archived?file=X  — Downloads specific archive from FTP
+
+static void handleArchivedClients(EthernetClient &client, const String &query) {
+  String fileParam = getQueryParam(query, "file");
+
+  if (fileParam.length() > 0) {
+    // Load specific archive from FTP
+    if (!gConfig.ftpEnabled) {
+      respondStatus(client, 503, F("FTP not enabled"));
+      return;
+    }
+
+    // Validate filename: only allow alphanumeric, dash, underscore, dot, slash
+    for (unsigned int i = 0; i < fileParam.length(); ++i) {
+      char ch = fileParam.charAt(i);
+      if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+            (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ||
+            ch == '.' || ch == '/')) {
+        respondStatus(client, 400, F("Invalid filename"));
+        return;
+      }
+    }
+    // Block path traversal
+    if (fileParam.indexOf("..") >= 0) {
+      respondStatus(client, 400, F("Invalid filename"));
+      return;
+    }
+
+    FtpSession session;
+    char err[128];
+    if (!ftpConnectAndLogin(session, err, sizeof(err))) {
+      respondStatus(client, 502, F("FTP connection failed"));
+      return;
+    }
+
+    // Archive files may be up to ~8KB; use a stack buffer
+    char buf[8192];
+    size_t bufLen = 0;
+    bool ok = ftpRetrieveBuffer(session, fileParam.c_str(), buf, sizeof(buf), bufLen, err, sizeof(err));
+    ftpQuit(session);
+
+    if (!ok || bufLen == 0) {
+      respondStatus(client, 404, F("Archive not found on FTP"));
+      return;
+    }
+
+    client.println(F("HTTP/1.1 200 OK"));
+    client.println(F("Content-Type: application/json"));
+    client.println(F("Connection: close"));
+    client.print(F("Content-Length: "));
+    client.println(bufLen);
+    client.println(F("Cache-Control: no-cache"));
+    client.println();
+    client.write((const uint8_t *)buf, bufLen);
+    return;
+  }
+
+  // Return manifest of archived clients from LittleFS
+  JsonDocument doc;
+  doc["ftpEnabled"] = gConfig.ftpEnabled;
+
+  #ifdef FILESYSTEM_AVAILABLE
+  {
+    FILE *mf = fopen("/fs/archived_clients.json", "r");
+    if (mf) {
+      char buf[2048];
+      size_t nRead = fread(buf, 1, sizeof(buf) - 1, mf);
+      fclose(mf);
+      buf[nRead] = '\0';
+      JsonDocument manifest;
+      if (!deserializeJson(manifest, buf) && manifest["archives"].is<JsonArray>()) {
+        doc["archives"] = manifest["archives"];
+      }
+    }
+  }
+  #endif
+
+  if (!doc["archives"].is<JsonArray>()) {
+    doc["archives"].to<JsonArray>();  // Empty array
+  }
+
+  String jsonOut;
+  serializeJson(doc, jsonOut);
+
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: application/json"));
   client.println(F("Connection: close"));
