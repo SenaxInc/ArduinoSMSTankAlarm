@@ -391,6 +391,9 @@ struct ClientMetadata {
   char firmwareVersion[16];  // Firmware version string from client telemetry/daily
   // Stale alerting state
   bool staleAlertSent;       // Whether a stale alert has been sent for this client
+  // Last system-level alarm (solar/battery/power) — stored here, not on TankRecord
+  char lastSystemAlarmType[16];  // "solar", "battery", "power", or ""
+  double lastSystemAlarmEpoch;   // When the last system alarm was received
   // Cellular signal strength (from client daily reports)
   int8_t signalBars;         // 0-4 bars, -1 = unknown
   int16_t signalRssi;        // RSSI in dBm
@@ -7859,7 +7862,29 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
   
   // Prune orphaned tank records that are no longer in the new config
   pruneOrphanedTankRecords(clientUid);
-  
+
+  // Clear sensor-stuck alarms for tanks where stuckDetection was disabled
+  JsonArrayConst tanks = cfgObj["tanks"].as<JsonArrayConst>();
+  if (!tanks.isNull()) {
+    for (JsonObjectConst t : tanks) {
+      if (t["stuckDetection"].is<bool>() && !t["stuckDetection"].as<bool>()) {
+        uint8_t sensorIdx = t["number"] | (uint8_t)0;
+        if (sensorIdx == 0) continue;
+        TankRecord *rec = findTankByHash(clientUid, sensorIdx);
+        if (rec && rec->alarmActive && strcmp(rec->alarmType, "sensor-stuck") == 0) {
+          rec->alarmActive = false;
+          strlcpy(rec->alarmType, "clear", sizeof(rec->alarmType));
+          clearAlarmEvent(clientUid, sensorIdx);
+          gTankRegistryDirty = true;
+          Serial.print(F("Cleared sensor-stuck alarm for sensor "));
+          Serial.print(sensorIdx);
+          Serial.print(F(" on "));
+          Serial.println(clientUid);
+        }
+      }
+    }
+  }
+
   // Generate config version hash for ACK tracking
   // Simple hash of the payload to create a short version identifier
   ClientConfigSnapshot *snapPre = findClientConfigSnapshot(clientUid);
@@ -8208,6 +8233,49 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
 
 static void handleAlarm(JsonDocument &doc, double epoch) {
   const char *clientUid = doc["c"] | "";
+  const char *type = doc["y"] | "";
+
+  // System alarms (solar/battery/power) don't reference a specific sensor.
+  // Store on ClientMetadata instead of creating a phantom sensorIndex=0 TankRecord.
+  bool isSystemAlarm = (strcmp(type, "solar") == 0) ||
+                       (strcmp(type, "battery") == 0) ||
+                       (strcmp(type, "power") == 0);
+  if (isSystemAlarm) {
+    ClientMetadata *meta = findOrCreateClientMetadata(clientUid);
+    if (meta) {
+      strlcpy(meta->lastSystemAlarmType, type, sizeof(meta->lastSystemAlarmType));
+      meta->lastSystemAlarmEpoch = (epoch > 0.0) ? epoch : currentEpoch();
+      gClientMetadataDirty = true;
+    }
+    Serial.print(F("System alarm from "));
+    Serial.print(clientUid);
+    Serial.print(F(": "));
+    Serial.println(type);
+    addServerSerialLog("System alarm received", "warn", "alarm");
+    // SMS for system alarms if client flagged as critical (se=true)
+    bool smsRequested = doc["se"] | false;
+    if (smsRequested) {
+      const char *siteName = doc["s"] | "";
+      char message[160];
+      if (strcmp(type, "solar") == 0) {
+        const char *alert = doc["alert"] | "unknown";
+        float bv = doc["bv"] | 0.0f;
+        snprintf(message, sizeof(message), "%s Solar: %s (%.1fV)", siteName, alert, bv);
+      } else if (strcmp(type, "battery") == 0) {
+        const char *alert = doc["alert"] | "unknown";
+        float v = doc["v"] | 0.0f;
+        snprintf(message, sizeof(message), "%s Battery: %s (%.1fV)", siteName, alert, v);
+      } else if (strcmp(type, "power") == 0) {
+        const char *from = doc["from"] | "?";
+        const char *to = doc["to"] | "?";
+        float v = doc["v"] | 0.0f;
+        snprintf(message, sizeof(message), "%s Power: %s->%s (%.1fV)", siteName, from, to, v);
+      }
+      sendSmsAlert(message);
+    }
+    return;
+  }
+
   uint8_t sensorIndex = doc["k"].as<uint8_t>();
   TankRecord *rec = upsertTankRecord(clientUid, sensorIndex);
   if (!rec) {
@@ -8229,8 +8297,6 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
     }
   }
 
-  const char *type = doc["y"] | "";
-  
   // Store object type if provided
   const char *objectType = doc["ot"] | "";
   if (objectType && strlen(objectType) > 0) {
@@ -8281,10 +8347,6 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   // Digital sensor (float switch) alarm types
   bool isDigitalAlarm = (strcmp(type, "triggered") == 0) ||
                         (strcmp(type, "not_triggered") == 0);
-  // System-level alarm types (solar charger, battery, power conservation)
-  bool isSystemAlarm = (strcmp(type, "solar") == 0) ||
-                       (strcmp(type, "battery") == 0) ||
-                       (strcmp(type, "power") == 0);
 
   if (strcmp(type, "clear") == 0 || isRecovery) {
     rec->alarmActive = false;
@@ -8297,24 +8359,19 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   } else {
     rec->alarmActive = true;
     strlcpy(rec->alarmType, type, sizeof(rec->alarmType));
-    // Log new alarm event (skip for system alarms -- they don't have tank levels)
-    if (!isSystemAlarm) {
-      const char *siteName = doc["s"] | "";
-      bool isHigh = (strcmp(type, "high") == 0 || strcmp(type, "triggered") == 0);
-      logAlarmEvent(clientUid, siteName, sensorIndex, level, isHigh);
-    }
+    const char *siteName = doc["s"] | "";
+    bool isHigh = (strcmp(type, "high") == 0 || strcmp(type, "triggered") == 0);
+    logAlarmEvent(clientUid, siteName, sensorIndex, level, isHigh);
   }
-  if (!isSystemAlarm) {
-    rec->levelInches = level;
-    // Record historical snapshot from alarm so trend data captures alarm events
-    if (level > 0.0f) {
-      const char *alarmSiteName = doc["s"] | rec->site;
-      float alarmVin = 0.0f;
-      ClientMetadata *alarmMeta = findOrCreateClientMetadata(clientUid);
-      if (alarmMeta) alarmVin = alarmMeta->vinVoltage;
-      recordTelemetrySnapshot(clientUid, alarmSiteName, sensorIndex,
-                              rec->levelInches, level, alarmVin);
-    }
+  rec->levelInches = level;
+  // Record historical snapshot from alarm so trend data captures alarm events
+  if (level > 0.0f) {
+    const char *alarmSiteName = doc["s"] | rec->site;
+    float alarmVin = 0.0f;
+    ClientMetadata *alarmMeta = findOrCreateClientMetadata(clientUid);
+    if (alarmMeta) alarmVin = alarmMeta->vinVoltage;
+    recordTelemetrySnapshot(clientUid, alarmSiteName, sensorIndex,
+                            rec->levelInches, level, alarmVin);
   }
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
   gTankRegistryDirty = true;
@@ -8340,9 +8397,6 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   } else if (isDigitalAlarm) {
     smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnHigh;
-  } else if (isSystemAlarm && doc["se"]) {
-    // System alarms: SMS only if client flagged as critical (se=true)
-    smsAllowedByServer = true;
   }
 
   if (!isDiagnostic && smsEnabled && smsAllowedByServer && checkSmsRateLimit(rec)) {
@@ -8350,19 +8404,6 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
     if (isDigitalAlarm) {
       const char *stateDesc = (strcmp(type, "triggered") == 0) ? "ACTIVATED" : "NOT ACTIVATED";
       snprintf(message, sizeof(message), "%s%s%d Float Switch %s", rec->site, rec->userNumber > 0 ? " #" : " sensor ", rec->userNumber > 0 ? rec->userNumber : rec->sensorIndex, stateDesc);
-    } else if (strcmp(type, "solar") == 0) {
-      const char *alert = doc["alert"] | "unknown";
-      float bv = doc["bv"] | 0.0f;
-      snprintf(message, sizeof(message), "%s Solar: %s (%.1fV)", rec->site, alert, bv);
-    } else if (strcmp(type, "battery") == 0) {
-      const char *alert = doc["alert"] | "unknown";
-      float v = doc["v"] | 0.0f;
-      snprintf(message, sizeof(message), "%s Battery: %s (%.1fV)", rec->site, alert, v);
-    } else if (strcmp(type, "power") == 0) {
-      const char *from = doc["from"] | "?";
-      const char *to = doc["to"] | "?";
-      float v = doc["v"] | 0.0f;
-      snprintf(message, sizeof(message), "%s Power: %s->%s (%.1fV)", rec->site, from, to, v);
     } else {
       snprintf(message, sizeof(message), "%s%s%d %s alarm %.1f %s", rec->site, rec->userNumber > 0 ? " #" : " sensor ", rec->userNumber > 0 ? rec->userNumber : rec->sensorIndex, rec->alarmType, level, rec->measurementUnit[0] ? rec->measurementUnit : "in");
     }
@@ -8538,6 +8579,40 @@ static void handleDaily(JsonDocument &doc, double epoch) {
           rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
           gTankRegistryDirty = true;
         }
+      }
+    }
+
+    // Reconciliation: clear alarms on server for sensors that the client
+    // reports as NOT alarming.  This catches orphaned server-side alarms
+    // where the "clear" note was lost or rate-limited.
+    for (uint8_t ri = 0; ri < gTankRecordCount; ++ri) {
+      if (strcmp(gTankRecords[ri].clientUid, clientUid) != 0) continue;
+      if (!gTankRecords[ri].alarmActive) continue;
+      // Skip system alarm types — those aren't in the daily alarms array
+      if (strcmp(gTankRecords[ri].alarmType, "solar") == 0 ||
+          strcmp(gTankRecords[ri].alarmType, "battery") == 0 ||
+          strcmp(gTankRecords[ri].alarmType, "power") == 0) continue;
+      // Check if this sensorIndex has an active alarm in the daily report
+      bool foundInDaily = false;
+      for (JsonObject a : dailyAlarms) {
+        uint8_t dailyIdx = a["k"] | 0;
+        if (dailyIdx == gTankRecords[ri].sensorIndex) {
+          bool hiAlarm = a["hi"] | false;
+          bool loAlarm = a["lo"] | false;
+          if (hiAlarm || loAlarm) foundInDaily = true;
+          break;
+        }
+      }
+      if (!foundInDaily) {
+        Serial.print(F("Reconciliation: Clearing orphaned alarm on sensor "));
+        Serial.print(gTankRecords[ri].sensorIndex);
+        Serial.print(F(" for client "));
+        Serial.println(clientUid);
+        addServerSerialLog("Orphaned alarm cleared via daily reconciliation", "info", "alarm");
+        gTankRecords[ri].alarmActive = false;
+        strlcpy(gTankRecords[ri].alarmType, "clear", sizeof(gTankRecords[ri].alarmType));
+        clearAlarmEvent(gTankRecords[ri].clientUid, gTankRecords[ri].sensorIndex);
+        gTankRegistryDirty = true;
       }
     }
   }
@@ -8839,17 +8914,22 @@ static TankRecord *upsertTankRecord(const char *clientUid, uint8_t sensorIndex) 
   }
   
   if (gTankRecordCount >= MAX_TANK_RECORDS) {
-    // Evict the stalest non-alarm tank record (LRU policy)
+    // Evict the stalest non-alarm tank record (LRU policy).
+    // Alarmed records are protected only if updated within the last 72 hours;
+    // stale alarms (likely orphaned) lose their eviction protection.
     uint8_t evictIdx = 0xFF;
     double oldestEpoch = 1e18;
+    double now = currentEpoch();
     for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-      if (!gTankRecords[i].alarmActive && gTankRecords[i].lastUpdateEpoch < oldestEpoch) {
+      bool recentAlarm = gTankRecords[i].alarmActive &&
+                         (now - gTankRecords[i].lastUpdateEpoch) < 259200.0;  // 72h
+      if (!recentAlarm && gTankRecords[i].lastUpdateEpoch < oldestEpoch) {
         oldestEpoch = gTankRecords[i].lastUpdateEpoch;
         evictIdx = i;
       }
     }
     if (evictIdx == 0xFF) {
-      // All records have active alarms - evict absolute stalest
+      // All records have recent active alarms - evict absolute stalest
       for (uint8_t i = 0; i < gTankRecordCount; ++i) {
         if (gTankRecords[i].lastUpdateEpoch < oldestEpoch) {
           oldestEpoch = gTankRecords[i].lastUpdateEpoch;
@@ -9667,6 +9747,10 @@ static void saveClientMetadataCache() {
         if (meta.signalRat[0] != '\0') obj["sn"] = meta.signalRat;
         obj["se"] = meta.signalEpoch;
       }
+      if (meta.lastSystemAlarmType[0] != '\0') {
+        obj["sa"] = meta.lastSystemAlarmType;
+        obj["sae"] = meta.lastSystemAlarmEpoch;
+      }
       // Note: cachedTemperatureF and staleAlertSent are runtime-only, not persisted
     }
     
@@ -9754,6 +9838,8 @@ static void loadClientMetadataCache() {
       meta.signalRsrq = obj["sq"] | (int)0;
       strlcpy(meta.signalRat, obj["sn"] | "", sizeof(meta.signalRat));
       meta.signalEpoch = obj["se"] | 0.0;
+      strlcpy(meta.lastSystemAlarmType, obj["sa"] | "", sizeof(meta.lastSystemAlarmType));
+      meta.lastSystemAlarmEpoch = obj["sae"] | 0.0;
       meta.cachedTemperatureF = TEMPERATURE_UNAVAILABLE;
       meta.staleAlertSent = false;
     }

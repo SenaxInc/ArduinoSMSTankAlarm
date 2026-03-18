@@ -3438,10 +3438,40 @@ static void reinitializeHardware() {
       }
     }
     
+    // If sensor was in a failed/stuck state, notify server before clearing
+    if (gMonitorState[i].sensorFailed) {
+      Serial.print(F("Sending sensor-recovered for sensor "));
+      Serial.println(cfg.name);
+      JsonDocument recovDoc;
+      recovDoc["c"] = gDeviceUID;
+      recovDoc["s"] = gConfig.siteName;
+      recovDoc["k"] = cfg.sensorIndex;
+      recovDoc["y"] = "sensor-recovered";
+      recovDoc["rd"] = 0;
+      recovDoc["t"] = currentEpoch();
+      publishNote(ALARM_FILE, recovDoc, true);
+    }
+
+    // If alarm was latched, send clear to server before resetting
+    if (gMonitorState[i].highAlarmLatched || gMonitorState[i].lowAlarmLatched) {
+      Serial.print(F("Clearing latched alarm for sensor "));
+      Serial.println(cfg.name);
+      JsonDocument clearDoc;
+      clearDoc["c"] = gDeviceUID;
+      clearDoc["s"] = gConfig.siteName;
+      clearDoc["k"] = cfg.sensorIndex;
+      clearDoc["y"] = "clear";
+      clearDoc["rd"] = 0;
+      clearDoc["t"] = currentEpoch();
+      publishNote(ALARM_FILE, clearDoc, true);
+    }
+
     // Reset tank runtime state for hardware changes
     gMonitorState[i].highAlarmDebounceCount = 0;
     gMonitorState[i].lowAlarmDebounceCount = 0;
     gMonitorState[i].clearDebounceCount = 0;
+    gMonitorState[i].highAlarmLatched = false;
+    gMonitorState[i].lowAlarmLatched = false;
     gMonitorState[i].consecutiveFailures = 0;
     gMonitorState[i].stuckReadingCount = 0;
     gMonitorState[i].sensorFailed = false;
@@ -3613,7 +3643,36 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   if (!doc["tanks"].isNull()) {
     hardwareChanged = true;  // Tank configuration affects hardware
     JsonArrayConst tanks = doc["tanks"].as<JsonArrayConst>();
-    gConfig.monitorCount = min<uint8_t>(tanks.size(), MAX_TANKS);
+    uint8_t newCount = min<uint8_t>(tanks.size(), MAX_TANKS);
+
+    // Clean up state for monitors being removed (count decreasing)
+    for (uint8_t i = newCount; i < gConfig.monitorCount; ++i) {
+      // Send recovery/clear notes for removed monitors with active alarms
+      if (gMonitorState[i].sensorFailed) {
+        JsonDocument recovDoc;
+        recovDoc["c"] = gDeviceUID;
+        recovDoc["s"] = gConfig.siteName;
+        recovDoc["k"] = gConfig.monitors[i].sensorIndex;
+        recovDoc["y"] = "sensor-recovered";
+        recovDoc["rd"] = 0;
+        recovDoc["t"] = currentEpoch();
+        publishNote(ALARM_FILE, recovDoc, true);
+      }
+      if (gMonitorState[i].highAlarmLatched || gMonitorState[i].lowAlarmLatched) {
+        JsonDocument clearDoc;
+        clearDoc["c"] = gDeviceUID;
+        clearDoc["s"] = gConfig.siteName;
+        clearDoc["k"] = gConfig.monitors[i].sensorIndex;
+        clearDoc["y"] = "clear";
+        clearDoc["rd"] = 0;
+        clearDoc["t"] = currentEpoch();
+        publishNote(ALARM_FILE, clearDoc, true);
+      }
+      // Zero out stale runtime state so it's clean if monitor is re-added later
+      memset(&gMonitorState[i], 0, sizeof(MonitorRuntime));
+    }
+
+    gConfig.monitorCount = newCount;
     for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
       JsonObjectConst t = tanks[i];
       parseMonitorFromJson(gConfig.monitors[i], t, i);
@@ -4328,12 +4387,10 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
       Serial.println(idx);
       return false;
     }
-  } else if (strcmp(alarmType, "clear") == 0) {
-    if (now - state.lastClearAlarmMillis < minInterval) {
-      Serial.print(F("Rate limit: Clear alarm suppressed for tank "));
-      Serial.println(idx);
-      return false;
-    }
+  } else if (strcmp(alarmType, "clear") == 0 || strcmp(alarmType, "sensor-recovered") == 0) {
+    // Never rate-limit clear/recovery notes — the server needs them to resolve alarms
+    state.lastClearAlarmMillis = now;
+    return true;
   } else if (strcmp(alarmType, "sensor-fault") == 0 || strcmp(alarmType, "sensor-stuck") == 0) {
     if (now - state.lastSensorFaultMillis < minInterval) {
       Serial.print(F("Rate limit: Sensor fault suppressed for tank "));
