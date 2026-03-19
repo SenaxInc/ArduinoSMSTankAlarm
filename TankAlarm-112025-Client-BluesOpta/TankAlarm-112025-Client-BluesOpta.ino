@@ -1,6 +1,6 @@
 /*
   Tank Alarm Client 112025 - Arduino Opta + Blues Notecard
-  Version: 1.1.8
+  Version: 1.1.9
 
   Hardware:
   - Arduino Opta Lite (STM32H747XI dual-core)
@@ -8,7 +8,7 @@
   - Blues Wireless Notecard for Opta adapter (cellular + GPS)
 
   Features:
-  - Multi-tank level monitoring with per-tank alarm thresholds
+  - Multi-sensor monitoring with per-monitor alarm thresholds
   - Blues Notecard telemetry for server ingestion
   - SMS alarm escalation via server
   - Daily report schedule aligned with server
@@ -177,8 +177,8 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #define NOTE_BUFFER_MIN_HEADROOM 2048
 #endif
 
-#ifndef MAX_TANKS
-#define MAX_TANKS 8
+#ifndef MAX_MONITORS
+#define MAX_MONITORS 8
 #endif
 
 // DEFAULT_SAMPLE_INTERVAL_SEC, DEFAULT_LEVEL_CHANGE_THRESHOLD,
@@ -212,11 +212,11 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 #endif
 
 #ifndef MAX_ALARMS_PER_HOUR
-#define MAX_ALARMS_PER_HOUR 10  // Maximum alarms per tank per hour
+#define MAX_ALARMS_PER_HOUR 10  // Maximum alarms per monitor per hour
 #endif
 
 #ifndef MAX_GLOBAL_ALARMS_PER_HOUR
-#define MAX_GLOBAL_ALARMS_PER_HOUR 30  // Maximum alarms across ALL tanks per hour
+#define MAX_GLOBAL_ALARMS_PER_HOUR 30  // Maximum alarms across ALL sensors per hour
 #endif
 
 #ifndef TELEMETRY_OUTBOX_MAX_PENDING
@@ -509,7 +509,7 @@ struct ClientConfig {
   uint8_t reportHour;
   uint8_t reportMinute;
   uint8_t monitorCount;
-  MonitorConfig monitors[MAX_TANKS];
+  MonitorConfig monitors[MAX_MONITORS];
   // Optional clear button configuration
   int8_t clearButtonPin;        // Pin for physical clear button (-1 = disabled)
   bool clearButtonActiveHigh;   // true = button active when HIGH, false = active when LOW (with pullup)
@@ -576,9 +576,9 @@ struct MonitorRuntime {
 };
 
 static ClientConfig gConfig;
-static MonitorRuntime gMonitorState[MAX_TANKS];
+static MonitorRuntime gMonitorState[MAX_MONITORS];
 
-// Global alarm rate limiting (across all tanks)
+// Global alarm rate limiting (across all sensors)
 static unsigned long gGlobalAlarmTimestamps[MAX_GLOBAL_ALARMS_PER_HOUR];
 static uint8_t gGlobalAlarmCount = 0;
 
@@ -691,12 +691,12 @@ static bool gRelayState[MAX_RELAYS] = {false, false, false, false};
 static unsigned long gLastRelayCheckMillis = 0;
 
 // Per-relay activation tracking for momentary mode timeout
-// Each relay in a tank's mask can have a different momentary duration,
-// so we track activation time per-relay (not per-tank) to support
+// Each relay in a monitor's mask can have a different momentary duration,
+// so we track activation time per-relay (not per-monitor) to support
 // independent timeout behavior.
 static unsigned long gRelayActivationTime[MAX_RELAYS] = {0};
-static bool gRelayActiveForTank[MAX_TANKS] = {false};
-static uint8_t gRelayActiveMaskForTank[MAX_TANKS] = {0}; // Which relays are currently active for each tank
+static bool gRelayActiveForMonitor[MAX_MONITORS] = {false};
+static uint8_t gRelayActiveMaskForMonitor[MAX_MONITORS] = {0}; // Which relays are currently active for each monitor
 
 // Clear button state for debouncing
 static unsigned long gClearButtonLastPressTime = 0;
@@ -706,17 +706,17 @@ static bool gClearButtonInitialized = false;
 #define CLEAR_BUTTON_MIN_PRESS_MS 500  // Require 500ms press to clear (prevent accidental triggers)
 
 // RPM sensor state for Hall effect pulse counting
-// We track pulses per tank that uses an RPM sensor
-static unsigned long gRpmLastSampleMillis[MAX_TANKS] = {0};
-static float gRpmLastReading[MAX_TANKS] = {0.0f};
-static int gRpmLastPinState[MAX_TANKS];  // Initialized dynamically in setup()
+// We track pulses per monitor that uses an RPM sensor
+static unsigned long gRpmLastSampleMillis[MAX_MONITORS] = {0};
+static float gRpmLastReading[MAX_MONITORS] = {0.0f};
+static int gRpmLastPinState[MAX_MONITORS];  // Initialized dynamically in setup()
 // For time-based detection: track time between pulses
-static unsigned long gRpmLastPulseTime[MAX_TANKS] = {0};
-static unsigned long gRpmPulsePeriodMs[MAX_TANKS] = {0};
+static unsigned long gRpmLastPulseTime[MAX_MONITORS] = {0};
+static unsigned long gRpmPulsePeriodMs[MAX_MONITORS] = {0};
 // For accumulated mode: count pulses between telemetry reports
-static volatile uint32_t gRpmAccumulatedPulses[MAX_TANKS] = {0};
-static unsigned long gRpmAccumulatedStartMillis[MAX_TANKS] = {0};
-static bool gRpmAccumulatedInitialized[MAX_TANKS] = {false};
+static volatile uint32_t gRpmAccumulatedPulses[MAX_MONITORS] = {0};
+static unsigned long gRpmAccumulatedStartMillis[MAX_MONITORS] = {0};
+static bool gRpmAccumulatedInitialized[MAX_MONITORS] = {false};
 
 // Atomic access helpers for volatile pulse counter (protects against future interrupt use)
 // On 32-bit ARM (Cortex-M7 in STM32H747XI), 32-bit aligned reads/writes are atomic,
@@ -805,12 +805,12 @@ static void pollForConfigUpdates();
 static void applyConfigUpdate(const JsonDocument &doc);
 static void sendConfigAck(bool success, const char *message, const char *configVersion);
 static void persistConfigIfDirty();
-static void sampleTanks();
+static void sampleMonitors();
 static float readDigitalSensor(const MonitorConfig &cfg, uint8_t idx);
 static float readAnalogSensor(const MonitorConfig &cfg, uint8_t idx);
 static float readCurrentLoopSensor(const MonitorConfig &cfg, uint8_t idx);
 static float readPulseSensor(const MonitorConfig &cfg, uint8_t idx);
-static float readTankSensor(uint8_t idx);
+static float readMonitorSensor(uint8_t idx);
 
 // ============================================================================
 // Non-blocking Pulse Sampler State Machine
@@ -820,7 +820,7 @@ static float readTankSensor(uint8_t idx);
 // pollPulseSampler() does a short burst of work (up to PULSE_POLL_BURST_MS),
 // then returns. When the configured sample duration has elapsed, the result
 // is finalized and made available via readPulseSensorResult().
-// Between sampling periods, readTankSensor() returns the last computed value.
+// Between sampling periods, readMonitorSensor() returns the last computed value.
 // ============================================================================
 #ifndef PULSE_POLL_BURST_MS
 #define PULSE_POLL_BURST_MS 50  // Max ms per poll call (keeps loop responsive)
@@ -855,7 +855,7 @@ struct PulseSamplerContext {
   bool resultReady;
 };
 
-static PulseSamplerContext gPulseSampler[MAX_TANKS];
+static PulseSamplerContext gPulseSampler[MAX_MONITORS];
 static bool gPulseSamplerInitialized = false;
 
 static void initPulseSamplers() {
@@ -1085,7 +1085,7 @@ static void trimTelemetryOutbox();
 static void ensureTimeSync();
 static void updateDailyScheduleIfNeeded();
 static bool checkNotecardHealth();
-static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit);
+static bool appendDailyMonitor(JsonDocument &doc, JsonArray &array, uint8_t monitorIndex, size_t payloadLimit);
 static void pollForRelayCommands();
 static void processRelayCommand(const JsonDocument &doc);
 static void setRelayState(uint8_t relayNum, bool state);
@@ -1096,7 +1096,7 @@ static float readNotecardVinVoltage();
 static float readVinDividerVoltage();
 static void checkRelayMomentaryTimeout(unsigned long now);
 static bool fetchNotecardLocation(float &latitude, float &longitude);
-static void resetRelayForTank(uint8_t idx);
+static void resetRelayForMonitor(uint8_t idx);
 static void initializeClearButton();
 static void checkClearButton(unsigned long now);
 static void clearAllRelayAlarms();
@@ -1197,7 +1197,7 @@ void setup() {
   // Initialize serial log buffer
   memset(&gSerialLog, 0, sizeof(ClientSerialLog));
 
-  // Set analog resolution to 12-bit to match the /4095.0f divisor used in readTankSensor
+  // Set analog resolution to 12-bit to match the /4095.0f divisor used in readMonitorSensor
   analogReadResolution(12);
 
   initializeStorage();
@@ -1267,7 +1267,7 @@ void setup() {
 #endif
 
   // Initialize RPM sensor state arrays dynamically
-  for (uint8_t i = 0; i < MAX_TANKS; ++i) {
+  for (uint8_t i = 0; i < MAX_MONITORS; ++i) {
     gRpmLastPinState[i] = HIGH;
     gRpmLastSampleMillis[i] = 0;
     gRpmLastReading[i] = 0.0f;
@@ -1279,9 +1279,9 @@ void setup() {
   for (uint8_t i = 0; i < MAX_RELAYS; ++i) {
     gRelayActivationTime[i] = 0;
   }
-  for (uint8_t i = 0; i < MAX_TANKS; ++i) {
-    gRelayActiveForTank[i] = false;
-    gRelayActiveMaskForTank[i] = 0;
+  for (uint8_t i = 0; i < MAX_MONITORS; ++i) {
+    gRelayActiveForMonitor[i] = false;
+    gRelayActiveMaskForMonitor[i] = 0;
   }
 
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
@@ -1403,7 +1403,7 @@ void setup() {
     if (!isSolarOnlyActive()) {
       Serial.println(F("Sending boot telemetry..."));
       addSerialLog("Boot telemetry");
-      sampleTanks();
+      sampleMonitors();
     }
     // Solar clients with monitors rely on loop sample interval
   } else {
@@ -1581,7 +1581,7 @@ void loop() {
     if (now - gLastTelemetryMillis >= sampleInterval) {
       gLastTelemetryMillis = now;
       if (gConfig.monitorCount > 0) {
-        sampleTanks();
+        sampleMonitors();
       } else {
         // No monitors configured — periodically re-register so the server
         // knows this device is still online and awaiting configuration.
@@ -2343,7 +2343,7 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
           // Current loop with non-default range unit
           strlcpy(mon.measurementUnit, mon.sensorRangeUnit, sizeof(mon.measurementUnit));
         }
-        // For tanks with PSI pressure sensors, leave empty — server converts PSI→inches
+        // For sensors with PSI pressure sensors, leave empty — server converts PSI→inches
         break;
     }
   }
@@ -2584,12 +2584,12 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     ? (uint32_t)doc["healthCheckBaseIntervalMs"].as<int>() 
     : 0;
 
-  // Support both old "tanks" and new "monitors" array names
-  JsonArray monitorsArray = doc["monitors"].as<JsonArray>();
+  // Support both "sensors" (from server) and "monitors" (local config) array names
+  JsonArray monitorsArray = doc["sensors"].as<JsonArray>();
   if (!monitorsArray) {
-    monitorsArray = doc["tanks"].as<JsonArray>();
+    monitorsArray = doc["monitors"].as<JsonArray>();
   }
-  cfg.monitorCount = monitorsArray ? min<uint8_t>(monitorsArray.size(), MAX_TANKS) : 0;
+  cfg.monitorCount = monitorsArray ? min<uint8_t>(monitorsArray.size(), MAX_MONITORS) : 0;
 
   for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
     JsonObjectConst t = monitorsArray[i];
@@ -2672,9 +2672,9 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   batCfg["declineThreshold"] = cfg.batteryMonitor.declineAlertThreshold;
   batCfg["includeInDaily"] = cfg.batteryMonitor.includeInDailyReport;
 
-  JsonArray tanks = doc["tanks"].to<JsonArray>();
+  JsonArray sensors = doc["sensors"].to<JsonArray>();
   for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
-    JsonObject t = tanks.add<JsonObject>();
+    JsonObject t = sensors.add<JsonObject>();
     char idBuffer[2] = {cfg.monitors[i].id, '\0'};
     t["id"] = idBuffer;
     t["name"] = cfg.monitors[i].name;
@@ -3006,7 +3006,7 @@ static void configureNotecardHubMode() {
   }
   
   // Disable accelerometer motion tracking for power savings
-  // The accelerometer is not used by this tank monitoring application
+  // The accelerometer is not used by this sensor monitoring application
   // card.motion.sync controls motion-triggered syncing; stop prevents
   // the Notecard from syncing on motion detection.
   req = notecard.newRequest("card.motion.sync");
@@ -3424,7 +3424,7 @@ static void reinitializeHardware() {
   Wire.begin();
   Wire.setTimeout(I2C_WIRE_TIMEOUT_MS);  // Guard against indefinite blocking on bus hang
 
-  // Reinitialize all tank sensors with new configuration
+  // Reinitialize all monitor sensors with new configuration
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
     const MonitorConfig &cfg = gConfig.monitors[i];
     
@@ -3466,7 +3466,7 @@ static void reinitializeHardware() {
       publishNote(ALARM_FILE, clearDoc, true);
     }
 
-    // Reset tank runtime state for hardware changes
+    // Reset monitor runtime state for hardware changes
     gMonitorState[i].highAlarmDebounceCount = 0;
     gMonitorState[i].lowAlarmDebounceCount = 0;
     gMonitorState[i].clearDebounceCount = 0;
@@ -3490,7 +3490,7 @@ static void reinitializeHardware() {
 }
 
 static void resetTelemetryBaselines() {
-  for (uint8_t i = 0; i < MAX_TANKS; ++i) {
+  for (uint8_t i = 0; i < MAX_MONITORS; ++i) {
     gMonitorState[i].lastReportedInches = -9999.0f;
   }
 }
@@ -3640,10 +3640,10 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     gConfig.healthCheckBaseIntervalMs = (uint32_t)doc["healthCheckBaseIntervalMs"].as<int>();
   }
 
-  if (!doc["tanks"].isNull()) {
-    hardwareChanged = true;  // Tank configuration affects hardware
-    JsonArrayConst tanks = doc["tanks"].as<JsonArrayConst>();
-    uint8_t newCount = min<uint8_t>(tanks.size(), MAX_TANKS);
+  if (!doc["sensors"].isNull()) {
+    hardwareChanged = true;  // Monitor configuration affects hardware
+    JsonArrayConst sensors = doc["sensors"].as<JsonArrayConst>();
+    uint8_t newCount = min<uint8_t>(sensors.size(), MAX_MONITORS);
 
     // Clean up state for monitors being removed (count decreasing)
     for (uint8_t i = newCount; i < gConfig.monitorCount; ++i) {
@@ -3674,7 +3674,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
 
     gConfig.monitorCount = newCount;
     for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
-      JsonObjectConst t = tanks[i];
+      JsonObjectConst t = sensors[i];
       parseMonitorFromJson(gConfig.monitors[i], t, i);
 
       // Side effect: reset accumulated state when pulse mode config changes
@@ -3867,7 +3867,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
     if (state.consecutiveFailures >= SENSOR_FAILURE_THRESHOLD) {
       if (!state.sensorFailed) {
         state.sensorFailed = true;
-        Serial.print(F("Sensor failure detected for tank "));
+        Serial.print(F("Sensor failure detected for monitor "));
         Serial.println(cfg.name);
         // Send sensor failure alert with rate limiting
         if (checkAlarmRateLimit(idx, "sensor-fault")) {
@@ -3891,7 +3891,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
     if (state.stuckReadingCount >= SENSOR_STUCK_THRESHOLD) {
       if (!state.sensorFailed) {
         state.sensorFailed = true;
-        Serial.print(F("Stuck sensor detected for tank "));
+        Serial.print(F("Stuck sensor detected for monitor "));
         Serial.println(cfg.name);
         // Send stuck sensor alert with rate limiting
         if (checkAlarmRateLimit(idx, "sensor-stuck")) {
@@ -3915,7 +3915,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   state.consecutiveFailures = 0;
   if (state.sensorFailed) {
     state.sensorFailed = false;
-    Serial.print(F("Sensor recovered for tank "));
+    Serial.print(F("Sensor recovered for monitor "));
     Serial.println(cfg.name);
     // Send recovery notification (no rate limit on recovery)
     JsonDocument doc;
@@ -3933,7 +3933,7 @@ static bool validateSensorReading(uint8_t idx, float reading) {
 }
 
 // ============================================================================
-// Sensor Type Helper Functions (extracted from readTankSensor for clarity)
+// Sensor Type Helper Functions (extracted from readMonitorSensor for clarity)
 // ============================================================================
 
 /**
@@ -4093,10 +4093,10 @@ static float readPulseSensor(const MonitorConfig &cfg, uint8_t idx) {
 }
 
 // ============================================================================
-// readTankSensor — dispatches to sensor-type-specific helpers
+// readMonitorSensor — dispatches to sensor-type-specific helpers
 // ============================================================================
 
-static float readTankSensor(uint8_t idx) {
+static float readMonitorSensor(uint8_t idx) {
   if (idx >= gConfig.monitorCount) {
     return 0.0f;
   }
@@ -4112,7 +4112,7 @@ static float readTankSensor(uint8_t idx) {
   }
 }
 
-static void sampleTanks() {
+static void sampleMonitors() {
   // Solar-only sensor voltage gating: skip sampling if power is insufficient
   if (isSolarOnlyActive() && !isSensorVoltageGateOpen()) {
     return;  // Voltage too low for reliable sensor readings
@@ -4123,7 +4123,7 @@ static void sampleTanks() {
   trimTelemetryOutbox();
 
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
-    float inches = readTankSensor(i);
+    float inches = readMonitorSensor(i);
     
     // Validate sensor reading
     if (!validateSensorReading(i, inches)) {
@@ -4377,13 +4377,13 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
   
   if (strcmp(alarmType, "high") == 0) {
     if (now - state.lastHighAlarmMillis < minInterval) {
-      Serial.print(F("Rate limit: High alarm suppressed for tank "));
+      Serial.print(F("Rate limit: High alarm suppressed for monitor "));
       Serial.println(idx);
       return false;
     }
   } else if (strcmp(alarmType, "low") == 0) {
     if (now - state.lastLowAlarmMillis < minInterval) {
-      Serial.print(F("Rate limit: Low alarm suppressed for tank "));
+      Serial.print(F("Rate limit: Low alarm suppressed for monitor "));
       Serial.println(idx);
       return false;
     }
@@ -4393,7 +4393,7 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
     return true;
   } else if (strcmp(alarmType, "sensor-fault") == 0 || strcmp(alarmType, "sensor-stuck") == 0) {
     if (now - state.lastSensorFaultMillis < minInterval) {
-      Serial.print(F("Rate limit: Sensor fault suppressed for tank "));
+      Serial.print(F("Rate limit: Sensor fault suppressed for monitor "));
       Serial.println(idx);
       return false;
     }
@@ -4411,7 +4411,7 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
 
   // Check if we've exceeded the hourly limit
   if (state.alarmCount >= MAX_ALARMS_PER_HOUR) {
-    Serial.print(F("Rate limit: Hourly limit exceeded for tank "));
+    Serial.print(F("Rate limit: Hourly limit exceeded for monitor "));
     Serial.print(idx);
     Serial.print(F(" ("));
     Serial.print(state.alarmCount);
@@ -4421,12 +4421,12 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
     return false;
   }
 
-  // Add current timestamp (per-tank)
+  // Add current timestamp (per-monitor)
   if (state.alarmCount < MAX_ALARMS_PER_HOUR) {
     state.alarmTimestamps[state.alarmCount++] = now;
   }
 
-  // Global alarm rate limit — cap total alarms across ALL tanks per hour
+  // Global alarm rate limit — cap total alarms across ALL sensors per hour
   {
     uint8_t gValid = 0;
     for (uint8_t g = 0; g < gGlobalAlarmCount; ++g) {
@@ -4465,8 +4465,8 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
 
 static void activateLocalAlarm(uint8_t idx, bool active) {
   // Use Opta's built-in relay outputs for local alarm indication.
-  // If the tank has a configured relayMask, use that; otherwise fall back
-  // to mapping tank index directly to a relay (tank 0 -> relay 0, etc.)
+  // If the monitor has a configured relayMask, use that; otherwise fall back
+  // to mapping monitor index directly to a relay (monitor 0 -> relay 0, etc.)
   uint8_t mask = 0;
   if (idx < gConfig.monitorCount) {
     mask = gConfig.monitors[idx].relayMask;
@@ -4484,7 +4484,7 @@ static void activateLocalAlarm(uint8_t idx, bool active) {
       }
     }
   } else {
-    // Legacy fallback: map tank index directly to relay (only works for tanks 0-3)
+    // Legacy fallback: map monitor index directly to relay (only works for sensors 0-3)
     int relayPin = getRelayPin(idx);
     if (relayPin >= 0) {
       pinMode(relayPin, OUTPUT);
@@ -4493,10 +4493,10 @@ static void activateLocalAlarm(uint8_t idx, bool active) {
   }
   
   if (active) {
-    Serial.print(F("LOCAL ALARM ACTIVE - Tank "));
+    Serial.print(F("LOCAL ALARM ACTIVE - Sensor "));
     Serial.println(idx);
   } else {
-    Serial.print(F("LOCAL ALARM CLEARED - Tank "));
+    Serial.print(F("LOCAL ALARM CLEARED - Sensor "));
     Serial.println(idx);
   }
 }
@@ -4563,7 +4563,7 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     doc["t"] = currentEpoch();
 
     publishNote(ALARM_FILE, doc, true);
-    Serial.print(F("Alarm sent for tank "));
+    Serial.print(F("Alarm sent for monitor "));
     Serial.print(cfg.name);
     Serial.print(F(" type "));
     Serial.println(alarmType);
@@ -4589,7 +4589,7 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
       } else {
         // Alarm cleared - check if we should deactivate relay
         // Only deactivate if mode is UNTIL_CLEAR and the clearing alarm matches trigger
-        if (cfg.relayMode == RELAY_MODE_UNTIL_CLEAR && gRelayActiveForTank[idx]) {
+        if (cfg.relayMode == RELAY_MODE_UNTIL_CLEAR && gRelayActiveForMonitor[idx]) {
           bool shouldClear = false;
           if (cfg.relayTrigger == RELAY_TRIGGER_ANY) {
             shouldClear = true; // Any alarm clearing will deactivate
@@ -4604,10 +4604,10 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
         }
       }
       
-      if (shouldActivateRelay && !gRelayActiveForTank[idx]) {
+      if (shouldActivateRelay && !gRelayActiveForMonitor[idx]) {
         triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, true);
-        gRelayActiveForTank[idx] = true;
-        gRelayActiveMaskForTank[idx] = cfg.relayMask;
+        gRelayActiveForMonitor[idx] = true;
+        gRelayActiveMaskForMonitor[idx] = cfg.relayMask;
         // Set per-relay activation times for independent timeout tracking
         unsigned long activateTime = millis();
         for (uint8_t r = 0; r < MAX_RELAYS; r++) {
@@ -4626,22 +4626,22 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
         Serial.println(F(")"));
       } else if (shouldDeactivateRelay) {
         triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
-        // Clear per-relay activation times using the stored mask (not tank index)
-        // BugFix 02282026: Was gRelayActivationTime[idx] which used the tank index
+        // Clear per-relay activation times using the stored mask (not monitor index)
+        // BugFix 02282026: Was gRelayActivationTime[idx] which used the monitor index
         // instead of iterating the relay bitmask — relay timeouts were not properly
-        // cleared for tanks whose relay mask didn't coincidentally match their index.
+        // cleared for sensors whose relay mask didn't coincidentally match their index.
         for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-          if (gRelayActiveMaskForTank[idx] & (1 << r)) {
+          if (gRelayActiveMaskForMonitor[idx] & (1 << r)) {
             gRelayActivationTime[r] = 0;
           }
         }
-        gRelayActiveForTank[idx] = false;
-        gRelayActiveMaskForTank[idx] = 0;
+        gRelayActiveForMonitor[idx] = false;
+        gRelayActiveMaskForMonitor[idx] = 0;
         Serial.println(F("Relay deactivated on alarm clear"));
       }
     }
   } else {
-    Serial.print(F("Network offline - local alarm only for tank "));
+    Serial.print(F("Network offline - local alarm only for monitor "));
     Serial.print(cfg.name);
     Serial.print(F(" type "));
     Serial.println(alarmType);
@@ -4661,11 +4661,11 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
 // 5. Optionally send SMS/email notification
 //
 // Use cases:
-// - Fill-and-empty tanks (fuel delivery tanks, milk tanks, etc.)
-// - NOT for tanks that fluctuate through in/out ports
+// - Fill-and-empty sensors (fuel delivery sensors, milk sensors, etc.)
+// - NOT for sensors that fluctuate through in/out ports
 // ============================================================================
 
-static uint8_t gUnloadDebounceCount[MAX_TANKS] = {0};
+static uint8_t gUnloadDebounceCount[MAX_MONITORS] = {0};
 
 static void evaluateUnload(uint8_t idx) {
   if (idx >= gConfig.monitorCount) {
@@ -5801,7 +5801,7 @@ static void updatePowerState() {
 }
 
 static void sendDailyReport() {
-  uint8_t eligibleIndices[MAX_TANKS];
+  uint8_t eligibleIndices[MAX_MONITORS];
   uint8_t eligibleCount = 0;
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
     if (gConfig.monitors[i].enableDailyReport) {
@@ -5814,7 +5814,7 @@ static void sendDailyReport() {
   }
 
   double reportEpoch = currentEpoch();
-  size_t tankCursor = 0;
+  size_t monitorCursor = 0;
   uint8_t part = 0;
   bool queuedAny = false;
 
@@ -5831,7 +5831,7 @@ static void sendDailyReport() {
     vinVoltage = readNotecardVinVoltage();
   }
 
-  while (tankCursor < eligibleCount) {
+  while (monitorCursor < eligibleCount) {
     JsonDocument doc;
     doc["c"] = gDeviceUID;
     doc["s"] = gConfig.siteName;
@@ -5891,35 +5891,35 @@ static void sendDailyReport() {
       }
     }
 
-    JsonArray tanks = doc["tanks"].to<JsonArray>();
-    bool addedTank = false;
+    JsonArray sensors = doc["sensors"].to<JsonArray>();
+    bool addedMonitor = false;
 
-    while (tankCursor < eligibleCount) {
-      uint8_t tankIndex = eligibleIndices[tankCursor];
-      if (appendDailyTank(doc, tanks, tankIndex, DAILY_NOTE_PAYLOAD_LIMIT)) {
-        ++tankCursor;
-        addedTank = true;
+    while (monitorCursor < eligibleCount) {
+      uint8_t monitorIdx = eligibleIndices[monitorCursor];
+      if (appendDailyMonitor(doc, sensors, monitorIdx, DAILY_NOTE_PAYLOAD_LIMIT)) {
+        ++monitorCursor;
+        addedMonitor = true;
       } else {
-        if (!addedTank) {
+        if (!addedMonitor) {
           // Allow a single large entry with minimal headroom so it still publishes.
-          if (appendDailyTank(doc, tanks, tankIndex, DAILY_NOTE_PAYLOAD_LIMIT + 48U)) {
-            ++tankCursor;
-            addedTank = true;
+          if (appendDailyMonitor(doc, sensors, monitorIdx, DAILY_NOTE_PAYLOAD_LIMIT + 48U)) {
+            ++monitorCursor;
+            addedMonitor = true;
           } else {
             Serial.println(F("Daily report entry skipped; payload still exceeds limit"));
-            ++tankCursor;
+            ++monitorCursor;
           }
         }
         break;
       }
     }
 
-    if (!addedTank) {
+    if (!addedMonitor) {
       continue;
     }
 
-    doc["m"] = (tankCursor < eligibleCount);  // more parts follow
-    bool syncNow = (tankCursor >= eligibleCount);
+    doc["m"] = (monitorCursor < eligibleCount);  // more parts follow
+    bool syncNow = (monitorCursor >= eligibleCount);
     publishNote(DAILY_FILE, doc, syncNow);
     queuedAny = true;
     ++part;
@@ -5951,13 +5951,13 @@ static void sendDailyReport() {
   gI2cBusRecoveryCount = 0;
 }
 
-static bool appendDailyTank(JsonDocument &doc, JsonArray &array, uint8_t tankIndex, size_t payloadLimit) {
-  if (tankIndex >= gConfig.monitorCount) {
+static bool appendDailyMonitor(JsonDocument &doc, JsonArray &array, uint8_t monitorIndex, size_t payloadLimit) {
+  if (monitorIndex >= gConfig.monitorCount) {
     return false;
   }
 
-  const MonitorConfig &cfg = gConfig.monitors[tankIndex];
-  MonitorRuntime &state = gMonitorState[tankIndex];
+  const MonitorConfig &cfg = gConfig.monitors[monitorIndex];
+  MonitorRuntime &state = gMonitorState[monitorIndex];
 
   JsonObject t = array.add<JsonObject>();
   t["n"] = cfg.name;                              // label/name
@@ -6727,13 +6727,13 @@ static void processRelayCommand(const JsonDocument &doc) {
     lastRelayCommandMillis = now;
   }
 
-  // Handle tank relay reset command from server first
-  // Command format: { "relay_reset_tank": 0-7 }
+  // Handle monitor relay reset command from server first
+  // Command format: { "relay_reset_sensor": 0-7 }
   // This is a standalone command that doesn't require relay/state fields
-  if (!doc["relay_reset_tank"].isNull()) {
-    uint8_t tankIdx = doc["relay_reset_tank"].as<uint8_t>();
-    if (tankIdx < MAX_TANKS) {
-      resetRelayForTank(tankIdx);
+  if (!doc["relay_reset_sensor"].isNull()) {
+    uint8_t sensorIdx = doc["relay_reset_sensor"].as<uint8_t>();
+    if (sensorIdx < MAX_MONITORS) {
+      resetRelayForMonitor(sensorIdx);
     }
     return;  // This is a complete command
   }
@@ -6845,22 +6845,22 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
 }
 
 // Check and deactivate relays that have exceeded their individual momentary timeout.
-// Each relay in a tank's mask is tracked independently, allowing different durations
+// Each relay in a monitor's mask is tracked independently, allowing different durations
 // (e.g., relay 0 = 10 min, relay 2 = 60 min) to expire at their own times.
 static void checkRelayMomentaryTimeout(unsigned long now) {
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
     const MonitorConfig &cfg = gConfig.monitors[i];
     
-    // Only check tanks with active relays in momentary mode
-    if (!gRelayActiveForTank[i] || cfg.relayMode != RELAY_MODE_MOMENTARY) {
+    // Only check sensors with active relays in momentary mode
+    if (!gRelayActiveForMonitor[i] || cfg.relayMode != RELAY_MODE_MOMENTARY) {
       continue;
     }
     
-    // Check each relay in this tank's active mask independently
+    // Check each relay in this monitor's active mask independently
     uint8_t expiredMask = 0;
     for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-      if (!(gRelayActiveMaskForTank[i] & (1 << r))) {
-        continue; // Relay not active for this tank
+      if (!(gRelayActiveMaskForMonitor[i] & (1 << r))) {
+        continue; // Relay not active for this monitor
       }
       
       uint16_t seconds = cfg.relayMomentarySeconds[r];
@@ -6876,7 +6876,7 @@ static void checkRelayMomentaryTimeout(unsigned long now) {
         Serial.print(r);
         Serial.print(F(" timeout ("));
         Serial.print(seconds / 60);
-        Serial.print(F(" min) for tank "));
+        Serial.print(F(" min) for monitor "));
         Serial.println(i);
       }
     }
@@ -6887,41 +6887,41 @@ static void checkRelayMomentaryTimeout(unsigned long now) {
     }
     
     // Update active mask — remove expired relays
-    gRelayActiveMaskForTank[i] &= ~expiredMask;
+    gRelayActiveMaskForMonitor[i] &= ~expiredMask;
     for (uint8_t r = 0; r < MAX_RELAYS; r++) {
       if (expiredMask & (1 << r)) {
         gRelayActivationTime[r] = 0;
       }
     }
     
-    // If no relays remain active for this tank, clear the tank-level flag
-    if (gRelayActiveMaskForTank[i] == 0) {
-      gRelayActiveForTank[i] = false;
+    // If no relays remain active for this monitor, clear the monitor-level flag
+    if (gRelayActiveMaskForMonitor[i] == 0) {
+      gRelayActiveForMonitor[i] = false;
     }
   }
 }
 
-// Reset relay for a specific tank (called from server manual reset command)
-static void resetRelayForTank(uint8_t idx) {
+// Reset relay for a specific monitor (called from server manual reset command)
+static void resetRelayForMonitor(uint8_t idx) {
   if (idx >= gConfig.monitorCount) {
     return;
   }
   
   const MonitorConfig &cfg = gConfig.monitors[idx];
   
-  if (gRelayActiveForTank[idx] && cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
+  if (gRelayActiveForMonitor[idx] && cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
     triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
-    Serial.print(F("Manual relay reset for tank "));
+    Serial.print(F("Manual relay reset for monitor "));
     Serial.println(idx);
   }
-  gRelayActiveForTank[idx] = false;
-  // Clear per-relay activation times for relays in this tank's mask
+  gRelayActiveForMonitor[idx] = false;
+  // Clear per-relay activation times for relays in this monitor's mask
   for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-    if (gRelayActiveMaskForTank[idx] & (1 << r)) {
+    if (gRelayActiveMaskForMonitor[idx] & (1 << r)) {
       gRelayActivationTime[r] = 0;
     }
   }
-  gRelayActiveMaskForTank[idx] = 0;
+  gRelayActiveMaskForMonitor[idx] = 0;
 }
 
 // ============================================================================
@@ -6997,13 +6997,13 @@ static void checkClearButton(unsigned long now) {
   }
 }
 
-// Clear all relay alarms for all tanks (turn off all relays and reset state)
+// Clear all relay alarms for all sensors (turn off all relays and reset state)
 static void clearAllRelayAlarms() {
   bool anyCleared = false;
   
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
-    if (gRelayActiveForTank[i]) {
-      resetRelayForTank(i);
+    if (gRelayActiveForMonitor[i]) {
+      resetRelayForMonitor(i);
       anyCleared = true;
     }
   }
@@ -7348,7 +7348,7 @@ static float readNotecardVinVoltage() {
  * Wiring: Battery+ --> R1 --> Analog Pin --> R2 --> GND
  * The ADC reads the divided voltage; we reverse the ratio to get battery voltage.
  *
- * Takes 8 samples with 2ms settling delay between each (same pattern as readTankSensor).
+ * Takes 8 samples with 2ms settling delay between each (same pattern as readMonitorSensor).
  * Total time: ~16ms — negligible power cost.
  *
  * @return Battery voltage in volts, or 0.0 if Vin monitor is disabled or ratio is invalid.

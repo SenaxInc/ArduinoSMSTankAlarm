@@ -14,7 +14,7 @@
 // Firmware Version
 // ============================================================================
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "1.1.8"
+#define FIRMWARE_VERSION "1.1.9"
 #endif
 
 // Notefile schema version — increment when payload field names or semantics change.
@@ -46,10 +46,10 @@
 #endif
 
 // ============================================================================
-// Tank Record Configuration
+// Sensor Record Configuration
 // ============================================================================
-#ifndef MAX_TANK_RECORDS
-#define MAX_TANK_RECORDS 64
+#ifndef MAX_SENSOR_RECORDS
+#define MAX_SENSOR_RECORDS 64
 #endif
 
 // ============================================================================

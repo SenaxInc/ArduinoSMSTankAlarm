@@ -1,5 +1,5 @@
 // Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
-// Version: 1.1.8
+// Version: 1.1.9
 // NOTE: Save this file as UTF-8 without BOM to avoid stray character compile errors.
 //
 // Hardware:
@@ -9,7 +9,7 @@
 // Features:
 // - Aggregates telemetry from client nodes via Blues Notecard
 // - Dispatches SMS alerts for alarm events
-// - Sends daily email summary of tank levels
+// - Sends daily email summary of sensor levels
 // - Hosts lightweight intranet dashboard and REST API
 // - Persists configuration to internal flash (LittleFS)
 // - Allows remote client configuration updates via web UI
@@ -102,9 +102,9 @@
 #define SERVER_DOWN_THRESHOLD_SECONDS 86400UL  // 24 hours
 #endif
 
-// Email buffer must accommodate all tanks. Per-tank JSON: ~230 bytes worst-case
+// Email buffer must accommodate all sensors. Per-sensor JSON: ~230 bytes worst-case
 // (48 clientUid + 32 site + 24 label + 24 alarmType + keys/floats ~100)
-// 32 tanks * 230 = 7360 + overhead. Using 16KB for ~70 tanks capacity with margin.
+// 32 sensors * 230 = 7360 + overhead. Using 16KB for ~70 sensors capacity with margin.
 #ifndef MAX_EMAIL_BUFFER
 #define MAX_EMAIL_BUFFER 16384
 #endif
@@ -118,19 +118,19 @@
 #endif
 
 #ifndef MAX_SMS_ALERTS_PER_HOUR
-#define MAX_SMS_ALERTS_PER_HOUR 2  // Maximum SMS alerts per tank per hour
+#define MAX_SMS_ALERTS_PER_HOUR 2  // Maximum SMS alerts per sensor per hour
 #endif
 
 #ifndef MIN_SMS_ALERT_INTERVAL_SECONDS
-#define MIN_SMS_ALERT_INTERVAL_SECONDS 300  // Minimum 5 minutes between SMS for same tank
+#define MIN_SMS_ALERT_INTERVAL_SECONDS 300  // Minimum 5 minutes between SMS for same sensor
 #endif
 
 #ifndef CLIENT_CONFIG_CACHE_PATH
 #define CLIENT_CONFIG_CACHE_PATH "/client_config_cache.txt"
 #endif
 
-#ifndef TANK_REGISTRY_PATH
-#define TANK_REGISTRY_PATH "/tank_registry.json"
+#ifndef SENSOR_REGISTRY_PATH
+#define SENSOR_REGISTRY_PATH "/sensor_registry.json"
 #endif
 
 #ifndef CLIENT_METADATA_CACHE_PATH
@@ -272,11 +272,11 @@
 #endif
 
 #ifndef MAX_CALIBRATION_ENTRIES
-#define MAX_CALIBRATION_ENTRIES 100  // Max calibration entries per tank
+#define MAX_CALIBRATION_ENTRIES 100  // Max calibration entries per sensor
 #endif
 
-#ifndef MAX_CALIBRATION_TANKS
-#define MAX_CALIBRATION_TANKS 20  // Max tanks to track calibration for
+#ifndef MAX_CALIBRATION_SENSORS
+#define MAX_CALIBRATION_SENSORS 20  // Max sensors to track calibration for
 #endif
 
 // National Weather Service API constants (for weather data during calibration)
@@ -342,7 +342,7 @@ struct ServerConfig {
   char ftpPath[64];
 };
 
-struct TankRecord {
+struct SensorRecord {
   char clientUid[48];
   char site[32];
   char label[24];
@@ -365,7 +365,7 @@ struct TankRecord {
   // Rate limiting for SMS alerts
   double lastSmsAlertEpoch;
   uint8_t smsAlertsInLastHour;
-  double smsAlertTimestamps[10];  // Track last 10 SMS alerts per tank
+  double smsAlertTimestamps[10];  // Track last 10 SMS alerts per sensor
 };
 
 // Per-client metadata (VIN voltage, etc.)
@@ -393,7 +393,7 @@ struct ClientMetadata {
   char firmwareVersion[16];  // Firmware version string from client telemetry/daily
   // Stale alerting state
   bool staleAlertSent;       // Whether a stale alert has been sent for this client
-  // Last system-level alarm (solar/battery/power) — stored here, not on TankRecord
+  // Last system-level alarm (solar/battery/power) — stored here, not on SensorRecord
   char lastSystemAlarmType[16];  // "solar", "battery", "power", or ""
   double lastSystemAlarmEpoch;   // When the last system alarm was received
   // Cellular signal strength (from client daily reports)
@@ -447,13 +447,13 @@ static uint8_t gClientSerialBufferCount = 0;
 struct CalibrationEntry {
   double timestamp;           // Epoch time of the reading
   float sensorReading;        // Raw sensor value (mA for 4-20mA sensors)
-  float verifiedLevelInches;  // Manually verified tank level in inches
+  float verifiedLevelInches;  // Manually verified sensor level in inches
   float temperatureF;         // NWS temperature (6-hour avg) at calibration time, -999 if unavailable
   char notes[64];             // Optional notes about the reading
 };
 
-// Per-tank calibration data with learned parameters
-struct TankCalibration {
+// Per-sensor calibration data with learned parameters
+struct SensorCalibration {
   char clientUid[48];
   uint8_t sensorIndex;
   // Learned multiple linear regression parameters: 
@@ -485,8 +485,8 @@ static const float TEMP_REFERENCE_F = 70.0f;
 // Minimum entries with temperature data to enable temperature compensation
 static const uint8_t MIN_TEMP_ENTRIES_FOR_COMPENSATION = 5;
 
-static TankCalibration gTankCalibrations[MAX_CALIBRATION_TANKS];
-static uint8_t gTankCalibrationCount = 0;
+static SensorCalibration gSensorCalibrations[MAX_CALIBRATION_SENSORS];
+static uint8_t gSensorCalibrationCount = 0;
 
 // ============================================================================
 // Historical Data & Tiered Storage System
@@ -536,9 +536,9 @@ static void logTransmission(const char *clientUid, const char *site, const char 
 static void handleTransmissionLogGet(EthernetClient &client);
 
 // ============================================================================
-// Tank Unload Log System
+// Sensor Unload Log System
 // ============================================================================
-// Logs when fill-and-empty tanks are unloaded (significant level drop from peak)
+// Logs when fill-and-empty sensors are unloaded (significant level drop from peak)
 #ifndef MAX_UNLOAD_LOG_ENTRIES
 #define MAX_UNLOAD_LOG_ENTRIES 50  // Ring buffer of recent unload events
 #endif
@@ -569,15 +569,15 @@ static void logUnloadEvent(const UnloadLogEntry &entry);
 static void sendUnloadSms(const UnloadLogEntry &entry);
 
 // Structure for hourly telemetry snapshots (hot tier)
-#ifndef MAX_HOURLY_HISTORY_PER_TANK
-#define MAX_HOURLY_HISTORY_PER_TANK 90   // ~90 snapshots per tank (ring buffer). Warm tier on LittleFS extends to 3 months; cold tier on FTP extends further.
+#ifndef MAX_HOURLY_HISTORY_PER_SENSOR
+#define MAX_HOURLY_HISTORY_PER_SENSOR 90   // ~90 snapshots per sensor (ring buffer). Warm tier on LittleFS extends to 3 months; cold tier on FTP extends further.
 #endif
-// NOTE: Ring buffer holds 90 snapshots per tank in RAM. Older data lives in
+// NOTE: Ring buffer holds 90 snapshots per sensor in RAM. Older data lives in
 // the warm tier (LittleFS daily summaries, 3 months) and cold tier (FTP
 // monthly archives, unlimited). Combined tiers provide long-term retention.
 
-#ifndef MAX_HISTORY_TANKS
-#define MAX_HISTORY_TANKS 20
+#ifndef MAX_HISTORY_SENSORS
+#define MAX_HISTORY_SENSORS 20
 #endif
 
 struct TelemetrySnapshot {
@@ -586,18 +586,18 @@ struct TelemetrySnapshot {
   float voltage;              // VIN voltage (0 if not available)
 };
 
-struct TankHourlyHistory {
+struct SensorHourlyHistory {
   char clientUid[48];
   char siteName[32];
   uint8_t sensorIndex;
   float heightInches;         // Tank height for percentage calculation
-  TelemetrySnapshot snapshots[MAX_HOURLY_HISTORY_PER_TANK];
+  TelemetrySnapshot snapshots[MAX_HOURLY_HISTORY_PER_SENSOR];
   uint16_t snapshotCount;
   uint16_t writeIndex;        // Ring buffer write pointer
 };
 
-static TankHourlyHistory gTankHistory[MAX_HISTORY_TANKS];
-static uint8_t gTankHistoryCount = 0;
+static SensorHourlyHistory gSensorHistory[MAX_HISTORY_SENSORS];
+static uint8_t gSensorHistoryCount = 0;
 
 // Structure for daily summaries (warm tier, persisted to LittleFS)
 struct DailySummary {
@@ -615,14 +615,14 @@ struct DailySummary {
 struct MonthlyArchiveHeader {
   uint16_t year;
   uint8_t month;
-  uint8_t tankCount;
+  uint8_t sensorCount;
   uint32_t recordCount;
   uint32_t fileSize;
 };
 
 // History storage settings
 struct HistorySettings {
-  uint16_t hotTierRetentionDays;    // Days to keep in RAM ring buffer (max = MAX_HOURLY_HISTORY_PER_TANK snapshots)
+  uint16_t hotTierRetentionDays;    // Days to keep in RAM ring buffer (max = MAX_HOURLY_HISTORY_PER_SENSOR snapshots)
   uint8_t warmTierRetentionMonths;  // Months to keep daily summaries (default 24)
   bool ftpArchiveEnabled;           // Whether to archive to FTP
   uint8_t ftpSyncHour;              // Hour to sync to FTP (default 3 AM)
@@ -647,7 +647,7 @@ static HistorySettings gHistorySettings = {
 // LittleFS Daily Summary Storage (Warm Tier)
 // ============================================================================
 // Compact daily summaries persisted to flash. Survives reboots. ~32 bytes per
-// day per tank, stored as JSON in /fs/history/daily_YYYYMM.json files.
+// day per sensor, stored as JSON in /fs/history/daily_YYYYMM.json files.
 // When FTP is available, monthly archives extend range beyond 3 months.
 // When FTP is NOT available, data is limited to hot tier + 3 months of dailies.
 #ifndef MAX_DAILY_SUMMARY_MONTHS
@@ -662,16 +662,16 @@ struct FtpArchiveCache {
   uint16_t cachedYear;
   uint8_t cachedMonth;
   bool valid;
-  // Cached summary data per tank
-  struct CachedTankSummary {
+  // Cached summary data per sensor
+  struct CachedSensorSummary {
     char clientUid[48];
     uint8_t sensorIndex;
     float minLevel, maxLevel, avgLevel;
     float avgVoltage;
     uint16_t readings;
   };
-  CachedTankSummary tanks[MAX_HISTORY_TANKS];
-  uint8_t tankCount;
+  CachedSensorSummary sensors[MAX_HISTORY_SENSORS];
+  uint8_t sensorCount;
 };
 static FtpArchiveCache gFtpArchiveCache = {0, 0, false, {}, 0};
 
@@ -690,7 +690,7 @@ static void loadHotTierSnapshot();
 // FTP archive retrieval
 static bool loadFtpArchiveCached(uint16_t year, uint8_t month);
 static void populateStatsFromFtpCache(const char *clientUid, uint8_t sensorIndex, JsonObject &statsObj);
-static TankHourlyHistory *findOrCreateTankHistory(const char *clientUid, uint8_t sensorIndex);
+static SensorHourlyHistory *findOrCreateSensorHistory(const char *clientUid, uint8_t sensorIndex);
 static void pruneHotTierIfNeeded();
 static bool archiveMonthToFtp(uint16_t year, uint8_t month);
 static bool loadArchivedMonth(uint16_t year, uint8_t month, JsonDocument &doc);
@@ -789,22 +789,22 @@ static bool sessionTokenMatches(const char *candidate) {
 static String gContactsCache;
 static bool gContactsCacheValid = false;
 
-static TankRecord gTankRecords[MAX_TANK_RECORDS];
-static uint8_t gTankRecordCount = 0;
+static SensorRecord gSensorRecords[MAX_SENSOR_RECORDS];
+static uint8_t gSensorRecordCount = 0;
 
-// Hash table for O(1) tank lookups by clientUid + sensorIndex
+// Hash table for O(1) sensor lookups by clientUid + sensorIndex
 // Uses djb2 hash algorithm with linear probing for collision resolution
-#define TANK_HASH_TABLE_SIZE 128  // Must be power of 2, >= 2 * MAX_TANK_RECORDS
-#define TANK_HASH_EMPTY 0xFF      // Sentinel value for empty slot
+#define SENSOR_HASH_TABLE_SIZE 128  // Must be power of 2, >= 2 * MAX_SENSOR_RECORDS
+#define SENSOR_HASH_EMPTY 0xFF      // Sentinel value for empty slot
 
 // Compile-time validation: hash table must be at least 2x the max records for good performance
-static_assert(TANK_HASH_TABLE_SIZE >= 2 * MAX_TANK_RECORDS, "Hash table too small - must be >= 2 * MAX_TANK_RECORDS");
-static_assert((TANK_HASH_TABLE_SIZE & (TANK_HASH_TABLE_SIZE - 1)) == 0, "Hash table size must be power of 2");
+static_assert(SENSOR_HASH_TABLE_SIZE >= 2 * MAX_SENSOR_RECORDS, "Hash table too small - must be >= 2 * MAX_SENSOR_RECORDS");
+static_assert((SENSOR_HASH_TABLE_SIZE & (SENSOR_HASH_TABLE_SIZE - 1)) == 0, "Hash table size must be power of 2");
 
-static uint8_t gTankHashTable[TANK_HASH_TABLE_SIZE];  // Index into gTankRecords, or TANK_HASH_EMPTY
+static uint8_t gSensorHashTable[SENSOR_HASH_TABLE_SIZE];  // Index into gSensorRecords, or SENSOR_HASH_EMPTY
 
 // djb2 hash function - fast and good distribution for strings
-static uint32_t hashTankKey(const char *clientUid, uint8_t sensorIndex) {
+static uint32_t hashSensorKey(const char *clientUid, uint8_t sensorIndex) {
   uint32_t hash = 5381;
   const char *p = clientUid;
   while (*p) {
@@ -814,59 +814,59 @@ static uint32_t hashTankKey(const char *clientUid, uint8_t sensorIndex) {
   return hash;
 }
 
-// Initialize hash table (call after clearing gTankRecords)
-static void initTankHashTable() {
-  memset(gTankHashTable, TANK_HASH_EMPTY, sizeof(gTankHashTable));
+// Initialize hash table (call after clearing gSensorRecords)
+static void initSensorHashTable() {
+  memset(gSensorHashTable, SENSOR_HASH_EMPTY, sizeof(gSensorHashTable));
 }
 
-// Insert tank record into hash table
-static void insertTankIntoHash(uint8_t recordIndex) {
-  if (recordIndex >= gTankRecordCount) return;
-  TankRecord &rec = gTankRecords[recordIndex];
-  uint32_t hash = hashTankKey(rec.clientUid, rec.sensorIndex);
-  uint32_t idx = hash & (TANK_HASH_TABLE_SIZE - 1);  // Fast mod for power of 2
+// Insert sensor record into hash table
+static void insertSensorIntoHash(uint8_t recordIndex) {
+  if (recordIndex >= gSensorRecordCount) return;
+  SensorRecord &rec = gSensorRecords[recordIndex];
+  uint32_t hash = hashSensorKey(rec.clientUid, rec.sensorIndex);
+  uint32_t idx = hash & (SENSOR_HASH_TABLE_SIZE - 1);  // Fast mod for power of 2
   
   // Linear probing to find empty slot
-  for (uint32_t i = 0; i < TANK_HASH_TABLE_SIZE; ++i) {
-    uint32_t probeIdx = (idx + i) & (TANK_HASH_TABLE_SIZE - 1);
-    if (gTankHashTable[probeIdx] == TANK_HASH_EMPTY) {
-      gTankHashTable[probeIdx] = recordIndex;
+  for (uint32_t i = 0; i < SENSOR_HASH_TABLE_SIZE; ++i) {
+    uint32_t probeIdx = (idx + i) & (SENSOR_HASH_TABLE_SIZE - 1);
+    if (gSensorHashTable[probeIdx] == SENSOR_HASH_EMPTY) {
+      gSensorHashTable[probeIdx] = recordIndex;
       return;
     }
   }
-  // Table full - should not happen if TANK_HASH_TABLE_SIZE >= 2 * MAX_TANK_RECORDS
+  // Table full - should not happen if SENSOR_HASH_TABLE_SIZE >= 2 * MAX_SENSOR_RECORDS
 }
 
 // Rebuild hash table from scratch (call after bulk operations)
-static void rebuildTankHashTable() {
-  initTankHashTable();
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    insertTankIntoHash(i);
+static void rebuildSensorHashTable() {
+  initSensorHashTable();
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    insertSensorIntoHash(i);
   }
 }
 
-// Find tank record using hash table - O(1) average case
-static TankRecord *findTankByHash(const char *clientUid, uint8_t sensorIndex) {
-  uint32_t hash = hashTankKey(clientUid, sensorIndex);
-  uint32_t idx = hash & (TANK_HASH_TABLE_SIZE - 1);
+// Find sensor record using hash table - O(1) average case
+static SensorRecord *findSensorByHash(const char *clientUid, uint8_t sensorIndex) {
+  uint32_t hash = hashSensorKey(clientUid, sensorIndex);
+  uint32_t idx = hash & (SENSOR_HASH_TABLE_SIZE - 1);
   
   // Linear probing to find matching entry
-  for (uint32_t i = 0; i < TANK_HASH_TABLE_SIZE; ++i) {
-    uint32_t probeIdx = (idx + i) & (TANK_HASH_TABLE_SIZE - 1);
-    uint8_t recordIdx = gTankHashTable[probeIdx];
+  for (uint32_t i = 0; i < SENSOR_HASH_TABLE_SIZE; ++i) {
+    uint32_t probeIdx = (idx + i) & (SENSOR_HASH_TABLE_SIZE - 1);
+    uint8_t recordIdx = gSensorHashTable[probeIdx];
     
-    if (recordIdx == TANK_HASH_EMPTY) {
+    if (recordIdx == SENSOR_HASH_EMPTY) {
       return nullptr;  // Not found
     }
     
     // Validate recordIdx is within bounds before accessing array
-    if (recordIdx >= MAX_TANK_RECORDS) {
+    if (recordIdx >= MAX_SENSOR_RECORDS) {
       Serial.print(F("ERROR: Invalid hash table entry: "));
       Serial.println(recordIdx);
       return nullptr;  // Corrupted hash table entry
     }
     
-    TankRecord &rec = gTankRecords[recordIdx];
+    SensorRecord &rec = gSensorRecords[recordIdx];
     if (strcmp(rec.clientUid, clientUid) == 0 && rec.sensorIndex == sensorIndex) {
       return &rec;
     }
@@ -1004,8 +1004,8 @@ static unsigned long gLastVoltageCheckMillis = 0;
 static double gLastDailyEmailSentEpoch = 0.0;
 #define MIN_DAILY_EMAIL_INTERVAL_SECONDS 3600  // Minimum 1 hour between daily emails
 
-// Tank registry & client metadata persistence state
-static bool gTankRegistryDirty = false;         // True when tank records need saving
+// Sensor registry & client metadata persistence state
+static bool gSensorRegistryDirty = false;         // True when sensor records need saving
 static bool gClientMetadataDirty = false;        // True when client metadata needs saving
 static unsigned long gLastRegistrySaveMillis = 0;
 static unsigned long gLastStaleCheckMillis = 0;
@@ -1382,8 +1382,8 @@ tbody tr:nth-child(even){background:#fafafa}
 .btn-reset{padding:4px 8px;font-size:0.75rem;background:#fee2e2;color:#991b1b;border:1px solid #fecaca;cursor:pointer;border-radius:4px}
 .btn-reset:hover{background:#fecaca}
 .quality-warning{cursor:help;margin-left:4px}
-.tank-link{color:var(--accent);text-decoration:none;cursor:pointer}
-.tank-link:hover{text-decoration:underline}
+.sensor-link{color:var(--accent);text-decoration:none;cursor:pointer}
+.sensor-link:hover{text-decoration:underline}
 .chart-container{border:1px solid var(--border);padding:var(--space-2);height:320px;background:#ffffff}
 .sensor-card{border:1px solid var(--border);padding:var(--space-3);margin-bottom:var(--space-3);background:#fafafa;border-radius:var(--radius)}
 .sensor-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-3);padding-bottom:var(--space-2);border-bottom:1px solid var(--border)}
@@ -1407,7 +1407,7 @@ tbody tr:nth-child(even){background:#fafafa}
 }
 )HTML";
 
-static const char SERVER_SETTINGS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Server Settings - Tank Alarm</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Server Configuration</h2><form id="settingsForm"><h3>Blues Notehub</h3><div class="form-grid"><label class="field"><span>Product UID <span style="color:var(--danger);">*</span></span><input id="productUidInput" type="text" placeholder="com.company.product:project" required></label></div><p style="color:var(--muted);font-size:0.85rem;margin:-8px 0 16px;">Required. The Product UID from your Blues Notehub project (e.g. com.company.product:project). Changing this requires a device restart to fully apply.</p><h3>Server SMS Alert Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive SMS alerts for server events (e.g., power restoration after outage).</p><div id="smsRecipientsList" class="recipient-list"><div class="empty-state">No SMS recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><button type="button" class="secondary" id="addSmsRecipientBtn">+ Add SMS Recipient</button></div><div class="toggle-group" style="margin-top:-12px;"><label class="toggle"><span>Server down (power loss &gt; 24h)<span class="tooltip-icon" tabindex="0" data-tooltip="Sends an SMS if the server was offline for at least 24 hours before reboot.">?</span></span><input type="checkbox" id="serverDownSmsToggle" checked></label></div><h3>Daily Email Report Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive the daily tank level summary email.</p><div class="form-grid"><label class="field"><span>Daily Email Time (HH:MM)</span><input id="dailyEmailTimeInput" type="time" value="05:00"></label></div><div id="dailyRecipientsList" class="recipient-list"><div class="empty-state">No daily report recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><div id="dailyRecipientControls" style="display:flex;gap:8px;align-items:center;"><select id="dailyRecipientDropdown" style="min-width:250px;"><option value="">Choose a contact...</option></select><button type="button" id="addSelectedDailyRecipient" class="secondary">Add</button></div><a class="pill secondary" href="/contacts" id="addNewContactLink" style="display:none;">+ Add New Contact</a><a class="pill secondary" href="/email-format" style="margin-left:8px;">Email Formatting</a></div><h3>Security</h3><div class="actions" style="margin-bottom: 24px;"><button type="button" class="secondary" id="changePinBtn">Change Admin PIN</button><span id="pinBadge" class="pin-chip hidden">PIN SET</span><span id="pinStatus" style="margin-left:12px;font-size:0.9rem;color:var(--muted)"></span></div><h3>FTP Backup & Restore</h3><div class="form-grid"><label class="field"><span>FTP Host</span><input id="ftpHost" type="text" placeholder="192.168.1.50"></label><label class="field"><span>FTP Port</span><input id="ftpPort" type="number" min="1" max="65535" value="21"></label><label class="field"><span>FTP User</span><input id="ftpUser" type="text" placeholder="user"></label><label class="field"><span>FTP Password <small style="color:var(--muted);font-weight:400;">(leave blank to keep)</small></span><input id="ftpPass" type="password" autocomplete="off"></label><label class="field"><span>FTP Path</span><input id="ftpPath" type="text" placeholder="/tankalarm/server"></label></div><div class="toggle-group"><label class="toggle"><span>Enable FTP</span><input type="checkbox" id="ftpEnabled"></label><label class="toggle"><span>Passive Mode</span><input type="checkbox" id="ftpPassive" chec)HTML" R"HTML(ked></label><label class="toggle"><span>Auto-backup on save</span><input type="checkbox" id="ftpBackupOnChange"></label><label class="toggle"><span>Restore on boot</span><input type="checkbox" id="ftpRestoreOnBoot"></label></div><div class="actions"><button type="button" id="ftpBackupNow">Backup Now</button><button type="button" class="secondary" id="ftpRestoreNow">Restore Now</button></div><h3>Viewer Device</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Enable periodic viewer summary publishing via Notecard. Only enable this if you have a Viewer Opta device set up and connected.</p><div class="toggle-group"><label class="toggle"><span>Enable Viewer Summary<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, the server publishes tank summary data to a Viewer Opta device every 6 hours via Notecard.">?</span></span><input type="checkbox" id="viewerEnabled"></label></div><div class="actions"><button type="submit">Save Settings</button></div></form></div><div class="card"><h2>Tools & System Info</h2><h3>System Status</h3><div class="form-grid"><div class="field"><span>Firmware Version</span><div id="fwVersionDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Build Date</span><div id="fwBuildDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Firmware Last Updated</span><div id="fwLastUpdatedDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Notecard Supply (V+ rail)</span><div id="serverVoltageDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Server Time</span><div id="serverTimeDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div></div><h3>Notecard Status</h3><div id="notecardStatusPanel" style="padding:16px;background:var(--chip);border:1px solid var(--card-border);border-radius:var(--radius);margin-bottom:16px;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span id="notecardStatusDot" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#888;"></span><strong id="notecardStatusLabel">Checking...</strong></div><div class="form-grid" style="margin:0;"><div class="field"><span>Connection</span><div id="ncConnStatus" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Product UID</span><div id="ncProductUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Server UID</span><div id="ncServerUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Sync Mode</span><div id="ncSyncMode" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div></div><div class="actions" style="margin-top:12px;"><button type="button" class="secondary" id="ncRefreshBtn">Refresh Notecard Status</button></div></div><h3>Firmware Update (DFU)</h3><div id="dfuStatus" style="padding:12px;background:var(--chip);border:1px solid var(--card-border);margin-bottom:12px"><span id="dfuStatusText">Checking for updates...</span></div><div class="actions"><button type="button" id="dfuCheckBtn" class="secondary">Check for Update</button><button type="button" id="dfuEnableBtn" disabled>Install Update</button></div><p style="color:var(--muted);font-size:0.85rem;margin-top:8px">Firmware updates are deployed via Blues Notehub. Upload new firmware to Notehub, then click &quot;Check for Update&quot; to detect it.</p><h3>Quick Access</h3><div class="actions"><button type="button" class="secondary" id="pauseBodyBtn">Pause Server</button><a class="pill" href="/serial-monitor">Open Serial Monitor</a><a class="pill" href="/transmission-log">Transmission Log</a><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/SERVER_INSTALLATION_GUIDE.md" target="_blank" title="View Server Installation Guide">Help</a></div></div></main><div id="toast"></div><div id="contactSelectModal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2 id="contactSelectTitle">Add Recipient</h2><button class="modal-close" onclick="closeContactSelectModal()">&times;</button></div><form id="contactSelectForm"><div class="form-grid"><div class="form-field"><label>Select Contact</label><select id="contactSelectDropdown" required><option value="">Choose a contact...</option></select></div></div><div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;"><button type="button" class="btn btn-secondary" onclick="closeContactSelectModal()">Cancel</button><button type="submit" class="btn btn-primary">Add</button></div></form></div></div><div id="pinModal" class="modal hidden"><div class="modal-card"><div class="modal-badge" id="pinSessionBadge">Session</div><h2 id="pinModalTitle">Set Admin PIN</h2><p id="pinModalDescription">Enter a 4-digit PIN to unlock configuration changes.</p><form id="pinForm"><label class="field hidden" id="pinCurrentGroup"><span>Current PIN</span><input type="password" id="pinCurrentInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><label class="field" id="pinPrimaryGroup"><span id="pinPrimaryLabel">PIN</span><input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits" aria-describedby="pinHint" title="Enter exactly four digits (0-9)"><small class="pin-hint" id="pinHint">Use exactly 4 digits (0-9). The PIN is kept locally in this browser for 90 days.</small></label><label class="field hidden" id="pinConfirmGroup"><span>Confirm PIN</span><input type="password" id="pinConfirmInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><div class="actions"><button type="submit" id="pinSubmit">Save PIN</button><button type="button" class="secondary" id="pinCancel">Cancel</button></div></form></div></div><script>document.addEventListener('DOMContentLoaded', async () => {try{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);const state={pin:null,pinConfigured:false,pendingAction:null,contacts:[],smsAlertRecipients:[],dailyReportRecipients:[],contactSelectMode:null};
+static const char SERVER_SETTINGS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Server Settings - Tank Alarm</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Server Configuration</h2><form id="settingsForm"><h3>Blues Notehub</h3><div class="form-grid"><label class="field"><span>Product UID <span style="color:var(--danger);">*</span></span><input id="productUidInput" type="text" placeholder="com.company.product:project" required></label></div><p style="color:var(--muted);font-size:0.85rem;margin:-8px 0 16px;">Required. The Product UID from your Blues Notehub project (e.g. com.company.product:project). Changing this requires a device restart to fully apply.</p><h3>Server SMS Alert Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive SMS alerts for server events (e.g., power restoration after outage).</p><div id="smsRecipientsList" class="recipient-list"><div class="empty-state">No SMS recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><button type="button" class="secondary" id="addSmsRecipientBtn">+ Add SMS Recipient</button></div><div class="toggle-group" style="margin-top:-12px;"><label class="toggle"><span>Server down (power loss &gt; 24h)<span class="tooltip-icon" tabindex="0" data-tooltip="Sends an SMS if the server was offline for at least 24 hours before reboot.">?</span></span><input type="checkbox" id="serverDownSmsToggle" checked></label></div><h3>Daily Email Report Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive the daily tank level summary email.</p><div class="form-grid"><label class="field"><span>Daily Email Time (HH:MM)</span><input id="dailyEmailTimeInput" type="time" value="05:00"></label></div><div id="dailyRecipientsList" class="recipient-list"><div class="empty-state">No daily report recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><div id="dailyRecipientControls" style="display:flex;gap:8px;align-items:center;"><select id="dailyRecipientDropdown" style="min-width:250px;"><option value="">Choose a contact...</option></select><button type="button" id="addSelectedDailyRecipient" class="secondary">Add</button></div><a class="pill secondary" href="/contacts" id="addNewContactLink" style="display:none;">+ Add New Contact</a><a class="pill secondary" href="/email-format" style="margin-left:8px;">Email Formatting</a></div><h3>Security</h3><div class="actions" style="margin-bottom: 24px;"><button type="button" class="secondary" id="changePinBtn">Change Admin PIN</button><span id="pinBadge" class="pin-chip hidden">PIN SET</span><span id="pinStatus" style="margin-left:12px;font-size:0.9rem;color:var(--muted)"></span></div><h3>FTP Backup & Restore</h3><div class="form-grid"><label class="field"><span>FTP Host</span><input id="ftpHost" type="text" placeholder="192.168.1.50"></label><label class="field"><span>FTP Port</span><input id="ftpPort" type="number" min="1" max="65535" value="21"></label><label class="field"><span>FTP User</span><input id="ftpUser" type="text" placeholder="user"></label><label class="field"><span>FTP Password <small style="color:var(--muted);font-weight:400;">(leave blank to keep)</small></span><input id="ftpPass" type="password" autocomplete="off"></label><label class="field"><span>FTP Path</span><input id="ftpPath" type="text" placeholder="/tankalarm/server"></label></div><div class="toggle-group"><label class="toggle"><span>Enable FTP</span><input type="checkbox" id="ftpEnabled"></label><label class="toggle"><span>Passive Mode</span><input type="checkbox" id="ftpPassive" chec)HTML" R"HTML(ked></label><label class="toggle"><span>Auto-backup on save</span><input type="checkbox" id="ftpBackupOnChange"></label><label class="toggle"><span>Restore on boot</span><input type="checkbox" id="ftpRestoreOnBoot"></label></div><div class="actions"><button type="button" id="ftpBackupNow">Backup Now</button><button type="button" class="secondary" id="ftpRestoreNow">Restore Now</button></div><h3>Viewer Device</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Enable periodic viewer summary publishing via Notecard. Only enable this if you have a Viewer Opta device set up and connected.</p><div class="toggle-group"><label class="toggle"><span>Enable Viewer Summary<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, the server publishes sensor summary data to a Viewer Opta device every 6 hours via Notecard.">?</span></span><input type="checkbox" id="viewerEnabled"></label></div><div class="actions"><button type="submit">Save Settings</button></div></form></div><div class="card"><h2>Tools & System Info</h2><h3>System Status</h3><div class="form-grid"><div class="field"><span>Firmware Version</span><div id="fwVersionDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Build Date</span><div id="fwBuildDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Firmware Last Updated</span><div id="fwLastUpdatedDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Notecard Supply (V+ rail)</span><div id="serverVoltageDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Server Time</span><div id="serverTimeDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div></div><h3>Notecard Status</h3><div id="notecardStatusPanel" style="padding:16px;background:var(--chip);border:1px solid var(--card-border);border-radius:var(--radius);margin-bottom:16px;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span id="notecardStatusDot" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#888;"></span><strong id="notecardStatusLabel">Checking...</strong></div><div class="form-grid" style="margin:0;"><div class="field"><span>Connection</span><div id="ncConnStatus" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Product UID</span><div id="ncProductUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Server UID</span><div id="ncServerUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Sync Mode</span><div id="ncSyncMode" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div></div><div class="actions" style="margin-top:12px;"><button type="button" class="secondary" id="ncRefreshBtn">Refresh Notecard Status</button></div></div><h3>Firmware Update (DFU)</h3><div id="dfuStatus" style="padding:12px;background:var(--chip);border:1px solid var(--card-border);margin-bottom:12px"><span id="dfuStatusText">Checking for updates...</span></div><div class="actions"><button type="button" id="dfuCheckBtn" class="secondary">Check for Update</button><button type="button" id="dfuEnableBtn" disabled>Install Update</button></div><p style="color:var(--muted);font-size:0.85rem;margin-top:8px">Firmware updates are deployed via Blues Notehub. Upload new firmware to Notehub, then click &quot;Check for Update&quot; to detect it.</p><h3>Quick Access</h3><div class="actions"><button type="button" class="secondary" id="pauseBodyBtn">Pause Server</button><a class="pill" href="/serial-monitor">Open Serial Monitor</a><a class="pill" href="/transmission-log">Transmission Log</a><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/SERVER_INSTALLATION_GUIDE.md" target="_blank" title="View Server Installation Guide">Help</a></div></div></main><div id="toast"></div><div id="contactSelectModal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2 id="contactSelectTitle">Add Recipient</h2><button class="modal-close" onclick="closeContactSelectModal()">&times;</button></div><form id="contactSelectForm"><div class="form-grid"><div class="form-field"><label>Select Contact</label><select id="contactSelectDropdown" required><option value="">Choose a contact...</option></select></div></div><div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;"><button type="button" class="btn btn-secondary" onclick="closeContactSelectModal()">Cancel</button><button type="submit" class="btn btn-primary">Add</button></div></form></div></div><div id="pinModal" class="modal hidden"><div class="modal-card"><div class="modal-badge" id="pinSessionBadge">Session</div><h2 id="pinModalTitle">Set Admin PIN</h2><p id="pinModalDescription">Enter a 4-digit PIN to unlock configuration changes.</p><form id="pinForm"><label class="field hidden" id="pinCurrentGroup"><span>Current PIN</span><input type="password" id="pinCurrentInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><label class="field" id="pinPrimaryGroup"><span id="pinPrimaryLabel">PIN</span><input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits" aria-describedby="pinHint" title="Enter exactly four digits (0-9)"><small class="pin-hint" id="pinHint">Use exactly 4 digits (0-9). The PIN is kept locally in this browser for 90 days.</small></label><label class="field hidden" id="pinConfirmGroup"><span>Confirm PIN</span><input type="password" id="pinConfirmInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><div class="actions"><button type="submit" id="pinSubmit">Save PIN</button><button type="button" class="secondary" id="pinCancel">Cancel</button></div></form></div></div><script>document.addEventListener('DOMContentLoaded', async () => {try{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);const state={pin:null,pinConfigured:false,pendingAction:null,contacts:[],smsAlertRecipients:[],dailyReportRecipients:[],contactSelectMode:null};
 const getEl=(id)=>document.getElementById(id);const els={pauseBtn:getEl('pauseBtn'),pauseBodyBtn:getEl('pauseBodyBtn'),toast:getEl('toast'),form:getEl('settingsForm'),productUid:getEl('productUidInput'),serverDownSmsToggle:getEl('serverDownSmsToggle'),dailyEmailTime:getEl('dailyEmailTimeInput'),ftpEnabled:getEl('ftpEnabled'),ftpPassive:getEl('ftpPassive'),ftpBackupOnChange:getEl('ftpBackupOnChange'),ftpRestoreOnBoot:getEl('ftpRestoreOnBoot'),ftpHost:getEl('ftpHost'),ftpPort:getEl('ftpPort'),ftpUser:getEl('ftpUser'),ftpPass:getEl('ftpPass'),ftpPath:getEl('ftpPath'),ftpBackupNow:getEl('ftpBackupNow'),ftpRestoreNow:getEl('ftpRestoreNow'),changePinBtn:getEl('changePinBtn'),pinStatus:getEl('pinStatus'),pinBadge:getEl('pinBadge'),smsRecipientsList:getEl('smsRecipientsList'),dailyRecipientsList:getEl('dailyRecipientsList'),addSmsRecipientBtn:getEl('addSmsRecipientBtn'),dailyRecipientDropdown:getEl('dailyRecipientDropdown'),addSelectedDailyRecipient:getEl('addSelectedDailyRecipient'),contactSelectModal:getEl('contactSelectModal'),contactSelectTitle:getEl('contactSelectTitle'),contactSelectDropdown:getEl('contactSelectDropdown'),contactSelectForm:getEl('contactSelectForm'),viewerEnabled:getEl('viewerEnabled')};if(els.pauseBtn)els.pauseBtn.addEventListener('click',togglePause);if(els.pauseBodyBtn)els.pauseBodyBtn.addEventListener('click',togglePause);const pinEls={modal:getEl('pinModal'),title:getEl('pinModalTitle'),desc:getEl('pinModalDescription'),form:getEl('pinForm'),currentGroup:getEl('pinCurrentGroup'),currentInput:getEl('pinCurrentInput'),primaryGroup:getEl('pinPrimaryGroup'),primaryLabel:getEl('pinPrimaryLabel'),input:getEl('pinInput'),confirmGroup:getEl('pinConfirmGroup'),confirmInput:getEl('pinConfirmInput'),submit:getEl('pinSubmit'),cancel:getEl('pinCancel'),badge:getEl('pinSessionBadge')};)HTML"
 R"HTML(let pinMode='unlock';state.paused=false;funct)HTML" R"HTML(ion showToast(message, isError){if(els.toast)els.toast.textContent=message;if(els.toast)els.toast.style.background=isError?'#dc2626':'#0284c7';if(els.toast)els.toast.classList.add('show');setTimeout(()=>{if(els.toast)els.toast.classList.remove('show')},2500);})HTML"
 R"HTML(funct)HTML" R"HTML(ion escapeHtml(text){const div=document.createElement('div');div.textContent=text;return div.innerHTML;})HTML"
@@ -1430,7 +1430,7 @@ async funct)HTML" R"HTML(ion loadSettings(){if(els.pinStatus){els.pinStatus.text
 R"HTML(async funct)HTML" R"HTML(ion saveSettingsImpl(){if(!els.productUid.value.trim()){showToast('Product UID is required',true);els.productUid.focus();return;}const ftpSettings={enabled:!!els.ftpEnabled.checked,passive:!!els.ftpPassive.checked,backupOnChange:!!els.ftpBackupOnChange.checked,restoreOnBoot:!!els.ftpRestoreOnBoot.checked,host:els.ftpHost.value.trim(),port:parseInt(els.ftpPort.value,10)||21,user:els.ftpUser.value.trim(),path:els.ftpPath.value.trim()||'/tankalarm/server'};const ftpPass=els.ftpPass.value.trim();if(ftpPass){ftpSettings.pass=ftpPass;}const timeValue=(els.dailyEmailTime&&els.dailyEmailTime.value)||'05:00';const timeParts=timeValue.split(':');const parsedHour=(timeParts.length===2&&!isNaN(parseInt(timeParts[0],10)))?Math.min(23,Math.max(0,parseInt(timeParts[0],10))):5;const parsedMinute=(timeParts.length===2&&!isNaN(parseInt(timeParts[1],10)))?Math.min(59,Math.max(0,parseInt(timeParts[1],10))):0;const payload={server:{productUid:els.productUid.value.trim(),serverDownSmsEnabled:!!(els.serverDownSmsToggle&&els.serverDownSmsToggle.checked),viewerEnabled:!!(els.viewerEnabled&&els.viewerEnabled.checked),dailyHour:parsedHour,dailyMinute:parsedMinute,ftp:ftpSettings}};try{const res=await fetch('/api/server-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text=await res.text();throw new Error(text||'Server rejected settings');}showToast('Settings saved successfully');await loadSettings();}catch(err){showToast(err.message||'Failed to save settings',true);}}if(els.form)els.form.addEventListener('submit',(e)=>{e.preventDefault();saveSettingsImpl();});async funct)HTML" R"HTML(ion performFtpAction(kind){const payload={};)HTML"
 R"HTML(const endpoint=kind==='restore'?'/api/ftp-restore':'/api/ftp-backup';try{const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text=await res.text();throw new Error(text||`${kind} failed`);}const data=await res.json();if(data&&data.message){showToast(data.message,false);}else{showToast(kind==='restore'?'FTP restore completed':'FTP backup completed');}}catch(err){showToast(err.message||`FTP ${kind} failed`,true);}}if(els.ftpBackupNow)els.ftpBackupNow.addEventListener('click',()=>performFtpAction('backup'));if(els.ftpRestoreNow)els.ftpRestoreNow.addEventListener('click',()=>performFtpAction('restore'));const ncEls={dot:getEl('notecardStatusDot'),label:getEl('notecardStatusLabel'),conn:getEl('ncConnStatus'),product:getEl('ncProductUid'),uid:getEl('ncServerUid'),mode:getEl('ncSyncMode'),refreshBtn:getEl('ncRefreshBtn')};async function loadNotecardStatus(){if(ncEls.label)ncEls.label.textContent='Checking...';if(ncEls.dot)ncEls.dot.style.background='#888';try{const res=await fetch('/api/notecard/status');if(!res.ok)throw new Error('Failed');const d=await res.json();const ok=d.connected;if(ncEls.dot)ncEls.dot.style.background=ok?'#10b981':'#ef4444';if(ncEls.label)ncEls.label.textContent=ok?'Connected':'Disconnected';if(ncEls.conn)ncEls.conn.textContent=ok?'I2C OK — Notecard responding':'I2C FAILED — no response from Notecard';if(ncEls.conn)ncEls.conn.style.color=ok?'#10b981':'#ef4444';if(ncEls.product)ncEls.product.textContent=d.productUid||'Not configured';if(ncEls.uid)ncEls.uid.textContent=d.serverUid||'Unknown';if(ncEls.mode)ncEls.mode.textContent=d.syncMode||'Unknown';if(!ok&&ncEls.product){ncEls.product.style.color='var(--muted)';}}catch(err){if(ncEls.dot)ncEls.dot.style.background='#f59e0b';if(ncEls.label)ncEls.label.textContent='Error: '+err.message;if(ncEls.conn)ncEls.conn.textContent='Could not reach server';}}if(ncEls.refreshBtn)ncEls.refreshBtn.addEventListener('click',loadNotecardStatus);const dfuEls={checkBtn:getEl('dfuCheckBtn'),enableBtn:getEl('dfuEnableBtn'),statusText:getEl('dfuStatusText'),fwVersion:getEl('fwVersionDisplay'),fwBuild:getEl('fwBuildDisplay'),voltage:getEl('serverVoltageDisplay'),serverTime:getEl('serverTimeDisplay'),fwLastUpdated:getEl('fwLastUpdatedDisplay')};function updateDfuUI(data){if(dfuEls.fwVersion)dfuEls.fwVersion.textContent='v'+data.currentVersion;if(dfuEls.fwBuild)dfuEls.fwBuild.textContent=data.buildDate||'Unknown';if(dfuEls.fwLastUpdated){if(data.buildDate){var updatedStr=data.buildDate;if(data.buildTime)updatedStr+=' '+data.buildTime;dfuEls.fwLastUpdated.textContent=updatedStr;}else{dfuEls.fwLastUpdated.textContent='Unknown';}}if(dfuEls.voltage){var vParts=[];if(data.inputVoltage>0.5){vParts.push('Vin: '+data.inputVoltage.toFixed(2)+'V');}if(data.notecardVoltage>0){vParts.push('NC: '+data.notecardVoltage.toFixed(2)+'V');}dfuEls.voltage.textContent=vParts.length>0?vParts.join(' | '):'Not available';}if(dfuEls.serverTime){if(data.serverTime>0){const d=new Date(data.serverTime*1000);dfuEls.serverTime.textContent=d.toLocaleString();}else{dfuEls.serverTime.textContent='Not synced';}}var mode=data.dfuMode||'idle';if(data.dfuInProgress){if(dfuEls.statusText)dfuEls.statusText.textContent='Firmware update in progress... ('+mode+')';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=true;}else if(mode==='downloading'){if(dfuEls.statusText)dfuEls.statusText.textContent='Downloading firmware from Notehub...';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}else if(mode==='ready'||data.updateAvailable){var verText=data.availableVersion||'';if(dfuEls.statusText)dfuEls.statusText.textContent=mode==='ready'?'Update ready to install: v'+verText:'Update available: v'+verText;if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=false;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}else if(mode==='error'){var errDetail=data.dfuError?' ('+data.dfuError+')':'';if(dfuEls.statusText)dfuEls.statusText.textContent='DFU error'+errDetail+' - try checking again';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}else{if(dfuEls.statusText)dfuEls.statusText.textContent='Firmware is up to date (v'+data.currentVersion+')';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}}async function loadDfuStatus(){try{const res=await fetch('/api/dfu/status');if(!res.ok)throw new Error('Failed to fetch DFU status');const data=await res.json();updateDfuUI(data);}catch(err){if(dfuEls.statusText)dfuEls.statusText.textContent='Error: '+err.message;if(dfuEls.fwVersion)dfuEls.fwVersion.textContent='Unknown';if(dfuEls.fwBuild)dfuEls.fwBuild.textContent='Unknown';if(dfuEls.fwLastUpdated)dfuEls.fwLastUpdated.textContent='Unknown';if(dfuEls.voltage)dfuEls.voltage.textContent='Not available';if(dfuEls.serverTime)dfuEls.serverTime.textContent='Not synced';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}}if(dfuEls.checkBtn)dfuEls.checkBtn.addEventListener('click',async()=>{dfuEls.checkBtn.disabled=true;if(dfuEls.statusText)dfuEls.statusText.textContent='Querying Notecard for updates...';try{const res=await fetch('/api/dfu/check',{method:'POST'});if(!res.ok)throw new Error('Check failed');const data=await res.json();updateDfuUI(data);showToast(data.updateAvailable?'Update found: v'+data.availableVersion:'No updates available');}catch(err){if(dfuEls.statusText)dfuEls.statusText.textContent='Error checking: '+err.message;showToast('Failed to check for updates',true);}finally{if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}});if(dfuEls.enableBtn)dfuEls.enableBtn.addEventListener('click',async()=>{if(!confirm('Install firmware update? The device will download and apply the update from Notehub.'))return;try{dfuEls.enableBtn.disabled=true;if(dfuEls.statusText)dfuEls.statusText.textContent='Enabling DFU mode...';const res=await fetch('/api/dfu/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});if(!res.ok){const text=await res.text();throw new Error(text||'Failed to enable DFU');}const data=await res.json();showToast(data.message||'DFU mode enabled - downloading firmware');if(dfuEls.statusText)dfuEls.statusText.textContent='DFU enabled - downloading firmware from Notehub...';setTimeout(loadDfuStatus,5000);}catch(err){showToast(err.message,true);if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=false;if(dfuEls.statusText)dfuEls.statusText.textContent='Error: '+err.message;}});await loadDfuStatus();await loadNotecardStatus();await loadSettings();}catch(e){console.error(e);const t=document.getElementById('toast');if(t){t.innerText='Script Error! '+e.message;t.style.background='red';t.classList.add('show');}}});</script></body></html>)HTML";
 
-static const char EMAIL_FORMAT_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Email Formatting - Tank Alarm</title><link rel="stylesheet" href="/style.css"><style>.format-section{border:1px solid var(--border);padding:var(--space-3);margin-bottom:var(--space-3);background:#fafafa}.format-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-2)}.format-title{font-weight:600;font-size:1rem}.preview-box{border:1px solid var(--border);background:#fff;padding:var(--space-3);font-family:ui-monospace,Consolas,monospace;font-size:0.85rem;white-space:pre-wrap;max-height:400px;overflow:auto}.field-list{display:flex;flex-direction:column;gap:var(--space-2)}.field-item{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2);border:1px solid var(--border);background:#fff}.field-item label{flex:1;display:flex;align-items:center;gap:8px}.field-item input[type="checkbox"]{width:auto}.drag-handle{cursor:grab;color:var(--muted);padding:0 8px}.drag-handle:active{cursor:grabbing}</style></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Daily Email Format</h2><p style="color:var(--muted);margin-bottom:16px;">Customize the content and layout of daily tank summary emails. Changes are saved automatically.</p><form id="formatForm"><div class="format-section"><div class="format-header"><span class="format-title">Email Header</span></div><div class="form-grid"><label class="field"><span>Email Subject</span><input type="text" id="emailSubject" value="Daily Tank Summary - {date}" placeholder="Daily Tank Summary - {date}"></label><label class="field"><span>Company/Organization Name</span><input type="text" id="companyName" value="" placeholder="Your Company Name (optional)"></label></div><div class="toggle-group" style="margin-top:12px"><label class="toggle"><span>Include Date in Header</span><input type="checkbox" id="includeDate" checked></label><label class="toggle"><span>Include Time Generated</span><input type="checkbox" id="includeTime"></label><label class="toggle"><span>Include Server Name</span><input type="checkbox" id="includeServerName" checked></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Site Information</span></div><div class="toggle-group"><label class="toggle"><span>Group Tanks by Site</span><input type="checkbox" id="groupBySite" checked></label><label class="toggle"><span>Show Site Summary (total change)</span><input type="checkbox" id="showSiteSummary" checked></label><label class="toggle"><span>Show Site Total Capacity</span><input type="checkbox" id="showSiteCapacity"></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Tank Details</span></div><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px">Select which fields to include for each tank:</p><div class="toggle-group"><label class="toggle"><span>Tank Number</span><input type="checkbox" id="fieldSensorIndex" checked></label><label class="toggle"><span>Tank Name</span><input type="checkbox" id="fieldTankName" checked></label><label class="toggle"><span>Contents (Diesel, Water, etc.)</span><input type="checkbox" id="fieldContents" checked></label><label class="toggle"><span>Current Level (inches)</span><input type="checkbox" id="fieldLevelInches" checked></label><label class="toggle"><span>Current Level (percentage)</span><input type="checkbox" id="fieldLevelPercent"></label><label class="toggle"><span>Level Change (24h)</span><input type="checkbox" id="fieldLevelChange" checked></label><label class="toggle"><span>Delivery Indicator</span><input type="checkbox" id="fieldDeliveryIndicator" checked></label><label class="toggle"><span>Last Reading Time</span><input type="checkbox" id="fieldLastReading"></label><label class="toggle"><span>Sensor Raw Value (mA)</span><input type="checkbox" id="fieldSensorMa"></label><label class="toggle"><span>High/Low Alarm Status</span><input type="checkbox" id="fieldAlarmStatus" checked></label><label class="toggle"><span>Tank Capacity (max height)</span><input type="checkbox" id="fieldCapacity"></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Summary Section</span></div><div class="toggle-group"><label class="toggle"><span>Include Fleet Summary</span><input type="checkbox" id="includeFleetSummary" checked></label><label class="toggle"><span>Total Tanks Monitored</span><input type="checkbox" id="summaryTotalTanks" checked></label><label class="toggle"><span>Tanks with Active Alarms</span><input type="checkbox" id="summaryActiveAlarms" checked></label><label class="toggle"><span>Total Deliveries (24h)</span><input type="checkbox" id="summaryDeliveries" checked></label><label class="toggle"><span>Stale Readings Warning</span><input type="checkbox" id="summaryStaleWarning" checked></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Formatting Options</span></div><div class="form-grid"><label class="field"><span>Number Format</span><select id="numberFormat"><option value="decimal">Decimal (12.5)</option><option value="fraction">Fraction (12 1/2)</option></select></label><label class="field"><span>Date Format</span><select id="dateFormat"><option value="us">US (MM/DD/YYYY)</option><option value="iso">ISO (YYYY-MM-DD)</option><option value="eu">EU (DD/MM/YYYY)</option></select></label><label class="field"><span>Change Indicator Style</span><select id="changeStyle"><option value="arrow">Arrows (&#x2191; &#x2193;)</option><option value="plusminus">Plus/Minus (+5.2 / -3.1)</option><option value="text">Text (increased/decreased)</option></select></label></div><div class="toggle-group" style="margin-top:12px"><label class="toggle"><span>Use Color Coding (HTML emails)</span><input type="checkbox" id="useColors" checked></label><label class="toggle"><span>Include Horizontal Dividers</span><input type="checkbox" id="useDividers" checked></label></div></div><div class="actions"><button type="submit">Save Format</button><button type="button" class="secondary" id="previewBtn">Preview Email</button><button type="button" class="secondary" id="resetBtn">Reset to Defaults</button><a class="pill secondary" href="/server-settings">Back to Settings</a></div></form></div><div class="card" id="previewCard" style="display:none"><h2>Email Preview</h2><div id="previewContent" class="preview-box"></div></div></main><div id="toast"></div><script>document.addEventListener('DOMContentLoaded',()=>{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);const toast=document.getElementById('toast');const previewCard=document.getElementById('previewCard');const previewContent=document.getElementById('previewContent');function showToast(msg,isError){toast.textContent=msg;toast.style.background=isError?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}const fields=['emailSubject','companyName','includeDate','includeTime','includeServerName','groupBySite','showSiteSummary','showSiteCapacity','fieldSensorIndex','fieldTankName','fieldContents','fieldLevelInches','fieldLevelPercent','fieldLevelChange','fieldDeliveryIndicator','fieldLastReading','fieldSensorMa','fieldAlarmStatus','fieldCapacity','includeFleetSummary','summaryTotalTanks','summaryActiveAlarms','summaryDeliveries','summaryStaleWarning','numberFormat','dateFormat','changeStyle','useColors','useDividers'];function getFormData(){const data={};fields.forEach(f=>{const el=document.getElementById(f);if(el.type==='checkbox')data[f]=el.checked;else data[f]=el.value;});return data;}function setFormData(data){fields.forEach(f=>{const el=document.getElementById(f);if(!el)return;if(el.type==='checkbox')el.checked=!!data[f];else if(data[f]!==undefined)el.value=data[f];});}async function loadFormat(){try{const res=await fetch('/api/email-format');if(!res.ok)throw new Error('Failed to load');const data=await res.json();setFormData(data);}catch(err){console.log('Using defaults');}}async function saveFormat(e){if(e)e.preventDefault();const data=getFormData();try{const res=await fetch('/api/email-format',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!res.ok)throw new Error('Failed to save');showToast('Format saved successfully');}catch(err){showToast(err.message,true);}}function generatePreview(){const d=getFormData();const dateStr=d.dateFormat==='iso'?new Date().toISOString().split('T')[0]:d.dateFormat==='eu'?new Date().toLocaleDateString('en-GB'):new Date().toLocaleDateString('en-US');let subject=d.emailSubject.replace('{date}',dateStr);let preview='Subject: '+subject+'\n\n';if(d.companyName)preview+=d.companyName+'\n';if(d.includeServerName)preview+='Server: TankAlarm-Server-01\n';if(d.includeDate)preview+='Date: '+dateStr+'\n';if(d.includeTime)preview+='Generated: '+new Date().toLocaleTimeString()+'\n';preview+='\n'+'-'.repeat(50)+'\n\n';const sites=[{name:'Site Alpha',tanks:[{num:1,name:'Main Tank',contents:'Diesel',level:85.5,change:12.3,alarm:false,capacity:120},{num:2,name:'Reserve',contents:'Diesel',level:45.2,change:-8.1,alarm:true,alarmType:'low',capacity:100}]},{name:'Site Beta',tanks:[{num:1,name:'Water Tank',contents:'Water',level:92.0,change:0,alarm:false,capacity:150}]}];if(d.groupBySite){sites.forEach(site=>{preview+='=== '+site.name+' ===\n';if(d.showSiteSummary){const totalChange=site.tanks.reduce((s,t)=>s+t.change,0);const arrow=d.changeStyle==='arrow'?(totalChange>0?'\u2191':'\u2193'):d.changeStyle==='plusminus'?(totalChange>0?'+':''):' ';preview+='Site Total Change: '+arrow+(d.numberFormat==='fraction'?Math.round(Math.abs(totalChange)):Math.abs(totalChange).toFixed(1))+' in\n';}if(d.showSiteCapacity){const totalCap=site.tanks.reduce((s,t)=>s+t.capacity,0);preview+='Total Capacity: '+totalCap+' in\n';}preview+='\n';site.tanks.forEach(t=>{let line='';if(d.fieldSensorIndex)line+='Tank #'+t.num+' ';if(d.fieldTankName)line+=t.name+' ';if(d.fieldContents)line+='['+t.contents+'] ';preview+=line.trim()+'\n';let details='  ';if(d.fieldLevelInches)details+='Level: '+(d.numberFormat==='fraction'?Math.round(t.level):t.level.toFixed(1))+' in  ';if(d.fieldLevelPercent)details+=Math.round(t.level/t.capacity*100)+'%  ';if(d.fieldLevelChange&&t.change!==0){const arrow=d.changeStyle==='arrow'?(t.change>0?'\u2191':'\u2193'):d.changeStyle==='plusminus'?(t.change>0?'+':''): '';details+=arrow+Math.abs(t.change).toFixed(1)+' in  ';}if(d.fieldDeliveryIndicator&&t.change>5)details+='&#x1F4E6; DELIVERY  ';if(d.fieldAlarmStatus&&t.alarm)details+='&#x26A0;&#xFE0F; '+t.alarmType.toUpperCase()+' ALARM  ';if(d.fieldCapacity)details+='(Cap: '+t.capacity+' in)  ';preview+=details.trim()+'\n';if(d.fieldLastReading)preview+='  Last: '+new Date().toLocaleString()+'\n';if(d.fieldSensorMa)preview+='  Sensor: 12.45 mA\n';preview+='\n';});if(d.useDividers)preview+='-'.repeat(50)+'\n\n';});}if(d.includeFleetSummary){preview+='=== FLEET SUMMARY ===\n';if(d.summaryTotalTanks)preview+='Total Tanks: 3\n';if(d.summaryActiveAlarms)preview+='Active Alarms: 1\n';if(d.summaryDeliveries)preview+='Deliveries (24h): 1\n';if(d.summaryStaleWarning)preview+='Stale Readings: 0\n';}previewContent.textContent=preview;previewCard.style.display='block';previewCard.scrollIntoView({behavior:'smooth'});}document.getElementById('formatForm').addEventListener('submit',saveFormat);document.getElementById('previewBtn').addEventListener('click',generatePreview);document.getElementById('resetBtn').addEventListener('click',()=>{const defaults={emailSubject:'Daily Tank Summary - {date}',companyName:'',includeDate:true,includeTime:false,includeServerName:true,groupBySite:true,showSiteSummary:true,showSiteCapacity:false,fieldSensorIndex:true,fieldTankName:true,fieldContents:true,fieldLevelInches:true,fieldLevelPercent:false,fieldLevelChange:true,fieldDeliveryIndicator:true,fieldLastReading:false,fieldSensorMa:false,fieldAlarmStatus:true,fieldCapacity:false,includeFleetSummary:true,summaryTotalTanks:true,summaryActiveAlarms:true,summaryDeliveries:true,summaryStaleWarning:true,numberFormat:'decimal',dateFormat:'us',changeStyle:'arrow',useColors:true,useDividers:true};setFormData(defaults);showToast('Reset to defaults');});loadFormat();});</script></body></html>)HTML";
+static const char EMAIL_FORMAT_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Email Formatting - Tank Alarm</title><link rel="stylesheet" href="/style.css"><style>.format-section{border:1px solid var(--border);padding:var(--space-3);margin-bottom:var(--space-3);background:#fafafa}.format-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-2)}.format-title{font-weight:600;font-size:1rem}.preview-box{border:1px solid var(--border);background:#fff;padding:var(--space-3);font-family:ui-monospace,Consolas,monospace;font-size:0.85rem;white-space:pre-wrap;max-height:400px;overflow:auto}.field-list{display:flex;flex-direction:column;gap:var(--space-2)}.field-item{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2);border:1px solid var(--border);background:#fff}.field-item label{flex:1;display:flex;align-items:center;gap:8px}.field-item input[type="checkbox"]{width:auto}.drag-handle{cursor:grab;color:var(--muted);padding:0 8px}.drag-handle:active{cursor:grabbing}</style></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Daily Email Format</h2><p style="color:var(--muted);margin-bottom:16px;">Customize the content and layout of daily sensor summary emails. Changes are saved automatically.</p><form id="formatForm"><div class="format-section"><div class="format-header"><span class="format-title">Email Header</span></div><div class="form-grid"><label class="field"><span>Email Subject</span><input type="text" id="emailSubject" value="Daily Tank Summary - {date}" placeholder="Daily Tank Summary - {date}"></label><label class="field"><span>Company/Organization Name</span><input type="text" id="companyName" value="" placeholder="Your Company Name (optional)"></label></div><div class="toggle-group" style="margin-top:12px"><label class="toggle"><span>Include Date in Header</span><input type="checkbox" id="includeDate" checked></label><label class="toggle"><span>Include Time Generated</span><input type="checkbox" id="includeTime"></label><label class="toggle"><span>Include Server Name</span><input type="checkbox" id="includeServerName" checked></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Site Information</span></div><div class="toggle-group"><label class="toggle"><span>Group Sensors by Site</span><input type="checkbox" id="groupBySite" checked></label><label class="toggle"><span>Show Site Summary (total change)</span><input type="checkbox" id="showSiteSummary" checked></label><label class="toggle"><span>Show Site Total Capacity</span><input type="checkbox" id="showSiteCapacity"></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Tank Details</span></div><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px">Select which fields to include for each sensor:</p><div class="toggle-group"><label class="toggle"><span>Tank Number</span><input type="checkbox" id="fieldSensorIndex" checked></label><label class="toggle"><span>Tank Name</span><input type="checkbox" id="fieldSensorName" checked></label><label class="toggle"><span>Contents (Diesel, Water, etc.)</span><input type="checkbox" id="fieldContents" checked></label><label class="toggle"><span>Current Level (inches)</span><input type="checkbox" id="fieldLevelInches" checked></label><label class="toggle"><span>Current Level (percentage)</span><input type="checkbox" id="fieldLevelPercent"></label><label class="toggle"><span>Level Change (24h)</span><input type="checkbox" id="fieldLevelChange" checked></label><label class="toggle"><span>Delivery Indicator</span><input type="checkbox" id="fieldDeliveryIndicator" checked></label><label class="toggle"><span>Last Reading Time</span><input type="checkbox" id="fieldLastReading"></label><label class="toggle"><span>Sensor Raw Value (mA)</span><input type="checkbox" id="fieldSensorMa"></label><label class="toggle"><span>High/Low Alarm Status</span><input type="checkbox" id="fieldAlarmStatus" checked></label><label class="toggle"><span>Tank Capacity (max height)</span><input type="checkbox" id="fieldCapacity"></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Summary Section</span></div><div class="toggle-group"><label class="toggle"><span>Include Fleet Summary</span><input type="checkbox" id="includeFleetSummary" checked></label><label class="toggle"><span>Total Sensors Monitored</span><input type="checkbox" id="summaryTotalSensors" checked></label><label class="toggle"><span>Sensors with Active Alarms</span><input type="checkbox" id="summaryActiveAlarms" checked></label><label class="toggle"><span>Total Deliveries (24h)</span><input type="checkbox" id="summaryDeliveries" checked></label><label class="toggle"><span>Stale Readings Warning</span><input type="checkbox" id="summaryStaleWarning" checked></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Formatting Options</span></div><div class="form-grid"><label class="field"><span>Number Format</span><select id="numberFormat"><option value="decimal">Decimal (12.5)</option><option value="fraction">Fraction (12 1/2)</option></select></label><label class="field"><span>Date Format</span><select id="dateFormat"><option value="us">US (MM/DD/YYYY)</option><option value="iso">ISO (YYYY-MM-DD)</option><option value="eu">EU (DD/MM/YYYY)</option></select></label><label class="field"><span>Change Indicator Style</span><select id="changeStyle"><option value="arrow">Arrows (&#x2191; &#x2193;)</option><option value="plusminus">Plus/Minus (+5.2 / -3.1)</option><option value="text">Text (increased/decreased)</option></select></label></div><div class="toggle-group" style="margin-top:12px"><label class="toggle"><span>Use Color Coding (HTML emails)</span><input type="checkbox" id="useColors" checked></label><label class="toggle"><span>Include Horizontal Dividers</span><input type="checkbox" id="useDividers" checked></label></div></div><div class="actions"><button type="submit">Save Format</button><button type="button" class="secondary" id="previewBtn">Preview Email</button><button type="button" class="secondary" id="resetBtn">Reset to Defaults</button><a class="pill secondary" href="/server-settings">Back to Settings</a></div></form></div><div class="card" id="previewCard" style="display:none"><h2>Email Preview</h2><div id="previewContent" class="preview-box"></div></div></main><div id="toast"></div><script>document.addEventListener('DOMContentLoaded',()=>{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);const toast=document.getElementById('toast');const previewCard=document.getElementById('previewCard');const previewContent=document.getElementById('previewContent');function showToast(msg,isError){toast.textContent=msg;toast.style.background=isError?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}const fields=['emailSubject','companyName','includeDate','includeTime','includeServerName','groupBySite','showSiteSummary','showSiteCapacity','fieldSensorIndex','fieldSensorName','fieldContents','fieldLevelInches','fieldLevelPercent','fieldLevelChange','fieldDeliveryIndicator','fieldLastReading','fieldSensorMa','fieldAlarmStatus','fieldCapacity','includeFleetSummary','summaryTotalSensors','summaryActiveAlarms','summaryDeliveries','summaryStaleWarning','numberFormat','dateFormat','changeStyle','useColors','useDividers'];function getFormData(){const data={};fields.forEach(f=>{const el=document.getElementById(f);if(el.type==='checkbox')data[f]=el.checked;else data[f]=el.value;});return data;}function setFormData(data){fields.forEach(f=>{const el=document.getElementById(f);if(!el)return;if(el.type==='checkbox')el.checked=!!data[f];else if(data[f]!==undefined)el.value=data[f];});}async function loadFormat(){try{const res=await fetch('/api/email-format');if(!res.ok)throw new Error('Failed to load');const data=await res.json();setFormData(data);}catch(err){console.log('Using defaults');}}async function saveFormat(e){if(e)e.preventDefault();const data=getFormData();try{const res=await fetch('/api/email-format',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!res.ok)throw new Error('Failed to save');showToast('Format saved successfully');}catch(err){showToast(err.message,true);}}function generatePreview(){const d=getFormData();const dateStr=d.dateFormat==='iso'?new Date().toISOString().split('T')[0]:d.dateFormat==='eu'?new Date().toLocaleDateString('en-GB'):new Date().toLocaleDateString('en-US');let subject=d.emailSubject.replace('{date}',dateStr);let preview='Subject: '+subject+'\n\n';if(d.companyName)preview+=d.companyName+'\n';if(d.includeServerName)preview+='Server: TankAlarm-Server-01\n';if(d.includeDate)preview+='Date: '+dateStr+'\n';if(d.includeTime)preview+='Generated: '+new Date().toLocaleTimeString()+'\n';preview+='\n'+'-'.repeat(50)+'\n\n';const sites=[{name:'Site Alpha',sensors:[{num:1,name:'Main Tank',contents:'Diesel',level:85.5,change:12.3,alarm:false,capacity:120},{num:2,name:'Reserve',contents:'Diesel',level:45.2,change:-8.1,alarm:true,alarmType:'low',capacity:100}]},{name:'Site Beta',sensors:[{num:1,name:'Water Tank',contents:'Water',level:92.0,change:0,alarm:false,capacity:150}]}];if(d.groupBySite){sites.forEach(site=>{preview+='=== '+site.name+' ===\n';if(d.showSiteSummary){const totalChange=site.sensors.reduce((s,t)=>s+t.change,0);const arrow=d.changeStyle==='arrow'?(totalChange>0?'\u2191':'\u2193'):d.changeStyle==='plusminus'?(totalChange>0?'+':''):' ';preview+='Site Total Change: '+arrow+(d.numberFormat==='fraction'?Math.round(Math.abs(totalChange)):Math.abs(totalChange).toFixed(1))+' in\n';}if(d.showSiteCapacity){const totalCap=site.sensors.reduce((s,t)=>s+t.capacity,0);preview+='Total Capacity: '+totalCap+' in\n';}preview+='\n';site.sensors.forEach(t=>{let line='';if(d.fieldSensorIndex)line+='Tank #'+t.num+' ';if(d.fieldSensorName)line+=t.name+' ';if(d.fieldContents)line+='['+t.contents+'] ';preview+=line.trim()+'\n';let details='  ';if(d.fieldLevelInches)details+='Level: '+(d.numberFormat==='fraction'?Math.round(t.level):t.level.toFixed(1))+' in  ';if(d.fieldLevelPercent)details+=Math.round(t.level/t.capacity*100)+'%  ';if(d.fieldLevelChange&&t.change!==0){const arrow=d.changeStyle==='arrow'?(t.change>0?'\u2191':'\u2193'):d.changeStyle==='plusminus'?(t.change>0?'+':''): '';details+=arrow+Math.abs(t.change).toFixed(1)+' in  ';}if(d.fieldDeliveryIndicator&&t.change>5)details+='&#x1F4E6; DELIVERY  ';if(d.fieldAlarmStatus&&t.alarm)details+='&#x26A0;&#xFE0F; '+t.alarmType.toUpperCase()+' ALARM  ';if(d.fieldCapacity)details+='(Cap: '+t.capacity+' in)  ';preview+=details.trim()+'\n';if(d.fieldLastReading)preview+='  Last: '+new Date().toLocaleString()+'\n';if(d.fieldSensorMa)preview+='  Sensor: 12.45 mA\n';preview+='\n';});if(d.useDividers)preview+='-'.repeat(50)+'\n\n';});}if(d.includeFleetSummary){preview+='=== FLEET SUMMARY ===\n';if(d.summaryTotalSensors)preview+='Total Sensors: 3\n';if(d.summaryActiveAlarms)preview+='Active Alarms: 1\n';if(d.summaryDeliveries)preview+='Deliveries (24h): 1\n';if(d.summaryStaleWarning)preview+='Stale Readings: 0\n';}previewContent.textContent=preview;previewCard.style.display='block';previewCard.scrollIntoView({behavior:'smooth'});}document.getElementById('formatForm').addEventListener('submit',saveFormat);document.getElementById('previewBtn').addEventListener('click',generatePreview);document.getElementById('resetBtn').addEventListener('click',()=>{const defaults={emailSubject:'Daily Tank Summary - {date}',companyName:'',includeDate:true,includeTime:false,includeServerName:true,groupBySite:true,showSiteSummary:true,showSiteCapacity:false,fieldSensorIndex:true,fieldSensorName:true,fieldContents:true,fieldLevelInches:true,fieldLevelPercent:false,fieldLevelChange:true,fieldDeliveryIndicator:true,fieldLastReading:false,fieldSensorMa:false,fieldAlarmStatus:true,fieldCapacity:false,includeFleetSummary:true,summaryTotalSensors:true,summaryActiveAlarms:true,summaryDeliveries:true,summaryStaleWarning:true,numberFormat:'decimal',dateFormat:'us',changeStyle:'arrow',useColors:true,useDividers:true};setFormData(defaults);showToast('Reset to defaults');});loadFormat();});</script></body></html>)HTML";
 
 static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Client Configuration</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill" href="/config-generator">Client Config</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Client Configuration</h2>
 <div class="actions" style="margin-bottom:20px;justify-content:space-between;flex-wrap:wrap;gap:10px;">
@@ -1462,7 +1462,7 @@ const inputActions=[{value:'clear_relays',label:'Clear All Relay Alarms'},{value
 const inputModes=[{value:'active_low',label:'Active LOW(Button to GND,internal pullup)'},{value:'active_high',label:'Active HIGH(Button to VCC,external pull-down)'}];
 let sensorCount=0;let inputIdCounter=0;
 /* SENSOR CARD HTML */
-function createSensorHtml(id){return `<div class="sensor-card" id="sensor-${id}"><div class="sensor-header"><span class="sensor-title">Sensor #${id+1}</span><button type="button" class="remove-btn" onclick="removeSensor(${id})">Remove</button></div><div class="form-grid"><label class="field"><span>Monitor Type</span><select class="monitor-type" onchange="updateMonitorFields(${id})">${monitorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label><label class="field tank-num-field"><span>Display Number (optional)</span><input type="number" class="tank-num" placeholder="e.g. 1, 2, 3"></label><label class="field"><span><span class="name-label">Name</span></span><input type="text" class="tank-name" placeholder="Name"></label><label class="field contents-field"><span>Contents</span><input type="text" class="tank-contents" placeholder="e.g. Diesel, Water"></label><label class="field"><span>Sensor Type</span><select class="sensor-type" onchange="updatePinOptions(${id})">${sensorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label><label class="field"><span>Pin / Channel</span><select class="sensor-pin">${optaPins.map(p=>`<option value="${p.value}">${p.label}</option>`).join('')}</select></label><label class="field switch-mode-field" style="display:none;"><span>Switch Mode<span class="tooltip-icon" tabindex="0" data-tooltip="NO(Normally-Open): Switch is open by default, closes when fluid is present. NC(Normally-Closed): Switch is closed by default, opens when fluid is present.">?</span></span><select class="switch-mode"><option value="NO">Normally-Open(NO)</option><option value="NC">Normally-Closed(NC)</option></select></label><label class="field pulses-per-rev-field" style="display:none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label><label class="field current-loop-type-field" style="display:none;"><span>4-20mA Sensor Type<span class="tooltip-icon" tabindex="0" data-tooltip="Select the type of 4-20mA sensor: Pressure sensors are mounted near the tank bottom and measure liquid pressure. Ultrasonic sensors are mounted on top of the tank and measure distance to the liquid surface.">?</span></span><select class="current-loop-type" onchange="updateCurrentLoopFields(${id})"><option value="pressure">Pressure Sensor(Bottom-Mounted)</option><option value="ultrasonic">Ultrasonic Sensor(Top-Mounted)</option></select></label><label class="field sensor-range-field" style="display:none;"><span><span class="sensor-range-label">Sensor Range</span><span class="tooltip-icon sensor-range-tooltip" tabindex="0" data-tooltip="Native measurement range of the sensor (e.g., 0-5 PSI for pressure, 0-10m for ultrasonic). This is the range that corresponds to 4-20mA output.">?</span></span><div style="display:flex;gap:8px;align-items:center;"><input type="number" class="sensor-range-min" value="0" step="0.1" style="width:70px;" placeholder="Min"><span>to</span><input type="number" class="sensor-range-max" value="5" step="0.1" style="width:70px;" placeholder="Max"><select class="sensor-range-unit" style="width:70px;"><option value="PSI">PSI</option><option value="bar">bar</option><option value="m">m</option><option value="ft">ft</option><option value="in">in</option><option value="cm">cm</option></select></div></label><label class="field sensor-mount-height-field" style="display:none;"><span><span class="mount-height-label">Sensor Mount Height(in)</span><span class="tooltip-icon mount-height-tooltip" tabindex="0" data-tooltip="For pressure sensors: height of sensor above tank bottom (usually 0-2 inches). For ultrasonic sensors: distance from sensor to tank bottom when empty.">?</span></span><input type="number" class="sensor-mount-height" value="0" step="0.1" min="0"></label><label class="field height-field"><span><span class="height-label">Height(in)</span><span class="tooltip-icon height-tooltip" tabindex="0" data-tooltip="Maximum height or capacity of the tank in inches. Used to set alarm thresholds relative to tank size.">?</span></span><input type="number" class="tank-height" value="120"></label></div><label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" class="stuck-detection" checked> Stuck Sensor Detection<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, the system flags a sensor as failed if it reports the same reading 10 consecutive times. Disable for sensors where readings naturally stay constant (e.g., gas pressure monitors).">?</span></label><label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" class="calibration-enabled" checked> Calibration Learning<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, you can submit manual verification readings on the Calibration page to teach the system the actual relationship between sensor output and measured values. Recommended for tank level sensors. For gas pressure or RPM sensors, disable unless you have reference gauges for comparison.">?</span></label><div class="digital-sensor-info" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-top:8px;font-size:0.9rem;color:var(--muted);"><strong>Float Switch Mode:</strong> This sensor only detects whether fluid has reached the switch position.<br><br><strong>Wiring Note:</strong> Connect the switch between the input pin and GND. The software uses an internal pull-up resistor.</div><div class="current-loop-sensor-info" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-top:8px;font-size:0.9rem;color:var(--muted);"><div class="pressure-sensor-info"><strong>Pressure Sensor(Bottom-Mounted):</strong> Measures the pressure of the liquid column above it.<br>- 4mA = Empty tank (0 pressure)<br>- 20mA = Full tank (max pressure)<br>- Sensor Range: The native pressure range (e.g., 0-5 PSI)<br>- Mount Height: Distance from sensor to tank bottom</div><div class="ultrasonic-sensor-info" style="display:none;"><strong>Ultrasonic Sensor(Top-Mounted):</strong> Measures the distance from the sensor to the liquid surface.<br>- 4mA = Full tank (liquid close to sensor)<br>- 20mA = Empty tank (liquid far from sensor)<br>- Sensor Range: The native distance range (e.g., 0-10m)<br>- Sensor Mount Height: Distance from sensor to tank bottom when empty</div></div><button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button><div class="collapsible-section alarm-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;"><span class="alarm-section-title">Alarm Thresholds</span><button type="button" class="remove-btn" onclick="removeAlarmSection(${id})" style="float:right;">Remove Alarm</button></h4><div class="form-grid alarm-thresholds-grid"><div class="field"><span><label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="high-alarm-enabled" checked> High Alarm</label></span><input type="number" class="high-alarm" value="100"></div><div class="field"><span><label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="low-alarm-enabled" checked> Low Alarm</label></span><input type="number" class="low-alarm" value="20"></div></div><div class="form-grid digital-alarm-grid" style="display:none;"><div class="field" style="grid-column:1 / -1;"><span>Trigger Condition<span class="tooltip-icon" tabindex="0" data-tooltip="Select when the alarm should trigger based on the float switch state.">?</span></span><select class="digital-trigger-state"><option value="activated">When Switch is Activated (fluid detected)</option><option value="not_activated">When Switch is NOT Activated (no fluid)</option></select></div></div></div><button type="button" class="add-section-btn add-relay-btn hidden" onclick="toggleRelaySection(${id})">+ Add Relay Control</button><div class="collapsible-section relay-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;">Relay Switch Control<button type="button" class="remove-btn" onclick="removeRelaySection(${id})" style="float:right;">Remove Relay</button></h4><div class="form-grid"><label class="field"><span>Target Client UID</span><input type="text" class="relay-target" list="relayTargetSuggestions" placeholder="dev:IMEI (optional)"></label><label class="field"><span>Trigger On</span><select class="relay-trigger"><option value="any">Any Alarm (High or Low)</option><option value="high">High Alarm Only</option><option value="low">Low Alarm Only</option></select></label><label class="field"><span>Relay Mode</span><select class="relay-mode" onchange="toggleRelayDurations(${id})"><option value="momentary">Momentary (configurable duration)</option><option value="until_clear">Stay On Until Alarm Clears</option><option value="manual_reset">Stay On Until Manual Server Reset</option></select></label><div class="field"><span>Relay Outputs</span><div style="display:flex;gap:12px;padding:8px 0;"><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-1" value="1"> R1</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-2" value="2"> R2</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-3" value="4"> R3</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-4" value="8"> R4</label></div></div><div class="relay-durations-section" style="grid-column:1 / -1;display:block;"><span style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:8px;display:block;">Momentary Duration per Relay (seconds, 0 = default 30 min):</span><div style="display:flex;gap:12px;flex-wrap:wrap;"><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R1:<input type="number" class="relay-duration-1" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R2:<input type="number" class="relay-duration-2" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R3:<input type="number" class="relay-duration-3" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R4:<input type="number" class="relay-duration-4" value="0" min="0" max="86400" style="width:70px;"></label></div></div></div></div><button type="button" class="add-section-btn add-sms-btn hidden" onclick="toggleSmsSection(${id})">+ Add SMS Alert</button><div class="collapsible-section sms-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;">SMS Alert Notifications<button type="button" class="remove-btn" onclick="removeSmsSection(${id})" style="float:right;">Remove SMS Alert</button></h4><div class="form-grid"><label class="field" style="grid-column:1 / -1;"><span>Phone Numbers<span class="tooltip-icon" tabindex="0" data-tooltip="Enter phone numbers with country code (e.g., +15551234567). Separate multiple numbers with commas.">?</span></span><input type="text" class="sms-phones" placeholder="+15551234567,+15559876543"></label><label class="field"><span>Trigger On</span><select class="sms-trigger"><option value="any">Any Alarm (High or Low)</option><option value="high">High Alarm Only</option><option value="low">Low Alarm Only</option></select></label><label class="field" style="grid-column:span 2;"><span>Custom Message (optional)</span><input type="text" class="sms-message" placeholder="Tank alarm triggered"></label></div></div></div>`;}
+function createSensorHtml(id){return `<div class="sensor-card" id="sensor-${id}"><div class="sensor-header"><span class="sensor-title">Sensor #${id+1}</span><button type="button" class="remove-btn" onclick="removeSensor(${id})">Remove</button></div><div class="form-grid"><label class="field"><span>Monitor Type</span><select class="monitor-type" onchange="updateMonitorFields(${id})">${monitorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label><label class="field tank-num-field"><span>Display Number (optional)</span><input type="number" class="tank-num" placeholder="e.g. 1, 2, 3"></label><label class="field"><span><span class="name-label">Name</span></span><input type="text" class="tank-name" placeholder="Name"></label><label class="field contents-field"><span>Contents</span><input type="text" class="tank-contents" placeholder="e.g. Diesel, Water"></label><label class="field"><span>Sensor Type</span><select class="sensor-type" onchange="updatePinOptions(${id})">${sensorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label><label class="field"><span>Pin / Channel</span><select class="sensor-pin">${optaPins.map(p=>`<option value="${p.value}">${p.label}</option>`).join('')}</select></label><label class="field switch-mode-field" style="display:none;"><span>Switch Mode<span class="tooltip-icon" tabindex="0" data-tooltip="NO(Normally-Open): Switch is open by default, closes when fluid is present. NC(Normally-Closed): Switch is closed by default, opens when fluid is present.">?</span></span><select class="switch-mode"><option value="NO">Normally-Open(NO)</option><option value="NC">Normally-Closed(NC)</option></select></label><label class="field pulses-per-rev-field" style="display:none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label><label class="field current-loop-type-field" style="display:none;"><span>4-20mA Sensor Type<span class="tooltip-icon" tabindex="0" data-tooltip="Select the type of 4-20mA sensor: Pressure sensors are mounted near the sensor bottom and measure liquid pressure. Ultrasonic sensors are mounted on top of the sensor and measure distance to the liquid surface.">?</span></span><select class="current-loop-type" onchange="updateCurrentLoopFields(${id})"><option value="pressure">Pressure Sensor(Bottom-Mounted)</option><option value="ultrasonic">Ultrasonic Sensor(Top-Mounted)</option></select></label><label class="field sensor-range-field" style="display:none;"><span><span class="sensor-range-label">Sensor Range</span><span class="tooltip-icon sensor-range-tooltip" tabindex="0" data-tooltip="Native measurement range of the sensor (e.g., 0-5 PSI for pressure, 0-10m for ultrasonic). This is the range that corresponds to 4-20mA output.">?</span></span><div style="display:flex;gap:8px;align-items:center;"><input type="number" class="sensor-range-min" value="0" step="0.1" style="width:70px;" placeholder="Min"><span>to</span><input type="number" class="sensor-range-max" value="5" step="0.1" style="width:70px;" placeholder="Max"><select class="sensor-range-unit" style="width:70px;"><option value="PSI">PSI</option><option value="bar">bar</option><option value="m">m</option><option value="ft">ft</option><option value="in">in</option><option value="cm">cm</option></select></div></label><label class="field sensor-mount-height-field" style="display:none;"><span><span class="mount-height-label">Sensor Mount Height(in)</span><span class="tooltip-icon mount-height-tooltip" tabindex="0" data-tooltip="For pressure sensors: height of sensor above tank bottom (usually 0-2 inches). For ultrasonic sensors: distance from sensor to tank bottom when empty.">?</span></span><input type="number" class="sensor-mount-height" value="0" step="0.1" min="0"></label><label class="field height-field"><span><span class="height-label">Height(in)</span><span class="tooltip-icon height-tooltip" tabindex="0" data-tooltip="Maximum height or capacity of the sensor in inches. Used to set alarm thresholds relative to tank size.">?</span></span><input type="number" class="tank-height" value="120"></label></div><label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" class="stuck-detection" checked> Stuck Sensor Detection<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, the system flags a sensor as failed if it reports the same reading 10 consecutive times. Disable for sensors where readings naturally stay constant (e.g., gas pressure monitors).">?</span></label><label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" class="calibration-enabled" checked> Calibration Learning<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, you can submit manual verification readings on the Calibration page to teach the system the actual relationship between sensor output and measured values. Recommended for tank level sensors. For gas pressure or RPM sensors, disable unless you have reference gauges for comparison.">?</span></label><div class="digital-sensor-info" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-top:8px;font-size:0.9rem;color:var(--muted);"><strong>Float Switch Mode:</strong> This sensor only detects whether fluid has reached the switch position.<br><br><strong>Wiring Note:</strong> Connect the switch between the input pin and GND. The software uses an internal pull-up resistor.</div><div class="current-loop-sensor-info" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-top:8px;font-size:0.9rem;color:var(--muted);"><div class="pressure-sensor-info"><strong>Pressure Sensor(Bottom-Mounted):</strong> Measures the pressure of the liquid column above it.<br>- 4mA = Empty tank (0 pressure)<br>- 20mA = Full tank (max pressure)<br>- Sensor Range: The native pressure range (e.g., 0-5 PSI)<br>- Mount Height: Distance from sensor to tank bottom</div><div class="ultrasonic-sensor-info" style="display:none;"><strong>Ultrasonic Sensor(Top-Mounted):</strong> Measures the distance from the sensor to the liquid surface.<br>- 4mA = Full tank (liquid close to sensor)<br>- 20mA = Empty tank (liquid far from sensor)<br>- Sensor Range: The native distance range (e.g., 0-10m)<br>- Sensor Mount Height: Distance from sensor to tank bottom when empty</div></div><button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button><div class="collapsible-section alarm-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;"><span class="alarm-section-title">Alarm Thresholds</span><button type="button" class="remove-btn" onclick="removeAlarmSection(${id})" style="float:right;">Remove Alarm</button></h4><div class="form-grid alarm-thresholds-grid"><div class="field"><span><label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="high-alarm-enabled" checked> High Alarm</label></span><input type="number" class="high-alarm" value="100"></div><div class="field"><span><label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="low-alarm-enabled" checked> Low Alarm</label></span><input type="number" class="low-alarm" value="20"></div></div><div class="form-grid digital-alarm-grid" style="display:none;"><div class="field" style="grid-column:1 / -1;"><span>Trigger Condition<span class="tooltip-icon" tabindex="0" data-tooltip="Select when the alarm should trigger based on the float switch state.">?</span></span><select class="digital-trigger-state"><option value="activated">When Switch is Activated (fluid detected)</option><option value="not_activated">When Switch is NOT Activated (no fluid)</option></select></div></div></div><button type="button" class="add-section-btn add-relay-btn hidden" onclick="toggleRelaySection(${id})">+ Add Relay Control</button><div class="collapsible-section relay-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;">Relay Switch Control<button type="button" class="remove-btn" onclick="removeRelaySection(${id})" style="float:right;">Remove Relay</button></h4><div class="form-grid"><label class="field"><span>Target Client UID</span><input type="text" class="relay-target" list="relayTargetSuggestions" placeholder="dev:IMEI (optional)"></label><label class="field"><span>Trigger On</span><select class="relay-trigger"><option value="any">Any Alarm (High or Low)</option><option value="high">High Alarm Only</option><option value="low">Low Alarm Only</option></select></label><label class="field"><span>Relay Mode</span><select class="relay-mode" onchange="toggleRelayDurations(${id})"><option value="momentary">Momentary (configurable duration)</option><option value="until_clear">Stay On Until Alarm Clears</option><option value="manual_reset">Stay On Until Manual Server Reset</option></select></label><div class="field"><span>Relay Outputs</span><div style="display:flex;gap:12px;padding:8px 0;"><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-1" value="1"> R1</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-2" value="2"> R2</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-3" value="4"> R3</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-4" value="8"> R4</label></div></div><div class="relay-durations-section" style="grid-column:1 / -1;display:block;"><span style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:8px;display:block;">Momentary Duration per Relay (seconds, 0 = default 30 min):</span><div style="display:flex;gap:12px;flex-wrap:wrap;"><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R1:<input type="number" class="relay-duration-1" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R2:<input type="number" class="relay-duration-2" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R3:<input type="number" class="relay-duration-3" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R4:<input type="number" class="relay-duration-4" value="0" min="0" max="86400" style="width:70px;"></label></div></div></div></div><button type="button" class="add-section-btn add-sms-btn hidden" onclick="toggleSmsSection(${id})">+ Add SMS Alert</button><div class="collapsible-section sms-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;">SMS Alert Notifications<button type="button" class="remove-btn" onclick="removeSmsSection(${id})" style="float:right;">Remove SMS Alert</button></h4><div class="form-grid"><label class="field" style="grid-column:1 / -1;"><span>Phone Numbers<span class="tooltip-icon" tabindex="0" data-tooltip="Enter phone numbers with country code (e.g., +15551234567). Separate multiple numbers with commas.">?</span></span><input type="text" class="sms-phones" placeholder="+15551234567,+15559876543"></label><label class="field"><span>Trigger On</span><select class="sms-trigger"><option value="any">Any Alarm (High or Low)</option><option value="high">High Alarm Only</option><option value="low">Low Alarm Only</option></select></label><label class="field" style="grid-column:span 2;"><span>Custom Message (optional)</span><input type="text" class="sms-message" placeholder="Tank alarm triggered"></label></div></div></div>`;}
 /* SENSOR FUNCTIONS */
 function normalizeBulletText(root){if(!root)return;root.querySelectorAll('.current-loop-sensor-info').forEach(el=>{el.innerHTML=el.innerHTML.replace(/[^\x20-\x7E]+/g,'-');});}
 function addSensor(){const container=document.getElementById('sensorsContainer');const div=document.createElement('div');div.innerHTML=createSensorHtml(sensorCount);container.appendChild(div.firstElementChild);normalizeBulletText(div.firstElementChild);updateSensorTypeFields(sensorCount);sensorCount++;}
@@ -1476,8 +1476,8 @@ window.removeSmsSection=function(id){const card=document.getElementById(`sensor-
 window.toggleRelayDurations=function(id){const card=document.getElementById(`sensor-${id}`);const relayMode=card.querySelector('.relay-mode').value;const durationsSection=card.querySelector('.relay-durations-section');if(relayMode==='momentary'){durationsSection.style.display='block';}else{durationsSection.style.display='none';}};
 window.updateMonitorFields=function(id){const card=document.getElementById(`sensor-${id}`);const type=card.querySelector('.monitor-type').value;const numField=card.querySelector('.tank-num-field');const numFieldLabel=numField.querySelector('span');const nameLabel=card.querySelector('.name-label');const heightLabel=card.querySelector('.height-label');const sensorTypeSelect=card.querySelector('.sensor-type');const pulsesPerRevField=card.querySelector('.pulses-per-rev-field');const contentsField=card.querySelector('.contents-field');const calCheckbox=card.querySelector('.calibration-enabled');if(type==='gas'){numField.style.display='flex';numFieldLabel.textContent='Display Number (optional)';nameLabel.textContent='System Name';heightLabel.textContent='Max Pressure';pulsesPerRevField.style.display='none';contentsField.style.display='flex';sensorTypeSelect.value='2';calCheckbox.checked=false;updatePinOptions(id);}else if(type==='rpm'){numField.style.display='flex';numFieldLabel.textContent='Engine Number (optional)';nameLabel.textContent='Engine Name';heightLabel.textContent='Max RPM';pulsesPerRevField.style.display='flex';contentsField.style.display='none';sensorTypeSelect.value='3';calCheckbox.checked=false;updatePinOptions(id);}else{numField.style.display='flex';numFieldLabel.textContent='Tank Number (optional)';nameLabel.textContent='Name';heightLabel.textContent='Height(in)';pulsesPerRevField.style.display='none';contentsField.style.display='flex';calCheckbox.checked=true;}updateSensorTypeFields(id);};
 window.updatePinOptions=function(id){const card=document.getElementById(`sensor-${id}`);const typeSelect=card.querySelector('.sensor-type');const pinSelect=card.querySelector('.sensor-pin');const type=parseInt(typeSelect.value);pinSelect.innerHTML='';let options=[];if(type===2){options=expansionChannels;}else{options=optaPins;}options.forEach(opt=>{const option=document.createElement('option');option.value=opt.value;option.textContent=opt.label;pinSelect.appendChild(option);});updateSensorTypeFields(id);};
-window.updateSensorTypeFields=function(id){const card=document.getElementById(`sensor-${id}`);const type=parseInt(card.querySelector('.sensor-type').value);const heightField=card.querySelector('.height-field');const heightLabel=card.querySelector('.height-label');const heightTooltip=card.querySelector('.height-tooltip');const digitalInfoBox=card.querySelector('.digital-sensor-info');const currentLoopInfoBox=card.querySelector('.current-loop-sensor-info');const alarmThresholdsGrid=card.querySelector('.alarm-thresholds-grid');const digitalAlarmGrid=card.querySelector('.digital-alarm-grid');const alarmSectionTitle=card.querySelector('.alarm-section-title');const pulsesPerRevField=card.querySelector('.pulses-per-rev-field');const switchModeField=card.querySelector('.switch-mode-field');const currentLoopTypeField=card.querySelector('.current-loop-type-field');const sensorMountHeightField=card.querySelector('.sensor-mount-height-field');const sensorRangeField=card.querySelector('.sensor-range-field');if(type===0){heightField.style.display='none';digitalInfoBox.style.display='block';currentLoopInfoBox.style.display='none';switchModeField.style.display='flex';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';alarmThresholdsGrid.style.display='none';digitalAlarmGrid.style.display='grid';alarmSectionTitle.textContent='Float Switch Alarm';pulsesPerRevField.style.display='none';}else if(type===2){const monitorType=card.querySelector('.monitor-type').value;digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='block';switchModeField.style.display='none';const loopTypeSelect=card.querySelector('.current-loop-type');if(monitorType==='tank'){heightField.style.display='flex';heightLabel.textContent='Tank Height(in)';heightTooltip.setAttribute('data-tooltip','Maximum height of liquid in the tank in inches.');currentLoopTypeField.style.display='flex';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor(Bottom-Mounted)</option><option value="ultrasonic">Ultrasonic Sensor(Top-Mounted)</option>';sensorMountHeightField.style.display='flex';sensorRangeField.style.display='flex';}else if(monitorType==='gas'){heightField.style.display='flex';heightLabel.textContent='Max Pressure(PSI)';heightTooltip.setAttribute('data-tooltip','Maximum expected pressure for alarm threshold reference.');currentLoopTypeField.style.display='none';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor</option>';loopTypeSelect.value='pressure';sensorMountHeightField.style.display='none';sensorRangeField.style.display='flex';}else{heightField.style.display='flex';currentLoopTypeField.style.display='flex';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor</option>';loopTypeSelect.value='pressure';sensorMountHeightField.style.display='none';sensorRangeField.style.display='flex';}alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='none';updateCurrentLoopFields(id);}else if(type===3){heightField.style.display='flex';heightLabel.textContent='Max RPM';heightTooltip.setAttribute('data-tooltip','Maximum expected RPM value.');digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='none';switchModeField.style.display='none';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='flex';}else{heightField.style.display='flex';heightLabel.textContent='Height(in)';heightTooltip.setAttribute('data-tooltip','Maximum height or capacity of the tank in inches.');digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='none';switchModeField.style.display='none';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='none';}};
-window.updateCurrentLoopFields=function(id){const card=document.getElementById(`sensor-${id}`);const currentLoopType=card.querySelector('.current-loop-type').value;const currentLoopInfoBox=card.querySelector('.current-loop-sensor-info');const pressureInfo=currentLoopInfoBox.querySelector('.pressure-sensor-info');const ultrasonicInfo=currentLoopInfoBox.querySelector('.ultrasonic-sensor-info');const mountHeightLabel=card.querySelector('.mount-height-label');const mountHeightTooltip=card.querySelector('.mount-height-tooltip');const heightLabel=card.querySelector('.height-label');const heightTooltip=card.querySelector('.height-tooltip');const sensorRangeLabel=card.querySelector('.sensor-range-label');const sensorRangeTooltip=card.querySelector('.sensor-range-tooltip');const sensorRangeUnit=card.querySelector('.sensor-range-unit');const sensorRangeMax=card.querySelector('.sensor-range-max');if(currentLoopType==='ultrasonic'){pressureInfo.style.display='none';ultrasonicInfo.style.display='block';mountHeightLabel.textContent='Sensor Mount Height(in)';mountHeightTooltip.setAttribute('data-tooltip','Distance from the ultrasonic sensor to the tank bottom when empty.');heightLabel.textContent='Tank Height(in)';heightTooltip.setAttribute('data-tooltip','Maximum liquid height in the tank.');sensorRangeLabel.textContent='Sensor Range';sensorRangeTooltip.setAttribute('data-tooltip','Native distance range of the ultrasonic sensor (e.g., 0-10m).');sensorRangeUnit.value='m';sensorRangeMax.value='10';}else{const monitorType=card.querySelector('.monitor-type').value;pressureInfo.style.display='block';ultrasonicInfo.style.display='none';if(monitorType==='gas'){heightLabel.textContent='Max Pressure(PSI)';heightTooltip.setAttribute('data-tooltip','Maximum expected pressure for alarm threshold reference.');sensorRangeTooltip.setAttribute('data-tooltip','Native pressure range of the sensor that maps to 4-20mA output.');}else{mountHeightLabel.textContent='Sensor Mount Height(in)';mountHeightTooltip.setAttribute('data-tooltip','Height of the pressure sensor above the tank bottom (usually 0-2 inches).');heightLabel.textContent='Max Measured Height(in)';heightTooltip.setAttribute('data-tooltip','Maximum liquid height the sensor can measure.');sensorRangeTooltip.setAttribute('data-tooltip','Native pressure range of the sensor (e.g., 0-5 PSI).');}sensorRangeLabel.textContent='Sensor Range';sensorRangeUnit.value='PSI';sensorRangeMax.value='5';}};
+window.updateSensorTypeFields=function(id){const card=document.getElementById(`sensor-${id}`);const type=parseInt(card.querySelector('.sensor-type').value);const heightField=card.querySelector('.height-field');const heightLabel=card.querySelector('.height-label');const heightTooltip=card.querySelector('.height-tooltip');const digitalInfoBox=card.querySelector('.digital-sensor-info');const currentLoopInfoBox=card.querySelector('.current-loop-sensor-info');const alarmThresholdsGrid=card.querySelector('.alarm-thresholds-grid');const digitalAlarmGrid=card.querySelector('.digital-alarm-grid');const alarmSectionTitle=card.querySelector('.alarm-section-title');const pulsesPerRevField=card.querySelector('.pulses-per-rev-field');const switchModeField=card.querySelector('.switch-mode-field');const currentLoopTypeField=card.querySelector('.current-loop-type-field');const sensorMountHeightField=card.querySelector('.sensor-mount-height-field');const sensorRangeField=card.querySelector('.sensor-range-field');if(type===0){heightField.style.display='none';digitalInfoBox.style.display='block';currentLoopInfoBox.style.display='none';switchModeField.style.display='flex';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';alarmThresholdsGrid.style.display='none';digitalAlarmGrid.style.display='grid';alarmSectionTitle.textContent='Float Switch Alarm';pulsesPerRevField.style.display='none';}else if(type===2){const monitorType=card.querySelector('.monitor-type').value;digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='block';switchModeField.style.display='none';const loopTypeSelect=card.querySelector('.current-loop-type');if(monitorType==='tank'){heightField.style.display='flex';heightLabel.textContent='Tank Height(in)';heightTooltip.setAttribute('data-tooltip','Maximum height of liquid in the sensor in inches.');currentLoopTypeField.style.display='flex';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor(Bottom-Mounted)</option><option value="ultrasonic">Ultrasonic Sensor(Top-Mounted)</option>';sensorMountHeightField.style.display='flex';sensorRangeField.style.display='flex';}else if(monitorType==='gas'){heightField.style.display='flex';heightLabel.textContent='Max Pressure(PSI)';heightTooltip.setAttribute('data-tooltip','Maximum expected pressure for alarm threshold reference.');currentLoopTypeField.style.display='none';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor</option>';loopTypeSelect.value='pressure';sensorMountHeightField.style.display='none';sensorRangeField.style.display='flex';}else{heightField.style.display='flex';currentLoopTypeField.style.display='flex';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor</option>';loopTypeSelect.value='pressure';sensorMountHeightField.style.display='none';sensorRangeField.style.display='flex';}alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='none';updateCurrentLoopFields(id);}else if(type===3){heightField.style.display='flex';heightLabel.textContent='Max RPM';heightTooltip.setAttribute('data-tooltip','Maximum expected RPM value.');digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='none';switchModeField.style.display='none';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='flex';}else{heightField.style.display='flex';heightLabel.textContent='Height(in)';heightTooltip.setAttribute('data-tooltip','Maximum height or capacity of the sensor in inches.');digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='none';switchModeField.style.display='none';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='none';}};
+window.updateCurrentLoopFields=function(id){const card=document.getElementById(`sensor-${id}`);const currentLoopType=card.querySelector('.current-loop-type').value;const currentLoopInfoBox=card.querySelector('.current-loop-sensor-info');const pressureInfo=currentLoopInfoBox.querySelector('.pressure-sensor-info');const ultrasonicInfo=currentLoopInfoBox.querySelector('.ultrasonic-sensor-info');const mountHeightLabel=card.querySelector('.mount-height-label');const mountHeightTooltip=card.querySelector('.mount-height-tooltip');const heightLabel=card.querySelector('.height-label');const heightTooltip=card.querySelector('.height-tooltip');const sensorRangeLabel=card.querySelector('.sensor-range-label');const sensorRangeTooltip=card.querySelector('.sensor-range-tooltip');const sensorRangeUnit=card.querySelector('.sensor-range-unit');const sensorRangeMax=card.querySelector('.sensor-range-max');if(currentLoopType==='ultrasonic'){pressureInfo.style.display='none';ultrasonicInfo.style.display='block';mountHeightLabel.textContent='Sensor Mount Height(in)';mountHeightTooltip.setAttribute('data-tooltip','Distance from the ultrasonic sensor to the sensor bottom when empty.');heightLabel.textContent='Tank Height(in)';heightTooltip.setAttribute('data-tooltip','Maximum liquid height in the sensor.');sensorRangeLabel.textContent='Sensor Range';sensorRangeTooltip.setAttribute('data-tooltip','Native distance range of the ultrasonic sensor (e.g., 0-10m).');sensorRangeUnit.value='m';sensorRangeMax.value='10';}else{const monitorType=card.querySelector('.monitor-type').value;pressureInfo.style.display='block';ultrasonicInfo.style.display='none';if(monitorType==='gas'){heightLabel.textContent='Max Pressure(PSI)';heightTooltip.setAttribute('data-tooltip','Maximum expected pressure for alarm threshold reference.');sensorRangeTooltip.setAttribute('data-tooltip','Native pressure range of the sensor that maps to 4-20mA output.');}else{mountHeightLabel.textContent='Sensor Mount Height(in)';mountHeightTooltip.setAttribute('data-tooltip','Height of the pressure sensor above the sensor bottom (usually 0-2 inches).');heightLabel.textContent='Max Measured Height(in)';heightTooltip.setAttribute('data-tooltip','Maximum liquid height the sensor can measure.');sensorRangeTooltip.setAttribute('data-tooltip','Native pressure range of the sensor (e.g., 0-5 PSI).');}sensorRangeLabel.textContent='Sensor Range';sensorRangeUnit.value='PSI';sensorRangeMax.value='5';}};
 document.getElementById('addSensorBtn').addEventListener('click',addSensor);
 /* INPUTS */
 function addInput(){const id=inputIdCounter++;const container=document.getElementById('inputsContainer');const card=document.createElement('div');card.className='sensor-card';card.id=`input-${id}`;card.innerHTML=`<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><h4 style="margin:0;font-size:1rem;">Input ${id+1}</h4><button type="button" class="remove-btn" onclick="removeInput(${id})">Remove</button></div><div class="form-grid"><label class="field"><span>Input Name</span><input type="text" class="input-name" placeholder="Clear Button" value="Clear Button"></label><label class="field"><span>Pin Number<span class="tooltip-icon" tabindex="0" data-tooltip="Arduino Opta pin number for the input.">?</span></span><input type="number" class="input-pin" value="0" min="0" max="99"></label><label class="field"><span>Input Mode<span class="tooltip-icon" tabindex="0" data-tooltip="Active LOW: Button connects pin to GND, uses internal pull-up. Active HIGH: Button connects pin to VCC, requires external pull-down.">?</span></span><select class="input-mode">${inputModes.map(m=>`<option value="${m.value}">${m.label}</option>`).join('')}</select></label><label class="field"><span>Action<span class="tooltip-icon" tabindex="0" data-tooltip="What happens when this input is activated.">?</span></span><select class="input-action">${inputActions.map(a=>`<option value="${a.value}">${a.label}</option>`).join('')}</select></label></div>`;container.appendChild(card);}
@@ -1485,9 +1485,9 @@ window.removeInput=function(id){const card=document.getElementById(`input-${id}`
 document.getElementById('addInputBtn').addEventListener('click',addInput);
 /* CONFIG COLLECTION */
 function sensorKeyFromValue(value){switch(value){case 0:return 'digital';case 2:return 'current';case 3:return 'rpm';default:return 'analog';}}
-function collectConfig(){const sMinutes=Math.max(1,Math.min(1440,parseInt(document.getElementById('sampleMinutes').value,10)||30));const time=(document.getElementById('reportTime').value||'05:00').split(':');const reportHour=parseInt(time[0])||5;const reportMinute=parseInt(time[1])||0;const ps=document.getElementById('powerSource').value||'grid';const hasVin=ps.includes('vin');const isSolarOnly=ps.startsWith('solar_nobat');const cfg={productUid:document.getElementById('productUid').value.trim(),deviceUid:(document.getElementById('clientUid').value||'').trim(),site:document.getElementById('siteName').value.trim(),deviceLabel:document.getElementById('deviceLabel').value.trim()||'Unconfigured Client',clientFleet:(document.getElementById('clientFleet').value||'').trim(),serverFleet:document.getElementById('serverFleet').value.trim()||'tankalarm-server',sampleSeconds:sMinutes*60,reportHour:reportHour,reportMinute:reportMinute,dailyEmail:document.getElementById('dailyEmail').value.trim(),powerSource:ps,solarPowered:ps.includes('solar'),mpptEnabled:ps.includes('mppt'),solarCharger:{enabled:ps==='solar_modbus_mppt'},vinMonitor:{enabled:hasVin,pin:hasVin?parseInt(document.getElementById('vinPin').value)||0:0,r1Kohm:hasVin?parseFloat(document.getElementById('vinR1').value)||22:22,r2Kohm:hasVin?parseFloat(document.getElementById('vinR2').value)||47:47},solarOnlyConfig:{enabled:isSolarOnly,startupDebounceVoltage:(isSolarOnly&&hasVin)?parseFloat(document.getElementById('solarOnlyDebounceV').value)||10:10,startupDebounceSec:(isSolarOnly&&hasVin)?parseInt(document.getElementById('solarOnlyDebounceSec').value)||30:30,startupWarmupSec:(isSolarOnly&&!hasVin)?parseInt(document.getElementById('solarOnlyWarmupSec').value)||60:60,sensorGateVoltage:(isSolarOnly&&hasVin)?parseFloat(document.getElementById('solarOnlySensorGateV').value)||11:11,sunsetVoltage:(isSolarOnly&&hasVin)?parseFloat(document.getElementById('solarOnlySunsetV').value)||10:10,sunsetConfirmSec:isSolarOnly?parseInt(document.getElementById('solarOnlySunsetSec').value)||120:120,opportunisticReportHours:isSolarOnly?parseInt(document.getElementById('solarOnlyReportHours').value)||20:20,batteryFailureFallback:(!isSolarOnly&&ps.includes('solar'))?!!document.getElementById('solarOnlyBatFail').checked:false,batteryFailureThreshold:parseInt(document.getElementById('solarOnlyBatFailCount').value)||10},tanks:[],clearButtonPin:-1,clearButtonActiveHigh:false};
+function collectConfig(){const sMinutes=Math.max(1,Math.min(1440,parseInt(document.getElementById('sampleMinutes').value,10)||30));const time=(document.getElementById('reportTime').value||'05:00').split(':');const reportHour=parseInt(time[0])||5;const reportMinute=parseInt(time[1])||0;const ps=document.getElementById('powerSource').value||'grid';const hasVin=ps.includes('vin');const isSolarOnly=ps.startsWith('solar_nobat');const cfg={productUid:document.getElementById('productUid').value.trim(),deviceUid:(document.getElementById('clientUid').value||'').trim(),site:document.getElementById('siteName').value.trim(),deviceLabel:document.getElementById('deviceLabel').value.trim()||'Unconfigured Client',clientFleet:(document.getElementById('clientFleet').value||'').trim(),serverFleet:document.getElementById('serverFleet').value.trim()||'tankalarm-server',sampleSeconds:sMinutes*60,reportHour:reportHour,reportMinute:reportMinute,dailyEmail:document.getElementById('dailyEmail').value.trim(),powerSource:ps,solarPowered:ps.includes('solar'),mpptEnabled:ps.includes('mppt'),solarCharger:{enabled:ps==='solar_modbus_mppt'},vinMonitor:{enabled:hasVin,pin:hasVin?parseInt(document.getElementById('vinPin').value)||0:0,r1Kohm:hasVin?parseFloat(document.getElementById('vinR1').value)||22:22,r2Kohm:hasVin?parseFloat(document.getElementById('vinR2').value)||47:47},solarOnlyConfig:{enabled:isSolarOnly,startupDebounceVoltage:(isSolarOnly&&hasVin)?parseFloat(document.getElementById('solarOnlyDebounceV').value)||10:10,startupDebounceSec:(isSolarOnly&&hasVin)?parseInt(document.getElementById('solarOnlyDebounceSec').value)||30:30,startupWarmupSec:(isSolarOnly&&!hasVin)?parseInt(document.getElementById('solarOnlyWarmupSec').value)||60:60,sensorGateVoltage:(isSolarOnly&&hasVin)?parseFloat(document.getElementById('solarOnlySensorGateV').value)||11:11,sunsetVoltage:(isSolarOnly&&hasVin)?parseFloat(document.getElementById('solarOnlySunsetV').value)||10:10,sunsetConfirmSec:isSolarOnly?parseInt(document.getElementById('solarOnlySunsetSec').value)||120:120,opportunisticReportHours:isSolarOnly?parseInt(document.getElementById('solarOnlyReportHours').value)||20:20,batteryFailureFallback:(!isSolarOnly&&ps.includes('solar'))?!!document.getElementById('solarOnlyBatFail').checked:false,batteryFailureThreshold:parseInt(document.getElementById('solarOnlyBatFailCount').value)||10},sensors:[],clearButtonPin:-1,clearButtonActiveHigh:false};
 const sensorCards=document.querySelectorAll('#sensorsContainer .sensor-card');if(!sensorCards.length){showToast('Add at least one sensor',true);return null;}
-sensorCards.forEach((card,index)=>{const monitorType=card.querySelector('.monitor-type').value;const type=parseInt(card.querySelector('.sensor-type').value);const pin=parseInt(card.querySelector('.sensor-pin').value);let userNum=parseInt(card.querySelector('.tank-num').value)||0;let name=card.querySelector('.tank-name').value;const contents=card.querySelector('.tank-contents')?.value||'';if(monitorType==='gas'){if(!name)name=`Gas System ${userNum||index+1}`;}else if(monitorType==='rpm'){if(!name)name=`Engine ${userNum||index+1}`;}else{if(!name)name=`Tank ${userNum||index+1}`;}const sensor=sensorKeyFromValue(type);const pulsesPerRev=Math.max(1,Math.min(255,parseInt(card.querySelector('.pulses-per-rev').value)||1));const switchMode=card.querySelector('.switch-mode').value;const alarmSectionVisible=card.querySelector('.alarm-section').classList.contains('visible');const highAlarmEnabled=card.querySelector('.high-alarm-enabled').checked;const lowAlarmEnabled=card.querySelector('.low-alarm-enabled').checked;const highAlarmValue=card.querySelector('.high-alarm').value;const lowAlarmValue=card.querySelector('.low-alarm').value;const tank={id:String.fromCharCode(65+index),monitorType:monitorType,name:name,contents:contents,number:index+1,userNumber:userNum,sensor:sensor,primaryPin:sensor==='current'?0:pin,secondaryPin:-1,loopChannel:sensor==='current'?pin:-1,rpmPin:sensor==='rpm'?pin:-1,maxValue:sensor==='digital'?1:(parseFloat(card.querySelector('.tank-height').value)||120),hysteresis:sensor==='digital'?0:2.0,daily:true,upload:true,stuckDetection:card.querySelector('.stuck-detection').checked,calibrationEnabled:card.querySelector('.calibration-enabled').checked};if(sensor==='digital'){tank.digitalSwitchMode=switchMode;}let sUnit='';if(sensor==='current'){const currentLoopType=card.querySelector('.current-loop-type').value;const sensorMountHeight=parseFloat(card.querySelector('.sensor-mount-height').value)||0;const sMin=parseFloat(card.querySelector('.sensor-range-min').value)||0;const sMax=parseFloat(card.querySelector('.sensor-range-max').value)||5;sUnit=card.querySelector('.sensor-range-unit').value||'PSI';tank.currentLoopType=currentLoopType;tank.sensorMountHeight=sensorMountHeight;tank.sensorRangeMin=sMin;tank.sensorRangeMax=sMax;tank.sensorRangeUnit=sUnit;}if(monitorType==='gas'){tank.measurementUnit=sUnit?sUnit.toLowerCase():'psi';}else if(monitorType==='rpm'){tank.measurementUnit='rpm';}else if(monitorType==='flow'){tank.measurementUnit='gpm';}if(alarmSectionVisible){if(sensor==='digital'){const digitalTriggerState=card.querySelector('.digital-trigger-state').value;tank.digitalTrigger=digitalTriggerState;if(digitalTriggerState==='activated'){tank.highAlarm=1;}else{tank.lowAlarm=0;}tank.alarmSms=true;}else if(highAlarmEnabled||lowAlarmEnabled){if(highAlarmEnabled&&highAlarmValue!==''){const v=parseFloat(highAlarmValue);if(!isNaN(v))tank.highAlarm=v;}if(lowAlarmEnabled&&lowAlarmValue!==''){const v=parseFloat(lowAlarmValue);if(!isNaN(v))tank.lowAlarm=v;}tank.alarmSms=true;}else{tank.alarmSms=false;}}else{tank.alarmSms=false;}if(sensor==='rpm'){tank.pulsesPerRev=pulsesPerRev;}const relaySectionVisible=card.querySelector('.relay-section').classList.contains('visible');if(relaySectionVisible){let relayMask=0;['relay-1','relay-2','relay-3','relay-4'].forEach(cls=>{const cb=card.querySelector('.'+cls);if(cb.checked)relayMask|=parseInt(cb.value);});const relayTarget=card.querySelector('.relay-target').value.trim();const relayTrigger=card.querySelector('.relay-trigger').value;const relayMode=card.querySelector('.relay-mode').value;if(relayTarget){tank.relayTargetClient=relayTarget;tank.relayMask=relayMask;tank.relayTrigger=relayTrigger;tank.relayMode=relayMode;if(relayMode==='momentary'){tank.relayMomentaryDurations=[parseInt(card.querySelector('.relay-duration-1').value)||0,parseInt(card.querySelector('.relay-duration-2').value)||0,parseInt(card.querySelector('.relay-duration-3').value)||0,parseInt(card.querySelector('.relay-duration-4').value)||0];}}}const smsSectionVisible=card.querySelector('.sms-section').classList.contains('visible');if(smsSectionVisible){const smsPhones=card.querySelector('.sms-phones').value.trim();const smsTrigger=card.querySelector('.sms-trigger').value;const smsMessage=card.querySelector('.sms-message').value.trim();if(smsPhones){const phoneArray=smsPhones.split(',').map(p=>p.trim()).filter(p=>p.length>0);if(phoneArray.length>0){tank.smsAlert={phones:phoneArray,trigger:smsTrigger,message:smsMessage||'Tank alarm triggered'};}}}cfg.tanks.push(tank);});
+sensorCards.forEach((card,index)=>{const monitorType=card.querySelector('.monitor-type').value;const type=parseInt(card.querySelector('.sensor-type').value);const pin=parseInt(card.querySelector('.sensor-pin').value);let userNum=parseInt(card.querySelector('.tank-num').value)||0;let name=card.querySelector('.tank-name').value;const contents=card.querySelector('.tank-contents')?.value||'';if(monitorType==='gas'){if(!name)name=`Gas System ${userNum||index+1}`;}else if(monitorType==='rpm'){if(!name)name=`Engine ${userNum||index+1}`;}else{if(!name)name=`Tank ${userNum||index+1}`;}const sensor=sensorKeyFromValue(type);const pulsesPerRev=Math.max(1,Math.min(255,parseInt(card.querySelector('.pulses-per-rev').value)||1));const switchMode=card.querySelector('.switch-mode').value;const alarmSectionVisible=card.querySelector('.alarm-section').classList.contains('visible');const highAlarmEnabled=card.querySelector('.high-alarm-enabled').checked;const lowAlarmEnabled=card.querySelector('.low-alarm-enabled').checked;const highAlarmValue=card.querySelector('.high-alarm').value;const lowAlarmValue=card.querySelector('.low-alarm').value;const tank={id:String.fromCharCode(65+index),monitorType:monitorType,name:name,contents:contents,number:index+1,userNumber:userNum,sensor:sensor,primaryPin:sensor==='current'?0:pin,secondaryPin:-1,loopChannel:sensor==='current'?pin:-1,rpmPin:sensor==='rpm'?pin:-1,maxValue:sensor==='digital'?1:(parseFloat(card.querySelector('.tank-height').value)||120),hysteresis:sensor==='digital'?0:2.0,daily:true,upload:true,stuckDetection:card.querySelector('.stuck-detection').checked,calibrationEnabled:card.querySelector('.calibration-enabled').checked};if(sensor==='digital'){tank.digitalSwitchMode=switchMode;}let sUnit='';if(sensor==='current'){const currentLoopType=card.querySelector('.current-loop-type').value;const sensorMountHeight=parseFloat(card.querySelector('.sensor-mount-height').value)||0;const sMin=parseFloat(card.querySelector('.sensor-range-min').value)||0;const sMax=parseFloat(card.querySelector('.sensor-range-max').value)||5;sUnit=card.querySelector('.sensor-range-unit').value||'PSI';tank.currentLoopType=currentLoopType;tank.sensorMountHeight=sensorMountHeight;tank.sensorRangeMin=sMin;tank.sensorRangeMax=sMax;tank.sensorRangeUnit=sUnit;}if(monitorType==='gas'){tank.measurementUnit=sUnit?sUnit.toLowerCase():'psi';}else if(monitorType==='rpm'){tank.measurementUnit='rpm';}else if(monitorType==='flow'){tank.measurementUnit='gpm';}if(alarmSectionVisible){if(sensor==='digital'){const digitalTriggerState=card.querySelector('.digital-trigger-state').value;tank.digitalTrigger=digitalTriggerState;if(digitalTriggerState==='activated'){tank.highAlarm=1;}else{tank.lowAlarm=0;}tank.alarmSms=true;}else if(highAlarmEnabled||lowAlarmEnabled){if(highAlarmEnabled&&highAlarmValue!==''){const v=parseFloat(highAlarmValue);if(!isNaN(v))tank.highAlarm=v;}if(lowAlarmEnabled&&lowAlarmValue!==''){const v=parseFloat(lowAlarmValue);if(!isNaN(v))tank.lowAlarm=v;}tank.alarmSms=true;}else{tank.alarmSms=false;}}else{tank.alarmSms=false;}if(sensor==='rpm'){tank.pulsesPerRev=pulsesPerRev;}const relaySectionVisible=card.querySelector('.relay-section').classList.contains('visible');if(relaySectionVisible){let relayMask=0;['relay-1','relay-2','relay-3','relay-4'].forEach(cls=>{const cb=card.querySelector('.'+cls);if(cb.checked)relayMask|=parseInt(cb.value);});const relayTarget=card.querySelector('.relay-target').value.trim();const relayTrigger=card.querySelector('.relay-trigger').value;const relayMode=card.querySelector('.relay-mode').value;if(relayTarget){tank.relayTargetClient=relayTarget;tank.relayMask=relayMask;tank.relayTrigger=relayTrigger;tank.relayMode=relayMode;if(relayMode==='momentary'){tank.relayMomentaryDurations=[parseInt(card.querySelector('.relay-duration-1').value)||0,parseInt(card.querySelector('.relay-duration-2').value)||0,parseInt(card.querySelector('.relay-duration-3').value)||0,parseInt(card.querySelector('.relay-duration-4').value)||0];}}}const smsSectionVisible=card.querySelector('.sms-section').classList.contains('visible');if(smsSectionVisible){const smsPhones=card.querySelector('.sms-phones').value.trim();const smsTrigger=card.querySelector('.sms-trigger').value;const smsMessage=card.querySelector('.sms-message').value.trim();if(smsPhones){const phoneArray=smsPhones.split(',').map(p=>p.trim()).filter(p=>p.length>0);if(phoneArray.length>0){tank.smsAlert={phones:phoneArray,trigger:smsTrigger,message:smsMessage||'Tank alarm triggered'};}}}cfg.sensors.push(tank);});
 const inputCards=document.querySelectorAll('#inputsContainer .sensor-card');let clearButtonConfigured=false;inputCards.forEach(card=>{const inputAction=card.querySelector('.input-action').value;if(inputAction==='clear_relays'&&!clearButtonConfigured){cfg.clearButtonPin=parseInt(card.querySelector('.input-pin').value)||0;cfg.clearButtonActiveHigh=(card.querySelector('.input-mode').value==='active_high');clearButtonConfigured=true;}});return cfg;}
 /* SUBMIT & DOWNLOAD */
 const retryBtn=document.getElementById('retryConfigBtn');
@@ -1500,7 +1500,7 @@ if(syncBtn)syncBtn.addEventListener('click',requestSync);
 if(els.form)els.form.addEventListener('submit',submitConfig);
 document.getElementById('downloadBtn').addEventListener('click',()=>{const cfg=collectConfig();if(!cfg)return;const blob=new Blob([JSON.stringify(cfg,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='client_config.json';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);});
 /* LOAD CONFIG */
-window.loadConfig=function(c){if(els.siteName)els.siteName.value=c.site||'';if(els.clientUid)els.clientUid.value=c.deviceUid||'';if(els.deviceLabel)els.deviceLabel.value=c.deviceLabel||'';if(els.clientFleet)els.clientFleet.value=c.clientFleet||'';if(els.productUid)els.productUid.value=c.productUid||'';if(els.sampleMinutes)els.sampleMinutes.value=(c.sampleSeconds||1800)/60;if(els.dailyEmail)els.dailyEmail.value=c.dailyEmail||'';const h=String(c.reportHour||5).padStart(2,'0');const m=String(c.reportMinute||0).padStart(2,'0');if(els.reportTime)els.reportTime.value=`${h}:${m}`;if(els.powerSource)els.powerSource.value=c.powerSource||'grid';updatePowerConfigInfo();if(c.vinMonitor){if(c.vinMonitor.pin!==undefined)document.getElementById('vinPin').value=c.vinMonitor.pin;if(c.vinMonitor.r1Kohm!==undefined)document.getElementById('vinR1').value=c.vinMonitor.r1Kohm;if(c.vinMonitor.r2Kohm!==undefined)document.getElementById('vinR2').value=c.vinMonitor.r2Kohm;updateVinCalc();}if(c.solarOnlyConfig){const so=c.solarOnlyConfig;if(so.startupDebounceVoltage!==undefined)document.getElementById('solarOnlyDebounceV').value=so.startupDebounceVoltage;if(so.startupDebounceSec!==undefined)document.getElementById('solarOnlyDebounceSec').value=so.startupDebounceSec;if(so.startupWarmupSec!==undefined)document.getElementById('solarOnlyWarmupSec').value=so.startupWarmupSec;if(so.sensorGateVoltage!==undefined)document.getElementById('solarOnlySensorGateV').value=so.sensorGateVoltage;if(so.sunsetVoltage!==undefined)document.getElementById('solarOnlySunsetV').value=so.sunsetVoltage;if(so.sunsetConfirmSec!==undefined)document.getElementById('solarOnlySunsetSec').value=so.sunsetConfirmSec;if(so.opportunisticReportHours!==undefined)document.getElementById('solarOnlyReportHours').value=so.opportunisticReportHours;if(so.batteryFailureFallback!==undefined)document.getElementById('solarOnlyBatFail').checked=so.batteryFailureFallback;if(so.batteryFailureThreshold!==undefined)document.getElementById('solarOnlyBatFailCount').value=so.batteryFailureThreshold;}document.getElementById('sensorsContainer').innerHTML='';sensorCount=0;if(c.tanks)c.tanks.forEach(t=>{addSensor();const card=document.getElementById(`sensor-${sensorCount-1}`);if(card){const monitorSel=card.querySelector('.monitor-type');if(t.monitorType){monitorSel.value=t.monitorType;}else if(t.name&&t.name.match(/gas/i)){monitorSel.value='gas';}else if(t.sensor==='rpm'){monitorSel.value='rpm';}else{monitorSel.value='tank';}updateMonitorFields(sensorCount-1);card.querySelector('.tank-num').value=t.userNumber||'';card.querySelector('.tank-name').value=t.name||'';card.querySelector('.tank-contents').value=t.contents||'';card.querySelector('.tank-height').value=t.maxValue||120;const sensorVal=t.sensor==='digital'?0:(t.sensor==='current'?2:(t.sensor==='rpm'?3:1));card.querySelector('.sensor-type').value=sensorVal;updatePinOptions(sensorCount-1);if(t.sensor==='current'){card.querySelector('.sensor-pin').value=t.loopChannel||0;}else if(t.sensor==='rpm'){card.querySelector('.sensor-pin').value=t.rpmPin||0;}else{card.querySelector('.sensor-pin').value=t.primaryPin||0;}if(t.digitalSwitchMode)card.querySelector('.switch-mode').value=t.digitalSwitchMode;if(t.pulsesPerRev)card.querySelector('.pulses-per-rev').value=t.pulsesPerRev;if(t.currentLoopType)card.querySelector('.current-loop-type').value=t.currentLoopType;if(t.sensorMountHeight!==undefined)card.querySelector('.sensor-mount-height').value=t.sensorMountHeight;if(t.highAlarm!==undefined||t.lowAlarm!==undefined||t.alarmSms){toggleAlarmSection(sensorCount-1);if(t.highAlarm!==undefined){card.querySelector('.high-alarm').value=t.highAlarm;card.querySelector('.high-alarm-enabled').checked=true;}if(t.lowAlarm!==undefined){card.querySelector('.low-alarm').value=t.lowAlarm;card.querySelector('.low-alarm-enabled').checked=true;}}if(t.relayTargetClient){toggleRelaySection(sensorCount-1);card.querySelector('.relay-target').value=t.relayTargetClient;if(t.relayTrigger)card.querySelector('.relay-trigger').value=t.relayTrigger;if(t.relayMode)card.querySelector('.relay-mode').value=t.relayMode;if(t.relayMask){if(t.relayMask&1)card.querySelector('.relay-1').checked=true;if(t.relayMask&2)card.querySelector('.relay-2').checked=true;if(t.relayMask&4)card.querySelector('.relay-3').checked=true;if(t.relayMask&8)card.querySelector('.relay-4').checked=true;}if(t.relayMomentaryDurations){card.querySelector('.relay-duration-1').value=t.relayMomentaryDurations[0]||0;card.querySelector('.relay-duration-2').value=t.relayMomentaryDurations[1]||0;card.querySelector('.relay-duration-3').value=t.relayMomentaryDurations[2]||0;card.querySelector('.relay-duration-4').value=t.relayMomentaryDurations[3]||0;}toggleRelayDurations(sensorCount-1);}if(t.smsAlert&&t.smsAlert.phones){toggleSmsSection(sensorCount-1);card.querySelector('.sms-phones').value=t.smsAlert.phones.join(',');if(t.smsAlert.trigger)card.querySelector('.sms-trigger').value=t.smsAlert.trigger;if(t.smsAlert.message)card.querySelector('.sms-message').value=t.smsAlert.message;}updateSensorTypeFields(sensorCount-1);if(t.sensorRangeMin!==undefined)card.querySelector('.sensor-range-min').value=t.sensorRangeMin;if(t.sensorRangeMax!==undefined)card.querySelector('.sensor-range-max').value=t.sensorRangeMax;if(t.sensorRangeUnit)card.querySelector('.sensor-range-unit').value=t.sensorRangeUnit;if(t.stuckDetection!==undefined)card.querySelector('.stuck-detection').checked=t.stuckDetection;if(t.calibrationEnabled!==undefined)card.querySelector('.calibration-enabled').checked=t.calibrationEnabled;}});showToast('Configuration loaded');};
+window.loadConfig=function(c){if(els.siteName)els.siteName.value=c.site||'';if(els.clientUid)els.clientUid.value=c.deviceUid||'';if(els.deviceLabel)els.deviceLabel.value=c.deviceLabel||'';if(els.clientFleet)els.clientFleet.value=c.clientFleet||'';if(els.productUid)els.productUid.value=c.productUid||'';if(els.sampleMinutes)els.sampleMinutes.value=(c.sampleSeconds||1800)/60;if(els.dailyEmail)els.dailyEmail.value=c.dailyEmail||'';const h=String(c.reportHour||5).padStart(2,'0');const m=String(c.reportMinute||0).padStart(2,'0');if(els.reportTime)els.reportTime.value=`${h}:${m}`;if(els.powerSource)els.powerSource.value=c.powerSource||'grid';updatePowerConfigInfo();if(c.vinMonitor){if(c.vinMonitor.pin!==undefined)document.getElementById('vinPin').value=c.vinMonitor.pin;if(c.vinMonitor.r1Kohm!==undefined)document.getElementById('vinR1').value=c.vinMonitor.r1Kohm;if(c.vinMonitor.r2Kohm!==undefined)document.getElementById('vinR2').value=c.vinMonitor.r2Kohm;updateVinCalc();}if(c.solarOnlyConfig){const so=c.solarOnlyConfig;if(so.startupDebounceVoltage!==undefined)document.getElementById('solarOnlyDebounceV').value=so.startupDebounceVoltage;if(so.startupDebounceSec!==undefined)document.getElementById('solarOnlyDebounceSec').value=so.startupDebounceSec;if(so.startupWarmupSec!==undefined)document.getElementById('solarOnlyWarmupSec').value=so.startupWarmupSec;if(so.sensorGateVoltage!==undefined)document.getElementById('solarOnlySensorGateV').value=so.sensorGateVoltage;if(so.sunsetVoltage!==undefined)document.getElementById('solarOnlySunsetV').value=so.sunsetVoltage;if(so.sunsetConfirmSec!==undefined)document.getElementById('solarOnlySunsetSec').value=so.sunsetConfirmSec;if(so.opportunisticReportHours!==undefined)document.getElementById('solarOnlyReportHours').value=so.opportunisticReportHours;if(so.batteryFailureFallback!==undefined)document.getElementById('solarOnlyBatFail').checked=so.batteryFailureFallback;if(so.batteryFailureThreshold!==undefined)document.getElementById('solarOnlyBatFailCount').value=so.batteryFailureThreshold;}document.getElementById('sensorsContainer').innerHTML='';sensorCount=0;if(c.sensors)c.sensors.forEach(t=>{addSensor();const card=document.getElementById(`sensor-${sensorCount-1}`);if(card){const monitorSel=card.querySelector('.monitor-type');if(t.monitorType){monitorSel.value=t.monitorType;}else if(t.name&&t.name.match(/gas/i)){monitorSel.value='gas';}else if(t.sensor==='rpm'){monitorSel.value='rpm';}else{monitorSel.value='tank';}updateMonitorFields(sensorCount-1);card.querySelector('.tank-num').value=t.userNumber||'';card.querySelector('.tank-name').value=t.name||'';card.querySelector('.tank-contents').value=t.contents||'';card.querySelector('.tank-height').value=t.maxValue||120;const sensorVal=t.sensor==='digital'?0:(t.sensor==='current'?2:(t.sensor==='rpm'?3:1));card.querySelector('.sensor-type').value=sensorVal;updatePinOptions(sensorCount-1);if(t.sensor==='current'){card.querySelector('.sensor-pin').value=t.loopChannel||0;}else if(t.sensor==='rpm'){card.querySelector('.sensor-pin').value=t.rpmPin||0;}else{card.querySelector('.sensor-pin').value=t.primaryPin||0;}if(t.digitalSwitchMode)card.querySelector('.switch-mode').value=t.digitalSwitchMode;if(t.pulsesPerRev)card.querySelector('.pulses-per-rev').value=t.pulsesPerRev;if(t.currentLoopType)card.querySelector('.current-loop-type').value=t.currentLoopType;if(t.sensorMountHeight!==undefined)card.querySelector('.sensor-mount-height').value=t.sensorMountHeight;if(t.highAlarm!==undefined||t.lowAlarm!==undefined||t.alarmSms){toggleAlarmSection(sensorCount-1);if(t.highAlarm!==undefined){card.querySelector('.high-alarm').value=t.highAlarm;card.querySelector('.high-alarm-enabled').checked=true;}if(t.lowAlarm!==undefined){card.querySelector('.low-alarm').value=t.lowAlarm;card.querySelector('.low-alarm-enabled').checked=true;}}if(t.relayTargetClient){toggleRelaySection(sensorCount-1);card.querySelector('.relay-target').value=t.relayTargetClient;if(t.relayTrigger)card.querySelector('.relay-trigger').value=t.relayTrigger;if(t.relayMode)card.querySelector('.relay-mode').value=t.relayMode;if(t.relayMask){if(t.relayMask&1)card.querySelector('.relay-1').checked=true;if(t.relayMask&2)card.querySelector('.relay-2').checked=true;if(t.relayMask&4)card.querySelector('.relay-3').checked=true;if(t.relayMask&8)card.querySelector('.relay-4').checked=true;}if(t.relayMomentaryDurations){card.querySelector('.relay-duration-1').value=t.relayMomentaryDurations[0]||0;card.querySelector('.relay-duration-2').value=t.relayMomentaryDurations[1]||0;card.querySelector('.relay-duration-3').value=t.relayMomentaryDurations[2]||0;card.querySelector('.relay-duration-4').value=t.relayMomentaryDurations[3]||0;}toggleRelayDurations(sensorCount-1);}if(t.smsAlert&&t.smsAlert.phones){toggleSmsSection(sensorCount-1);card.querySelector('.sms-phones').value=t.smsAlert.phones.join(',');if(t.smsAlert.trigger)card.querySelector('.sms-trigger').value=t.smsAlert.trigger;if(t.smsAlert.message)card.querySelector('.sms-message').value=t.smsAlert.message;}updateSensorTypeFields(sensorCount-1);if(t.sensorRangeMin!==undefined)card.querySelector('.sensor-range-min').value=t.sensorRangeMin;if(t.sensorRangeMax!==undefined)card.querySelector('.sensor-range-max').value=t.sensorRangeMax;if(t.sensorRangeUnit)card.querySelector('.sensor-range-unit').value=t.sensorRangeUnit;if(t.stuckDetection!==undefined)card.querySelector('.stuck-detection').checked=t.stuckDetection;if(t.calibrationEnabled!==undefined)card.querySelector('.calibration-enabled').checked=t.calibrationEnabled;}});showToast('Configuration loaded');};
 /* CLOUD & IMPORT */
 function closeSelectClientModal(){els.selectClientModal.classList.add('hidden');}window.closeSelectClientModal=closeSelectClientModal;
 els.loadFromCloudBtn.addEventListener('click',async()=>{els.selectClientModal.classList.remove('hidden');els.clientList.innerHTML='Loading...';try{const r=await fetch('/api/clients?summary=1');const d=await r.json();els.clientList.innerHTML=d.clients.map(c=>`<div class="client-item" onclick="fetchClientConfig('${c.client}')"><strong>${c.label||c.client}</strong> (${c.client})<br>${c.site||''}</div>`).join('');}catch(e){els.clientList.innerHTML='Error loading clients';}});
@@ -1541,39 +1541,39 @@ async funct)HTML" R"HTML(ion requestClientLogs(clientUid,panelState){if(!clientU
 async funct)HTML" R"HTML(ion loadClients(){try{const res = await fetch('/api/clients?summary=1');if(!res.ok)throw new Error('Failed to fetch clients');const data = await res.json();const rawClients = data.cs || [];const unique = new Map();rawClients.forEach(c =>{if(c.c){unique.set(c.c,{uid:c.c,site:c.s || 'Unassigned',label:c.n || c.c});}});setClients(Array.from(unique.values()));renderSiteOptions();renderClientOptions();clientPanels.forEach((_,uid)=> updatePanelHeader(uid));}catch(err){console.error('Failed to load clients:',err);}}if(els.refreshServerBtn)els.refreshServerBtn.addEventListener('click',refreshServerLogs);if(els.clearServerBtn)els.clearServerBtn.addEventListener('click',()=>{els.serverLogs.innerHTML = '<div class="empty-state">Logs cleared</div>';});if(els.siteSelect)els.siteSelect.addEventListener('change',()=>{state.siteFilter = els.siteSelect.value;renderClientOptions();updateSiteButtons();});if(els.clientSelect)els.clientSelect.addEventListener('change',()=>{els.pinClientBtn.disabled = !els.clientSelect.value;});if(els.pinClientBtn)els.pinClientBtn.addEventListener('click',()=> pinClient(els.clientSelect.value));if(els.pinSiteBtn)els.pinSiteBtn.addEventListener('click',pinSiteClients);if(els.clearClientBtn)els.clearClientBtn.addEventListener('click',clearClientPanels);serverRefreshTimer = setInterval(refreshServerLogs,5000);await refreshServerLogs();ensureClientPanelPlaceholder();await loadClients();})();})();
 </script></body></html>)HTML";
 
-static const char CALIBRATION_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Calibration Learning - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Add Calibration Reading</h2><p style="color: var(--muted); margin-bottom: 16px;"> Enter a manually verified sensor reading. For best results, take readings at different levels (e.g., 25%, 50%, 75%, full). Works with tank levels, gas pressure gauges, or other 4-20mA sensors. </p><form id="calibrationForm"><div class="form-grid"><label class="field"><span>Select Sensor</span><select id="tankSelect" required><option value="">-- Select a sensor --</option></select></label><label class="field"><span>Verified Level</span><div id="levelInputContainer"><div id="levelInputTank" class="level-input-group"><input type="number" id="levelFeet" min="0" max="100" placeholder="Feet"><span>'</span><input type="number" id="levelInches" min="0" max="11.9" step="0.1" placeholder="Inches"><span>"</span></div><div id="levelInputGeneric" style="display:none;"><div style="display:flex;gap:8px;align-items:center;"><input type="number" id="levelValue" step="0.01" placeholder="Value"><span id="levelUnitLabel">PSI</span></div></div></div></label><labe)HTML" R"HTML(l class="field"><span>Reading Timestamp</span><input type="datetime-local" id="readingTimestamp"></label></div><label class="field" style="margin-top: 12px;"><span>Notes (optional)</span><textarea id="notes" rows="2" placeholder="e.g., Measured with stick gauge at front of tank"></textarea></label><div style="margin-top: 16px;"><button type="submit">Submit Calibration Reading</button><button type="button" class="secondary" onclick="document.getElementById('calibrationForm').reset();">Clear Form</button></div></form><div class="info-box"><strong>How it works:</strong> Each calibration reading pairs a verified measurement (from a stick gauge, reference gauge, or other method) with the raw 4-20mA sensor reading from telemetry. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and measured value. This learned calibration replaces the theoretical range-based calculation. <br><br><strong>Temperature Compensation:</strong> When 5+ calibration readings with temperature data are collected across a 10°F+ temperature range, the system automatically learns a temperature coefficient. This allows predictions to account for thermal expansion/contraction effects on readings. The status will show "Calibrated+Temp" when temperature compensation is active. </div></div><div class="card"><h2>Calibration Status</h2><div id="calibrationStats" class="stats-row"><div class="stat-item"><span>Total Sensors</span><strong id="statTotalTanks">0</strong></div><div class="stat-item"><span>Calibrated</span><strong id="statCalibrated">0</strong></div><div class="stat-item"><span>Learning (1 point)</span><strong id="statLearning">0</strong></div><div class="stat-item"><span>Uncalibrated</span><strong id="statUncalibrated">0</strong></div></div><table><thead><tr><th>Sensor</th><th>Site</th><th>Status</th><th>Data Points</th><th>R2 Fit</th><th>Learned Slope</th><th>Temp Coef</th><th>Drift from Original</th><th>Last Calibration</th><th>Actions</th></tr></thead><tbody id="calibrationTableBody"></tbody></table></div><div class="card"><h2>Calibration Log</h2><div class="form-grid" style="margin-bottom: 12px;"><label class="field"><span>Filter by Sensor</span><select id="logTankFilter"><option value="">All Sensors</option></select></label></div><table><thead><tr><th>Timestamp</th><th>Sensor</th><th>Sensor (mA)</th><th)HTML" R"HTML(>Verified Value</th><th>Temp °F</th><th>Notes</th></tr></thead><tbody id="logTableBody"></tbody></table></div><div class="card"><h2>Drift Analysis</h2><p style="color: var(--muted); margin-bottom: 16px;"> Shows how sensor accuracy has changed over time. High drift may indicate sensor degradation, tank modifications, or environmental factors. </p><div id="driftAnalysis"><p style="color: var(--muted);">Select a sensor with calibration data to view drift analysis.</p></div></div></main><div id="toast"></div><script>(async () => {const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
+static const char CALIBRATION_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Calibration Learning - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Add Calibration Reading</h2><p style="color: var(--muted); margin-bottom: 16px;"> Enter a manually verified sensor reading. For best results, take readings at different levels (e.g., 25%, 50%, 75%, full). Works with sensor levels, gas pressure gauges, or other 4-20mA sensors. </p><form id="calibrationForm"><div class="form-grid"><label class="field"><span>Select Sensor</span><select id="sensorSelect" required><option value="">-- Select a sensor --</option></select></label><label class="field"><span>Verified Level</span><div id="levelInputContainer"><div id="levelInputTank" class="level-input-group"><input type="number" id="levelFeet" min="0" max="100" placeholder="Feet"><span>'</span><input type="number" id="levelInches" min="0" max="11.9" step="0.1" placeholder="Inches"><span>"</span></div><div id="levelInputGeneric" style="display:none;"><div style="display:flex;gap:8px;align-items:center;"><input type="number" id="levelValue" step="0.01" placeholder="Value"><span id="levelUnitLabel">PSI</span></div></div></div></label><labe)HTML" R"HTML(l class="field"><span>Reading Timestamp</span><input type="datetime-local" id="readingTimestamp"></label></div><label class="field" style="margin-top: 12px;"><span>Notes (optional)</span><textarea id="notes" rows="2" placeholder="e.g., Measured with stick gauge at front of tank"></textarea></label><div style="margin-top: 16px;"><button type="submit">Submit Calibration Reading</button><button type="button" class="secondary" onclick="document.getElementById('calibrationForm').reset();">Clear Form</button></div></form><div class="info-box"><strong>How it works:</strong> Each calibration reading pairs a verified measurement (from a stick gauge, reference gauge, or other method) with the raw 4-20mA sensor reading from telemetry. With at least 2 data points at different levels, the system calculates a linear regression to determine the actual relationship between sensor output and measured value. This learned calibration replaces the theoretical range-based calculation. <br><br><strong>Temperature Compensation:</strong> When 5+ calibration readings with temperature data are collected across a 10°F+ temperature range, the system automatically learns a temperature coefficient. This allows predictions to account for thermal expansion/contraction effects on readings. The status will show "Calibrated+Temp" when temperature compensation is active. </div></div><div class="card"><h2>Calibration Status</h2><div id="calibrationStats" class="stats-row"><div class="stat-item"><span>Total Sensors</span><strong id="statTotalTanks">0</strong></div><div class="stat-item"><span>Calibrated</span><strong id="statCalibrated">0</strong></div><div class="stat-item"><span>Learning (1 point)</span><strong id="statLearning">0</strong></div><div class="stat-item"><span>Uncalibrated</span><strong id="statUncalibrated">0</strong></div></div><table><thead><tr><th>Sensor</th><th>Site</th><th>Status</th><th>Data Points</th><th>R2 Fit</th><th>Learned Slope</th><th>Temp Coef</th><th>Drift from Original</th><th>Last Calibration</th><th>Actions</th></tr></thead><tbody id="calibrationTableBody"></tbody></table></div><div class="card"><h2>Calibration Log</h2><div class="form-grid" style="margin-bottom: 12px;"><label class="field"><span>Filter by Sensor</span><select id="logSensorFilter"><option value="">All Sensors</option></select></label></div><table><thead><tr><th>Timestamp</th><th>Sensor</th><th>Sensor (mA)</th><th)HTML" R"HTML(>Verified Value</th><th>Temp °F</th><th>Notes</th></tr></thead><tbody id="logTableBody"></tbody></table></div><div class="card"><h2>Drift Analysis</h2><p style="color: var(--muted); margin-bottom: 16px;"> Shows how sensor accuracy has changed over time. High drift may indicate sensor degradation, tank modifications, or environmental factors. </p><div id="driftAnalysis"><p style="color: var(--muted);">Select a sensor with calibration data to view drift analysis.</p></div></div></main><div id="toast"></div><script>(async () => {const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
 const pause_state={paused:false};if(pause_els.btn)pause_els.btn.addEventListener('click',togglePauseFlow);if(pause_els.btn)pause_els.btn.addEventListener('mouseenter',()=>{if(pause_state.paused)pause_els.btn.textContent='Resume';});if(pause_els.btn)pause_els.btn.addEventListener('mouseleave',()=>{renderPauseBtn();});await fetch('/api/clients?summary=1').then(r=>r.json()).then(d=>{if(d&&d.srv){pause_state.paused=!!d.srv.ps;renderPauseBtn();}}).catch(e=>console.error('Failed to load pause state',e));
 funct)HTML" R"HTML(ion showPauseToast(message,isError){if(!pause_els.toast)return;const t=pause_els.toast;t.textContent=message;t.style.background=isError?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion renderPauseBtn(){const btn=pause_els.btn;if(!btn)return;if(pause_state.paused){btn.classList.add('paused');btn.style.display='';btn.textContent='Unpause';btn.title='Resume data flow';}else{btn.classList.remove('paused');btn.style.display='none';}}
 async funct)HTML" R"HTML(ion togglePauseFlow(){const targetPaused=!pause_state.paused;try{const res=await fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:targetPaused})});if(!res.ok){const text=await res.text();throw new Error(text||'Pause toggle failed');}const data=await res.json();pause_state.paused=!!data.paused;renderPauseBtn();showPauseToast(pause_state.paused?'Paused for maintenance':'Resumed');}catch(err){showPauseToast(err.message||'Pause toggle failed',true);}}(async ()=>{funct)HTML" R"HTML(ion escapeHtml(str){if(!str)return'';const div=document.createElement('div');div.textContent=str;return div.innerHTML;}
 funct)HTML" R"HTML(ion showToast(message,isError){const toast = document.getElementById('toast');toast.textContent = message;toast.style.background = isError ? '#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=> toast.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion formatEpoch(epoch){if(!epoch)return '--';const date = new Date(epoch * 1000);if(isNaN(date.getTime()))return '--';return date.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
-funct)HTML" R"HTML(ion formatLevel(value,unit){if(typeof value !== 'number' || !isFinite(value)|| value < 0){return '--';}if(!unit||unit==='inches'){const feet = Math.floor(value / 12);const remainingInches = value % 12;if(feet === 0){return `${remainingInches.toFixed(1)}"`;}return `${feet}' ${remainingInches.toFixed(1)}"`;}return `${value.toFixed(2)} ${unit}`;}function getTankUnit(clientUid,sensorIdx){const t=tanks.find(x=>x.client===clientUid&&x.sensorIndex===sensorIdx);if(t&&t.measurementUnit&&t.measurementUnit!=='inches')return t.measurementUnit;if(t&&t.objectType&&t.objectType!=='tank')return t.measurementUnit||'units';return 'inches';}let tanks = [];let calibrations = [];let calibrationLogs = [];async funct)HTML" R"HTML(ion loadTanks(){try{const response = await fetch('/api/tanks');if(!response.ok)throw new Error('Failed to load tanks');const data = await response.json();tanks = (data.tanks || []).map(t=>({client:t.c,sensorIndex:t.k,site:t.s,label:t.n,contents:t.cn||'',levelInches:t.l,sensorMa:t.ma||0,sensorType:t.st||'',objectType:t.ot||'tank',measurementUnit:t.mu||'inches',delta:t.d,previousEpoch:t.pe,alarmActive:t.a,alarmType:t.at,lastUpdate:t.u,userNumber:t.un||0}));populateTankDropdowns();}catch(err){console.error('Error loading tanks:',err);showToast('Failed to load tank list',true);}}
-funct)HTML" R"HTML(ion populateTankDropdowns(){const tankSelect = document.getElementById('tankSelect');const logTankFilter = document.getElementById('logTankFilter');tankSelect.innerHTML = '<option value="">-- Select a sensor --</option>';logTankFilter.innerHTML = '<option value="">All Sensors</option>';const uniqueTanks = new Map();tanks.forEach(t =>{const key = `${t.client}:${t.sensorIndex}`;if(!uniqueTanks.has(key)){uniqueTanks.set(key,{client:t.client,sensorIndex:t.sensorIndex,site:t.site,label:t.label || `Sensor ${t.sensorIndex}`,heightInches:t.heightInches || 0,levelInches:t.levelInches || 0,sensorMa:t.sensorMa || 0,lastUpdate:t.lastUpdate || 0,objectType:t.objectType||'tank',measurementUnit:t.measurementUnit||'inches',userNumber:t.userNumber||0});}});uniqueTanks.forEach((tank,key)=>{const option = document.createElement('option');option.value = key;const typeTag=tank.objectType==='tank'?'':'['+tank.objectType.toUpperCase()+'] ';option.textContent = `${typeTag}${tank.site} - ${tank.label}${tank.userNumber?' #'+tank.userNumber:''}`;tankSelect.appendChild(option.cloneNode(true));logTankFilter.appendChild(option);});}function updateLevelInput(){const sel=document.getElementById('tankSelect').value;if(!sel){document.getElementById('levelInputTank').style.display='flex';document.getElementById('levelInputGeneric').style.display='none';return;}const [uid,tn]=sel.split(':');const tank=tanks.find(t=>t.client===uid&&t.sensorIndex===parseInt(tn));const ot=tank?tank.objectType:'tank';const mu=tank?tank.measurementUnit:'inches';if(ot==='tank'||mu==='inches'){document.getElementById('levelInputTank').style.display='flex';document.getElementById('levelInputGeneric').style.display='none';}else{document.getElementById('levelInputTank').style.display='none';document.getElementById('levelInputGeneric').style.display='block';document.getElementById('levelUnitLabel').textContent=mu.toUpperCase();}}document.getElementById('tankSelect').addEventListener('change',updateLevelInput);
+funct)HTML" R"HTML(ion formatLevel(value,unit){if(typeof value !== 'number' || !isFinite(value)|| value < 0){return '--';}if(!unit||unit==='inches'){const feet = Math.floor(value / 12);const remainingInches = value % 12;if(feet === 0){return `${remainingInches.toFixed(1)}"`;}return `${feet}' ${remainingInches.toFixed(1)}"`;}return `${value.toFixed(2)} ${unit}`;}function getSensorUnit(clientUid,sensorIdx){const t=sensors.find(x=>x.client===clientUid&&x.sensorIndex===sensorIdx);if(t&&t.measurementUnit&&t.measurementUnit!=='inches')return t.measurementUnit;if(t&&t.objectType&&t.objectType!=='tank')return t.measurementUnit||'units';return 'inches';}let sensors = [];let calibrations = [];let calibrationLogs = [];async funct)HTML" R"HTML(ion loadSensors(){try{const response = await fetch('/api/sensors');if(!response.ok)throw new Error('Failed to load sensors');const data = await response.json();sensors = (data.sensors || []).map(t=>({client:t.c,sensorIndex:t.k,site:t.s,label:t.n,contents:t.cn||'',levelInches:t.l,sensorMa:t.ma||0,sensorType:t.st||'',objectType:t.ot||'tank',measurementUnit:t.mu||'inches',delta:t.d,previousEpoch:t.pe,alarmActive:t.a,alarmType:t.at,lastUpdate:t.u,userNumber:t.un||0}));populateSensorDropdowns();}catch(err){console.error('Error loading sensors:',err);showToast('Failed to load tank list',true);}}
+funct)HTML" R"HTML(ion populateSensorDropdowns(){const sensorSelect = document.getElementById('sensorSelect');const logSensorFilter = document.getElementById('logSensorFilter');sensorSelect.innerHTML = '<option value="">-- Select a sensor --</option>';logSensorFilter.innerHTML = '<option value="">All Sensors</option>';const uniqueTanks = new Map();sensors.forEach(t =>{const key = `${t.client}:${t.sensorIndex}`;if(!uniqueTanks.has(key)){uniqueTanks.set(key,{client:t.client,sensorIndex:t.sensorIndex,site:t.site,label:t.label || `Sensor ${t.sensorIndex}`,heightInches:t.heightInches || 0,levelInches:t.levelInches || 0,sensorMa:t.sensorMa || 0,lastUpdate:t.lastUpdate || 0,objectType:t.objectType||'tank',measurementUnit:t.measurementUnit||'inches',userNumber:t.userNumber||0});}});uniqueTanks.forEach((tank,key)=>{const option = document.createElement('option');option.value = key;const typeTag=tank.objectType==='tank'?'':'['+tank.objectType.toUpperCase()+'] ';option.textContent = `${typeTag}${rec.site} - ${rec.label}${tank.userNumber?' #'+tank.userNumber:''}`;sensorSelect.appendChild(option.cloneNode(true));logSensorFilter.appendChild(option);});}function updateLevelInput(){const sel=document.getElementById('sensorSelect').value;if(!sel){document.getElementById('levelInputTank').style.display='flex';document.getElementById('levelInputGeneric').style.display='none';return;}const [uid,tn]=sel.split(':');const tank=sensors.find(t=>t.client===uid&&t.sensorIndex===parseInt(tn));const ot=tank?tank.objectType:'tank';const mu=tank?tank.measurementUnit:'inches';if(ot==='tank'||mu==='inches'){document.getElementById('levelInputTank').style.display='flex';document.getElementById('levelInputGeneric').style.display='none';}else{document.getElementById('levelInputTank').style.display='none';document.getElementById('levelInputGeneric').style.display='block';document.getElementById('levelUnitLabel').textContent=mu.toUpperCase();}}document.getElementById('sensorSelect').addEventListener('change',updateLevelInput);
 async funct)HTML" R"HTML(ion loadCalibrationData(){try{const response = await fetch('/api/calibration');if(!response.ok)throw new Error('Failed to load calibration data');const data = await response.json();calibrations = data.calibrations || [];calibrationLogs = data.logs || [];updateCalibrationStats();updateCalibrationTable();updateCalibrationLog();}catch(err){console.error('Error loading calibration data:',err);}}
-funct)HTML" R"HTML(ion updateCalibrationStats(){const total = tanks.length > 0 ? new Set(tanks.map(t => `${t.client}:${t.sensorIndex}`)).size:0;const calibrated = calibrations.filter(c => c.hasLearnedCalibration).length;const learning = calibrations.filter(c => !c.hasLearnedCalibration && c.entryCount > 0).length;const uncalibrated = total - calibrated - learning;document.getElementById('statTotalTanks').textContent = total;document.getElementById('statCalibrated').textContent = calibrated;document.getElementById('statLearning').textContent = learning;document.getElementById('statUncalibrated').textContent = Math.max(0,uncalibrated);}
-funct)HTML" R"HTML(ion updateCalibrationTable(){const tbody = document.getElementById('calibrationTableBody');tbody.innerHTML = '';if(calibrations.length === 0){tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);">No calibration data yet. Add readings to start learning.</td></tr>';return;}calibrations.forEach(cal =>{const tr = document.createElement('tr');const tankInfo = tanks.find(t => t.client === cal.clientUid && t.sensorIndex === cal.sensorIndex);const tankName = tankInfo ? `${tankInfo.label || 'Sensor ' + cal.sensorIndex}${tankInfo.userNumber?' #'+tankInfo.userNumber:''}`:`Sensor ${cal.sensorIndex}`;const site = tankInfo ? tankInfo.site:'--';let statusClass = 'uncalibrated';let statusText = 'Uncalibrated';let warnings = [];if(cal.hasLearnedCalibration){statusClass = 'calibrated';statusText = cal.hasTempCompensation ? 'Calibrated+Temp' : 'Calibrated';if(cal.rSquared < 0.95){warnings.push('Low R&sup2; fit (<95%)');}if(cal.entryCount === 2){warnings.push('Only 2 data points');}}else if(cal.entryCount > 0){statusClass = 'learning';statusText = 'Learning';if(cal.entryCount === 1){warnings.push('Need 1 more point');}}const sensorRange = cal.maxSensorMa - cal.minSensorMa;const levelRange = cal.maxLevelInches - cal.minLevelInches;if(cal.hasLearnedCalibration && sensorRange < 4){warnings.push('Narrow sensor range (<4mA)');}let driftText = '--';let driftClass = 'low';if(cal.hasLearnedCalibration && cal.originalMaxValue > 0){const originalSlope = cal.originalMaxValue / 16.0;const drift = Math.abs((cal.learnedSlope - originalSlope)/ originalSlope * 100);driftText = drift.toFixed(1)+ '%';if(drift > 10)driftClass = 'high';else if(drift > 5)driftClass = 'medium';}let tempCoefText = '--';if(cal.hasTempCompensation && cal.learnedTempCoef !== undefined){tempCoefText = cal.learnedTempCoef.toFixed(4) + ' '+getTankUnit(cal.clientUid,cal.sensorIndex)+'/°F';}else if(cal.tempEntryCount > 0){tempCoefText = `(${cal.tempEntryCount} pts)`;}let rangeText = '--';if(cal.entryCount >= 1){rangeText = `${cal.minSensorMa.toFixed(1)}-${cal.maxSensorMa.toFixed(1)} mA`;}let warningHtml = '';if(warnings.length > 0){warningHtml = `<span class="quality-warning" title="${warnings.join(', ')}">&#x26A0;&#xFE0F;</span>`;}const tankKey = `${cal.clientUid}:${cal.sensorIndex}`;tr.innerHTML = ` <td><a href="#" class="tank-link" onclick="viewTankPoints('${tankKey}');return false;" title="Click to view data points">${escapeHtml(tankName)}</a>${warningHtml}</td><td>${escapeHtml(site)}</td><td><span class="calibration-status ${statusClass}">${statusText}</span></td><td title="Sensor range: ${rangeText}">${cal.entryCount}</td><td>${cal.hasLearnedCalibration ?(cal.rSquared * 100).toFixed(1)+ '%':'--'}</td><td>${cal.hasLearnedCalibration ? cal.learnedSlope.toFixed(3)+ ' '+getTankUnit(cal.clientUid,cal.sensorIndex)+'/mA':'--'}</td><td title="Temperature coefficient (${getTankUnit(cal.clientUid,cal.sensorIndex)} per °F deviation from 70°F)">${tempCoefText}</td><td><span class="drift-indicator ${driftClass}">${driftText}</span></td><td>${formatEpoch(cal.lastCalibrationEpoch)}</td><td><button class="btn-reset" onclick="resetCalibration('${cal.clientUid}',${cal.sensorIndex})" title="Reset calibration for this tank">Reset</button></td> `;tbody.appendChild(tr);});}
-funct)HTML" R"HTML(ion updateCalibrationLog(){const tbody = document.getElementById('logTableBody');const filter = document.getElementById('logTankFilter').value;tbody.innerHTML = '';let filtered = calibrationLogs;if(filter){const [clientUid,sensorIdx] = filter.split(':');filtered = calibrationLogs.filter(log => log.clientUid === clientUid && log.sensorIndex === parseInt(sensorIdx));}if(filtered.length === 0){tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);">No calibration entries found.</td></tr>';return;}filtered.sort((a,b)=> b.timestamp - a.timestamp);filtered.forEach(log =>{const tr = document.createElement('tr');const tankInfo = tanks.find(t => t.client === log.clientUid && t.sensorIndex === log.sensorIndex);const tankName = tankInfo ? `${tankInfo.site} - ${tankInfo.label || 'Sensor ' + log.sensorIndex}${tankInfo.userNumber?' #'+tankInfo.userNumber:''}`:`Sensor ${log.sensorIndex}`;const isValidReading = log.sensorReading >= 4 && log.sensorReading <= 20;const sensorDisplay = isValidReading ? log.sensorReading.toFixed(2)+ ' mA':(log.sensorReading ? `${log.sensorReading.toFixed(2)} mA (out of range)`:'-- (out of range)');const tempDisplay = log.temperatureF !== undefined && log.temperatureF !== null ? log.temperatureF.toFixed(1)+ '°F':'--';tr.innerHTML = ` <td>${formatEpoch(log.timestamp)}</td><td>${escapeHtml(tankName)}</td><td title="${isValidReading ? '':'Not used for calibration(outside 4-20mA range)'}">${sensorDisplay}</td><td>${formatLevel(log.verifiedLevelInches,getTankUnit(log.clientUid,log.sensorIndex))}</td><td>${tempDisplay}</td><td>${escapeHtml(log.notes || '--')}</td> `;if(!isValidReading){tr.style.opacity = '0.6';}tbody.appendChild(tr);});}document.getElementById('calibrationForm').addEventListener('submit',async(e)=>{e.preventDefault();const tankKey = document.getElementById('tankSelect').value;if(!tankKey){showToast('Please select a sensor',true);return;}const [clientUid,sensorIndex] = tankKey.split(':');const tank = tanks.find(t => `${t.client}:${t.sensorIndex}` === tankKey);const isTankMode=document.getElementById('levelInputTank').style.display!=='none';let totalValue;if(isTankMode){const levelFeet = parseInt(document.getElementById('levelFeet').value)|| 0;const levelInches = parseFloat(document.getElementById('levelInches').value)|| 0;totalValue = levelFeet * 12 + levelInches;}else{totalValue = parseFloat(document.getElementById('levelValue').value)||0;}const timestampInput = document.getElementById('readingTimestamp').value;const note)HTML" R"HTML(s = document.getElementById('notes').value.trim();if(totalValue < 0){showToast('Invalid level value',true);return;}const payload ={clientUid:clientUid,sensorIndex:parseInt(sensorIndex),verifiedLevelInches:totalValue,notes:notes};if(tank && tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20){payload.sensorReading = tank.sensorMa;}if(timestampInput){payload.timestamp = Math.floor(new Date(timestampInput).getTime()/ 1000);}try{const response = await fetch('/api/calibration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to submit calibration');}showToast('Calibration reading submitted successfully');document.getElementById('calibrationForm').reset();loadCalibrationData();}catch(err){console.error('Error submitting calibration:',err);showToast(err.message || 'Failed to submit calibration',true);}});document.getElementById('logTankFilter').addEventListener('change',updateCalibrationLog);const now = new Date();now.setMinutes(now.getMinutes()- now.getTimezoneOffset());document.getElementById('readingTimestamp').value = now.toISOString().slice(0,16);await loadTanks();await loadCalibrationData();setInterval(loadCalibrationData,30000);funct)HTML" R"HTML(ion viewTankPoints(tankKey){document.getElementById('logTankFilter').value = tankKey;updateCalibrationLog();document.getElementById('logTableBody').closest('.card').scrollIntoView({behavior:'smooth',block:'start'});showToast('Showing data points for selected tank');}async funct)HTML" R"HTML(ion resetCalibration(clientUid,sensorIndex){if(!confirm(`Reset calibration for sensor ${sensorIndex}? This will delete all calibration data for this sensor.`)){return;}try{const response = await fetch('/api/calibration',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid,sensorIndex:sensorIndex})});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to reset calibration');}showToast('Calibration reset successfully');loadCalibrationData();}catch(err){console.error('Error resetting calibration:',err);showToast(err.message || 'Failed to reset calibration',true);}}})();})();
+funct)HTML" R"HTML(ion updateCalibrationStats(){const total = sensors.length > 0 ? new Set(sensors.map(t => `${t.client}:${t.sensorIndex}`)).size:0;const calibrated = calibrations.filter(c => c.hasLearnedCalibration).length;const learning = calibrations.filter(c => !c.hasLearnedCalibration && c.entryCount > 0).length;const uncalibrated = total - calibrated - learning;document.getElementById('statTotalTanks').textContent = total;document.getElementById('statCalibrated').textContent = calibrated;document.getElementById('statLearning').textContent = learning;document.getElementById('statUncalibrated').textContent = Math.max(0,uncalibrated);}
+funct)HTML" R"HTML(ion updateCalibrationTable(){const tbody = document.getElementById('calibrationTableBody');tbody.innerHTML = '';if(calibrations.length === 0){tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);">No calibration data yet. Add readings to start learning.</td></tr>';return;}calibrations.forEach(cal =>{const tr = document.createElement('tr');const sensorInfo = sensors.find(t => t.client === cal.clientUid && t.sensorIndex === cal.sensorIndex);const sensorName = sensorInfo ? `${sensorInfo.label || 'Sensor ' + cal.sensorIndex}${sensorInfo.userNumber?' #'+sensorInfo.userNumber:''}`:`Sensor ${cal.sensorIndex}`;const site = sensorInfo ? sensorInfo.site:'--';let statusClass = 'uncalibrated';let statusText = 'Uncalibrated';let warnings = [];if(cal.hasLearnedCalibration){statusClass = 'calibrated';statusText = cal.hasTempCompensation ? 'Calibrated+Temp' : 'Calibrated';if(cal.rSquared < 0.95){warnings.push('Low R&sup2; fit (<95%)');}if(cal.entryCount === 2){warnings.push('Only 2 data points');}}else if(cal.entryCount > 0){statusClass = 'learning';statusText = 'Learning';if(cal.entryCount === 1){warnings.push('Need 1 more point');}}const sensorRange = cal.maxSensorMa - cal.minSensorMa;const levelRange = cal.maxLevelInches - cal.minLevelInches;if(cal.hasLearnedCalibration && sensorRange < 4){warnings.push('Narrow sensor range (<4mA)');}let driftText = '--';let driftClass = 'low';if(cal.hasLearnedCalibration && cal.originalMaxValue > 0){const originalSlope = cal.originalMaxValue / 16.0;const drift = Math.abs((cal.learnedSlope - originalSlope)/ originalSlope * 100);driftText = drift.toFixed(1)+ '%';if(drift > 10)driftClass = 'high';else if(drift > 5)driftClass = 'medium';}let tempCoefText = '--';if(cal.hasTempCompensation && cal.learnedTempCoef !== undefined){tempCoefText = cal.learnedTempCoef.toFixed(4) + ' '+getSensorUnit(cal.clientUid,cal.sensorIndex)+'/°F';}else if(cal.tempEntryCount > 0){tempCoefText = `(${cal.tempEntryCount} pts)`;}let rangeText = '--';if(cal.entryCount >= 1){rangeText = `${cal.minSensorMa.toFixed(1)}-${cal.maxSensorMa.toFixed(1)} mA`;}let warningHtml = '';if(warnings.length > 0){warningHtml = `<span class="quality-warning" title="${warnings.join(', ')}">&#x26A0;&#xFE0F;</span>`;}const sensorKey = `${cal.clientUid}:${cal.sensorIndex}`;tr.innerHTML = ` <td><a href="#" class="sensor-link" onclick="viewTankPoints('${sensorKey}');return false;" title="Click to view data points">${escapeHtml(sensorName)}</a>${warningHtml}</td><td>${escapeHtml(site)}</td><td><span class="calibration-status ${statusClass}">${statusText}</span></td><td title="Sensor range: ${rangeText}">${cal.entryCount}</td><td>${cal.hasLearnedCalibration ?(cal.rSquared * 100).toFixed(1)+ '%':'--'}</td><td>${cal.hasLearnedCalibration ? cal.learnedSlope.toFixed(3)+ ' '+getSensorUnit(cal.clientUid,cal.sensorIndex)+'/mA':'--'}</td><td title="Temperature coefficient (${getSensorUnit(cal.clientUid,cal.sensorIndex)} per °F deviation from 70°F)">${tempCoefText}</td><td><span class="drift-indicator ${driftClass}">${driftText}</span></td><td>${formatEpoch(cal.lastCalibrationEpoch)}</td><td><button class="btn-reset" onclick="resetCalibration('${cal.clientUid}',${cal.sensorIndex})" title="Reset calibration for this sensor">Reset</button></td> `;tbody.appendChild(tr);});}
+funct)HTML" R"HTML(ion updateCalibrationLog(){const tbody = document.getElementById('logTableBody');const filter = document.getElementById('logSensorFilter').value;tbody.innerHTML = '';let filtered = calibrationLogs;if(filter){const [clientUid,sensorIdx] = filter.split(':');filtered = calibrationLogs.filter(log => log.clientUid === clientUid && log.sensorIndex === parseInt(sensorIdx));}if(filtered.length === 0){tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);">No calibration entries found.</td></tr>';return;}filtered.sort((a,b)=> b.timestamp - a.timestamp);filtered.forEach(log =>{const tr = document.createElement('tr');const sensorInfo = sensors.find(t => t.client === log.clientUid && t.sensorIndex === log.sensorIndex);const sensorName = sensorInfo ? `${sensorInfo.site} - ${sensorInfo.label || 'Sensor ' + log.sensorIndex}${sensorInfo.userNumber?' #'+sensorInfo.userNumber:''}`:`Sensor ${log.sensorIndex}`;const isValidReading = log.sensorReading >= 4 && log.sensorReading <= 20;const sensorDisplay = isValidReading ? log.sensorReading.toFixed(2)+ ' mA':(log.sensorReading ? `${log.sensorReading.toFixed(2)} mA (out of range)`:'-- (out of range)');const tempDisplay = log.temperatureF !== undefined && log.temperatureF !== null ? log.temperatureF.toFixed(1)+ '°F':'--';tr.innerHTML = ` <td>${formatEpoch(log.timestamp)}</td><td>${escapeHtml(sensorName)}</td><td title="${isValidReading ? '':'Not used for calibration(outside 4-20mA range)'}">${sensorDisplay}</td><td>${formatLevel(log.verifiedLevelInches,getSensorUnit(log.clientUid,log.sensorIndex))}</td><td>${tempDisplay}</td><td>${escapeHtml(log.notes || '--')}</td> `;if(!isValidReading){tr.style.opacity = '0.6';}tbody.appendChild(tr);});}document.getElementById('calibrationForm').addEventListener('submit',async(e)=>{e.preventDefault();const sensorKey = document.getElementById('sensorSelect').value;if(!sensorKey){showToast('Please select a sensor',true);return;}const [clientUid,sensorIndex] = sensorKey.split(':');const tank = sensors.find(t => `${t.client}:${t.sensorIndex}` === sensorKey);const isTankMode=document.getElementById('levelInputTank').style.display!=='none';let totalValue;if(isTankMode){const levelFeet = parseInt(document.getElementById('levelFeet').value)|| 0;const levelInches = parseFloat(document.getElementById('levelInches').value)|| 0;totalValue = levelFeet * 12 + levelInches;}else{totalValue = parseFloat(document.getElementById('levelValue').value)||0;}const timestampInput = document.getElementById('readingTimestamp').value;const note)HTML" R"HTML(s = document.getElementById('notes').value.trim();if(totalValue < 0){showToast('Invalid level value',true);return;}const payload ={clientUid:clientUid,sensorIndex:parseInt(sensorIndex),verifiedLevelInches:totalValue,notes:notes};if(tank && tank.sensorMa && tank.sensorMa >= 4 && tank.sensorMa <= 20){payload.sensorReading = tank.sensorMa;}if(timestampInput){payload.timestamp = Math.floor(new Date(timestampInput).getTime()/ 1000);}try{const response = await fetch('/api/calibration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to submit calibration');}showToast('Calibration reading submitted successfully');document.getElementById('calibrationForm').reset();loadCalibrationData();}catch(err){console.error('Error submitting calibration:',err);showToast(err.message || 'Failed to submit calibration',true);}});document.getElementById('logSensorFilter').addEventListener('change',updateCalibrationLog);const now = new Date();now.setMinutes(now.getMinutes()- now.getTimezoneOffset());document.getElementById('readingTimestamp').value = now.toISOString().slice(0,16);await loadSensors();await loadCalibrationData();setInterval(loadCalibrationData,30000);funct)HTML" R"HTML(ion viewTankPoints(sensorKey){document.getElementById('logSensorFilter').value = sensorKey;updateCalibrationLog();document.getElementById('logTableBody').closest('.card').scrollIntoView({behavior:'smooth',block:'start'});showToast('Showing data points for selected tank');}async funct)HTML" R"HTML(ion resetCalibration(clientUid,sensorIndex){if(!confirm(`Reset calibration for sensor ${sensorIndex}? This will delete all calibration data for this sensor.`)){return;}try{const response = await fetch('/api/calibration',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid,sensorIndex:sensorIndex})});if(!response.ok){const text = await response.text();throw new Error(text || 'Failed to reset calibration');}showToast('Calibration reset successfully');loadCalibrationData();}catch(err){console.error('Error resetting calibration:',err);showToast(err.message || 'Failed to reset calibration',true);}}})();})();
 </script></body></html>)HTML";
 
-static const char HISTORICAL_DATA_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Historical Data - Tank Alarm Server</title><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Fleet Summary</h2><div class="stats-grid"><div class="stat-box"><div class="stat-value" id="statTotalTanks">0</div><div class="stat-label">Total Tanks</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsToday">0</div><div class="stat-label">Alarms Today</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsWeek">0</div><div class="stat-label">Alarms This Week</div></div></div><div id="dataSourceBanner" style="display:none;margin-top:12px;padding:8px 14px;border-radius:6px;font-size:0.85rem;background:#dbeafe;color:#1e40af;"></div></div><div class="card"><h2>Level Trends</h2><div class="controls"><select id="siteFilter"><option value="all")HTML" R"HTML(>All Sites</option></select><select id="tankFilter"><option value="all">All Tanks</option></select><select id="rangeSelect"><option value="24h">Last 24 Hours</option><option value="7d">Last 7 Days</option><option value="30d" selected>Last 30 Days</option><option value="90d">Last 90 Days</option><option value="6mo">Last 6 Months</option><option value="1yr">Last Year</option><option value="2yr">Last 2 Years</option><option value="custom">Custom Range</option></select><input type="date" id="startDate" style="display:none;" onchange="renderLevelChart()"><input type="date" id="endDate" style="display:none;" onchange="renderLevelChart()"><button onclick="refreshData()">Refresh</button><button class="secondary" onclick="exportData()">Export CSV</button></div><div class="chart-container"><canvas id="levelChart"></canvas></div></div><div class="card"><h2>Alarm Frequency</h2><div class="chart-container"><canvas id="alarmChart"></canvas></div></div><div class="card"><h2>Sites &amp; Tanks</h2><p style="color:var(--muted);margin-bottom:16px;">Click on a site to expand and view individual tank details with mini sparklines.</p><div id="sitesContainer"></div></div><div class="card"><h2>VIN Voltage History</h2><p style="color:var(--muted);margin-bottom:16px;">Track power supply voltage trends to detect battery degradation or power issues early.</p><div class="chart-container"><canvas id="voltageChart"></canvas></div></div><div class="card" id="archivedCard" style="display:none"><h2>Archived Clients</h2><p style="color:var(--muted);margin-bottom:16px;">Previously removed clients archived to FTP. Click to load and view historical data.</p><div id="archivedList"></div><div class="chart-container" id="archivedChartWrap" style="display:none"><canvas id="archivedChart"></canvas></div></div></main><div id="toast"></div><script>(async () => {const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
+static const char HISTORICAL_DATA_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Historical Data - Tank Alarm Server</title><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Fleet Summary</h2><div class="stats-grid"><div class="stat-box"><div class="stat-value" id="statTotalTanks">0</div><div class="stat-label">Total Sensors</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsToday">0</div><div class="stat-label">Alarms Today</div></div><div class="stat-box"><div class="stat-value" id="statAlarmsWeek">0</div><div class="stat-label">Alarms This Week</div></div></div><div id="dataSourceBanner" style="display:none;margin-top:12px;padding:8px 14px;border-radius:6px;font-size:0.85rem;background:#dbeafe;color:#1e40af;"></div></div><div class="card"><h2>Level Trends</h2><div class="controls"><select id="siteFilter"><option value="all")HTML" R"HTML(>All Sites</option></select><select id="sensorFilter"><option value="all">All Sensors</option></select><select id="rangeSelect"><option value="24h">Last 24 Hours</option><option value="7d">Last 7 Days</option><option value="30d" selected>Last 30 Days</option><option value="90d">Last 90 Days</option><option value="6mo">Last 6 Months</option><option value="1yr">Last Year</option><option value="2yr">Last 2 Years</option><option value="custom">Custom Range</option></select><input type="date" id="startDate" style="display:none;" onchange="renderLevelChart()"><input type="date" id="endDate" style="display:none;" onchange="renderLevelChart()"><button onclick="refreshData()">Refresh</button><button class="secondary" onclick="exportData()">Export CSV</button></div><div class="chart-container"><canvas id="levelChart"></canvas></div></div><div class="card"><h2>Alarm Frequency</h2><div class="chart-container"><canvas id="alarmChart"></canvas></div></div><div class="card"><h2>Sites &amp; Sensors</h2><p style="color:var(--muted);margin-bottom:16px;">Click on a site to expand and view individual tank details with mini sparklines.</p><div id="sitesContainer"></div></div><div class="card"><h2>VIN Voltage History</h2><p style="color:var(--muted);margin-bottom:16px;">Track power supply voltage trends to detect battery degradation or power issues early.</p><div class="chart-container"><canvas id="voltageChart"></canvas></div></div><div class="card" id="archivedCard" style="display:none"><h2>Archived Clients</h2><p style="color:var(--muted);margin-bottom:16px;">Previously removed clients archived to FTP. Click to load and view historical data.</p><div id="archivedList"></div><div class="chart-container" id="archivedChartWrap" style="display:none"><canvas id="archivedChart"></canvas></div></div></main><div id="toast"></div><script>(async () => {const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
 const pause_state={paused:false};if(pause_els.btn)pause_els.btn.addEventListener('click',togglePauseFlow);if(pause_els.btn)pause_els.btn.addEventListener('mouseenter',()=>{if(pause_state.paused)pause_els.btn.textContent='Resume';});if(pause_els.btn)pause_els.btn.addEventListener('mouseleave',()=>{renderPauseBtn();});await fetch('/api/clients?summary=1').then(r=>r.json()).then(d=>{if(d&&d.srv){pause_state.paused=!!d.srv.ps;renderPauseBtn();}}).catch(e=>console.error('Failed to load pause state',e));
 funct)HTML" R"HTML(ion showPauseToast(message,isError){if(!pause_els.toast)return;const t=pause_els.toast;t.textContent=message;t.style.background=isError?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion renderPauseBtn(){const btn=pause_els.btn;if(!btn)return;if(pause_state.paused){btn.classList.add('paused');btn.style.display='';btn.textContent='Unpause';btn.title='Resume data flow';}else{btn.classList.remove('paused');btn.style.display='none';}}
-async funct)HTML" R"HTML(ion togglePauseFlow(){const targetPaused=!pause_state.paused;try{const res=await fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:targetPaused})});if(!res.ok){const text=await res.text();throw new Error(text||'Pause toggle failed');}const data=await res.json();pause_state.paused=!!data.paused;renderPauseBtn();showPauseToast(pause_state.paused?'Paused for maintenance':'Resumed');}catch(err){showPauseToast(err.message||'Pause toggle failed',true);}}(async ()=>{const CHART_COLORS=['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];let levelChart=null;let alarmChart=null;let voltageChart=null;let historicalData={sites:{},tanks:[],alarms:[],voltage:[]};funct)HTML" R"HTML(ion showToast(message,isError){const toast=document.getElementById('toast');toast.textContent=message;toast.style.background=isError?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}
+async funct)HTML" R"HTML(ion togglePauseFlow(){const targetPaused=!pause_state.paused;try{const res=await fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:targetPaused})});if(!res.ok){const text=await res.text();throw new Error(text||'Pause toggle failed');}const data=await res.json();pause_state.paused=!!data.paused;renderPauseBtn();showPauseToast(pause_state.paused?'Paused for maintenance':'Resumed');}catch(err){showPauseToast(err.message||'Pause toggle failed',true);}}(async ()=>{const CHART_COLORS=['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];let levelChart=null;let alarmChart=null;let voltageChart=null;let historicalData={sites:{},sensors:[],alarms:[],voltage:[]};funct)HTML" R"HTML(ion showToast(message,isError){const toast=document.getElementById('toast');toast.textContent=message;toast.style.background=isError?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion formatLevel(inches){if(typeof inches!=='number'||!isFinite(inches))return'--';const feet=Math.floor(inches/12);const rem=inches%12;return feet>0?`${feet}' ${rem.toFixed(1)}"`:`${rem.toFixed(1)}"`;}
 funct)HTML" R"HTML(ion formatEpoch(epoch){if(!epoch)return'--';const d=new Date(epoch*1000);return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
-funct)HTML" R"HTML(ion initEmptyData(){historicalData={sites:{},tanks:[],alarms:[],voltage:[]};}
-funct)HTML" R"HTML(ion updateStats(){const totalTanks=historicalData.tanks.length;const now=Date.now()/1000;const today=now-86400;const week=now-7*86400;const alarmsToday=historicalData.alarms.filter(a=>a.timestamp>today).length;const alarmsWeek=historicalData.alarms.filter(a=>a.timestamp>week).length;document.getElementById('statTotalTanks').textContent=totalTanks;document.getElementById('statAlarmsToday').textContent=alarmsToday;document.getElementById('statAlarmsWeek').textContent=alarmsWeek;}
-funct)HTML" R"HTML(ion populateFilters(){const siteSelect=document.getElementById('siteFilter');const tankSelect=document.getElementById('tankFilter');siteSelect.innerHTML='<option value="all">All Sites</option>';Object.keys(historicalData.sites).sort().forEach(site=>{const opt=document.createElement('option');opt.value=site;opt.textContent=site;siteSelect.appendChild(opt);});tankSelect.innerHTML='<option value="all">All Tanks</option>';historicalData.tanks.forEach((t,i)=>{const opt=document.createElement('option');opt.value=i;opt.textContent=`${t.site} - ${t.label}`;tankSelect.appendChild(opt);});}
-funct)HTML" R"HTML(ion getFilteredData(){const site=document.getElementById('siteFilter').value;const tankIdx=document.getElementById('tankFilter').value;const range=document.getElementById('rangeSelect').value;const now=Date.now()/1000;let cutoff=now-30*86400;let cutoffEnd=now;if(range==='24h')cutoff=now-86400;else if(range==='7d')cutoff=now-7*86400;else if(range==='90d')cutoff=now-90*86400;else if(range==='6mo')cutoff=now-180*86400;else if(range==='1yr')cutoff=now-365*86400;else if(range==='2yr')cutoff=now-730*86400;else if(range==='custom'){const sd=document.getElementById('startDate').value;const ed=document.getElementById('endDate').value;if(sd)cutoff=new Date(sd).getTime()/1000;if(ed)cutoffEnd=new Date(ed+'T23:59:59').getTime()/1000;}let tanks=historicalData.tanks;if(site!=='all')tanks=tanks.filter(t=>t.site===site);if(tankIdx!=='all')tanks=[historicalData.tanks[parseInt(tankIdx)]];return{tanks,cutoff,cutoffEnd};}
-funct)HTML" R"HTML(ion renderLevelChart(){const ctx=document.getElementById('levelChart').getContext('2d');const{tanks,cutoff,cutoffEnd}=getFilteredData();if(levelChart)levelChart.destroy();const datasets=tanks.slice(0,8).map((tank,i)=>{const data=tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).map(r=>({x:new Date(r.timestamp*1000),y:r.level}));return{label:`${tank.site} - ${tank.label}`,data,borderColor:CHART_COLORS[i%CHART_COLORS.length],backgroundColor:CHART_COLORS[i%CHART_COLORS.length]+'20',fill:false,tension:0.3,pointRadius:0};});levelChart=new Chart(ctx,{type:'line',data:{datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{intersect:false,mode:'index'},scales:{x:{type:'time',time:{unit:'day',displayFormats:{hour:'MMM d, HH:mm',day:'MMM d'}},grid:{color:'var(--chart-grid)'}},y:{title:{display:true,text:'Level (inches)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{position:'bottom'}}}});}
+funct)HTML" R"HTML(ion initEmptyData(){historicalData={sites:{},sensors:[],alarms:[],voltage:[]};}
+funct)HTML" R"HTML(ion updateStats(){const totalSensors=historicalData.sensors.length;const now=Date.now()/1000;const today=now-86400;const week=now-7*86400;const alarmsToday=historicalData.alarms.filter(a=>a.timestamp>today).length;const alarmsWeek=historicalData.alarms.filter(a=>a.timestamp>week).length;document.getElementById('statTotalTanks').textContent=totalSensors;document.getElementById('statAlarmsToday').textContent=alarmsToday;document.getElementById('statAlarmsWeek').textContent=alarmsWeek;}
+funct)HTML" R"HTML(ion populateFilters(){const siteSelect=document.getElementById('siteFilter');const sensorSelect=document.getElementById('sensorFilter');siteSelect.innerHTML='<option value="all">All Sites</option>';Object.keys(historicalData.sites).sort().forEach(site=>{const opt=document.createElement('option');opt.value=site;opt.textContent=site;siteSelect.appendChild(opt);});sensorSelect.innerHTML='<option value="all">All Sensors</option>';historicalData.sensors.forEach((t,i)=>{const opt=document.createElement('option');opt.value=i;opt.textContent=`${t.site} - ${t.label}`;sensorSelect.appendChild(opt);});}
+funct)HTML" R"HTML(ion getFilteredData(){const site=document.getElementById('siteFilter').value;const sensorIdx=document.getElementById('sensorFilter').value;const range=document.getElementById('rangeSelect').value;const now=Date.now()/1000;let cutoff=now-30*86400;let cutoffEnd=now;if(range==='24h')cutoff=now-86400;else if(range==='7d')cutoff=now-7*86400;else if(range==='90d')cutoff=now-90*86400;else if(range==='6mo')cutoff=now-180*86400;else if(range==='1yr')cutoff=now-365*86400;else if(range==='2yr')cutoff=now-730*86400;else if(range==='custom'){const sd=document.getElementById('startDate').value;const ed=document.getElementById('endDate').value;if(sd)cutoff=new Date(sd).getTime()/1000;if(ed)cutoffEnd=new Date(ed+'T23:59:59').getTime()/1000;}let sensors=historicalData.sensors;if(site!=='all')sensors=sensors.filter(t=>t.site===site);if(sensorIdx!=='all')sensors=[historicalData.sensors[parseInt(sensorIdx)]];return{sensors,cutoff,cutoffEnd};}
+funct)HTML" R"HTML(ion renderLevelChart(){const ctx=document.getElementById('levelChart').getContext('2d');const{sensors,cutoff,cutoffEnd}=getFilteredData();if(levelChart)levelChart.destroy();const datasets=sensors.slice(0,8).map((tank,i)=>{const data=tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).map(r=>({x:new Date(r.timestamp*1000),y:r.level}));return{label:`${rec.site} - ${rec.label}`,data,borderColor:CHART_COLORS[i%CHART_COLORS.length],backgroundColor:CHART_COLORS[i%CHART_COLORS.length]+'20',fill:false,tension:0.3,pointRadius:0};});levelChart=new Chart(ctx,{type:'line',data:{datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{intersect:false,mode:'index'},scales:{x:{type:'time',time:{unit:'day',displayFormats:{hour:'MMM d, HH:mm',day:'MMM d'}},grid:{color:'var(--chart-grid)'}},y:{title:{display:true,text:'Level (inches)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{position:'bottom'}}}});}
 funct)HTML" R"HTML(ion renderAlarmChart(){const ctx=document.getElementById('alarmChart').getContext('2d');if(alarmChart)alarmChart.destroy();const sites=Object.keys(historicalData.sites);const highCounts=sites.map(s=>historicalData.alarms.filter(a=>a.site===s&&a.type==='HIGH').length);const lowCounts=sites.map(s=>historicalData.alarms.filter(a=>a.site===s&&a.type==='LOW').length);alarmChart=new Chart(ctx,{type:'bar',data:{labels:sites,datasets:[{label:'High Alarms',data:highCounts,backgroundColor:'#ef4444'},{label:'Low Alarms',data:lowCounts,backgroundColor:'#f59e0b'}]},options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,beginAtZero:true,title:{display:true,text:'Alarm Count'}}},plugins:{legend:{position:'bottom'}}}});}
 funct)HTML" R"HTML(ion renderVoltageChart(){const ctx=document.getElementById('voltageChart').getContext('2d');if(voltageChart)voltageChart.destroy();const data=historicalData.voltage.map(v=>({x:new Date(v.timestamp*1000),y:v.voltage}));if(!data.length){voltageChart=null;return;}var vals=data.map(d=>d.y);var vMin=Math.min(...vals);var vMax=Math.max(...vals);var yMin,yMax;if(vMax<=6){yMin=0;yMax=6;}else if(vMax<=15){yMin=10;yMax=15;}else{yMin=Math.floor(vMin-1);yMax=Math.ceil(vMax+1);}voltageChart=new Chart(ctx,{type:'line',data:{datasets:[{label:'VIN Voltage',data,borderColor:'#10b981',backgroundColor:'#10b98120',fill:true,tension:0.3,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false,scales:{x:{type:'time',time:{unit:'day'},grid:{color:'var(--chart-grid)'}},y:{min:yMin,max:yMax,title:{display:true,text:'Voltage (V)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{display:false}}}});}
 funct)HTML" R"HTML(ion createSparkline(container,data){const width=container.clientWidth||100;const height=40;const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;container.appendChild(canvas);const ctx=canvas.getContext('2d');if(!data||data.length<2)return;const values=data.map(d=>d.level);const min=Math.min(...values);const max=Math.max(...values);const range=max-min||1;ctx.strokeStyle='#2563eb';ctx.lineWidth=1.5;ctx.beginPath();data.forEach((d,i)=>{const x=i/(data.length-1)*width;const y=height-(d.level-min)/range*height;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();}
-funct)HTML" R"HTML(ion renderSites(){const container=document.getElementById('sitesContainer');container.innerHTML='';Object.keys(historicalData.sites).sort().forEach(siteName=>{const tanks=historicalData.sites[siteName];const alarmCount=historicalData.alarms.filter(a=>a.site===siteName).length;const siteCard=document.createElement('div');siteCard.className='site-card';siteCard.innerHTML=`<div class="site-header" onclick="this.nextElementSibling.classList.toggle('expanded')"><h3>${siteName}</h3><div class="site-stats"><span>${tanks.length} Tank${tanks.length!==1?'s':''}</span>${alarmCount>0?`<span class="alarm-badge">${alarmCount} Alarms</span>`:''}</div></div><div class="site-content"><div class="tank-grid"></div></div>`;const grid=siteCard.querySelector('.tank-grid');tanks.forEach(tank=>{const change=tank.change24h||0;const changeClass=change>=0?'positive':'negative';const changeSign=change>=0?'+':'';const tankCard=document.createElement('div');tankCard.className='tank-card';tankCard.innerHTML=`<div class="tank-header"><div><div class="tank-name">${tank.label}</div><div class="tank-level">${formatLevel(tank.currentLevel)}</div></div><div class="tank-change ${changeClass}">${changeSign}${change.toFixed(1)}" 24h</div></div><div class="sparkline"></div><div class="tank-footer"><span>Updated: ${formatEpoch(tank.readings[tank.readings.length-1]?.timestamp)}</span></div>`;grid.appendChild(tankCard);const sparklineEl=tankCard.querySelector('.sparkline');const last24h=tank.readings.slice(-24);setTimeout(()=>createSparkline(sparklineEl,last24h),0);});container.appendChild(siteCard);});}
-async funct)HTML" R"HTML(ion loadHistoricalData(){const tankIdx=document.getElementById('tankFilter').value;const range=document.getElementById('rangeSelect').value;let apiDays=90;if(tankIdx!=='all'){apiDays=0;}else{const rangeDays={'24h':7,'7d':7,'30d':30,'90d':90,'6mo':180,'1yr':365,'2yr':730};apiDays=rangeDays[range]||90;}const url=apiDays>0?'/api/history?days='+apiDays:'/api/history';try{const res=await fetch(url);if(!res.ok)throw new Error('Failed to load historical data');const data=await res.json();if(data.tanks&&data.tanks.length>0){historicalData=data;}else{initEmptyData();}if(data.dataInfo){const banner=document.getElementById('dataSourceBanner');if(banner){let msg='Data: RAM ('+data.settings.hotTierDays+'d)';if(data.dataInfo.warmTierAvailable)msg+=' + Flash ('+data.settings.warmTierMonths+'mo)';if(data.dataInfo.coldTierAvailable)msg+=' + FTP Archive';else msg+=' | Enable FTP for full archive';if(data.dataInfo.rangeNote)msg+=' — '+data.dataInfo.rangeNote;banner.textContent=msg;banner.style.display='';banner.style.background=data.dataInfo.coldTierAvailable?'#d1fae5':'#fef3c7';banner.style.color=data.dataInfo.coldTierAvailable?'#065f46':'#92400e';}}updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}catch(err){console.warn('No historical data available:',err.message);initEmptyData();updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}}
-window.refreshData=funct)HTML" R"HTML(ion(){loadHistoricalData();showToast('Data refreshed');};window.exportData=funct)HTML" R"HTML(ion(){const{tanks,cutoff,cutoffEnd}=getFilteredData();let csv='Site,Tank,Timestamp,Level (inches)\n';tanks.forEach(tank=>{tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).forEach(r=>{csv+=`"${tank.site}","${tank.label}",${new Date(r.timestamp*1000).toISOString()},${r.level.toFixed(2)}\n`;});});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='tank_history.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');};document.getElementById('siteFilter').addEventListener('change',renderLevelChart);document.getElementById('tankFilter').addEventListener('change',function(){loadHistoricalData();});document.getElementById('rangeSelect').addEventListener('change',function(){const sd=document.getElementById('startDate');const ed=document.getElementById('endDate');if(this.value==='custom'){sd.style.display='';ed.style.display='';if(!sd.value){const d=new Date();d.setDate(d.getDate()-7);sd.value=d.toISOString().split('T')[0];}if(!ed.value){ed.value=new Date().toISOString().split('T')[0];}}else{sd.style.display='none';ed.style.display='none';}loadHistoricalData();});loadHistoricalData();/* ARCHIVED CLIENTS */let archivedChart=null;async function loadArchivedClients(){try{const res=await fetch('/api/history/archived');if(!res.ok)return;const data=await res.json();const archives=data.archives||[];if(!archives.length)return;const card=document.getElementById('archivedCard');card.style.display='';const list=document.getElementById('archivedList');list.innerHTML='';archives.forEach((a,idx)=>{const div=document.createElement('div');div.className='site-card';div.style.cursor='pointer';div.style.padding='12px 16px';div.style.marginBottom='8px';const d1=a.firstSeenEpoch?new Date(a.firstSeenEpoch*1000).toLocaleDateString(undefined,{month:'short',year:'numeric'}):'?';const d2=a.lastUpdateEpoch?new Date(a.lastUpdateEpoch*1000).toLocaleDateString(undefined,{month:'short',year:'numeric'}):'?';div.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><div><strong>'+escHtml(a.displayLabel||a.site||a.clientUid)+'</strong><div style="font-size:0.85rem;color:var(--muted);margin-top:4px">'+a.sensorCount+' sensor'+(a.sensorCount!==1?'s':'')+' &bull; '+d1+' &mdash; '+d2+'</div></div><button class="pill secondary" style="font-size:0.8rem" data-idx="'+idx+'">Load Data</button></div>';div.querySelector('button').addEventListener('click',function(e){e.stopPropagation();loadArchivedData(a.ftpFile,a.displayLabel||a.site);});list.appendChild(div);});}catch(e){console.warn('Archived clients:',e.message);}}function escHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}async function loadArchivedData(ftpFile,label){try{showToast('Loading archived data from FTP...');const res=await fetch('/api/history/archived?file='+encodeURIComponent(ftpFile));if(!res.ok)throw new Error('Failed to load archive');const data=await res.json();const wrap=document.getElementById('archivedChartWrap');wrap.style.display='';const ctx=document.getElementById('archivedChart').getContext('2d');if(archivedChart)archivedChart.destroy();const datasets=[];const COLORS=['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899'];if(data.history&&data.history.length){data.history.forEach((h,i)=>{const pts=(h.readings||[]).map(r=>({x:new Date(r[0]*1000),y:r[1]}));if(pts.length)datasets.push({label:(data.site||'')+' Sensor '+h.sensorIndex,data:pts,borderColor:COLORS[i%COLORS.length],backgroundColor:COLORS[i%COLORS.length]+'20',fill:false,tension:0.3,pointRadius:0});});}if(!datasets.length){wrap.style.display='none';showToast('No chart data in archive',true);return;}archivedChart=new Chart(ctx,{type:'line',data:{datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{intersect:false,mode:'index'},scales:{x:{type:'time',time:{unit:'day'},grid:{color:'var(--chart-grid)'}},y:{title:{display:true,text:'Level (inches)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{position:'bottom'}}}});showToast('Loaded: '+label);}catch(e){showToast(e.message||'Archive load failed',true);}}loadArchivedClients();})();})();
+funct)HTML" R"HTML(ion renderSites(){const container=document.getElementById('sitesContainer');container.innerHTML='';Object.keys(historicalData.sites).sort().forEach(siteName=>{const sensors=historicalData.sites[siteName];const alarmCount=historicalData.alarms.filter(a=>a.site===siteName).length;const siteCard=document.createElement('div');siteCard.className='site-card';siteCard.innerHTML=`<div class="site-header" onclick="this.nextElementSibling.classList.toggle('expanded')"><h3>${siteName}</h3><div class="site-stats"><span>${sensors.length} Tank${sensors.length!==1?'s':''}</span>${alarmCount>0?`<span class="alarm-badge">${alarmCount} Alarms</span>`:''}</div></div><div class="site-content"><div class="sensor-grid"></div></div>`;const grid=siteCard.querySelector('.sensor-grid');sensors.forEach(tank=>{const change=tank.change24h||0;const changeClass=change>=0?'positive':'negative';const changeSign=change>=0?'+':'';const tankCard=document.createElement('div');tankCard.className='sensor-card';tankCard.innerHTML=`<div class="tank-header"><div><div class="tank-name">${rec.label}</div><div class="sensor-level">${formatLevel(tank.currentLevel)}</div></div><div class="tank-change ${changeClass}">${changeSign}${change.toFixed(1)}" 24h</div></div><div class="sparkline"></div><div class="tank-footer"><span>Updated: ${formatEpoch(tank.readings[tank.readings.length-1]?.timestamp)}</span></div>`;grid.appendChild(tankCard);const sparklineEl=tankCard.querySelector('.sparkline');const last24h=tank.readings.slice(-24);setTimeout(()=>createSparkline(sparklineEl,last24h),0);});container.appendChild(siteCard);});}
+async funct)HTML" R"HTML(ion loadHistoricalData(){const sensorIdx=document.getElementById('sensorFilter').value;const range=document.getElementById('rangeSelect').value;let apiDays=90;if(sensorIdx!=='all'){apiDays=0;}else{const rangeDays={'24h':7,'7d':7,'30d':30,'90d':90,'6mo':180,'1yr':365,'2yr':730};apiDays=rangeDays[range]||90;}const url=apiDays>0?'/api/history?days='+apiDays:'/api/history';try{const res=await fetch(url);if(!res.ok)throw new Error('Failed to load historical data');const data=await res.json();if(data.sensors&&data.sensors.length>0){historicalData=data;}else{initEmptyData();}if(data.dataInfo){const banner=document.getElementById('dataSourceBanner');if(banner){let msg='Data: RAM ('+data.settings.hotTierDays+'d)';if(data.dataInfo.warmTierAvailable)msg+=' + Flash ('+data.settings.warmTierMonths+'mo)';if(data.dataInfo.coldTierAvailable)msg+=' + FTP Archive';else msg+=' | Enable FTP for full archive';if(data.dataInfo.rangeNote)msg+=' — '+data.dataInfo.rangeNote;banner.textContent=msg;banner.style.display='';banner.style.background=data.dataInfo.coldTierAvailable?'#d1fae5':'#fef3c7';banner.style.color=data.dataInfo.coldTierAvailable?'#065f46':'#92400e';}}updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}catch(err){console.warn('No historical data available:',err.message);initEmptyData();updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}}
+window.refreshData=funct)HTML" R"HTML(ion(){loadHistoricalData();showToast('Data refreshed');};window.exportData=funct)HTML" R"HTML(ion(){const{sensors,cutoff,cutoffEnd}=getFilteredData();let csv='Site,Tank,Timestamp,Level (inches)\n';sensors.forEach(tank=>{tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).forEach(r=>{csv+=`"${rec.site}","${rec.label}",${new Date(r.timestamp*1000).toISOString()},${r.level.toFixed(2)}\n`;});});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='tank_history.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');};document.getElementById('siteFilter').addEventListener('change',renderLevelChart);document.getElementById('sensorFilter').addEventListener('change',function(){loadHistoricalData();});document.getElementById('rangeSelect').addEventListener('change',function(){const sd=document.getElementById('startDate');const ed=document.getElementById('endDate');if(this.value==='custom'){sd.style.display='';ed.style.display='';if(!sd.value){const d=new Date();d.setDate(d.getDate()-7);sd.value=d.toISOString().split('T')[0];}if(!ed.value){ed.value=new Date().toISOString().split('T')[0];}}else{sd.style.display='none';ed.style.display='none';}loadHistoricalData();});loadHistoricalData();/* ARCHIVED CLIENTS */let archivedChart=null;async function loadArchivedClients(){try{const res=await fetch('/api/history/archived');if(!res.ok)return;const data=await res.json();const archives=data.archives||[];if(!archives.length)return;const card=document.getElementById('archivedCard');card.style.display='';const list=document.getElementById('archivedList');list.innerHTML='';archives.forEach((a,idx)=>{const div=document.createElement('div');div.className='site-card';div.style.cursor='pointer';div.style.padding='12px 16px';div.style.marginBottom='8px';const d1=a.firstSeenEpoch?new Date(a.firstSeenEpoch*1000).toLocaleDateString(undefined,{month:'short',year:'numeric'}):'?';const d2=a.lastUpdateEpoch?new Date(a.lastUpdateEpoch*1000).toLocaleDateString(undefined,{month:'short',year:'numeric'}):'?';div.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><div><strong>'+escHtml(a.displayLabel||a.site||a.clientUid)+'</strong><div style="font-size:0.85rem;color:var(--muted);margin-top:4px">'+a.sensorCount+' sensor'+(a.sensorCount!==1?'s':'')+' &bull; '+d1+' &mdash; '+d2+'</div></div><button class="pill secondary" style="font-size:0.8rem" data-idx="'+idx+'">Load Data</button></div>';div.querySelector('button').addEventListener('click',function(e){e.stopPropagation();loadArchivedData(a.ftpFile,a.displayLabel||a.site);});list.appendChild(div);});}catch(e){console.warn('Archived clients:',e.message);}}function escHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}async function loadArchivedData(ftpFile,label){try{showToast('Loading archived data from FTP...');const res=await fetch('/api/history/archived?file='+encodeURIComponent(ftpFile));if(!res.ok)throw new Error('Failed to load archive');const data=await res.json();const wrap=document.getElementById('archivedChartWrap');wrap.style.display='';const ctx=document.getElementById('archivedChart').getContext('2d');if(archivedChart)archivedChart.destroy();const datasets=[];const COLORS=['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899'];if(data.history&&data.history.length){data.history.forEach((h,i)=>{const pts=(h.readings||[]).map(r=>({x:new Date(r[0]*1000),y:r[1]}));if(pts.length)datasets.push({label:(data.site||'')+' Sensor '+h.sensorIndex,data:pts,borderColor:COLORS[i%COLORS.length],backgroundColor:COLORS[i%COLORS.length]+'20',fill:false,tension:0.3,pointRadius:0});});}if(!datasets.length){wrap.style.display='none';showToast('No chart data in archive',true);return;}archivedChart=new Chart(ctx,{type:'line',data:{datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{intersect:false,mode:'index'},scales:{x:{type:'time',time:{unit:'day'},grid:{color:'var(--chart-grid)'}},y:{title:{display:true,text:'Level (inches)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{position:'bottom'}}}});showToast('Loaded: '+label);}catch(e){showToast(e.message||'Archive load failed',true);}}loadArchivedClients();})();})();
 </script></body></html>)HTML";
 
 static const char TRANSMISSION_LOG_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Transmission Log - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Outbound Transmission Log</h2><p style="color:var(--muted);margin-bottom:16px;">Log of messages sent from the server to clients and external services via Notehub. Shows the most recent 100 transmissions.</p><div class="controls"><button id="refreshBtn">Refresh</button><select id="typeFilter"><option value="all">All Types</option><option value="sms">SMS</option><option value="email">Email</option><option value="config">Config</option><option value="relay">Relay</option><option value="relay_clear">Relay Clear</option><option value="viewer_summary">Viewer Summary</option><option value="serial_request">Serial Request</option><option value="location_request">Location Request</option></select><select id="statusFilter"><option value="all">All Statuses</option><option value="outbox">Outbox</option><option value="sent">Sent</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select><input type="text" id="searchInput" placeholder="Filter by site or client..." style="max-width:250px;"><button class="secondary" id="exportBtn">Export CSV</button><button class="secondary" id="cancelAllBtn" style="display:none;background:#fee2e2;color:#991b1b;border-color:#fca5a5;">Cancel All Pending</button></div><table><thead><tr><th>Date/Time</th><th>Site</th><th>Client ID</th><th>Type</th><th>Status</th><th>Detail</th><th style="width:80px;">Actions</th></tr></thead><tbody id="logBody"><tr><td colspan="7" class="empty-state">Loading...</td></tr></tbody></table></div></main><div id="toast"></div><script>(async ()=>{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);)HTML"
@@ -1673,17 +1673,17 @@ const grad=ctx.createLinearGradient(0,pad,0,height);grad.addColorStop(0,(color||
 const label=document.createElement('span');label.className='spark-label';const spanSec=readings.length>=2?(readings[readings.length-1].timestamp-readings[0].timestamp):0;const spanDays=Math.round(spanSec/86400);let spanText=spanDays>=60?Math.round(spanDays/30)+'mo':spanDays>=2?spanDays+'d':'<1d';label.textContent=readings.length+'pts / '+spanText;container.appendChild(label);}
 async function loadSparklineData(){
 try{const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),10000);const res=await fetch('/api/history?days=90',{signal:ac.signal});clearTimeout(tid);if(!res.ok)return;const data=await res.json();
-if(!data.tanks||!data.tanks.length)return;
-const map={};data.tanks.forEach(t=>{const key=(t.client||'')+'|'+(t.sensorIndex||1);map[key]=t.readings||[];});
+if(!data.sensors||!data.sensors.length)return;
+const map={};data.sensors.forEach(t=>{const key=(t.client||'')+'|'+(t.sensorIndex||1);map[key]=t.readings||[];});
 state.sparkData=map;renderSparklines();}catch(e){console.warn('Sparkline data unavailable:',e.message);}}
 function renderSparklines(){
 document.querySelectorAll('.dc-sparkline[data-spark-key]').forEach(el=>{
 const key=el.dataset.sparkKey;const readings=state.sparkData[key];if(readings&&readings.length>=2){el.innerHTML='';drawSparkline(el,readings,el.dataset.sparkColor);}});}
-function buildSiteModel(rawClients){const sites={};rawClients.forEach(c=>{const uid=c.c||'';const site=c.s||'Unknown Site';if(!sites[site])sites[site]={name:site,clients:{}};if(!sites[site].clients[uid])sites[site].clients[uid]={uid:uid,alarm:!!c.a,lastUpdate:c.u||0,vinVoltage:c.v,vinVoltageEpoch:c.ve,tanks:[]};const cl=sites[site].clients[uid];if(c.a)cl.alarm=true;if(c.u>cl.lastUpdate)cl.lastUpdate=c.u;const tanks=Array.isArray(c.ts)?c.ts:[];if(tanks.length){tanks.forEach((t,idx)=>{cl.tanks.push({label:t.n||c.n||'Sensor',sensorIndex:t.k||'',userNumber:t.un||0,levelInches:t.l,sensorMa:t.ma,sensorType:t.st||'',objectType:t.ot||'tank',measurementUnit:t.mu||'',contents:t.ct||'',alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,change24h:t.d,tankIdx:idx,_clientUid:uid});});}else if(c.u){cl.tanks.push({label:c.n||'Sensor',sensorIndex:c.k||'',userNumber:c.un||0,levelInches:c.l,sensorMa:c.ma,sensorType:'',objectType:'tank',measurementUnit:'',contents:'',alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,change24h:undefined,tankIdx:0,_clientUid:uid});}});return sites;}
+function buildSiteModel(rawClients){const sites={};rawClients.forEach(c=>{const uid=c.c||'';const site=c.s||'Unknown Site';if(!sites[site])sites[site]={name:site,clients:{}};if(!sites[site].clients[uid])sites[site].clients[uid]={uid:uid,alarm:!!c.a,lastUpdate:c.u||0,vinVoltage:c.v,vinVoltageEpoch:c.ve,sensors:[]};const cl=sites[site].clients[uid];if(c.a)cl.alarm=true;if(c.u>cl.lastUpdate)cl.lastUpdate=c.u;const sensors=Array.isArray(c.ts)?c.ts:[];if(sensors.length){sensors.forEach((t,idx)=>{cl.sensors.push({label:t.n||c.n||'Sensor',sensorIndex:t.k||'',userNumber:t.un||0,levelInches:t.l,sensorMa:t.ma,sensorType:t.st||'',objectType:t.ot||'tank',measurementUnit:t.mu||'',contents:t.ct||'',alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,change24h:t.d,sensorIdx:idx,_clientUid:uid});});}else if(c.u){cl.sensors.push({label:c.n||'Sensor',sensorIndex:c.k||'',userNumber:c.un||0,levelInches:c.l,sensorMa:c.ma,sensorType:'',objectType:'tank',measurementUnit:'',contents:'',alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,change24h:undefined,sensorIdx:0,_clientUid:uid});}});return sites;}
 )HTML" R"HTML(
 function clientStatusColor(cl){if(cl.alarm)return'red';if(!cl.lastUpdate||isStale(cl.lastUpdate))return'yellow';return'green';}
 function renderSites(){const container=els.siteContainer;container.innerHTML='';const siteNames=Object.keys(state.sites).sort();if(!siteNames.length){container.innerHTML='<div class="no-data">No telemetry available yet.</div>';return;}
-siteNames.forEach(siteName=>{const site=state.sites[siteName];const section=document.createElement('div');section.className='site-section';const clientList=Object.values(site.clients);const hasAlarm=clientList.some(c=>c.alarm);const head=document.createElement('div');head.className='site-head';if(hasAlarm)head.style.borderLeft='4px solid var(--danger)';const left=document.createElement('div');left.innerHTML=`<div class="site-name">${escapeHtml(siteName)}</div>`;const right=document.createElement('div');right.className='site-actions';const dots=document.createElement('div');dots.className='client-dots';dots.title='Client status indicators - click to expand';clientList.forEach(cl=>{const dot=document.createElement('span');dot.className='cdot '+clientStatusColor(cl);dot.title=cl.uid;dot.dataset.uid=cl.uid;dot.dataset.site=siteName;dot.addEventListener('click',()=>toggleDotInfo(section,cl,siteName));dots.appendChild(dot);});right.appendChild(dots);const manageBtn=document.createElement('a');manageBtn.className='pill secondary';manageBtn.style.cssText='font-size:0.75rem;padding:3px 10px;';manageBtn.href='/site-config?site='+encodeURIComponent(siteName);manageBtn.textContent='Manage';right.appendChild(manageBtn);head.appendChild(left);head.appendChild(right);section.appendChild(head);const infoSlot=document.createElement('div');infoSlot.className='cdot-info-slot';section.appendChild(infoSlot);const grid=document.createElement('div');grid.className='data-grid';const allTanks=[];clientList.forEach(cl=>{cl.tanks.forEach(t=>{t._clientUid=cl.uid;t._vinVoltage=cl.vinVoltage;allTanks.push(t);});if(!cl.tanks.length){allTanks.push({label:'Configured Client',sensorIndex:'',objectType:'pending',lastUpdate:0,_clientUid:cl.uid,_vinVoltage:cl.vinVoltage,alarm:false});}});const grouped={};allTanks.forEach(t=>{const ot=t.objectType||'tank';if(!grouped[ot])grouped[ot]=[];grouped[ot].push(t);});const typeOrder=['tank','gas','rpm','flow','engine','pump','pending'];typeOrder.forEach(ot=>{if(!grouped[ot])return;grouped[ot].forEach(t=>{grid.appendChild(renderDataCard(t,siteName));});});Object.keys(grouped).filter(ot=>!typeOrder.includes(ot)).forEach(ot=>{grouped[ot].forEach(t=>{grid.appendChild(renderDataCard(t,siteName));});});section.appendChild(grid);container.appendChild(section);});}
+siteNames.forEach(siteName=>{const site=state.sites[siteName];const section=document.createElement('div');section.className='site-section';const clientList=Object.values(site.clients);const hasAlarm=clientList.some(c=>c.alarm);const head=document.createElement('div');head.className='site-head';if(hasAlarm)head.style.borderLeft='4px solid var(--danger)';const left=document.createElement('div');left.innerHTML=`<div class="site-name">${escapeHtml(siteName)}</div>`;const right=document.createElement('div');right.className='site-actions';const dots=document.createElement('div');dots.className='client-dots';dots.title='Client status indicators - click to expand';clientList.forEach(cl=>{const dot=document.createElement('span');dot.className='cdot '+clientStatusColor(cl);dot.title=cl.uid;dot.dataset.uid=cl.uid;dot.dataset.site=siteName;dot.addEventListener('click',()=>toggleDotInfo(section,cl,siteName));dots.appendChild(dot);});right.appendChild(dots);const manageBtn=document.createElement('a');manageBtn.className='pill secondary';manageBtn.style.cssText='font-size:0.75rem;padding:3px 10px;';manageBtn.href='/site-config?site='+encodeURIComponent(siteName);manageBtn.textContent='Manage';right.appendChild(manageBtn);head.appendChild(left);head.appendChild(right);section.appendChild(head);const infoSlot=document.createElement('div');infoSlot.className='cdot-info-slot';section.appendChild(infoSlot);const grid=document.createElement('div');grid.className='data-grid';const allSensors=[];clientList.forEach(cl=>{cl.sensors.forEach(t=>{t._clientUid=cl.uid;t._vinVoltage=cl.vinVoltage;allSensors.push(t);});if(!cl.sensors.length){allSensors.push({label:'Configured Client',sensorIndex:'',objectType:'pending',lastUpdate:0,_clientUid:cl.uid,_vinVoltage:cl.vinVoltage,alarm:false});}});const grouped={};allSensors.forEach(t=>{const ot=t.objectType||'tank';if(!grouped[ot])grouped[ot]=[];grouped[ot].push(t);});const typeOrder=['tank','gas','rpm','flow','engine','pump','pending'];typeOrder.forEach(ot=>{if(!grouped[ot])return;grouped[ot].forEach(t=>{grid.appendChild(renderDataCard(t,siteName));});});Object.keys(grouped).filter(ot=>!typeOrder.includes(ot)).forEach(ot=>{grouped[ot].forEach(t=>{grid.appendChild(renderDataCard(t,siteName));});});section.appendChild(grid);container.appendChild(section);});}
 )HTML" R"HTML(
 function renderDataCard(t,siteName){const card=document.createElement('div');card.className='data-card';if(t.alarm)card.classList.add('alarm-card');if(t.objectType==='pending'){card.style.opacity='0.6';card.innerHTML=`<div class="dc-type">AWAITING DATA</div><div class="dc-name" style="font-size:0.9rem;">Configured Client</div><div style="font-size:0.85rem;color:var(--muted);margin-top:6px;"><code style="font-size:0.8rem;">${escapeHtml(t._clientUid)}</code></div><div class="dc-meta"><span>Awaiting first report</span><a class="pill secondary" style="font-size:0.7rem;padding:2px 8px;" href="/config-generator?uid=${encodeURIComponent(t._clientUid)}">Edit Config</a></div>`;return card;}
 const ot=t.objectType||'tank';const mu=unitLabel(t.measurementUnit,ot);const val=formatValue(t.levelInches,t.measurementUnit,ot);const stale=isStale(t.lastUpdate);let changeHtml='';if(typeof t.change24h==='number'){const cls=t.change24h>=0?'pos':'neg';const sign=t.change24h>=0?'+':'';changeHtml=`<span class="dc-change ${cls}">${sign}${t.change24h.toFixed(1)} ${mu}/24h</span>`;}
@@ -1691,20 +1691,20 @@ let alarmHtml='';if(t.alarm)alarmHtml=`<div class="dc-alarm">ALARM: ${escapeHtml
 let contentsHtml='';if(t.contents)contentsHtml=`<div class="dc-contents">${escapeHtml(t.contents)}</div>`;
 const staleBadge=stale&&t.lastUpdate?`<span class="status-pill stale">Stale</span>`:'';
 let sparkHtml='';if(SPARKLINE_TYPES.has(ot)){const sparkKey=escapeHtml(t._clientUid)+'|'+(t.sensorIndex||1);const sparkColor=ot==='gas'?'#f59e0b':ot==='flow'?'#10b981':'#2563eb';sparkHtml=`<div class="dc-sparkline" data-spark-key="${sparkKey}" data-spark-color="${sparkColor}"><span class="spark-label">Loading trend...</span></div>`;}
-card.innerHTML=`<div class="dc-type">${objectTypeLabel(ot)} ${staleBadge}</div><div class="dc-name">${escapeHtml(t.label||'Sensor')}${t.userNumber?' #'+t.userNumber:''}</div>${contentsHtml}<div class="dc-value">${val} <small>${escapeHtml(mu)}</small></div>${sparkHtml}${changeHtml}${alarmHtml}<div class="dc-meta"><span>${timeAgo(t.lastUpdate)}</span>${t._vinVoltage&&t._vinVoltage>0?'<span>VIN: '+t._vinVoltage.toFixed(2)+'V</span>':''}</div><div class="dc-actions"><button class="secondary btn-small" onclick="refreshTank('${escapeHtml(t._clientUid)}')" ${state.refreshing?'disabled':''}>Refresh</button><button class="secondary btn-small" onclick="clearRelays('${escapeHtml(t._clientUid)}',${t.tankIdx||0})" ${state.refreshing?'disabled':''}>Clear Relay</button></div>`;return card;}
+card.innerHTML=`<div class="dc-type">${objectTypeLabel(ot)} ${staleBadge}</div><div class="dc-name">${escapeHtml(t.label||'Sensor')}${t.userNumber?' #'+t.userNumber:''}</div>${contentsHtml}<div class="dc-value">${val} <small>${escapeHtml(mu)}</small></div>${sparkHtml}${changeHtml}${alarmHtml}<div class="dc-meta"><span>${timeAgo(t.lastUpdate)}</span>${t._vinVoltage&&t._vinVoltage>0?'<span>VIN: '+t._vinVoltage.toFixed(2)+'V</span>':''}</div><div class="dc-actions"><button class="secondary btn-small" onclick="refreshSensor('${escapeHtml(t._clientUid)}')" ${state.refreshing?'disabled':''}>Refresh</button><button class="secondary btn-small" onclick="clearRelays('${escapeHtml(t._clientUid)}',${t.sensorIdx||0})" ${state.refreshing?'disabled':''}>Clear Relay</button></div>`;return card;}
 )HTML" R"HTML(
-function toggleDotInfo(section,cl,siteName){const slot=section.querySelector('.cdot-info-slot');if(state.expandedDot===cl.uid){slot.innerHTML='';state.expandedDot=null;return;}state.expandedDot=cl.uid;const color=clientStatusColor(cl);const statusText=cl.alarm?'ALARM':isStale(cl.lastUpdate)?'Stale / No Data':'Online';const tankCount=cl.tanks.length;slot.innerHTML=`<div class="cdot-info open"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><div><strong>${escapeHtml(cl.uid)}</strong><span class="status-pill ${color==='red'?'alarm':color==='yellow'?'stale':'ok'}" style="margin-left:8px;">${statusText}</span></div><div style="display:flex;gap:6px;"><a class="pill secondary" style="font-size:0.75rem;padding:2px 10px;" href="/config-generator?uid=${encodeURIComponent(cl.uid)}">Edit Config</a><a class="pill secondary" style="font-size:0.75rem;padding:2px 10px;" href="/site-config?site=${encodeURIComponent(siteName)}">Site Config</a><button class="pill secondary" style="font-size:0.75rem;padding:2px 10px;color:var(--danger);border-color:var(--danger);" onclick="deleteClient('${escapeHtml(cl.uid)}')">Remove Client</button></div></div><div style="margin-top:6px;color:var(--muted);font-size:0.85rem;">${tankCount} sensor${tankCount!==1?'s':''} &middot; Last update: ${formatEpoch(cl.lastUpdate)} &middot; VIN: ${formatVoltage(cl.vinVoltage)}</div></div>`;}
-function updateStats(){const allClients=Object.values(state.sites).flatMap(s=>Object.values(s.clients));const allTanks=allClients.flatMap(c=>c.tanks);const clientIds=new Set(allClients.map(c=>c.uid));if(els.statClients)els.statClients.textContent=clientIds.size;if(els.statTanks)els.statTanks.textContent=allTanks.length;if(els.statAlarms)els.statAlarms.textContent=allTanks.filter(t=>t.alarm).length;const stale=allTanks.filter(t=>isStale(t.lastUpdate)).length;if(els.statStale)els.statStale.textContent=stale;}
+function toggleDotInfo(section,cl,siteName){const slot=section.querySelector('.cdot-info-slot');if(state.expandedDot===cl.uid){slot.innerHTML='';state.expandedDot=null;return;}state.expandedDot=cl.uid;const color=clientStatusColor(cl);const statusText=cl.alarm?'ALARM':isStale(cl.lastUpdate)?'Stale / No Data':'Online';const sensorCount=cl.sensors.length;slot.innerHTML=`<div class="cdot-info open"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><div><strong>${escapeHtml(cl.uid)}</strong><span class="status-pill ${color==='red'?'alarm':color==='yellow'?'stale':'ok'}" style="margin-left:8px;">${statusText}</span></div><div style="display:flex;gap:6px;"><a class="pill secondary" style="font-size:0.75rem;padding:2px 10px;" href="/config-generator?uid=${encodeURIComponent(cl.uid)}">Edit Config</a><a class="pill secondary" style="font-size:0.75rem;padding:2px 10px;" href="/site-config?site=${encodeURIComponent(siteName)}">Site Config</a><button class="pill secondary" style="font-size:0.75rem;padding:2px 10px;color:var(--danger);border-color:var(--danger);" onclick="deleteClient('${escapeHtml(cl.uid)}')">Remove Client</button></div></div><div style="margin-top:6px;color:var(--muted);font-size:0.85rem;">${sensorCount} sensor${sensorCount!==1?'s':''} &middot; Last update: ${formatEpoch(cl.lastUpdate)} &middot; VIN: ${formatVoltage(cl.vinVoltage)}</div></div>`;}
+function updateStats(){const allClients=Object.values(state.sites).flatMap(s=>Object.values(s.clients));const allSensors=allClients.flatMap(c=>c.sensors);const clientIds=new Set(allClients.map(c=>c.uid));if(els.statClients)els.statClients.textContent=clientIds.size;if(els.statTanks)els.statTanks.textContent=allSensors.length;if(els.statAlarms)els.statAlarms.textContent=allSensors.filter(t=>t.alarm).length;const stale=allSensors.filter(t=>isStale(t.lastUpdate)).length;if(els.statStale)els.statStale.textContent=stale;}
 )HTML" R"HTML(
 function renderPauseButton(){const btn=els.pauseBtn;if(!btn)return;if(state.paused){btn.classList.add('paused');btn.style.display='';btn.textContent='Unpause';btn.title='Resume data flow';}else{btn.classList.remove('paused');btn.style.display='none';}}
 if(els.pauseBtn){els.pauseBtn.addEventListener('click',togglePause);els.pauseBtn.addEventListener('mouseenter',()=>{if(state.paused)els.pauseBtn.textContent='Resume';});els.pauseBtn.addEventListener('mouseleave',()=>{renderPauseButton();});}
 async function togglePause(){const target=!state.paused;try{const res=await fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:target})});if(!res.ok){throw new Error(await res.text()||'Pause toggle failed');}const data=await res.json();state.paused=!!data.paused;renderPauseButton();showToast(state.paused?'Paused for maintenance':'Resumed');}catch(err){showToast(err.message||'Pause toggle failed',true);}}
-async function refreshTank(clientUid){if(state.refreshing)return;state.refreshing=true;renderSites();try{const res=await fetch('/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client:clientUid})});if(!res.ok){throw new Error(await res.text()||'Refresh failed');}applyServerData(await res.json());showToast('Refreshed');}catch(err){showToast(err.message||'Refresh failed',true);}finally{state.refreshing=false;renderSites();}}
-window.refreshTank=refreshTank;
+async function refreshSensor(clientUid){if(state.refreshing)return;state.refreshing=true;renderSites();try{const res=await fetch('/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client:clientUid})});if(!res.ok){throw new Error(await res.text()||'Refresh failed');}applyServerData(await res.json());showToast('Refreshed');}catch(err){showToast(err.message||'Refresh failed',true);}finally{state.refreshing=false;renderSites();}}
+window.refreshSensor=refreshSensor;
 window.logout=function(){fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login';});};
-async function clearRelays(clientUid,tankIdx){if(state.refreshing)return;state.refreshing=true;renderSites();try{const res=await fetch('/api/relay/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid,tankIdx:tankIdx})});if(!res.ok){throw new Error(await res.text()||'Clear relay failed');}showToast('Relay clear command sent');setTimeout(()=>refreshData(),1000);}catch(err){showToast(err.message||'Clear relay failed',true);}finally{state.refreshing=false;renderSites();}}
+async function clearRelays(clientUid,sensorIdx){if(state.refreshing)return;state.refreshing=true;renderSites();try{const res=await fetch('/api/relay/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid,sensorIdx:sensorIdx})});if(!res.ok){throw new Error(await res.text()||'Clear relay failed');}showToast('Relay clear command sent');setTimeout(()=>refreshData(),1000);}catch(err){showToast(err.message||'Clear relay failed',true);}finally{state.refreshing=false;renderSites();}}
 window.clearRelays=clearRelays;
-async function deleteClient(clientUid){if(!confirm('Remove client '+clientUid+' and all its tank data? This cannot be undone.'))return;try{const res=await fetch('/api/client',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client:clientUid})});if(!res.ok){throw new Error(await res.text()||'Delete failed');}showToast('Client removed: '+clientUid);state.expandedDot=null;refreshData();}catch(err){showToast(err.message||'Failed to remove client',true);}}
+async function deleteClient(clientUid){if(!confirm('Remove client '+clientUid+' and all its sensor data? This cannot be undone.'))return;try{const res=await fetch('/api/client',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client:clientUid})});if(!res.ok){throw new Error(await res.text()||'Delete failed');}showToast('Client removed: '+clientUid);state.expandedDot=null;refreshData();}catch(err){showToast(err.message||'Failed to remove client',true);}}
 window.deleteClient=deleteClient;
 function applyServerData(data){state.clients=data.cs||[];state.sites=buildSiteModel(state.clients);const srv=data.srv||{};state.paused=!!srv.ps;state.uiRefreshS=DEFAULT_REFRESH_S;renderSites();renderPauseButton();updateStats();scheduleRefresh();if(Object.keys(state.sparkData).length){renderSparklines();}else{loadSparklineData();}if(!state.sparkTimer){state.sparkTimer=setInterval(loadSparklineData,300000);}}
 function scheduleRefresh(){if(state.timer)clearInterval(state.timer);state.timer=setInterval(refreshData,state.uiRefreshS*1000);}
@@ -1721,12 +1721,12 @@ function showToast(message,isError){if(els.toast)els.toast.textContent= message;
 function formatNumber(value){return(typeof value === 'number' && isFinite(value))? value.toFixed(1):'--';}
 function formatEpoch(epoch){if(!epoch)return '--';const date = new Date(epoch * 1000);if(isNaN(date.getTime()))return '--';return date.toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});}
 function signalIcon(sig){if(!sig||sig.bars==null||sig.bars<0)return'';const b=sig.bars;const c=b<=1?'#dc2626':b<=2?'#f59e0b':'#10b981';const lbl=b<=1?'Weak':b<=2?'Fair':b<=3?'Good':'Strong';return' <span title="'+lbl+' signal: '+b+'/4 bars'+(sig.rsrp?', RSRP: '+sig.rsrp+'dBm':'')+'" style="color:'+c+';font-size:0.7rem;font-weight:600;">&#x25A0;'+b+'/4</span>';}
-function renderTelemetry(){if(!els.telemetryContainer)return;els.telemetryContainer.innerHTML = '';if(!state.data || !state.data.clients)return;const sites ={};state.data.clients.forEach(client =>{const siteName = client.site || 'Unknown Site';if(!sites[siteName])sites[siteName]=[];sites[siteName].push(client);});Object.keys(sites).sort().forEach(siteName =>{const tanks = sites[siteName];const siteCard = document.createElement('div');siteCard.className = 'site-card';const header = document.createElement('div');header.className = 'site-header';header.innerHTML = `<span>${escapeHtml(siteName)}</span><span style="display:flex;align-items:center;gap:8px;"><span style="font-size:0.8rem;font-weight:400;color:var(--muted)">${tanks.length} device${tanks.length===1?'':'s'}</span><a class="pill secondary" href="/site-config?site=${encodeURIComponent(siteName)}" style="font-size:0.75rem;padding:3px 10px;">Manage Site</a></span>`;siteCard.appendChild(header);const grid = document.createElement('div');grid.className = 'site-tanks';tanks.forEach(tank =>{const tankDiv = document.createElement('div');tankDiv.className = 'site-tank';if(tank.alarm)tankDiv.classList.add('alarm');if(!tank.lastUpdate){tankDiv.style.opacity='0.7';tankDiv.innerHTML = `<div class="tank-meta"><strong>Configured Client</strong><code>${escapeHtml(tank.client)}</code></div><div class="tank-value" style="font-size:0.85rem;color:var(--muted);">Awaiting first report</div><div class="tank-footer"><button type="button" class="secondary" style="padding:2px 10px;font-size:0.8rem;" onclick="window.location.href='/config-generator?uid=${encodeURIComponent(tank.client)}'">Edit Config</button></div>`;}else{const ot=tank.objectType||'tank';const tlbl=tank.label||(ot==='tank'?'Tank':'Sensor');const tmu=tank.measurementUnit||'';const tUnit=(function(mu,o){const abr={inches:'in',psi:'psi',rpm:'rpm',gpm:'gpm'};if(mu){const k=mu.toLowerCase();return abr[k]||mu;}if(o==='gas')return'psi';if(o==='rpm')return'rpm';if(o==='flow')return'gpm';return'in';})(tmu,ot);tankDiv.innerHTML = `<div class="tank-meta"><strong>${escapeHtml(tlbl)}${tank.userNumber?' #'+tank.userNumber:''}</strong><code>${escapeHtml(tank.client).substring(0,8)}...</code>${signalIcon(tank.signal)}</div><div class="tank-value">${formatNumber(tank.levelInches)} <small style="font-size:0.7em;color:var(--muted)">${tUnit}</small></div><div class="tank-footer">${tank.alarm ? `<span style="color:var(--danger);font-weight:600">ALARM: ${escapeHtml(tank.alarmType)}</span>`:'Normal'}<span style="float:right">${formatEpoch(tank.lastUpdate)}</span></div>`;}grid.appendChild(tankDiv);});siteCard.appendChild(grid);els.telemetryContainer.appendChild(siteCard);});}
+function renderTelemetry(){if(!els.telemetryContainer)return;els.telemetryContainer.innerHTML = '';if(!state.data || !state.data.clients)return;const sites ={};state.data.clients.forEach(client =>{const siteName = client.site || 'Unknown Site';if(!sites[siteName])sites[siteName]=[];sites[siteName].push(client);});Object.keys(sites).sort().forEach(siteName =>{const sensors = sites[siteName];const siteCard = document.createElement('div');siteCard.className = 'site-card';const header = document.createElement('div');header.className = 'site-header';header.innerHTML = `<span>${escapeHtml(siteName)}</span><span style="display:flex;align-items:center;gap:8px;"><span style="font-size:0.8rem;font-weight:400;color:var(--muted)">${sensors.length} device${sensors.length===1?'':'s'}</span><a class="pill secondary" href="/site-config?site=${encodeURIComponent(siteName)}" style="font-size:0.75rem;padding:3px 10px;">Manage Site</a></span>`;siteCard.appendChild(header);const grid = document.createElement('div');grid.className = 'site-sensors';sensors.forEach(tank =>{const tankDiv = document.createElement('div');tankDiv.className = 'site-tank';if(tank.alarm)tankDiv.classList.add('alarm');if(!tank.lastUpdate){tankDiv.style.opacity='0.7';tankDiv.innerHTML = `<div class="tank-meta"><strong>Configured Client</strong><code>${escapeHtml(tank.client)}</code></div><div class="tank-value" style="font-size:0.85rem;color:var(--muted);">Awaiting first report</div><div class="tank-footer"><button type="button" class="secondary" style="padding:2px 10px;font-size:0.8rem;" onclick="window.location.href='/config-generator?uid=${encodeURIComponent(tank.client)}'">Edit Config</button></div>`;}else{const ot=tank.objectType||'tank';const tlbl=rec.label||(ot==='tank'?'Tank':'Sensor');const tmu=tank.measurementUnit||'';const tUnit=(function(mu,o){const abr={inches:'in',psi:'psi',rpm:'rpm',gpm:'gpm'};if(mu){const k=mu.toLowerCase();return abr[k]||mu;}if(o==='gas')return'psi';if(o==='rpm')return'rpm';if(o==='flow')return'gpm';return'in';})(tmu,ot);tankDiv.innerHTML = `<div class="tank-meta"><strong>${escapeHtml(tlbl)}${tank.userNumber?' #'+tank.userNumber:''}</strong><code>${escapeHtml(tank.client).substring(0,8)}...</code>${signalIcon(tank.signal)}</div><div class="tank-value">${formatNumber(tank.levelInches)} <small style="font-size:0.7em;color:var(--muted)">${tUnit}</small></div><div class="tank-footer">${tank.alarm ? `<span style="color:var(--danger);font-weight:600">ALARM: ${escapeHtml(rec.alarmType)}</span>`:'Normal'}<span style="float:right">${formatEpoch(tank.lastUpdate)}</span></div>`;}grid.appendChild(tankDiv);});siteCard.appendChild(grid);els.telemetryContainer.appendChild(siteCard);});}
 function renderNewSites(){if(!els.newSitesContainer)return;els.newSitesContainer.innerHTML='';if(!state.data||!state.data.clients){els.newSitesContainer.innerHTML='<div class="empty-state">No clients detected yet.</div>';return;}const unconfigured=state.data.clients.filter(client=>{if(!client.lastUpdate)return false;const hasNoSite=!client.site||client.site.trim()===''||client.site==='Unknown Site';const hasNoLabel=!client.label||client.label.trim()==='';const hasDefaultLabel=client.label&&(client.label==='Client-112025'||client.label==='Unconfigured Client'||client.label.includes('Tank A'));return hasNoSite||(hasNoLabel||hasDefaultLabel);});if(unconfigured.length===0){els.newSitesContainer.innerHTML='<div class="empty-state">No unconfigured clients detected.</div>';return;}unconfigured.forEach(client=>{const card=document.createElement('div');card.className='site-card';card.style.borderLeft='4px solid var(--warning)';const firmwareVersion=client.firmwareVersion||client.version||'unknown';const lastSeenEpoch=client.lastUpdate||0;const now=Date.now()/1000;const ageSeconds=now-lastSeenEpoch;let lastSeenDisplay='';if(ageSeconds<120){lastSeenDisplay='<span style="color:#10b981;">&#x2714; Active now</span>';}else if(ageSeconds<3600){const mins=Math.floor(ageSeconds/60);lastSeenDisplay=`Last seen ${mins} min${mins!==1?'s':''} ago`;}else if(ageSeconds<86400){const hours=Math.floor(ageSeconds/3600);lastSeenDisplay=`Last seen ${hours} hour${hours!==1?'s':''} ago`;}else{const days=Math.floor(ageSeconds/86400);lastSeenDisplay=`Last seen ${days} day${days!==1?'s':''} ago - ${formatEpoch(lastSeenEpoch)}`;}card.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;"><div><strong style="color:var(--warning)">&#x26A0; Unconfigured Client</strong><div style="font-size:0.85rem;color:var(--muted);margin-top:4px;">UID: <code>${escapeHtml(client.client)}</code></div><div style="font-size:0.85rem;margin-top:4px;">${lastSeenDisplay}</div><div style="font-size:0.85rem;margin-top:4px;color:var(--muted);">Firmware: ${escapeHtml(firmwareVersion)}</div></div><button type="button" class="configure-btn" style="white-space:nowrap;">Configure &#x2192;</button></div>`;card.querySelector)HTML" R"HTML(('.configure-btn').addEventListener('click',()=>{window.location.href='/config-generator?uid='+encodeURIComponent(client.client);});els.newSitesContainer.appendChild(card);});}
 function populateClientList(){if(!els.clientList)return;els.clientList.innerHTML='';if(!state.data||!state.data.clients||!state.data.clients.length){els.clientList.innerHTML='<div style="padding:12px;color:var(--muted);text-align:center;">No clients available</div>';return;}const items=[];state.data.clients.forEach(c=>{items.push({uid:c.client,site:c.site||'Unknown Site',label:c.label||'',type:'telemetry'});});if(state.data.configs){state.data.configs.forEach(entry=>{if(!items.find(i=>i.uid===entry.client)){items.push({uid:entry.client,site:entry.site||'Site',label:'Stored config',type:'config'});}});}if(!state.selected&&items.length){state.selected=items[0].uid;}items.forEach(item=>{const div=document.createElement('div');div.className='cl-item'+(state.selected===item.uid?' selected':'');div.dataset.uid=item.uid;const shortUid=item.uid.length>12?item.uid.substring(item.uid.length-8):item.uid;div.innerHTML='<div class="cl-site">'+escapeHtml(item.site)+'</div>'+(item.label&&item.type!=='config'?'<div class="cl-label">'+escapeHtml(item.label)+'</div>':'')+(item.type==='config'?'<div class="cl-label">Stored config</div>':'')+'<div class="cl-uid">'+escapeHtml(shortUid)+'</div>';div.addEventListener('click',()=>{state.selected=item.uid;els.clientList.querySelectorAll('.cl-item').forEach(el=>el.classList.remove('selected'));div.classList.add('selected');updateClientDetails(state.selected);fetchLocationInfo(state.selected);});els.clientList.appendChild(div);});updateClientDetails(state.selected);}
 function lookupClient(uid){if(!state.data || !state.data.clients)return null;return state.data.clients.find(c => c.client === uid)|| null;}
 function updateClientDetails(uid){if(!uid){els.clientDetails.textContent='Select a client';return;}const client = lookupClient(uid);const detailParts = [];if(client){detailParts.push(`<strong>Site:</strong> ${escapeHtml(client.site || 'Unknown')}`);const cOt=client.objectType||'';const dtLbl=client.label||(cOt==='tank'||!cOt?'Tank':'Sensor');const dtNum=client.userNumber?' #'+escapeHtml(String(client.userNumber)):'';detailParts.push(`<strong>Latest:</strong> ${escapeHtml(dtLbl)}${dtNum} at ${formatNumber(client.levelInches)}${client.measurementUnit||'in'}`);}else{detailParts.push('Client not in telemetry data');}detailParts.push(`<strong>UID:</strong><code>${uid}</code>`);detailParts.push(`<button type="button" class="secondary" style="padding:4px 12px;font-size:0.85rem;" onclick="window.location.href='/config-generator?uid=${encodeURIComponent(uid)}'">Edit Configuration</button>`);els.clientDetails.innerHTML = detailParts.join(' - ');}
-function normalizeApiData(data){var srv=data.srv||{};var result={server:{name:srv.n||'',smsPrimary:srv.sp||'',smsSecondary:srv.ss||'',productUid:srv.pu||'',pinConfigured:!!srv.pc,dailyEmail:srv.de||''},serverUid:data.si||'',nextDailyEmailEpoch:data.nde||0,clients:(data.cs||[]).map(function(c){return{client:c.c||'',site:c.s||'',label:c.n||'',sensorIndex:c.k||'',userNumber:c.un||0,alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,levelInches:c.l,vinVoltage:c.v,firmwareVersion:c.fv||'',objectType:c.ot||'',measurementUnit:c.mu||'',signal:c.sig||null,tanks:(c.ts||[]).map(function(t){return{label:t.n||'',sensorIndex:t.k||'',userNumber:t.un||0,levelInches:t.l,heightInches:t.h,alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,objectType:t.ot||'',measurementUnit:t.mu||''};})};})}};result.configs=(data.cfgs||[]).map(function(cfg){return{client:cfg.c||'',site:cfg.s||'',configJson:cfg.cj||''};});return result;}
+function normalizeApiData(data){var srv=data.srv||{};var result={server:{name:srv.n||'',smsPrimary:srv.sp||'',smsSecondary:srv.ss||'',productUid:srv.pu||'',pinConfigured:!!srv.pc,dailyEmail:srv.de||''},serverUid:data.si||'',nextDailyEmailEpoch:data.nde||0,clients:(data.cs||[]).map(function(c){return{client:c.c||'',site:c.s||'',label:c.n||'',sensorIndex:c.k||'',userNumber:c.un||0,alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,levelInches:c.l,vinVoltage:c.v,firmwareVersion:c.fv||'',objectType:c.ot||'',measurementUnit:c.mu||'',signal:c.sig||null,sensors:(c.ts||[]).map(function(t){return{label:t.n||'',sensorIndex:t.k||'',userNumber:t.un||0,levelInches:t.l,heightInches:t.h,alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,objectType:t.ot||'',measurementUnit:t.mu||''};})};})}};result.configs=(data.cfgs||[]).map(function(cfg){return{client:cfg.c||'',site:cfg.s||'',configJson:cfg.cj||''};});return result;}
 function applyServerData(data,preferredUid){try{state.data=normalizeApiData(data);if(preferredUid){state.selected=preferredUid;}renderTelemetry();renderNewSites();populateClientList();}catch(e){console.error('applyServerData error:',e);if(els.telemetryContainer)els.telemetryContainer.innerHTML='<div class="empty-state" style="color:var(--danger);">Render error: '+e.message+'</div>';}}
 async function refreshData(preferredUid){try{const query=preferredUid?'&client='+encodeURIComponent(preferredUid):'';const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),10000);const res=await fetch('/api/clients?summary=1'+query,{signal:ac.signal,headers:{'Cache-Control':'no-cache'}});clearTimeout(tid);if(!res.ok){throw new Error('Failed to fetch server data');}const data=await res.json();console.log('API response: cs=',data.cs?data.cs.length:0,'clients, cfgs=',data.cfgs?data.cfgs.length:0);applyServerData(data,preferredUid||state.selected);}catch(err){const msg=err.name==='AbortError'?'Request timed out (server busy)':err.message||'Initialization failed';console.error('refreshData error:',err);showToast(msg,true);if(els.telemetryContainer)els.telemetryContainer.innerHTML='<div class="empty-state" style="color:var(--danger);">'+escapeHtml(msg)+'</div>';}}
 async function triggerManualRefresh(targetUid){const payload = targetUid ?{client:targetUid}:{};try{const res = await fetch('/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text = await res.text();throw new Error(text || 'Refresh failed');}const data = await res.json();applyServerData(data,targetUid || state.selected);showToast(targetUid ? 'Selected site updated':'All sites updated');}catch(err){showToast(err.message || 'Refresh failed',true);}}
@@ -1735,7 +1735,7 @@ async function fetchLocationInfo(clientUid){if(!clientUid || !els.locationInfo)r
 if(els.refreshSelectedBtn)els.refreshSelectedBtn.addEventListener('click',()=>{if(!state.selected){showToast('Select a client first.',true);return;}triggerManualRefresh(state.selected);});if(els.requestLocationBtn)els.requestLocationBtn.addEventListener('click',()=>{requestLocation(state.selected);});refreshData().then(()=>{if(state.selected)fetchLocationInfo(state.selected);});})();
 </script></body></html>)HTML";
 
-static const char SITE_CONFIG_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Site Configuration - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"><style>.site-title{font-size:1.5rem;font-weight:700;margin:0;}.site-subtitle{color:var(--muted);font-size:0.9rem;margin-top:4px;}.client-grid{display:grid;gap:16px;margin-top:16px;}.client-card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:8px;padding:16px;}.client-card.has-alarm{border-left:4px solid var(--danger);}.client-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;}.client-name{font-weight:600;font-size:1.05rem;}.client-uid{font-family:monospace;font-size:0.8rem;color:var(--muted);margin-top:2px;}.tank-list{display:grid;gap:8px;}.tank-row{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg);border-radius:6px;font-size:0.9rem;}.tank-row.alarm{background:rgba(220,38,38,0.08);}.tank-level{font-weight:600;font-size:1.1rem;}.tank-status{font-size:0.85rem;}.uid-table{width:100%;border-collapse:collapse;margin-top:12px;font-size:0.9rem;}.uid-table th,.uid-table td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--card-border);}.uid-table th{font-weight:600;color:var(--muted);font-size:0.8rem;text-transform:uppercase;}.uid-table td code{font-size:0.85rem;cursor:pointer;}.uid-table td code:hover{color:var(--accent);}.copy-toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;padding:8px 16px;border-radius:6px;font-size:0.85rem;opacity:0;transition:opacity 0.3s;pointer-events:none;}.copy-toast.show{opacity:1;}</style></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;"><div><h1 class="site-title" id="siteTitle">Loading...</h1><p class="site-subtitle" id="siteSubtitle"></p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="addClientBtn" class="pill">+ Add Client</button><button id="backBtn" class="pill secondary" onclick="window.location.href='/client-console'">Back to Console</button></div></div></div><div class="card"><h2 style="margin-top:0;">Client Devices</h2><div id="clientGrid" class="client-grid"><div class="empty-state">Loading site data...</div></div></div><div class="card"><h2 style="margin-top:0;">Client UID Quick Reference</h2><p style="color:var(--muted);font-size:0.9rem;margin-bottom:8px;">Click any UID to copy it. Use these UIDs for relay target configuration.</p><table class="uid-table"><thead><tr><th>Device Label</th><th>Client UID</th><th>Sensors</th><th>Status</th></tr></thead><tbody id="uidTableBody"></tbody></table></div></main><div id="toast"></div><div class="copy-toast" id="copyToast">UID copied to clipboard</div>)HTML" R"HTML(<script>(async ()=>{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);function escapeHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}function formatNumber(v){return(typeof v==='number'&&isFinite(v))?v.toFixed(1):'--';}function formatEpoch(e){if(!e)return'--';const d=new Date(e*1000);if(isNaN(d.getTime()))return'--';return d.toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});}function getQueryParam(n){return new URLSearchParams(window.location.search).get(n)||'';}const siteName=getQueryParam('site');if(!siteName){document.getElementById('siteTitle').textContent='No site specified';document.getElementById('clientGrid').innerHTML='<div class="empty-state">Use ?site=SiteName in the URL or navigate from the Client Console.</div>';return;}document.getElementById('siteTitle').textContent=siteName;document.title=siteName+' - Site Configuration';document.getElementById('addClientBtn').addEventListener('click',()=>{window.location.href='/config-generator?site='+encodeURIComponent(siteName);});function showToast(msg,isErr){const t=document.getElementById('toast');t.textContent=msg;t.style.background=isErr?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}function copyUid(uid){navigator.clipboard.writeText(uid).then(()=>{const ct=document.getElementById('copyToast');ct.classList.add('show');setTimeout(()=>ct.classList.remove('show'),1500);}).catch(()=>{showToast('Copy failed',true);});}window.copyUid=copyUid;)HTML" R"HTML(async function loadSiteData(){try{const r=await fetch('/api/clients?summary=1');if(!r.ok)throw new Error('Failed to fetch');const raw=await r.json();const srv=raw.srv||{};const allClients=(raw.cs||[]).map(c=>({uid:c.c||'',site:c.s||'',label:c.n||'',sensorIndex:c.k||'',alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,levelInches:c.l,sensorMa:c.ma,vinVoltage:c.v,vinVoltageEpoch:c.ve,tankCount:c.tc||1,tanks:(c.ts||[]).map(t=>({label:t.n||'',sensorIndex:t.k||'',userNumber:t.un||0,levelInches:t.l,alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,sensorType:t.st||'',objectType:t.ot||'',measurementUnit:t.mu||'',contents:t.ct||'',change24h:t.d}))}));const siteClients=allClients.filter(c=>c.site===siteName);const uniqueMap=new Map();siteClients.forEach(c=>{if(!uniqueMap.has(c.uid)){uniqueMap.set(c.uid,{uid:c.uid,label:c.label,alarm:false,vinVoltage:c.vinVoltage,vinVoltageEpoch:c.vinVoltageEpoch,tanks:[]});}const entry=uniqueMap.get(c.uid);if(c.tanks&&c.tanks.length){c.tanks.forEach(t=>entry.tanks.push(t));}else{entry.tanks.push({label:c.label||'',sensorIndex:c.sensorIndex,levelInches:c.levelInches,alarm:c.alarm,alarmType:c.alarmType,lastUpdate:c.lastUpdate,objectType:'',measurementUnit:'',contents:''});}if(c.alarm)entry.alarm=true;entry.tanks.forEach(t=>{if(t.alarm)entry.alarm=true;});});const clients=Array.from(uniqueMap.values());document.getElementById('siteSubtitle').textContent=clients.length+' client device'+(clients.length===1?'':'s')+' at this site';renderClients(clients);renderUidTable(clients);}catch(e){console.error(e);document.getElementById('clientGrid').innerHTML='<div class="empty-state">Error loading site data.</div>';}}function objectTypeLabel(ot){const map={tank:'Tank',gas:'Gas Monitor',engine:'Engine',pump:'Pump',flow:'Flow Meter'};return map[ot]||'Sensor';}function sensorDisplayName(t){const ot=t.objectType||'';const lbl=t.label||objectTypeLabel(ot);return lbl+(t.userNumber?' #'+t.userNumber:'');}function unitLabel(mu,ot){const abr={inches:'in',psi:'psi',rpm:'rpm',gpm:'gpm'};if(mu){const k=mu.toLowerCase();return abr[k]||mu;}if(ot==='gas')return'psi';if(ot==='rpm')return'rpm';if(ot==='flow')return'gpm';return'in';}function renderClients(clients){const grid=document.getElementById('clientGrid');grid.innerHTML='';if(!clients.length){grid.innerHTML='<div class="empty-state">No client devices found at this site.</div>';return;})HTML" R"HTML(clients.forEach(client=>{const card=document.createElement('div');card.className='client-card'+(client.alarm?' has-alarm':'');let tanksHtml='';client.tanks.forEach(t=>{const alarmClass=t.alarm?' alarm':'';const statusHtml=t.alarm?`<span class="tank-status" style="color:var(--danger);font-weight:600;">ALARM: ${escapeHtml(t.alarmType)}</span>`:'<span class="tank-status" style="color:#10b981;">Normal</span>';const mu=unitLabel(t.measurementUnit,t.objectType);const changeHtml=(typeof t.change24h==='number')?`<span style="font-size:0.8rem;color:var(--muted);">${t.change24h>=0?'+':''}${t.change24h.toFixed(1)} ${mu}/24h</span>`:'';const contentsHtml=t.contents?`<span style="font-size:0.8rem;color:var(--muted);margin-left:6px;">(${escapeHtml(t.contents)})</span>`:'';tanksHtml+=`<div class="tank-row${alarmClass}"><div><strong>${escapeHtml(sensorDisplayName(t))}</strong>${contentsHtml} ${changeHtml}</div><div style="text-align:right;"><span class="tank-level">${formatNumber(t.levelInches)}</span> <small style="color:var(--muted)">${mu}</small><div style="font-size:0.8rem;color:var(--muted);">${formatEpoch(t.lastUpdate)}</div></div></div>`;});const voltageHtml=(typeof client.vinVoltage==='number'&&client.vinVoltage>0)?`<span style="font-size:0.85rem;color:var(--muted);">VIN: ${client.vinVoltage.toFixed(2)}V</span>`:'';card.innerHTML=`<div class="client-header"><div><div class="client-name">${escapeHtml(client.label||'Client Device')}</div><div class="client-uid">${escapeHtml(client.uid)}</div>${voltageHtml}</div><div style="display:flex;gap:6px;"><button class="pill secondary" style="font-size:0.8rem;padding:4px 12px;" onclick="window.location.href='/config-generator?uid=${encodeURIComponent(client.uid)}'">Edit Config</button><button class="pill secondary" style="font-size:0.8rem;padding:4px 12px;color:var(--danger);border-color:var(--danger);" onclick="deleteClient('${escapeHtml(client.uid)}')">Remove Client</button></div></div><div class="tank-list">${tanksHtml}</div>`;grid.appendChild(card);});}async function deleteClient(uid){if(!confirm('Remove client '+uid+' and all its tank data? This action cannot be undone.'))return;try{const res=await fetch('/api/client',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client:uid})});if(!res.ok){throw new Error(await res.text()||'Delete failed');}showToast('Client removed successfully');loadSiteData();}catch(err){showToast(err.message||'Failed to remove client',true);}}function renderUidTable(clients){const tbody=document.getElementById('uidTableBody');tbody.innerHTML='';if(!clients.length){tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--muted);">No clients at this site.</td></tr>';return;}clients.forEach(client=>{const tr=document.createElement('tr');const hasAlarm=client.tanks.some(t=>t.alarm);const statusHtml=hasAlarm?'<span style="color:var(--danger);font-weight:600;">ALARM</span>':'<span style="color:#10b981;">Normal</span>';tr.innerHTML=`<td>${escapeHtml(client.label||'Client Device')}</td><td><code onclick="copyUid('${escapeHtml(client.uid)}')" title="Click to copy">${escapeHtml(client.uid)}</code></td><td>${client.tanks.length}</td><td>${statusHtml}</td>`;tbody.appendChild(tr);});}loadSiteData();setInterval(loadSiteData,30000);})();</script></body></html>)HTML";
+static const char SITE_CONFIG_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Site Configuration - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"><style>.site-title{font-size:1.5rem;font-weight:700;margin:0;}.site-subtitle{color:var(--muted);font-size:0.9rem;margin-top:4px;}.client-grid{display:grid;gap:16px;margin-top:16px;}.client-card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:8px;padding:16px;}.client-card.has-alarm{border-left:4px solid var(--danger);}.client-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;}.client-name{font-weight:600;font-size:1.05rem;}.client-uid{font-family:monospace;font-size:0.8rem;color:var(--muted);margin-top:2px;}.sensor-list{display:grid;gap:8px;}.sensor-row{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg);border-radius:6px;font-size:0.9rem;}.sensor-row.alarm{background:rgba(220,38,38,0.08);}.sensor-level{font-weight:600;font-size:1.1rem;}.sensor-status{font-size:0.85rem;}.uid-table{width:100%;border-collapse:collapse;margin-top:12px;font-size:0.9rem;}.uid-table th,.uid-table td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--card-border);}.uid-table th{font-weight:600;color:var(--muted);font-size:0.8rem;text-transform:uppercase;}.uid-table td code{font-size:0.85rem;cursor:pointer;}.uid-table td code:hover{color:var(--accent);}.copy-toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;padding:8px 16px;border-radius:6px;font-size:0.85rem;opacity:0;transition:opacity 0.3s;pointer-events:none;}.copy-toast.show{opacity:1;}</style></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;"><div><h1 class="site-title" id="siteTitle">Loading...</h1><p class="site-subtitle" id="siteSubtitle"></p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="addClientBtn" class="pill">+ Add Client</button><button id="backBtn" class="pill secondary" onclick="window.location.href='/client-console'">Back to Console</button></div></div></div><div class="card"><h2 style="margin-top:0;">Client Devices</h2><div id="clientGrid" class="client-grid"><div class="empty-state">Loading site data...</div></div></div><div class="card"><h2 style="margin-top:0;">Client UID Quick Reference</h2><p style="color:var(--muted);font-size:0.9rem;margin-bottom:8px;">Click any UID to copy it. Use these UIDs for relay target configuration.</p><table class="uid-table"><thead><tr><th>Device Label</th><th>Client UID</th><th>Sensors</th><th>Status</th></tr></thead><tbody id="uidTableBody"></tbody></table></div></main><div id="toast"></div><div class="copy-toast" id="copyToast">UID copied to clipboard</div>)HTML" R"HTML(<script>(async ()=>{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);function escapeHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}function formatNumber(v){return(typeof v==='number'&&isFinite(v))?v.toFixed(1):'--';}function formatEpoch(e){if(!e)return'--';const d=new Date(e*1000);if(isNaN(d.getTime()))return'--';return d.toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});}function getQueryParam(n){return new URLSearchParams(window.location.search).get(n)||'';}const siteName=getQueryParam('site');if(!siteName){document.getElementById('siteTitle').textContent='No site specified';document.getElementById('clientGrid').innerHTML='<div class="empty-state">Use ?site=SiteName in the URL or navigate from the Client Console.</div>';return;}document.getElementById('siteTitle').textContent=siteName;document.title=siteName+' - Site Configuration';document.getElementById('addClientBtn').addEventListener('click',()=>{window.location.href='/config-generator?site='+encodeURIComponent(siteName);});function showToast(msg,isErr){const t=document.getElementById('toast');t.textContent=msg;t.style.background=isErr?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}function copyUid(uid){navigator.clipboard.writeText(uid).then(()=>{const ct=document.getElementById('copyToast');ct.classList.add('show');setTimeout(()=>ct.classList.remove('show'),1500);}).catch(()=>{showToast('Copy failed',true);});}window.copyUid=copyUid;)HTML" R"HTML(async function loadSiteData(){try{const r=await fetch('/api/clients?summary=1');if(!r.ok)throw new Error('Failed to fetch');const raw=await r.json();const srv=raw.srv||{};const allClients=(raw.cs||[]).map(c=>({uid:c.c||'',site:c.s||'',label:c.n||'',sensorIndex:c.k||'',alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,levelInches:c.l,sensorMa:c.ma,vinVoltage:c.v,vinVoltageEpoch:c.ve,sensorCount:c.tc||1,sensors:(c.ts||[]).map(t=>({label:t.n||'',sensorIndex:t.k||'',userNumber:t.un||0,levelInches:t.l,alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,sensorType:t.st||'',objectType:t.ot||'',measurementUnit:t.mu||'',contents:t.ct||'',change24h:t.d}))}));const siteClients=allClients.filter(c=>c.site===siteName);const uniqueMap=new Map();siteClients.forEach(c=>{if(!uniqueMap.has(c.uid)){uniqueMap.set(c.uid,{uid:c.uid,label:c.label,alarm:false,vinVoltage:c.vinVoltage,vinVoltageEpoch:c.vinVoltageEpoch,sensors:[]});}const entry=uniqueMap.get(c.uid);if(c.sensors&&c.sensors.length){c.sensors.forEach(t=>entry.sensors.push(t));}else{entry.sensors.push({label:c.label||'',sensorIndex:c.sensorIndex,levelInches:c.levelInches,alarm:c.alarm,alarmType:c.alarmType,lastUpdate:c.lastUpdate,objectType:'',measurementUnit:'',contents:''});}if(c.alarm)entry.alarm=true;entry.sensors.forEach(t=>{if(t.alarm)entry.alarm=true;});});const clients=Array.from(uniqueMap.values());document.getElementById('siteSubtitle').textContent=clients.length+' client device'+(clients.length===1?'':'s')+' at this site';renderClients(clients);renderUidTable(clients);}catch(e){console.error(e);document.getElementById('clientGrid').innerHTML='<div class="empty-state">Error loading site data.</div>';}}function objectTypeLabel(ot){const map={tank:'Tank',gas:'Gas Monitor',engine:'Engine',pump:'Pump',flow:'Flow Meter'};return map[ot]||'Sensor';}function sensorDisplayName(t){const ot=t.objectType||'';const lbl=t.label||objectTypeLabel(ot);return lbl+(t.userNumber?' #'+t.userNumber:'');}function unitLabel(mu,ot){const abr={inches:'in',psi:'psi',rpm:'rpm',gpm:'gpm'};if(mu){const k=mu.toLowerCase();return abr[k]||mu;}if(ot==='gas')return'psi';if(ot==='rpm')return'rpm';if(ot==='flow')return'gpm';return'in';}function renderClients(clients){const grid=document.getElementById('clientGrid');grid.innerHTML='';if(!clients.length){grid.innerHTML='<div class="empty-state">No client devices found at this site.</div>';return;})HTML" R"HTML(clients.forEach(client=>{const card=document.createElement('div');card.className='client-card'+(client.alarm?' has-alarm':'');let tanksHtml='';client.sensors.forEach(t=>{const alarmClass=t.alarm?' alarm':'';const statusHtml=t.alarm?`<span class="sensor-status" style="color:var(--danger);font-weight:600;">ALARM: ${escapeHtml(t.alarmType)}</span>`:'<span class="sensor-status" style="color:#10b981;">Normal</span>';const mu=unitLabel(t.measurementUnit,t.objectType);const changeHtml=(typeof t.change24h==='number')?`<span style="font-size:0.8rem;color:var(--muted);">${t.change24h>=0?'+':''}${t.change24h.toFixed(1)} ${mu}/24h</span>`:'';const contentsHtml=t.contents?`<span style="font-size:0.8rem;color:var(--muted);margin-left:6px;">(${escapeHtml(t.contents)})</span>`:'';tanksHtml+=`<div class="sensor-row${alarmClass}"><div><strong>${escapeHtml(sensorDisplayName(t))}</strong>${contentsHtml} ${changeHtml}</div><div style="text-align:right;"><span class="sensor-level">${formatNumber(t.levelInches)}</span> <small style="color:var(--muted)">${mu}</small><div style="font-size:0.8rem;color:var(--muted);">${formatEpoch(t.lastUpdate)}</div></div></div>`;});const voltageHtml=(typeof client.vinVoltage==='number'&&client.vinVoltage>0)?`<span style="font-size:0.85rem;color:var(--muted);">VIN: ${client.vinVoltage.toFixed(2)}V</span>`:'';card.innerHTML=`<div class="client-header"><div><div class="client-name">${escapeHtml(client.label||'Client Device')}</div><div class="client-uid">${escapeHtml(client.uid)}</div>${voltageHtml}</div><div style="display:flex;gap:6px;"><button class="pill secondary" style="font-size:0.8rem;padding:4px 12px;" onclick="window.location.href='/config-generator?uid=${encodeURIComponent(client.uid)}'">Edit Config</button><button class="pill secondary" style="font-size:0.8rem;padding:4px 12px;color:var(--danger);border-color:var(--danger);" onclick="deleteClient('${escapeHtml(client.uid)}')">Remove Client</button></div></div><div class="sensor-list">${tanksHtml}</div>`;grid.appendChild(card);});}async function deleteClient(uid){if(!confirm('Remove client '+uid+' and all its sensor data? This action cannot be undone.'))return;try{const res=await fetch('/api/client',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client:uid})});if(!res.ok){throw new Error(await res.text()||'Delete failed');}showToast('Client removed successfully');loadSiteData();}catch(err){showToast(err.message||'Failed to remove client',true);}}function renderUidTable(clients){const tbody=document.getElementById('uidTableBody');tbody.innerHTML='';if(!clients.length){tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--muted);">No clients at this site.</td></tr>';return;}clients.forEach(client=>{const tr=document.createElement('tr');const hasAlarm=client.sensors.some(t=>t.alarm);const statusHtml=hasAlarm?'<span style="color:var(--danger);font-weight:600;">ALARM</span>':'<span style="color:#10b981;">Normal</span>';tr.innerHTML=`<td>${escapeHtml(client.label||'Client Device')}</td><td><code onclick="copyUid('${escapeHtml(client.uid)}')" title="Click to copy">${escapeHtml(client.uid)}</code></td><td>${client.sensors.length}</td><td>${statusHtml}</td>`;tbody.appendChild(tr);});}loadSiteData();setInterval(loadSiteData,30000);})();</script></body></html>)HTML";
 
 static void initializeStorage();
 static void ensureConfigLoaded();
@@ -1772,7 +1772,7 @@ static void sendChunk(EthernetClient &client, const String &data);
 static void endChunkedResponse(EthernetClient &client);
 static size_t buildSerialLogCsvLine(char *out, size_t outSize, const SerialLogEntry &entry, const char *clientLabel);
 
-static void sendTankJson(EthernetClient &client);
+static void sendSensorJson(EthernetClient &client);
 static void sendUnloadLogJson(EthernetClient &client);
 static void sendClientDataJson(EthernetClient &client, const String &query = String());
 static void handleConfigPost(EthernetClient &client, const String &body);
@@ -1813,9 +1813,9 @@ static void handleNotecardStatusGet(EthernetClient &client);
 static void handleLocationRequestPost(EthernetClient &client, const String &body);
 static void handleLocationGet(EthernetClient &client, const String &path);
 static void handleClientConfigGet(EthernetClient &client, const String &query);
-static TankCalibration *findTankCalibration(const char *clientUid, uint8_t sensorIndex);
-static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8_t sensorIndex);
-static void recalculateCalibration(TankCalibration *cal);
+static SensorCalibration *findSensorCalibration(const char *clientUid, uint8_t sensorIndex);
+static SensorCalibration *findOrCreateSensorCalibration(const char *clientUid, uint8_t sensorIndex);
+static void recalculateCalibration(SensorCalibration *cal);
 static void loadCalibrationData();
 static void saveCalibrationData();
 static void saveCalibrationEntry(const char *clientUid, uint8_t sensorIndex, double timestamp, float sensorReading, float verifiedLevelInches, float temperatureF, const char *notes);
@@ -1835,7 +1835,7 @@ static void addServerSerialLog(const char *message, const char *level = "info", 
 static ClientSerialBuffer *findOrCreateClientSerialBuffer(const char *clientUid);
 static void addClientSerialLog(const char *clientUid, const char *message, double timestamp, const char *level = "info", const char *source = "client");
 static SerialRequestResult requestClientSerialLogs(const char *clientUid, String &errorMessage);
-static TankRecord *upsertTankRecord(const char *clientUid, uint8_t sensorIndex);
+static SensorRecord *upsertSensorRecord(const char *clientUid, uint8_t sensorIndex);
 static void sendSmsAlert(const char *message);
 static void sendDailyEmail();
 static void loadClientConfigSnapshots();
@@ -1844,7 +1844,7 @@ static bool cacheClientConfigFromBuffer(const char *clientUid, const char *buffe
 static ClientConfigSnapshot *findClientConfigSnapshot(const char *clientUid);
 static bool sendConfigViaNotecard(const char *clientUid, const char *jsonPayload);
 static uint8_t purgePendingConfigNotes(const char *clientUid);
-static void pruneOrphanedTankRecords(const char *clientUid);
+static void pruneOrphanedSensorRecords(const char *clientUid);
 static void dispatchPendingConfigs();
 static void handleConfigRetryPost(EthernetClient &client, const String &body);
 static void handleConfigCancelPost(EthernetClient &client, const String &body);
@@ -1853,13 +1853,13 @@ static float convertMaToLevelWithTemp(const char *clientUid, uint8_t sensorIndex
 static float convertVoltageToLevel(const char *clientUid, uint8_t sensorIndex, float voltage);
 static ClientMetadata *findClientMetadata(const char *clientUid);
 static ClientMetadata *findOrCreateClientMetadata(const char *clientUid);
-static bool checkSmsRateLimit(TankRecord *rec);
+static bool checkSmsRateLimit(SensorRecord *rec);
 static void publishViewerSummary();
-// Persistence: tank registry and client metadata
-static void saveTankRegistry();
-static void loadTankRegistry();
-static uint8_t deduplicateTankRecordsLinear();
-static void handleDebugTanks(EthernetClient &client, const String &method, const String &body, const String &queryString);
+// Persistence: sensor registry and client metadata
+static void saveSensorRegistry();
+static void loadSensorRegistry();
+static uint8_t deduplicateSensorRecordsLinear();
+static void handleDebugSensors(EthernetClient &client, const String &method, const String &body, const String &queryString);
 static void saveClientMetadataCache();
 static void loadClientMetadataCache();
 // Stale client alerting
@@ -2519,8 +2519,8 @@ void setup() {
   memset(&gServerSerial, 0, sizeof(ServerSerialBuffer));
   gClientSerialBufferCount = 0;
   
-  // Initialize hash table for tank lookups
-  initTankHashTable();
+  // Initialize hash table for sensor lookups
+  initSensorHashTable();
 
   initializeStorage();
 
@@ -2546,7 +2546,7 @@ void setup() {
   ensureConfigLoaded();
   gLastHeartbeatFileEpoch = loadServerHeartbeatEpoch();
   loadCalibrationData();  // Load calibration learning data
-  loadTankRegistry();     // Restore tank records from LittleFS
+  loadSensorRegistry();     // Restore sensor records from LittleFS
   loadHistorySettings();  // Restore history tier settings from LittleFS
   loadHotTierSnapshot();  // Restore hot tier ring buffer from LittleFS (survive reboot)
   loadClientMetadataCache();  // Restore client metadata from LittleFS
@@ -2635,9 +2635,9 @@ void setup() {
   checkServerVoltage();
   checkForFirmwareUpdate();
   
-  // Dedup tank records after all boot-time data sources have loaded.
+  // Dedup sensor records after all boot-time data sources have loaded.
   // Catches duplicates from corrupted registry files or Notecard note backlogs.
-  deduplicateTankRecordsLinear();
+  deduplicateSensorRecordsLinear();
   
   addServerSerialLog("Server started", "info", "lifecycle");
 }
@@ -2837,11 +2837,11 @@ void loop() {
     checkServerVoltage();
   }
   
-  // Periodic tank registry save (when dirty, every 5 minutes)
-  if (gTankRegistryDirty && (now - gLastRegistrySaveMillis > REGISTRY_SAVE_INTERVAL_MS)) {
+  // Periodic sensor registry save (when dirty, every 5 minutes)
+  if (gSensorRegistryDirty && (now - gLastRegistrySaveMillis > REGISTRY_SAVE_INTERVAL_MS)) {
     gLastRegistrySaveMillis = now;
-    saveTankRegistry();
-    gTankRegistryDirty = false;
+    saveSensorRegistry();
+    gSensorRegistryDirty = false;
   }
   
   // Periodic client metadata save (when dirty, piggyback on same interval)
@@ -2889,7 +2889,7 @@ static void recoverOrphanedTmpFiles() {
   static const char * const criticalFiles[] = {
     "/fs/server_config.json",
     "/fs/contacts_config.json",
-    "/fs/tank_registry.json",
+    "/fs/sensor_registry.json",
     "/fs/client_metadata.json",
     "/fs/client_config_cache.txt",
     "/fs/calibration_data.txt",
@@ -3346,7 +3346,7 @@ static const BackupFileEntry kBackupFiles[] = {
   { CLIENT_CONFIG_CACHE_PATH, "client_config_cache.txt" },
   { CALIBRATION_LOG_PATH, "calibration_log.txt" },
   { "/calibration_data.txt", "calibration_data.txt" },
-  { TANK_REGISTRY_PATH, "tank_registry.json" },
+  { SENSOR_REGISTRY_PATH, "sensor_registry.json" },
   { CLIENT_METADATA_CACHE_PATH, "client_metadata.json" },
   { "/history_settings.json", "history_settings.json" }
 };
@@ -3717,7 +3717,7 @@ static bool nwsLookupGridPoint(ClientMetadata *meta) {
   client.println(F(" HTTP/1.1"));
   client.print(F("Host: "));
   client.println(F(NWS_API_HOST));
-  client.println(F("User-Agent: TankAlarm/1.0 (tank monitoring system)"));
+  client.println(F("User-Agent: TankAlarm/1.0 (sensor monitoring system)"));
   client.println(F("Accept: application/json"));
   client.println(F("Connection: close"));
   client.println();
@@ -3813,7 +3813,7 @@ static float nwsFetchAverageTemperature(ClientMetadata *meta, double timestamp) 
   client.println(F(" HTTP/1.1"));
   client.print(F("Host: "));
   client.println(F(NWS_API_HOST));
-  client.println(F("User-Agent: TankAlarm/1.0 (tank monitoring system)"));
+  client.println(F("User-Agent: TankAlarm/1.0 (sensor monitoring system)"));
   client.println(F("Accept: application/json"));
   client.println(F("Connection: close"));
   client.println();
@@ -4380,7 +4380,7 @@ static void logAlarmEvent(const char *clientUid, const char *siteName, uint8_t s
   
   Serial.print(F("Alarm logged: "));
   Serial.print(siteName);
-  Serial.print(F(" Tank "));
+  Serial.print(F(" Sensor "));
   Serial.print(sensorIndex);
   Serial.println(isHigh ? F(" HIGH") : F(" LOW"));
 }
@@ -4392,7 +4392,7 @@ static void clearAlarmEvent(const char *clientUid, uint8_t sensorIndex) {
     now = gLastSyncedEpoch + (double)(millis() - gLastSyncMillis) / 1000.0;
   }
   
-  // Find most recent uncleared alarm for this tank
+  // Find most recent uncleared alarm for this sensor
   for (int i = alarmLogCount - 1; i >= 0; i--) {
     int idx = (alarmLogWriteIndex - 1 - (alarmLogCount - 1 - i) + MAX_ALARM_LOG_ENTRIES) % MAX_ALARM_LOG_ENTRIES;
     if (strcmp(alarmLog[idx].clientUid, clientUid) == 0 && 
@@ -4439,26 +4439,26 @@ static void logTransmission(const char *clientUid, const char *site, const char 
   Serial.println(F("]"));
 }
 
-// Find or create a tank history entry
-static TankHourlyHistory *findOrCreateTankHistory(const char *clientUid, uint8_t sensorIndex) {
+// Find or create a sensor history entry
+static SensorHourlyHistory *findOrCreateSensorHistory(const char *clientUid, uint8_t sensorIndex) {
   // Search existing entries
-  for (uint8_t i = 0; i < gTankHistoryCount; i++) {
-    if (strcmp(gTankHistory[i].clientUid, clientUid) == 0 && 
-        gTankHistory[i].sensorIndex == sensorIndex) {
-      return &gTankHistory[i];
+  for (uint8_t i = 0; i < gSensorHistoryCount; i++) {
+    if (strcmp(gSensorHistory[i].clientUid, clientUid) == 0 && 
+        gSensorHistory[i].sensorIndex == sensorIndex) {
+      return &gSensorHistory[i];
     }
   }
   
   // Create new entry if space available
-  if (gTankHistoryCount < MAX_HISTORY_TANKS) {
-    TankHourlyHistory &hist = gTankHistory[gTankHistoryCount];
+  if (gSensorHistoryCount < MAX_HISTORY_SENSORS) {
+    SensorHourlyHistory &hist = gSensorHistory[gSensorHistoryCount];
     strlcpy(hist.clientUid, clientUid, sizeof(hist.clientUid));
     hist.sensorIndex = sensorIndex;
     hist.siteName[0] = '\0';
     hist.heightInches = 120.0f;
     hist.snapshotCount = 0;
     hist.writeIndex = 0;
-    gTankHistoryCount++;
+    gSensorHistoryCount++;
     return &hist;
   }
   
@@ -4467,17 +4467,17 @@ static TankHourlyHistory *findOrCreateTankHistory(const char *clientUid, uint8_t
 
 // Record a telemetry snapshot (called hourly or on significant change)
 static void recordTelemetrySnapshot(const char *clientUid, const char *siteName, uint8_t sensorIndex, float heightInches, float level, float voltage) {
-  TankHourlyHistory *hist = findOrCreateTankHistory(clientUid, sensorIndex);
+  SensorHourlyHistory *hist = findOrCreateSensorHistory(clientUid, sensorIndex);
   if (!hist) {
     static unsigned long lastHistFullWarn = 0;
     if (millis() - lastHistFullWarn > 300000UL) {
       lastHistFullWarn = millis();
       Serial.print(F("WARNING: History slots full ("));
-      Serial.print(MAX_HISTORY_TANKS);
+      Serial.print(MAX_HISTORY_SENSORS);
       Serial.print(F("/"));
-      Serial.print(MAX_HISTORY_TANKS);
-      Serial.println(F(") — new tank history dropped"));
-      addServerSerialLog("History slots full — tank history dropped", "warn", "history");
+      Serial.print(MAX_HISTORY_SENSORS);
+      Serial.println(F(") — new sensor history dropped"));
+      addServerSerialLog("History slots full — sensor history dropped", "warn", "history");
     }
     return;
   }
@@ -4500,8 +4500,8 @@ static void recordTelemetrySnapshot(const char *clientUid, const char *siteName,
   snap.level = level;
   snap.voltage = voltage;
   
-  hist->writeIndex = (hist->writeIndex + 1) % MAX_HOURLY_HISTORY_PER_TANK;
-  if (hist->snapshotCount < MAX_HOURLY_HISTORY_PER_TANK) {
+  hist->writeIndex = (hist->writeIndex + 1) % MAX_HOURLY_HISTORY_PER_SENSOR;
+  if (hist->snapshotCount < MAX_HOURLY_HISTORY_PER_SENSOR) {
     hist->snapshotCount++;
   }
 }
@@ -4522,14 +4522,14 @@ static void pruneHotTierIfNeeded() {
   double cutoffEpoch = now - (gHistorySettings.hotTierRetentionDays * 86400.0);
   uint32_t pruned = 0;
   
-  // Prune old telemetry snapshots from each tank
-  for (uint8_t i = 0; i < gTankHistoryCount; i++) {
-    TankHourlyHistory &hist = gTankHistory[i];
+  // Prune old telemetry snapshots from each sensor
+  for (uint8_t i = 0; i < gSensorHistoryCount; i++) {
+    SensorHourlyHistory &hist = gSensorHistory[i];
     uint16_t newCount = 0;
     
     // Keep only snapshots newer than cutoff
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
       if (hist.snapshots[idx].timestamp >= cutoffEpoch) {
         newCount++;
       } else {
@@ -4603,12 +4603,12 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
   doc["month"] = month;
   doc["generated"] = gLastSyncedEpoch > 0.0 ? gLastSyncedEpoch : 0.0;
   
-  JsonArray tanksArray = doc["tankSummaries"].to<JsonArray>();
-  uint8_t tanksWithData = 0;
+  JsonArray sensorsArray = doc["sensorSummaries"].to<JsonArray>();
+  uint8_t sensorsWithData = 0;
   
-  // For each tank, compute monthly summary from hourly data filtered by month
-  for (uint8_t i = 0; i < gTankHistoryCount; i++) {
-    TankHourlyHistory &hist = gTankHistory[i];
+  // For each sensor, compute monthly summary from hourly data filtered by month
+  for (uint8_t i = 0; i < gSensorHistoryCount; i++) {
+    SensorHourlyHistory &hist = gSensorHistory[i];
     if (hist.snapshotCount == 0) continue;
     
     // Calculate summary stats — only for snapshots within the target month
@@ -4620,7 +4620,7 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
     uint16_t voltageCount = 0;
     
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
       TelemetrySnapshot &snap = hist.snapshots[idx];
       
       // Filter: only include snapshots from the target month
@@ -4637,29 +4637,29 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
       }
     }
     
-    // Only emit tank entry if it had data in the target month
+    // Only emit sensor entry if it had data in the target month
     if (count == 0) continue;
     
-    JsonObject tankObj = tanksArray.add<JsonObject>();
-    tankObj["clientUid"] = hist.clientUid;
-    tankObj["site"] = hist.siteName;
-    tankObj["sensorIndex"] = hist.sensorIndex;
-    tankObj["heightInches"] = hist.heightInches;
-    tankObj["minLevel"] = roundTo(minLevel, 1);
-    tankObj["maxLevel"] = roundTo(maxLevel, 1);
-    tankObj["avgLevel"] = roundTo(sumLevel / count, 1);
-    tankObj["avgVoltage"] = voltageCount > 0 ? roundTo(sumVoltage / voltageCount, 2) : 0.0f;
-    tankObj["readings"] = count;
-    tanksWithData++;
+    JsonObject sensorObj = sensorsArray.add<JsonObject>();
+    sensorObj["clientUid"] = hist.clientUid;
+    sensorObj["site"] = hist.siteName;
+    sensorObj["sensorIndex"] = hist.sensorIndex;
+    sensorObj["heightInches"] = hist.heightInches;
+    sensorObj["minLevel"] = roundTo(minLevel, 1);
+    sensorObj["maxLevel"] = roundTo(maxLevel, 1);
+    sensorObj["avgLevel"] = roundTo(sumLevel / count, 1);
+    sensorObj["avgVoltage"] = voltageCount > 0 ? roundTo(sumVoltage / voltageCount, 2) : 0.0f;
+    sensorObj["readings"] = count;
+    sensorsWithData++;
   }
   
   // If hot tier had no data, try warm tier daily summaries for this month
-  if (tanksWithData == 0) {
+  if (sensorsWithData == 0) {
     JsonDocument warmDoc;
     if (loadDailySummaryMonth(year, month, warmDoc) && warmDoc.is<JsonArray>()) {
-      // Aggregate daily summaries per tank into monthly summaries
+      // Aggregate daily summaries per sensor into monthly summaries
       struct WarmSummary { char clientUid[48]; uint8_t sensorIndex; float minL; float maxL; float sumL; float sumV; uint16_t count; uint16_t voltCount; };
-      WarmSummary warmed[MAX_HISTORY_TANKS];
+      WarmSummary warmed[MAX_HISTORY_SENSORS];
       uint8_t warmCount = 0;
 
       for (JsonObject de : warmDoc.as<JsonArray>()) {
@@ -4676,7 +4676,7 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
         for (uint8_t w = 0; w < warmCount; ++w) {
           if (strcmp(warmed[w].clientUid, wUid) == 0 && warmed[w].sensorIndex == wIdx) { ws = &warmed[w]; break; }
         }
-        if (!ws && warmCount < MAX_HISTORY_TANKS) {
+        if (!ws && warmCount < MAX_HISTORY_SENSORS) {
           ws = &warmed[warmCount++];
           strlcpy(ws->clientUid, wUid, sizeof(ws->clientUid));
           ws->sensorIndex = wIdx;
@@ -4696,24 +4696,24 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
       for (uint8_t w = 0; w < warmCount; ++w) {
         WarmSummary &ws = warmed[w];
         if (ws.count == 0) continue;
-        JsonObject tankObj = tanksArray.add<JsonObject>();
-        tankObj["clientUid"] = ws.clientUid;
-        tankObj["sensorIndex"] = ws.sensorIndex;
-        tankObj["minLevel"] = roundTo(ws.minL, 1);
-        tankObj["maxLevel"] = roundTo(ws.maxL, 1);
-        tankObj["avgLevel"] = roundTo(ws.sumL / ws.count, 1);
-        tankObj["avgVoltage"] = ws.voltCount > 0 ? roundTo(ws.sumV / ws.voltCount, 2) : 0.0f;
-        tankObj["readings"] = ws.count;
-        tankObj["dataSource"] = "warm";
-        tanksWithData++;
+        JsonObject sensorObj = sensorsArray.add<JsonObject>();
+        sensorObj["clientUid"] = ws.clientUid;
+        sensorObj["sensorIndex"] = ws.sensorIndex;
+        sensorObj["minLevel"] = roundTo(ws.minL, 1);
+        sensorObj["maxLevel"] = roundTo(ws.maxL, 1);
+        sensorObj["avgLevel"] = roundTo(ws.sumL / ws.count, 1);
+        sensorObj["avgVoltage"] = ws.voltCount > 0 ? roundTo(ws.sumV / ws.voltCount, 2) : 0.0f;
+        sensorObj["readings"] = ws.count;
+        sensorObj["dataSource"] = "warm";
+        sensorsWithData++;
       }
     }
   }
 
-  doc["tanks"] = tanksWithData;
+  doc["sensors"] = sensorsWithData;
   
   // No data for this month — nothing to archive
-  if (tanksWithData == 0) {
+  if (sensorsWithData == 0) {
     Serial.print(F("FTP archive skipped (no data): "));
     Serial.print(year);
     Serial.print(F("/"));
@@ -4935,7 +4935,7 @@ static void loadHistorySettings() {
 // ============================================================================
 // Rolls up hot-tier snapshots into compact daily summaries stored on flash.
 // Files: /fs/history/daily_YYYYMM.json  (one per month)
-// Each file contains an array of per-tank daily summary objects.
+// Each file contains an array of per-sensor daily summary objects.
 // Automatic pruning keeps only MAX_DAILY_SUMMARY_MONTHS on flash.
 
 // Helper: get YYYYMMDD integer from epoch
@@ -5014,10 +5014,10 @@ static void rollupDailySummaries() {
     }
   }
   
-  // For each tank in hot tier, compute yesterday's summary
+  // For each sensor in hot tier, compute yesterday's summary
   uint8_t addedCount = 0;
-  for (uint8_t i = 0; i < gTankHistoryCount; i++) {
-    TankHourlyHistory &hist = gTankHistory[i];
+  for (uint8_t i = 0; i < gSensorHistoryCount; i++) {
+    SensorHourlyHistory &hist = gSensorHistory[i];
     if (hist.snapshotCount == 0) continue;
     
     float minLevel = 999999.0f, maxLevel = -999999.0f;
@@ -5028,7 +5028,7 @@ static void rollupDailySummaries() {
     uint8_t alarms = 0;
     
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
       TelemetrySnapshot &snap = hist.snapshots[idx];
       
       if (snap.timestamp < dayBegin || snap.timestamp >= dayEnd) continue;
@@ -5044,9 +5044,9 @@ static void rollupDailySummaries() {
       if (snap.voltage > 0.0f) { sumVoltage += snap.voltage; voltCount++; }
     }
     
-    if (count == 0) continue;  // No data for this tank yesterday
+    if (count == 0) continue;  // No data for this sensor yesterday
     
-    // Count alarms for this tank on this day
+    // Count alarms for this sensor on this day
     for (uint8_t a = 0; a < alarmLogCount; a++) {
       int aIdx = (alarmLogWriteIndex - alarmLogCount + a + MAX_ALARM_LOG_ENTRIES) % MAX_ALARM_LOG_ENTRIES;
       if (strcmp(alarmLog[aIdx].clientUid, hist.clientUid) == 0 &&
@@ -5088,7 +5088,7 @@ static void rollupDailySummaries() {
     gLastDailyRollupDate = yesterdayDate;
     Serial.print(F("Daily summary rollup: "));
     Serial.print(addedCount);
-    Serial.print(F(" tanks for "));
+    Serial.print(F(" sensors for "));
     Serial.println(yesterdayDate);
   }
   #endif
@@ -5190,25 +5190,25 @@ static void pruneDailySummaryFiles() {
 static void saveHotTierSnapshot() {
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-  if (!mbedFS || gTankHistoryCount == 0) return;
+  if (!mbedFS || gSensorHistoryCount == 0) return;
   
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
   
-  for (uint8_t i = 0; i < gTankHistoryCount; i++) {
-    TankHourlyHistory &hist = gTankHistory[i];
+  for (uint8_t i = 0; i < gSensorHistoryCount; i++) {
+    SensorHourlyHistory &hist = gSensorHistory[i];
     if (hist.snapshotCount == 0) continue;
     
-    JsonObject tankObj = arr.add<JsonObject>();
-    tankObj["c"] = hist.clientUid;
-    tankObj["s"] = hist.siteName;
-    tankObj["k"] = hist.sensorIndex;
-    tankObj["h"] = hist.heightInches;
+    JsonObject sensorObj = arr.add<JsonObject>();
+    sensorObj["c"] = hist.clientUid;
+    sensorObj["s"] = hist.siteName;
+    sensorObj["k"] = hist.sensorIndex;
+    sensorObj["h"] = hist.heightInches;
     
-    JsonArray snaps = tankObj["d"].to<JsonArray>();
+    JsonArray snaps = sensorObj["d"].to<JsonArray>();
     // Write snapshots in chronological order
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
       TelemetrySnapshot &snap = hist.snapshots[idx];
       JsonArray entry = snaps.add<JsonArray>();
       entry.add(snap.timestamp);
@@ -5225,8 +5225,8 @@ static void saveHotTierSnapshot() {
   mkdir("/fs/history", 0777);
   if (tankalarm_posix_write_file_atomic("/fs/history/hot_tier.json", buf, jsonLen)) {
     Serial.print(F("Hot tier saved: "));
-    Serial.print(gTankHistoryCount);
-    Serial.println(F(" tanks"));
+    Serial.print(gSensorHistoryCount);
+    Serial.println(F(" sensors"));
   }
   free(buf);
   #endif
@@ -5245,7 +5245,7 @@ static void loadHotTierSnapshot() {
   long sz = ftell(f);
   fseek(f, 0, SEEK_SET);
   
-  // Hot tier JSON could be large with 90 snapshots × 20 tanks
+  // Hot tier JSON could be large with 90 snapshots × 20 sensors
   if (sz <= 0 || sz > 65536) {
     fclose(f);
     return;
@@ -5270,40 +5270,40 @@ static void loadHotTierSnapshot() {
   free(buf);
   
   JsonArray arr = doc.as<JsonArray>();
-  gTankHistoryCount = 0;
+  gSensorHistoryCount = 0;
   
-  for (JsonObject tankObj : arr) {
-    if (gTankHistoryCount >= MAX_HISTORY_TANKS) break;
+  for (JsonObject sensorObj : arr) {
+    if (gSensorHistoryCount >= MAX_HISTORY_SENSORS) break;
     
-    TankHourlyHistory &hist = gTankHistory[gTankHistoryCount];
-    strlcpy(hist.clientUid, tankObj["c"] | "", sizeof(hist.clientUid));
-    strlcpy(hist.siteName, tankObj["s"] | "", sizeof(hist.siteName));
-    hist.sensorIndex = tankObj["k"] | 0;
-    hist.heightInches = tankObj["h"] | 120.0f;
+    SensorHourlyHistory &hist = gSensorHistory[gSensorHistoryCount];
+    strlcpy(hist.clientUid, sensorObj["c"] | "", sizeof(hist.clientUid));
+    strlcpy(hist.siteName, sensorObj["s"] | "", sizeof(hist.siteName));
+    hist.sensorIndex = sensorObj["k"] | 0;
+    hist.heightInches = sensorObj["h"] | 120.0f;
     hist.snapshotCount = 0;
     hist.writeIndex = 0;
     
-    JsonArray snaps = tankObj["d"].as<JsonArray>();
+    JsonArray snaps = sensorObj["d"].as<JsonArray>();
     for (JsonArray entry : snaps) {
-      if (hist.snapshotCount >= MAX_HOURLY_HISTORY_PER_TANK) break;
+      if (hist.snapshotCount >= MAX_HOURLY_HISTORY_PER_SENSOR) break;
       
       TelemetrySnapshot &snap = hist.snapshots[hist.writeIndex];
       snap.timestamp = entry[0].as<double>();
       snap.level = entry[1].as<float>();
       snap.voltage = entry[2].as<float>();
       
-      hist.writeIndex = (hist.writeIndex + 1) % MAX_HOURLY_HISTORY_PER_TANK;
+      hist.writeIndex = (hist.writeIndex + 1) % MAX_HOURLY_HISTORY_PER_SENSOR;
       hist.snapshotCount++;
     }
     
     if (hist.clientUid[0] != '\0') {
-      gTankHistoryCount++;
+      gSensorHistoryCount++;
     }
   }
   
   Serial.print(F("Hot tier restored: "));
-  Serial.print(gTankHistoryCount);
-  Serial.println(F(" tanks from flash"));
+  Serial.print(gSensorHistoryCount);
+  Serial.println(F(" sensors from flash"));
   #endif
 #endif
 }
@@ -5331,21 +5331,21 @@ static bool loadFtpArchiveCached(uint16_t year, uint8_t month) {
   // Parse into cache
   gFtpArchiveCache.cachedYear = year;
   gFtpArchiveCache.cachedMonth = month;
-  gFtpArchiveCache.tankCount = 0;
+  gFtpArchiveCache.sensorCount = 0;
   
-  JsonArray summaries = doc["tankSummaries"].as<JsonArray>();
-  for (JsonObject tankObj : summaries) {
-    if (gFtpArchiveCache.tankCount >= MAX_HISTORY_TANKS) break;
+  JsonArray summaries = doc["sensorSummaries"].as<JsonArray>();
+  for (JsonObject sensorObj : summaries) {
+    if (gFtpArchiveCache.sensorCount >= MAX_HISTORY_SENSORS) break;
     
-    auto &cached = gFtpArchiveCache.tanks[gFtpArchiveCache.tankCount];
-    strlcpy(cached.clientUid, tankObj["clientUid"] | "", sizeof(cached.clientUid));
-    cached.sensorIndex = tankObj["sensorIndex"] | 0;
-    cached.minLevel = tankObj["minLevel"] | 0.0f;
-    cached.maxLevel = tankObj["maxLevel"] | 0.0f;
-    cached.avgLevel = tankObj["avgLevel"] | 0.0f;
-    cached.avgVoltage = tankObj["avgVoltage"] | 0.0f;
-    cached.readings = tankObj["readings"] | 0;
-    gFtpArchiveCache.tankCount++;
+    auto &cached = gFtpArchiveCache.sensors[gFtpArchiveCache.sensorCount];
+    strlcpy(cached.clientUid, sensorObj["clientUid"] | "", sizeof(cached.clientUid));
+    cached.sensorIndex = sensorObj["sensorIndex"] | 0;
+    cached.minLevel = sensorObj["minLevel"] | 0.0f;
+    cached.maxLevel = sensorObj["maxLevel"] | 0.0f;
+    cached.avgLevel = sensorObj["avgLevel"] | 0.0f;
+    cached.avgVoltage = sensorObj["avgVoltage"] | 0.0f;
+    cached.readings = sensorObj["readings"] | 0;
+    gFtpArchiveCache.sensorCount++;
   }
   
   gFtpArchiveCache.valid = true;
@@ -5356,10 +5356,10 @@ static bool loadFtpArchiveCached(uint16_t year, uint8_t month) {
   return true;
 }
 
-// Populate a JSON stats object from FTP cache for a specific tank
+// Populate a JSON stats object from FTP cache for a specific sensor
 static void populateStatsFromFtpCache(const char *clientUid, uint8_t sensorIndex, JsonObject &statsObj) {
-  for (uint8_t i = 0; i < gFtpArchiveCache.tankCount; i++) {
-    auto &cached = gFtpArchiveCache.tanks[i];
+  for (uint8_t i = 0; i < gFtpArchiveCache.sensorCount; i++) {
+    auto &cached = gFtpArchiveCache.sensors[i];
     if (strcmp(cached.clientUid, clientUid) == 0 && cached.sensorIndex == sensorIndex) {
       statsObj["min"] = roundTo(cached.minLevel, 1);
       statsObj["max"] = roundTo(cached.maxLevel, 1);
@@ -5371,7 +5371,7 @@ static void populateStatsFromFtpCache(const char *clientUid, uint8_t sensorIndex
     }
   }
   statsObj["available"] = false;
-  statsObj["message"] = "Tank not found in archive";
+  statsObj["message"] = "Sensor not found in archive";
 }
 
 // Populate stats from LittleFS daily summaries for a specific sensor+month
@@ -5412,7 +5412,7 @@ static void populateStatsFromDailySummary(uint16_t year, uint8_t month,
     statsObj["dataSource"] = "flash";
   } else {
     statsObj["available"] = false;
-    statsObj["message"] = "No data for this tank in daily summary";
+    statsObj["message"] = "No data for this sensor in daily summary";
   }
 }
 
@@ -5722,9 +5722,9 @@ static void enableDfuMode() {
     saveConfig(gConfig);
     gConfigDirty = false;
   }
-  if (gTankRegistryDirty) {
-    saveTankRegistry();
-    gTankRegistryDirty = false;
+  if (gSensorRegistryDirty) {
+    saveSensorRegistry();
+    gSensorRegistryDirty = false;
   }
   if (gClientMetadataDirty) {
     saveClientMetadataCache();
@@ -6084,8 +6084,8 @@ static void handleWebRequests() {
       queryString = path.substring(queryStart + 1);
     }
     handleHistoryYearOverYear(client, queryString);
-  } else if (method == "GET" && path == "/api/tanks") {
-    sendTankJson(client);
+  } else if (method == "GET" && path == "/api/sensors") {
+    sendSensorJson(client);
   } else if (method == "GET" && path == "/api/unloads") {
     sendUnloadLogJson(client);
   } else if (method == "GET" && path.startsWith("/api/clients")) {
@@ -6237,13 +6237,13 @@ static void handleWebRequests() {
     handleNotecardStatusGet(client);
   } else if (method == "GET" && path == "/api/dfu/status") {
     handleDfuStatusGet(client);
-  } else if (path.startsWith("/api/debug/tanks")) {
+  } else if (path.startsWith("/api/debug/sensors")) {
     String queryString = "";
     int queryStart = path.indexOf('?');
     if (queryStart >= 0) {
       queryString = path.substring(queryStart + 1);
     }
-    handleDebugTanks(client, method, body, queryString);
+    handleDebugSensors(client, method, body, queryString);
   } else if (method == "POST" && path == "/api/dfu/check") {
     handleDfuCheckPost(client, body);
   } else if (method == "POST" && path == "/api/dfu/enable") {
@@ -6680,52 +6680,52 @@ static void respondStatus(EthernetClient &client, int status, const String &mess
 
 
 
-static void sendTankJson(EthernetClient &client) {
+static void sendSensorJson(EthernetClient &client) {
   JsonDocument doc;
-  JsonArray arr = doc["tanks"].to<JsonArray>();
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+  JsonArray arr = doc["sensors"].to<JsonArray>();
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
     JsonObject obj = arr.add<JsonObject>();
-    obj["c"] = gTankRecords[i].clientUid;
-    obj["s"] = gTankRecords[i].site;
-    obj["n"] = gTankRecords[i].label;
-    if (gTankRecords[i].contents[0] != '\0') {
-      obj["cn"] = gTankRecords[i].contents;
+    obj["c"] = gSensorRecords[i].clientUid;
+    obj["s"] = gSensorRecords[i].site;
+    obj["n"] = gSensorRecords[i].label;
+    if (gSensorRecords[i].contents[0] != '\0') {
+      obj["cn"] = gSensorRecords[i].contents;
     }
-    obj["k"] = gTankRecords[i].sensorIndex;
-    if (gTankRecords[i].userNumber > 0) {
-      obj["un"] = gTankRecords[i].userNumber;
+    obj["k"] = gSensorRecords[i].sensorIndex;
+    if (gSensorRecords[i].userNumber > 0) {
+      obj["un"] = gSensorRecords[i].userNumber;
     }
-    obj["l"] = gTankRecords[i].levelInches;
+    obj["l"] = gSensorRecords[i].levelInches;
     // Only include sensorMa for current-loop sensors (valid range is 4-20mA)
-    if (gTankRecords[i].sensorMa >= 4.0f) {
-      obj["ma"] = gTankRecords[i].sensorMa;
+    if (gSensorRecords[i].sensorMa >= 4.0f) {
+      obj["ma"] = gSensorRecords[i].sensorMa;
     }
     // Include sensor type if known
-    if (gTankRecords[i].sensorType[0] != '\0') {
-      obj["st"] = gTankRecords[i].sensorType;
+    if (gSensorRecords[i].sensorType[0] != '\0') {
+      obj["st"] = gSensorRecords[i].sensorType;
     }
     // Include object type and measurement unit for calibration page
-    if (gTankRecords[i].objectType[0] != '\0') {
-      obj["ot"] = gTankRecords[i].objectType;
+    if (gSensorRecords[i].objectType[0] != '\0') {
+      obj["ot"] = gSensorRecords[i].objectType;
     }
-    if (gTankRecords[i].measurementUnit[0] != '\0') {
-      obj["mu"] = gTankRecords[i].measurementUnit;
+    if (gSensorRecords[i].measurementUnit[0] != '\0') {
+      obj["mu"] = gSensorRecords[i].measurementUnit;
     }
     // Calculate and include 24hr change if we have previous data
-    if (gTankRecords[i].previousLevelEpoch > 0.0) {
-      float delta = gTankRecords[i].levelInches - gTankRecords[i].previousLevelInches;
+    if (gSensorRecords[i].previousLevelEpoch > 0.0) {
+      float delta = gSensorRecords[i].levelInches - gSensorRecords[i].previousLevelInches;
       obj["d"] = delta;  // 24hr delta in inches
-      obj["pe"] = gTankRecords[i].previousLevelEpoch;  // when previous reading was taken
+      obj["pe"] = gSensorRecords[i].previousLevelEpoch;  // when previous reading was taken
     }
-    obj["a"] = gTankRecords[i].alarmActive;
-    obj["at"] = gTankRecords[i].alarmType;
-    obj["u"] = gTankRecords[i].lastUpdateEpoch;
+    obj["a"] = gSensorRecords[i].alarmActive;
+    obj["at"] = gSensorRecords[i].alarmType;
+    obj["u"] = gSensorRecords[i].lastUpdateEpoch;
   }
 
   // Detect if we ran out of memory while building the document
   if (doc.overflowed()) {
-    Serial.println(F("[ERROR] Tank JSON document overflowed - too many tank records for available memory"));
-    respondStatus(client, 500, F("Tank data too large"));
+    Serial.println(F("[ERROR] Sensor JSON document overflowed - too many sensor records for available memory"));
+    respondStatus(client, 500, F("Sensor data too large"));
     return;
   }
 
@@ -6848,10 +6848,10 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
   }
   doc["dfuProg"] = gDfuInProgress;
 
-  // Build client list from tank records (needed for both summary and full responses)
+  // Build client list from sensor records (needed for both summary and full responses)
   JsonArray clientsArr = doc["cs"].to<JsonArray>();
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    const TankRecord &rec = gTankRecords[i];
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    const SensorRecord &rec = gSensorRecords[i];
 
     if (clientFilter.length() > 0 && strcmp(rec.clientUid, clientFilter.c_str()) != 0) {
       continue;  // Skip non-matching clients when filter is applied
@@ -6928,48 +6928,48 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
       }
     }
 
-    JsonArray tankList;
+    JsonArray sensorList;
     if (!clientObj["ts"]) {
-      tankList = clientObj["ts"].to<JsonArray>();
+      sensorList = clientObj["ts"].to<JsonArray>();
     } else {
-      tankList = clientObj["ts"].as<JsonArray>();
+      sensorList = clientObj["ts"].as<JsonArray>();
     }
-    JsonObject tankObj = tankList.add<JsonObject>();
-    tankObj["n"] = rec.label;
-    tankObj["k"] = rec.sensorIndex;
+    JsonObject sensorObj = sensorList.add<JsonObject>();
+    sensorObj["n"] = rec.label;
+    sensorObj["k"] = rec.sensorIndex;
     if (rec.userNumber > 0) {
-      tankObj["un"] = rec.userNumber;
+      sensorObj["un"] = rec.userNumber;
     }
-    tankObj["l"] = rec.levelInches;
+    sensorObj["l"] = rec.levelInches;
     // Only include sensorMa for current-loop sensors (valid range is 4-20mA)
     if (rec.sensorMa >= 4.0f) {
-      tankObj["ma"] = rec.sensorMa;
+      sensorObj["ma"] = rec.sensorMa;
     }
     // Include sensor type if known
     if (rec.sensorType[0] != '\0') {
-      tankObj["st"] = rec.sensorType;
+      sensorObj["st"] = rec.sensorType;
     }
     // Include object type (tank, gas, rpm, etc.)
     if (rec.objectType[0] != '\0') {
-      tankObj["ot"] = rec.objectType;
+      sensorObj["ot"] = rec.objectType;
     }
     // Include measurement unit
     if (rec.measurementUnit[0] != '\0') {
-      tankObj["mu"] = rec.measurementUnit;
+      sensorObj["mu"] = rec.measurementUnit;
     }
     // Include contents (e.g. "Diesel", "Water", "Propane")
     if (rec.contents[0] != '\0') {
-      tankObj["ct"] = rec.contents;
+      sensorObj["ct"] = rec.contents;
     }
     // Include 24hr change if available
     if (rec.previousLevelEpoch > 0.0) {
-      tankObj["d"] = rec.levelInches - rec.previousLevelInches;
+      sensorObj["d"] = rec.levelInches - rec.previousLevelInches;
     }
-    tankObj["a"] = rec.alarmActive;
-    tankObj["at"] = rec.alarmType;
-    tankObj["u"] = rec.lastUpdateEpoch;
+    sensorObj["a"] = rec.alarmActive;
+    sensorObj["at"] = rec.alarmType;
+    sensorObj["u"] = rec.lastUpdateEpoch;
 
-    clientObj["tc"] = tankList.size();
+    clientObj["tc"] = sensorList.size();
   }
 
   // Include clients that have cached configs but no telemetry data yet.
@@ -7488,8 +7488,8 @@ static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state
   return true;
 }
 
-// Send a command to clear/reset relay alarms for a specific tank on a client
-static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
+// Send a command to clear/reset relay alarms for a specific sensor on a client
+static bool sendRelayClearCommand(const char *clientUid, uint8_t sensorIdx) {
   if (!clientUid) {
     return false;
   }
@@ -7512,8 +7512,8 @@ static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
   // Route Relay metadata
   JAddStringToObject(body, "_target", clientUid);
   JAddStringToObject(body, "_type", "relay");
-  // Use relay_reset_tank command format that the client already supports
-  JAddNumberToObject(body, "relay_reset_tank", tankIdx);
+  // Use relay_reset_sensor command format that the client already supports
+  JAddNumberToObject(body, "relay_reset_sensor", sensorIdx);
   JAddStringToObject(body, "source", "server-dashboard");
   stampSchemaVersion(body);
   JAddItemToObject(req, "body", body);
@@ -7525,12 +7525,12 @@ static bool sendRelayClearCommand(const char *clientUid, uint8_t tankIdx) {
 
   Serial.print(F("Queued relay clear command for client "));
   Serial.print(clientUid);
-  Serial.print(F(", tank "));
-  Serial.println(tankIdx);
+  Serial.print(F(", sensor "));
+  Serial.println(sensorIdx);
 
   // Log to transmission log
   char detail[64];
-  snprintf(detail, sizeof(detail), "Reset relay alarms tank %u", tankIdx);
+  snprintf(detail, sizeof(detail), "Reset relay alarms sensor %u", sensorIdx);
   logTransmission(clientUid, "", "relay_clear", "outbox", detail);
 
   return true;
@@ -7556,10 +7556,10 @@ static void handleRelayClearPost(EthernetClient &client, const String &body) {
     return;
   }
 
-  uint8_t tankIdx = doc["tankIdx"].as<uint8_t>();
-  // Note: tankIdx validation is handled by the client device based on its actual tank configuration
+  uint8_t sensorIdx = doc["sensorIdx"].as<uint8_t>();
+  // Note: sensorIdx validation is handled by the client device based on its actual sensor configuration
 
-  if (sendRelayClearCommand(clientUid, tankIdx)) {
+  if (sendRelayClearCommand(clientUid, sensorIdx)) {
     respondStatus(client, 200, F("OK"));
   } else {
     respondStatus(client, 500, F("Failed to send relay clear command"));
@@ -7862,22 +7862,22 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
     return ConfigDispatchStatus::PayloadTooLarge;
   }
   
-  // Prune orphaned tank records that are no longer in the new config
-  pruneOrphanedTankRecords(clientUid);
+  // Prune orphaned sensor records that are no longer in the new config
+  pruneOrphanedSensorRecords(clientUid);
 
-  // Clear sensor-stuck alarms for tanks where stuckDetection was disabled
-  JsonArrayConst tanks = cfgObj["tanks"].as<JsonArrayConst>();
-  if (!tanks.isNull()) {
-    for (JsonObjectConst t : tanks) {
+  // Clear sensor-stuck alarms for sensors where stuckDetection was disabled
+  JsonArrayConst sensors = cfgObj["sensors"].as<JsonArrayConst>();
+  if (!sensors.isNull()) {
+    for (JsonObjectConst t : sensors) {
       if (t["stuckDetection"].is<bool>() && !t["stuckDetection"].as<bool>()) {
         uint8_t sensorIdx = t["number"] | (uint8_t)0;
         if (sensorIdx == 0) continue;
-        TankRecord *rec = findTankByHash(clientUid, sensorIdx);
+        SensorRecord *rec = findSensorByHash(clientUid, sensorIdx);
         if (rec && rec->alarmActive && strcmp(rec->alarmType, "sensor-stuck") == 0) {
           rec->alarmActive = false;
           strlcpy(rec->alarmType, "clear", sizeof(rec->alarmType));
           clearAlarmEvent(clientUid, sensorIdx);
-          gTankRegistryDirty = true;
+          gSensorRegistryDirty = true;
           Serial.print(F("Cleared sensor-stuck alarm for sensor "));
           Serial.print(sensorIdx);
           Serial.print(F(" on "));
@@ -8059,7 +8059,7 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
 static void handleTelemetry(JsonDocument &doc, double epoch) {
   const char *clientUid = doc["c"] | "";
   uint8_t sensorIndex = doc["k"].as<uint8_t>();
-  TankRecord *rec = upsertTankRecord(clientUid, sensorIndex);
+  SensorRecord *rec = upsertSensorRecord(clientUid, sensorIndex);
   if (!rec) {
     return;
   }
@@ -8105,9 +8105,9 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
     if (cfgSnap && cfgSnap->payload[0] != '\0') {
       JsonDocument cfgDoc;
       if (deserializeJson(cfgDoc, cfgSnap->payload) == DeserializationError::Ok) {
-        JsonArray cfgTanks = cfgDoc["tanks"].as<JsonArray>();
-        if (cfgTanks) {
-          for (JsonVariant ct : cfgTanks) {
+        JsonArray cfgSensors = cfgDoc["sensors"].as<JsonArray>();
+        if (cfgSensors) {
+          for (JsonVariant ct : cfgSensors) {
             uint8_t ctn = ct["number"] | 0;
             if (ctn == sensorIndex) {
               const char *cfgOt = ct["monitorType"] | "";
@@ -8215,13 +8215,13 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   
   rec->levelInches = newLevel;
   rec->lastUpdateEpoch = now;
-  gTankRegistryDirty = true;
+  gSensorRegistryDirty = true;
   
   // Record telemetry snapshot for historical charting
   // Get site name and tank height for history record
   const char *siteName = doc["s"] | "";
-  float tankHeight = doc["h"].as<float>();
-  if (tankHeight <= 0) tankHeight = 48.0f; // Default tank height
+  float recordHeight = doc["h"].as<float>();
+  if (recordHeight <= 0) recordHeight = 48.0f; // Default tank height
   
   // Get voltage from client metadata if available
   float vinVoltage = 0.0f;
@@ -8230,7 +8230,7 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
     vinVoltage = meta->vinVoltage;
   }
   
-  recordTelemetrySnapshot(clientUid, siteName, sensorIndex, tankHeight, newLevel, vinVoltage);
+  recordTelemetrySnapshot(clientUid, siteName, sensorIndex, recordHeight, newLevel, vinVoltage);
 }
 
 static void handleAlarm(JsonDocument &doc, double epoch) {
@@ -8238,7 +8238,7 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   const char *type = doc["y"] | "";
 
   // System alarms (solar/battery/power) don't reference a specific sensor.
-  // Store on ClientMetadata instead of creating a phantom sensorIndex=0 TankRecord.
+  // Store on ClientMetadata instead of creating a phantom sensorIndex=0 SensorRecord.
   bool isSystemAlarm = (strcmp(type, "solar") == 0) ||
                        (strcmp(type, "battery") == 0) ||
                        (strcmp(type, "power") == 0);
@@ -8279,7 +8279,7 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   }
 
   uint8_t sensorIndex = doc["k"].as<uint8_t>();
-  TankRecord *rec = upsertTankRecord(clientUid, sensorIndex);
+  SensorRecord *rec = upsertSensorRecord(clientUid, sensorIndex);
   if (!rec) {
     return;
   }
@@ -8376,7 +8376,7 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
                             rec->levelInches, level, alarmVin);
   }
   rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
-  gTankRegistryDirty = true;
+  gSensorRegistryDirty = true;
 
   // Check rate limit before sending SMS
   bool smsEnabled = false;  // Default off -- only send SMS when client explicitly requests (se=true)
@@ -8385,10 +8385,10 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   } else if (doc["smsEnabled"]) {
     smsEnabled = doc["smsEnabled"].as<bool>();
   }
-  // For tank-level alarms (high/low/clear/digital), SMS is controlled by server policy
+  // For sensor-level alarms (high/low/clear/digital), SMS is controlled by server policy
   bool smsAllowedByServer = false;
   if (strcmp(type, "high") == 0) {
-    smsEnabled = true;  // Tank alarms always eligible
+    smsEnabled = true;  // Sensor alarms always eligible
     smsAllowedByServer = gConfig.smsOnHigh;
   } else if (strcmp(type, "low") == 0) {
     smsEnabled = true;
@@ -8551,7 +8551,7 @@ static void handleDaily(JsonDocument &doc, double epoch) {
 
   // Process alarm summary from daily report (backup notification path).
   // If the original alarm note was lost due to weak signal, detect active
-  // alarms here and cross-reference with server-side TankRecord state.
+  // alarms here and cross-reference with server-side SensorRecord state.
   JsonArray dailyAlarms = doc["alarms"];
   if (isFirstPart && dailyAlarms) {
     for (JsonObject a : dailyAlarms) {
@@ -8560,10 +8560,10 @@ static void handleDaily(JsonDocument &doc, double epoch) {
       bool loAlarm = a["lo"] | false;
       if (hiAlarm || loAlarm) {
         // Check if server already knows about this alarm (search without upserting)
-        TankRecord *rec = nullptr;
-        for (uint8_t ri = 0; ri < gTankRecordCount; ++ri) {
-          if (strcmp(gTankRecords[ri].clientUid, clientUid) == 0 && gTankRecords[ri].sensorIndex == sensorIdx) {
-            rec = &gTankRecords[ri];
+        SensorRecord *rec = nullptr;
+        for (uint8_t ri = 0; ri < gSensorRecordCount; ++ri) {
+          if (strcmp(gSensorRecords[ri].clientUid, clientUid) == 0 && gSensorRecords[ri].sensorIndex == sensorIdx) {
+            rec = &gSensorRecords[ri];
             break;
           }
         }
@@ -8579,7 +8579,7 @@ static void handleDaily(JsonDocument &doc, double epoch) {
           rec->alarmActive = true;
           strlcpy(rec->alarmType, hiAlarm ? "high" : "low", sizeof(rec->alarmType));
           rec->lastUpdateEpoch = (epoch > 0.0) ? epoch : currentEpoch();
-          gTankRegistryDirty = true;
+          gSensorRegistryDirty = true;
         }
       }
     }
@@ -8587,18 +8587,18 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     // Reconciliation: clear alarms on server for sensors that the client
     // reports as NOT alarming.  This catches orphaned server-side alarms
     // where the "clear" note was lost or rate-limited.
-    for (uint8_t ri = 0; ri < gTankRecordCount; ++ri) {
-      if (strcmp(gTankRecords[ri].clientUid, clientUid) != 0) continue;
-      if (!gTankRecords[ri].alarmActive) continue;
+    for (uint8_t ri = 0; ri < gSensorRecordCount; ++ri) {
+      if (strcmp(gSensorRecords[ri].clientUid, clientUid) != 0) continue;
+      if (!gSensorRecords[ri].alarmActive) continue;
       // Skip system alarm types — those aren't in the daily alarms array
-      if (strcmp(gTankRecords[ri].alarmType, "solar") == 0 ||
-          strcmp(gTankRecords[ri].alarmType, "battery") == 0 ||
-          strcmp(gTankRecords[ri].alarmType, "power") == 0) continue;
+      if (strcmp(gSensorRecords[ri].alarmType, "solar") == 0 ||
+          strcmp(gSensorRecords[ri].alarmType, "battery") == 0 ||
+          strcmp(gSensorRecords[ri].alarmType, "power") == 0) continue;
       // Check if this sensorIndex has an active alarm in the daily report
       bool foundInDaily = false;
       for (JsonObject a : dailyAlarms) {
         uint8_t dailyIdx = a["k"] | 0;
-        if (dailyIdx == gTankRecords[ri].sensorIndex) {
+        if (dailyIdx == gSensorRecords[ri].sensorIndex) {
           bool hiAlarm = a["hi"] | false;
           bool loAlarm = a["lo"] | false;
           if (hiAlarm || loAlarm) foundInDaily = true;
@@ -8607,14 +8607,14 @@ static void handleDaily(JsonDocument &doc, double epoch) {
       }
       if (!foundInDaily) {
         Serial.print(F("Reconciliation: Clearing orphaned alarm on sensor "));
-        Serial.print(gTankRecords[ri].sensorIndex);
+        Serial.print(gSensorRecords[ri].sensorIndex);
         Serial.print(F(" for client "));
         Serial.println(clientUid);
         addServerSerialLog("Orphaned alarm cleared via daily reconciliation", "info", "alarm");
-        gTankRecords[ri].alarmActive = false;
-        strlcpy(gTankRecords[ri].alarmType, "clear", sizeof(gTankRecords[ri].alarmType));
-        clearAlarmEvent(gTankRecords[ri].clientUid, gTankRecords[ri].sensorIndex);
-        gTankRegistryDirty = true;
+        gSensorRecords[ri].alarmActive = false;
+        strlcpy(gSensorRecords[ri].alarmType, "clear", sizeof(gSensorRecords[ri].alarmType));
+        clearAlarmEvent(gSensorRecords[ri].clientUid, gSensorRecords[ri].sensorIndex);
+        gSensorRegistryDirty = true;
       }
     }
   }
@@ -8622,11 +8622,11 @@ static void handleDaily(JsonDocument &doc, double epoch) {
   // Get site name
   const char *siteName = doc["s"] | "";
 
-  // Process tank records in the daily report
-  JsonArray tanks = doc["tanks"];
-  for (JsonObject t : tanks) {
+  // Process sensor records in the daily report
+  JsonArray sensors = doc["sensors"];
+  for (JsonObject t : sensors) {
     uint8_t sensorIndex = t["k"].as<uint8_t>();
-    TankRecord *rec = upsertTankRecord(clientUid, sensorIndex);
+    SensorRecord *rec = upsertSensorRecord(clientUid, sensorIndex);
     if (!rec) {
       continue;
     }
@@ -8725,7 +8725,7 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     
     rec->levelInches = newLevel;
     rec->lastUpdateEpoch = now;
-    gTankRegistryDirty = true;
+    gSensorRegistryDirty = true;
     
     // Record historical snapshot from daily report so sparklines/charts have data
     // even when change-based telemetry is disabled (levelChangeThreshold = 0)
@@ -8787,9 +8787,9 @@ static void handleDaily(JsonDocument &doc, double epoch) {
 }
 
 // ============================================================================
-// Tank Unload Event Handler
+// Sensor Unload Event Handler
 // ============================================================================
-// Processes unload events from clients (fill-and-empty tanks)
+// Processes unload events from clients (fill-and-empty sensors)
 static void handleUnload(JsonDocument &doc, double epoch) {
   const char *clientUid = doc["c"] | "";
   const char *siteName = doc["s"] | "";
@@ -8859,8 +8859,8 @@ static void handleUnload(JsonDocument &doc, double epoch) {
     sendUnloadSms(entry);
   }
   
-  // Update tank record with current level
-  TankRecord *rec = upsertTankRecord(clientUid, sensorIndex);
+  // Update sensor record with current level
+  SensorRecord *rec = upsertSensorRecord(clientUid, sensorIndex);
   if (rec) {
     strlcpy(rec->site, siteName, sizeof(rec->site));
     strlcpy(rec->label, tankLabel, sizeof(rec->label));
@@ -8902,69 +8902,80 @@ static void sendUnloadSms(const UnloadLogEntry &entry) {
   Serial.println(message);
 }
 
-static TankRecord *upsertTankRecord(const char *clientUid, uint8_t sensorIndex) {
+static SensorRecord *upsertSensorRecord(const char *clientUid, uint8_t sensorIndex) {
   // Validate UID length to prevent silent truncation issues
   if (!isValidClientUid(clientUid)) {
-    Serial.println(F("ERROR: Invalid client UID, skipping tank record"));
+    Serial.println(F("ERROR: Invalid client UID, skipping sensor record"));
     return nullptr;
   }
   
   // Use O(1) hash lookup instead of O(n) linear search
-  TankRecord *existing = findTankByHash(clientUid, sensorIndex);
+  SensorRecord *existing = findSensorByHash(clientUid, sensorIndex);
   if (existing) {
     return existing;
   }
   
-  if (gTankRecordCount >= MAX_TANK_RECORDS) {
-    // Evict the stalest non-alarm tank record (LRU policy).
+  // Fallback: linear scan in case hash table is out of sync.
+  // This prevents duplicate records if the hash table becomes corrupted.
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    if (strcmp(gSensorRecords[i].clientUid, clientUid) == 0 &&
+        gSensorRecords[i].sensorIndex == sensorIndex) {
+      Serial.println(F("WARNING: Hash miss — fallback linear scan found existing record. Rebuilding hash table."));
+      rebuildSensorHashTable();
+      return &gSensorRecords[i];
+    }
+  }
+  
+  if (gSensorRecordCount >= MAX_SENSOR_RECORDS) {
+    // Evict the stalest non-alarm sensor record (LRU policy).
     // Alarmed records are protected only if updated within the last 72 hours;
     // stale alarms (likely orphaned) lose their eviction protection.
     uint8_t evictIdx = 0xFF;
     double oldestEpoch = 1e18;
     double now = currentEpoch();
-    for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-      bool recentAlarm = gTankRecords[i].alarmActive &&
-                         (now - gTankRecords[i].lastUpdateEpoch) < 259200.0;  // 72h
-      if (!recentAlarm && gTankRecords[i].lastUpdateEpoch < oldestEpoch) {
-        oldestEpoch = gTankRecords[i].lastUpdateEpoch;
+    for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+      bool recentAlarm = gSensorRecords[i].alarmActive &&
+                         (now - gSensorRecords[i].lastUpdateEpoch) < 259200.0;  // 72h
+      if (!recentAlarm && gSensorRecords[i].lastUpdateEpoch < oldestEpoch) {
+        oldestEpoch = gSensorRecords[i].lastUpdateEpoch;
         evictIdx = i;
       }
     }
     if (evictIdx == 0xFF) {
       // All records have recent active alarms - evict absolute stalest
-      for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-        if (gTankRecords[i].lastUpdateEpoch < oldestEpoch) {
-          oldestEpoch = gTankRecords[i].lastUpdateEpoch;
+      for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+        if (gSensorRecords[i].lastUpdateEpoch < oldestEpoch) {
+          oldestEpoch = gSensorRecords[i].lastUpdateEpoch;
           evictIdx = i;
         }
       }
     }
     if (evictIdx == 0xFF) {
-      Serial.println(F("ERROR: Cannot evict any tank record"));
+      Serial.println(F("ERROR: Cannot evict any sensor record"));
       return nullptr;
     }
     
-    Serial.print(F("WARNING: Tank capacity full ("));
-    Serial.print(MAX_TANK_RECORDS);
+    Serial.print(F("WARNING: Sensor capacity full ("));
+    Serial.print(MAX_SENSOR_RECORDS);
     Serial.print(F(") - evicting stale record: "));
-    Serial.print(gTankRecords[evictIdx].site);
+    Serial.print(gSensorRecords[evictIdx].site);
     Serial.print(F(" #"));
-    Serial.println(gTankRecords[evictIdx].sensorIndex);
-    addServerSerialLog("Tank record evicted (capacity full)", "warn", "registry");
+    Serial.println(gSensorRecords[evictIdx].sensorIndex);
+    addServerSerialLog("Sensor record evicted (capacity full)", "warn", "registry");
     
     // Move last record into the evicted slot, then decrement count
-    if (evictIdx < gTankRecordCount - 1) {
-      memcpy(&gTankRecords[evictIdx], &gTankRecords[gTankRecordCount - 1], sizeof(TankRecord));
+    if (evictIdx < gSensorRecordCount - 1) {
+      memcpy(&gSensorRecords[evictIdx], &gSensorRecords[gSensorRecordCount - 1], sizeof(SensorRecord));
     }
-    gTankRecordCount--;
-    rebuildTankHashTable();
-    gTankRegistryDirty = true;
+    gSensorRecordCount--;
+    rebuildSensorHashTable();
+    gSensorRegistryDirty = true;
   }
   
   // Create new record
-  uint8_t newIndex = gTankRecordCount;
-  TankRecord &rec = gTankRecords[gTankRecordCount++];
-  memset(&rec, 0, sizeof(TankRecord));
+  uint8_t newIndex = gSensorRecordCount;
+  SensorRecord &rec = gSensorRecords[gSensorRecordCount++];
+  memset(&rec, 0, sizeof(SensorRecord));
   strlcpy(rec.clientUid, clientUid, sizeof(rec.clientUid));
   rec.sensorIndex = sensorIndex;
   rec.lastUpdateEpoch = currentEpoch();
@@ -8976,13 +8987,13 @@ static TankRecord *upsertTankRecord(const char *clientUid, uint8_t sensorIndex) 
   }
   
   // Insert into hash table
-  insertTankIntoHash(newIndex);
-  gTankRegistryDirty = true;
+  insertSensorIntoHash(newIndex);
+  gSensorRegistryDirty = true;
   
   return &rec;
 }
 
-static bool checkSmsRateLimit(TankRecord *rec) {
+static bool checkSmsRateLimit(SensorRecord *rec) {
   if (!rec) {
     return false;
   }
@@ -8992,7 +9003,7 @@ static bool checkSmsRateLimit(TankRecord *rec) {
     return true;  // No time sync yet, allow SMS
   }
 
-  // Check minimum interval since last SMS for this tank
+  // Check minimum interval since last SMS for this sensor
   if (now - rec->lastSmsAlertEpoch < MIN_SMS_ALERT_INTERVAL_SECONDS) {
     Serial.print(F("SMS rate limit: Too soon since last alert for "));
     Serial.print(rec->site);
@@ -9177,21 +9188,21 @@ static void sendDailyEmail() {
   // ArduinoJson v7: JsonDocument auto-sizes
   JsonDocument doc;
   doc["to"] = emailList;
-  doc["subject"] = "Daily Tank Summary";
-  JsonArray tanks = doc["tanks"].to<JsonArray>();
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    JsonObject obj = tanks.add<JsonObject>();
-    obj["client"] = gTankRecords[i].clientUid;
-    obj["site"] = gTankRecords[i].site;
-    obj["label"] = gTankRecords[i].label;
-    obj["sensorIndex"] = gTankRecords[i].sensorIndex;
-    if (gTankRecords[i].userNumber > 0) {
-      obj["userNumber"] = gTankRecords[i].userNumber;
+  doc["subject"] = "Daily Sensor Summary";
+  JsonArray sensors = doc["sensors"].to<JsonArray>();
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    JsonObject obj = sensors.add<JsonObject>();
+    obj["client"] = gSensorRecords[i].clientUid;
+    obj["site"] = gSensorRecords[i].site;
+    obj["label"] = gSensorRecords[i].label;
+    obj["sensorIndex"] = gSensorRecords[i].sensorIndex;
+    if (gSensorRecords[i].userNumber > 0) {
+      obj["userNumber"] = gSensorRecords[i].userNumber;
     }
-    obj["levelInches"] = roundTo(gTankRecords[i].levelInches, 1);
-    obj["sensorMa"] = roundTo(gTankRecords[i].sensorMa, 2);
-    obj["alarm"] = gTankRecords[i].alarmActive;
-    obj["alarmType"] = gTankRecords[i].alarmType;
+    obj["levelInches"] = roundTo(gSensorRecords[i].levelInches, 1);
+    obj["sensorMa"] = roundTo(gSensorRecords[i].sensorMa, 2);
+    obj["alarm"] = gSensorRecords[i].alarmActive;
+    obj["alarmType"] = gSensorRecords[i].alarmType;
   }
 
   // Check if JSON document overflowed during population
@@ -9224,7 +9235,7 @@ static void sendDailyEmail() {
 
 #ifdef TANKALARM_WATCHDOG_AVAILABLE
   // Kick watchdog before the potentially long Notecard transaction:
-  // JSON construction + I2C note.add can exceed 30s with many tanks.
+  // JSON construction + I2C note.add can exceed 30s with many sensors.
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     mbedWatchdog.kick();
   #else
@@ -9244,7 +9255,7 @@ static void sendDailyEmail() {
     } else {
       gLastDailyEmailSentEpoch = now;
       Serial.println(F("Daily email queued"));
-      logTransmission("", "", "email", "outbox", "Daily tank summary email");
+      logTransmission("", "", "email", "outbox", "Daily sensor summary email");
     }
     notecard.deleteResponse(emailRsp);
   } else {
@@ -9264,46 +9275,46 @@ static void publishViewerSummary() {
   doc["ge"] = now;
   doc["rs"] = VIEWER_SUMMARY_INTERVAL_SECONDS;
   doc["bh"] = VIEWER_SUMMARY_BASE_HOUR;
-  JsonArray arr = doc["tanks"].to<JsonArray>();
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+  JsonArray arr = doc["sensors"].to<JsonArray>();
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
     JsonObject obj = arr.add<JsonObject>();
-    obj["c"] = gTankRecords[i].clientUid;
-    obj["s"] = gTankRecords[i].site;
-    obj["n"] = gTankRecords[i].label;
-    obj["k"] = gTankRecords[i].sensorIndex;
-    if (gTankRecords[i].userNumber > 0) {
-      obj["un"] = gTankRecords[i].userNumber;
+    obj["c"] = gSensorRecords[i].clientUid;
+    obj["s"] = gSensorRecords[i].site;
+    obj["n"] = gSensorRecords[i].label;
+    obj["k"] = gSensorRecords[i].sensorIndex;
+    if (gSensorRecords[i].userNumber > 0) {
+      obj["un"] = gSensorRecords[i].userNumber;
     }
-    obj["l"] = roundTo(gTankRecords[i].levelInches, 1);
+    obj["l"] = roundTo(gSensorRecords[i].levelInches, 1);
     // Include raw sensor readings if available
-    if (gTankRecords[i].sensorMa >= 4.0f) {
-      obj["ma"] = roundTo(gTankRecords[i].sensorMa, 2);
+    if (gSensorRecords[i].sensorMa >= 4.0f) {
+      obj["ma"] = roundTo(gSensorRecords[i].sensorMa, 2);
     }
-    if (gTankRecords[i].sensorVoltage > 0.0f) {
-      obj["vt"] = roundTo(gTankRecords[i].sensorVoltage, 3);
+    if (gSensorRecords[i].sensorVoltage > 0.0f) {
+      obj["vt"] = roundTo(gSensorRecords[i].sensorVoltage, 3);
     }
     // Include object type if known (tank, engine, pump, gas, flow)
-    if (gTankRecords[i].objectType[0] != '\0') {
-      obj["ot"] = gTankRecords[i].objectType;
+    if (gSensorRecords[i].objectType[0] != '\0') {
+      obj["ot"] = gSensorRecords[i].objectType;
     }
     // Include sensor interface type if known (digital, analog, currentLoop, pulse)
-    if (gTankRecords[i].sensorType[0] != '\0') {
-      obj["st"] = gTankRecords[i].sensorType;
+    if (gSensorRecords[i].sensorType[0] != '\0') {
+      obj["st"] = gSensorRecords[i].sensorType;
     }
     // Include measurement unit if known (inches, rpm, psi, gpm, etc.)
-    if (gTankRecords[i].measurementUnit[0] != '\0') {
-      obj["mu"] = gTankRecords[i].measurementUnit;
+    if (gSensorRecords[i].measurementUnit[0] != '\0') {
+      obj["mu"] = gSensorRecords[i].measurementUnit;
     }
     // Include 24hr change if available
-    if (gTankRecords[i].previousLevelEpoch > 0.0) {
-      obj["d"] = roundTo(gTankRecords[i].levelInches - gTankRecords[i].previousLevelInches, 1);
+    if (gSensorRecords[i].previousLevelEpoch > 0.0) {
+      obj["d"] = roundTo(gSensorRecords[i].levelInches - gSensorRecords[i].previousLevelInches, 1);
     }
-    obj["a"] = gTankRecords[i].alarmActive;
-    obj["at"] = gTankRecords[i].alarmType;
-    obj["u"] = gTankRecords[i].lastUpdateEpoch;
+    obj["a"] = gSensorRecords[i].alarmActive;
+    obj["at"] = gSensorRecords[i].alarmType;
+    obj["u"] = gSensorRecords[i].lastUpdateEpoch;
     
     // Add VIN voltage from client metadata if available
-    ClientMetadata *meta = findClientMetadata(gTankRecords[i].clientUid);
+    ClientMetadata *meta = findClientMetadata(gSensorRecords[i].clientUid);
     if (meta && meta->vinVoltage > 0.0f) {
       obj["v"] = roundTo(meta->vinVoltage, 2);
     }
@@ -9368,7 +9379,7 @@ static void handleClientConfigGet(EthernetClient &client, const String &query) {
   }
 
   // Send the raw stored JSON directly to avoid JsonDocument overhead
-  // truncating nested fields (e.g. monitorType inside tanks array).
+  // truncating nested fields (e.g. monitorType inside sensors array).
   String response = F("{\"config\":");
   response += snap->payload;
   response += '}';
@@ -9381,8 +9392,8 @@ static float convertMaToLevelWithTemp(const char *clientUid, uint8_t sensorIndex
     return 0.0f;  // Invalid mA reading
   }
   
-  // Check if we have learned calibration data for this tank
-  TankCalibration *cal = findTankCalibration(clientUid, sensorIndex);
+  // Check if we have learned calibration data for this sensor
+  SensorCalibration *cal = findSensorCalibration(clientUid, sensorIndex);
   if (cal && cal->hasLearnedCalibration) {
     // Use learned calibration: level = slope * mA + offset
     float level = cal->learnedSlope * mA + cal->learnedOffset;
@@ -9407,23 +9418,23 @@ static float convertMaToLevelWithTemp(const char *clientUid, uint8_t sensorIndex
     return ((mA - 4.0f) / 16.0f) * 100.0f;
   }
   
-  // Parse the config snapshot to find the tank settings
+  // Parse the config snapshot to find the sensor settings
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, snap->payload);
   if (err) {
     return ((mA - 4.0f) / 16.0f) * 100.0f;  // Fallback
   }
   
-  // Find the tank in the config
-  JsonArray tanks = doc["tanks"];
-  if (!tanks) {
+  // Find the sensor in the config
+  JsonArray sensors = doc["sensors"];
+  if (!sensors) {
     return ((mA - 4.0f) / 16.0f) * 100.0f;  // Fallback
   }
   
-  for (JsonVariant t : tanks) {
+  for (JsonVariant t : sensors) {
     uint8_t tn = t["number"] | 0;
     if (tn == sensorIndex) {
-      // Found the tank - get sensor range settings
+      // Found the sensor - get sensor range settings
       float rangeMin = t["sensorRangeMin"] | 0.0f;
       float rangeMax = t["sensorRangeMax"] | 5.0f;  // Default 0-5 PSI
       float mountHeight = t["sensorMountHeight"] | 0.0f;
@@ -9452,7 +9463,7 @@ static float convertMaToLevelWithTemp(const char *clientUid, uint8_t sensorIndex
     }
   }
   
-  // Tank not found in config - use fallback
+  // Sensor not found in config - use fallback
   return ((mA - 4.0f) / 16.0f) * 100.0f;
 }
 
@@ -9470,23 +9481,23 @@ static float convertVoltageToLevel(const char *clientUid, uint8_t sensorIndex, f
     return (voltage / 10.0f) * 100.0f;
   }
   
-  // Parse the config snapshot to find the tank settings
+  // Parse the config snapshot to find the sensor settings
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, snap->payload);
   if (err) {
     return (voltage / 10.0f) * 100.0f;  // Fallback
   }
   
-  // Find the tank in the config
-  JsonArray tanks = doc["tanks"];
-  if (!tanks) {
+  // Find the sensor in the config
+  JsonArray sensors = doc["sensors"];
+  if (!sensors) {
     return (voltage / 10.0f) * 100.0f;  // Fallback
   }
   
-  for (JsonVariant t : tanks) {
+  for (JsonVariant t : sensors) {
     uint8_t tn = t["number"] | 0;
     if (tn == sensorIndex) {
-      // Found the tank - get sensor range settings
+      // Found the sensor - get sensor range settings
       float voltageMin = t["analogVoltageMin"] | 0.0f;   // e.g., 0V or 1V
       float voltageMax = t["analogVoltageMax"] | 10.0f;  // e.g., 10V or 5V
       float rangeMin = t["sensorRangeMin"] | 0.0f;       // e.g., 0 PSI
@@ -9513,25 +9524,25 @@ static float convertVoltageToLevel(const char *clientUid, uint8_t sensorIndex, f
     }
   }
   
-  // Tank not found in config - use fallback
+  // Sensor not found in config - use fallback
   return (voltage / 10.0f) * 100.0f;
 }
 
 // ============================================================================
-// Tank Registry Persistence (LittleFS JSON)
+// Sensor Registry Persistence (LittleFS JSON)
 // ============================================================================
 
-static void saveTankRegistry() {
+static void saveSensorRegistry() {
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    if (!mbedFS || gTankRecordCount == 0) {
+    if (!mbedFS || gSensorRecordCount == 0) {
       return;
     }
     
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
-    for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-      const TankRecord &rec = gTankRecords[i];
+    for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+      const SensorRecord &rec = gSensorRecords[i];
       if (rec.clientUid[0] == '\0') continue;
       JsonObject obj = arr.add<JsonObject>();
       obj["c"] = rec.clientUid;
@@ -9565,14 +9576,14 @@ static void saveTankRegistry() {
     size_t jsonLen = measureJson(doc);
     char *buf = (char *)malloc(jsonLen + 1);
     if (!buf) {
-      Serial.println(F("ERROR: Cannot allocate tank registry save buffer"));
+      Serial.println(F("ERROR: Cannot allocate sensor registry save buffer"));
       return;
     }
     serializeJson(doc, buf, jsonLen + 1);
     
-    if (posix_write_file("/fs" TANK_REGISTRY_PATH, buf, jsonLen)) {
-      Serial.print(F("Tank registry saved: "));
-      Serial.print(gTankRecordCount);
+    if (posix_write_file("/fs" SENSOR_REGISTRY_PATH, buf, jsonLen)) {
+      Serial.print(F("Sensor registry saved: "));
+      Serial.print(gSensorRecordCount);
       Serial.println(F(" records"));
     }
     free(buf);
@@ -9580,33 +9591,33 @@ static void saveTankRegistry() {
 #endif
 }
 
-static void loadTankRegistry() {
+static void loadSensorRegistry() {
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     if (!mbedFS) return;
     
-    if (!posix_file_exists("/fs" TANK_REGISTRY_PATH)) {
-      Serial.println(F("No tank registry file found - starting fresh"));
+    if (!posix_file_exists("/fs" SENSOR_REGISTRY_PATH)) {
+      Serial.println(F("No sensor registry file found - starting fresh"));
       return;
     }
     
     // Read file into buffer
-    FILE *fp = fopen("/fs" TANK_REGISTRY_PATH, "r");
+    FILE *fp = fopen("/fs" SENSOR_REGISTRY_PATH, "r");
     if (!fp) {
-      posix_log_error("fopen", "/fs" TANK_REGISTRY_PATH);
+      posix_log_error("fopen", "/fs" SENSOR_REGISTRY_PATH);
       return;
     }
     long fileSize = posix_file_size(fp);
     if (fileSize <= 0 || fileSize > 32768) {
       fclose(fp);
-      Serial.println(F("Tank registry file size invalid"));
+      Serial.println(F("Sensor registry file size invalid"));
       return;
     }
     fseek(fp, 0, SEEK_SET);
     char *buf = (char *)malloc(fileSize + 1);
     if (!buf) {
       fclose(fp);
-      Serial.println(F("ERROR: Cannot allocate tank registry load buffer"));
+      Serial.println(F("ERROR: Cannot allocate sensor registry load buffer"));
       return;
     }
     size_t bytesRead = fread(buf, 1, fileSize, fp);
@@ -9617,18 +9628,18 @@ static void loadTankRegistry() {
     DeserializationError err = deserializeJson(doc, buf);
     free(buf);
     if (err) {
-      Serial.print(F("ERROR: Tank registry parse failed: "));
+      Serial.print(F("ERROR: Sensor registry parse failed: "));
       Serial.println(err.c_str());
       return;
     }
     
-    gTankRecordCount = 0;
-    initTankHashTable();
+    gSensorRecordCount = 0;
+    initSensorHashTable();
     
     JsonArray arr = doc.as<JsonArray>();
     uint8_t dupsMerged = 0;
     for (JsonObject obj : arr) {
-      if (gTankRecordCount >= MAX_TANK_RECORDS) break;
+      if (gSensorRecordCount >= MAX_SENSOR_RECORDS) break;
       
       const char *loadedUid = obj["c"] | "";
       uint8_t loadedSensorIdx = obj["k"] | 0;
@@ -9636,7 +9647,7 @@ static void loadTankRegistry() {
       
       // Deduplicate: if a record with this clientUid+sensorIndex already exists,
       // keep the one with the most recent lastUpdateEpoch and merge fields.
-      TankRecord *existing = findTankByHash(loadedUid, loadedSensorIdx);
+      SensorRecord *existing = findSensorByHash(loadedUid, loadedSensorIdx);
       if (existing) {
         if (loadedEpoch > existing->lastUpdateEpoch) {
           // Newer record — overwrite into the existing slot
@@ -9665,8 +9676,8 @@ static void loadTankRegistry() {
         continue;  // Skip — already have this clientUid+sensorIndex
       }
       
-      TankRecord &rec = gTankRecords[gTankRecordCount];
-      memset(&rec, 0, sizeof(TankRecord));
+      SensorRecord &rec = gSensorRecords[gSensorRecordCount];
+      memset(&rec, 0, sizeof(SensorRecord));
       strlcpy(rec.clientUid, loadedUid, sizeof(rec.clientUid));
       rec.sensorIndex = loadedSensorIdx;
       rec.userNumber = obj["un"] | 0;
@@ -9688,19 +9699,19 @@ static void loadTankRegistry() {
       rec.lastSmsAlertEpoch = obj["se"] | 0.0;
       rec.smsAlertsInLastHour = obj["sa"] | 0;
       
-      insertTankIntoHash(gTankRecordCount);
-      gTankRecordCount++;
+      insertSensorIntoHash(gSensorRecordCount);
+      gSensorRecordCount++;
     }
     
     if (dupsMerged > 0) {
-      Serial.print(F("Tank registry: merged "));
+      Serial.print(F("Sensor registry: merged "));
       Serial.print(dupsMerged);
       Serial.println(F(" duplicate records"));
-      gTankRegistryDirty = true;  // Re-save to clean the file
+      gSensorRegistryDirty = true;  // Re-save to clean the file
     }
     
-    Serial.print(F("Tank registry loaded: "));
-    Serial.print(gTankRecordCount);
+    Serial.print(F("Sensor registry loaded: "));
+    Serial.print(gSensorRecordCount);
     Serial.println(F(" records"));
   #endif
 #endif
@@ -9863,16 +9874,16 @@ static void loadClientMetadataCache() {
 // have been stale for at least ORPHAN_SENSOR_PRUNE_SECONDS (default 72h).
 static void pruneStaleOrphanSensors(const char *clientUid, double now) {
   // First, try config-based pruning (safe, reuses existing logic)
-  pruneOrphanedTankRecords(clientUid);
+  pruneOrphanedSensorRecords(clientUid);
 
   // Then, handle sensors stale beyond the orphan threshold even without
   // config data (e.g., client was reflashed externally)
   // Safety check: ensure client still has at least one fresh sensor
   bool hasFresh = false;
-  for (uint8_t t = 0; t < gTankRecordCount; ++t) {
-    if (strcmp(gTankRecords[t].clientUid, clientUid) == 0) {
-      if (gTankRecords[t].lastUpdateEpoch > 0.0 &&
-          (now - gTankRecords[t].lastUpdateEpoch) < STALE_CLIENT_THRESHOLD_SECONDS) {
+  for (uint8_t t = 0; t < gSensorRecordCount; ++t) {
+    if (strcmp(gSensorRecords[t].clientUid, clientUid) == 0) {
+      if (gSensorRecords[t].lastUpdateEpoch > 0.0 &&
+          (now - gSensorRecords[t].lastUpdateEpoch) < STALE_CLIENT_THRESHOLD_SECONDS) {
         hasFresh = true;
         break;
       }
@@ -9882,33 +9893,33 @@ static void pruneStaleOrphanSensors(const char *clientUid, double now) {
 
   uint8_t writeIdx = 0;
   uint8_t pruned = 0;
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
     bool keep = true;
-    if (strcmp(gTankRecords[i].clientUid, clientUid) == 0) {
-      double age = (gTankRecords[i].lastUpdateEpoch > 0.0)
-                       ? (now - gTankRecords[i].lastUpdateEpoch)
+    if (strcmp(gSensorRecords[i].clientUid, clientUid) == 0) {
+      double age = (gSensorRecords[i].lastUpdateEpoch > 0.0)
+                       ? (now - gSensorRecords[i].lastUpdateEpoch)
                        : now;  // Never reported — treat as maximally stale
       if (age >= ORPHAN_SENSOR_PRUNE_SECONDS) {
         keep = false;
         pruned++;
         Serial.print(F("Auto-pruned stale orphan sensor: "));
-        Serial.print(gTankRecords[i].label);
+        Serial.print(gSensorRecords[i].label);
         Serial.print(F(" #"));
-        Serial.println(gTankRecords[i].sensorIndex);
+        Serial.println(gSensorRecords[i].sensorIndex);
       }
     }
     if (keep) {
       if (writeIdx != i) {
-        memcpy(&gTankRecords[writeIdx], &gTankRecords[i], sizeof(TankRecord));
+        memcpy(&gSensorRecords[writeIdx], &gSensorRecords[i], sizeof(SensorRecord));
       }
       writeIdx++;
     }
   }
 
   if (pruned > 0) {
-    gTankRecordCount = writeIdx;
-    rebuildTankHashTable();
-    gTankRegistryDirty = true;
+    gSensorRecordCount = writeIdx;
+    rebuildSensorHashTable();
+    gSensorRegistryDirty = true;
 
     char detail[96];
     snprintf(detail, sizeof(detail),
@@ -9923,6 +9934,9 @@ static void pruneStaleOrphanSensors(const char *clientUid, double now) {
 static void checkStaleClients() {
   double now = currentEpoch();
   if (now <= 0.0) return;  // No time sync yet
+
+  // Proactive dedup: catch any duplicate records that slipped past the hash table.
+  deduplicateSensorRecordsLinear();
 
   // Collect UIDs of clients to auto-remove after the main scan.
   // Deferring removal avoids modifying the metadata array during iteration.
@@ -9939,15 +9953,15 @@ static void checkStaleClients() {
     uint8_t totalSensors = 0;
     uint8_t staleSensors = 0;  // Stale beyond ORPHAN threshold (72h)
 
-    for (uint8_t t = 0; t < gTankRecordCount; ++t) {
-      if (strcmp(gTankRecords[t].clientUid, meta.clientUid) == 0) {
+    for (uint8_t t = 0; t < gSensorRecordCount; ++t) {
+      if (strcmp(gSensorRecords[t].clientUid, meta.clientUid) == 0) {
         totalSensors++;
-        if (gTankRecords[t].lastUpdateEpoch > latestUpdate) {
-          latestUpdate = gTankRecords[t].lastUpdateEpoch;
-          siteName = gTankRecords[t].site;
+        if (gSensorRecords[t].lastUpdateEpoch > latestUpdate) {
+          latestUpdate = gSensorRecords[t].lastUpdateEpoch;
+          siteName = gSensorRecords[t].site;
         }
-        double age = (gTankRecords[t].lastUpdateEpoch > 0.0)
-                         ? (now - gTankRecords[t].lastUpdateEpoch)
+        double age = (gSensorRecords[t].lastUpdateEpoch > 0.0)
+                         ? (now - gSensorRecords[t].lastUpdateEpoch)
                          : now;
         if (age >= ORPHAN_SENSOR_PRUNE_SECONDS) {
           staleSensors++;
@@ -10015,22 +10029,22 @@ static void checkStaleClients() {
 
   // If any clients were removed, force persistence save
   if (removeCount > 0) {
-    saveTankRegistry();
+    saveSensorRegistry();
     saveClientMetadataCache();
-    gTankRegistryDirty = false;
+    gSensorRegistryDirty = false;
     gClientMetadataDirty = false;
   }
 }
 
 // ============================================================================
-// Orphaned Tank Record Pruning
+// Orphaned Sensor Record Pruning
 // ============================================================================
-// When a client's config changes (e.g., sensors removed), stale TankRecords
+// When a client's config changes (e.g., sensors removed), stale SensorRecords
 // for removed sensor indices persist in the registry. This function parses the
 // cached config payload, extracts valid sensor indices, and removes any
-// TankRecords whose sensorIndex is no longer in the active config.
+// SensorRecords whose sensorIndex is no longer in the active config.
 
-static void pruneOrphanedTankRecords(const char *clientUid) {
+static void pruneOrphanedSensorRecords(const char *clientUid) {
   ClientConfigSnapshot *snap = findClientConfigSnapshot(clientUid);
   if (!snap || snap->payload[0] == '\0') return;
 
@@ -10040,32 +10054,32 @@ static void pruneOrphanedTankRecords(const char *clientUid) {
     return;  // Can't parse — skip pruning
   }
 
-  JsonArray tanks = cfgDoc["tanks"].as<JsonArray>();
-  if (!tanks) return;  // No tanks array — skip
+  JsonArray sensors = cfgDoc["sensors"].as<JsonArray>();
+  if (!sensors) return;  // No sensors array — skip
 
   // Build a set of valid sensor indices from the config
-  // MAX_TANK_RECORDS is the upper bound; typical configs have 1-8 sensors
-  uint8_t validNumbers[MAX_TANK_RECORDS];
+  // MAX_SENSOR_RECORDS is the upper bound; typical configs have 1-8 sensors
+  uint8_t validNumbers[MAX_SENSOR_RECORDS];
   uint8_t validCount = 0;
-  for (JsonVariant t : tanks) {
+  for (JsonVariant t : sensors) {
     uint8_t num = t["number"] | 0;
-    if (num > 0 && validCount < MAX_TANK_RECORDS) {
+    if (num > 0 && validCount < MAX_SENSOR_RECORDS) {
       validNumbers[validCount++] = num;
     }
   }
 
-  if (validCount == 0) return;  // Config has no numbered tanks — don't prune
+  if (validCount == 0) return;  // Config has no numbered sensors — don't prune
 
-  // Remove tank records for this client whose sensorIndex is not in the valid set
+  // Remove sensor records for this client whose sensorIndex is not in the valid set
   uint8_t writeIdx = 0;
   uint8_t pruned = 0;
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
     bool keep = true;
-    if (strcmp(gTankRecords[i].clientUid, clientUid) == 0) {
+    if (strcmp(gSensorRecords[i].clientUid, clientUid) == 0) {
       // Check if this sensor index is still in the config
       bool found = false;
       for (uint8_t v = 0; v < validCount; ++v) {
-        if (gTankRecords[i].sensorIndex == validNumbers[v]) {
+        if (gSensorRecords[i].sensorIndex == validNumbers[v]) {
           found = true;
           break;
         }
@@ -10073,24 +10087,24 @@ static void pruneOrphanedTankRecords(const char *clientUid) {
       if (!found) {
         keep = false;
         pruned++;
-        Serial.print(F("Pruned orphaned tank record: "));
-        Serial.print(gTankRecords[i].label);
+        Serial.print(F("Pruned orphaned sensor record: "));
+        Serial.print(gSensorRecords[i].label);
         Serial.print(F(" #"));
-        Serial.println(gTankRecords[i].sensorIndex);
+        Serial.println(gSensorRecords[i].sensorIndex);
       }
     }
     if (keep) {
       if (writeIdx != i) {
-        memcpy(&gTankRecords[writeIdx], &gTankRecords[i], sizeof(TankRecord));
+        memcpy(&gSensorRecords[writeIdx], &gSensorRecords[i], sizeof(SensorRecord));
       }
       writeIdx++;
     }
   }
 
   if (pruned > 0) {
-    gTankRecordCount = writeIdx;
-    rebuildTankHashTable();
-    gTankRegistryDirty = true;
+    gSensorRecordCount = writeIdx;
+    rebuildSensorHashTable();
+    gSensorRegistryDirty = true;
 
     char detail[64];
     snprintf(detail, sizeof(detail), "Pruned %u orphaned sensor(s) after config update", pruned);
@@ -10138,9 +10152,9 @@ static void handleConfigAck(JsonDocument &doc, double epoch) {
   }
   Serial.println();
   
-  // Prune orphaned tank records when config is successfully applied
+  // Prune orphaned sensor records when config is successfully applied
   if (strcmp(status, "applied") == 0) {
-    pruneOrphanedTankRecords(clientUid);
+    pruneOrphanedSensorRecords(clientUid);
   }
 
   addServerSerialLog("Config ACK received", "info", "config");
@@ -10150,9 +10164,9 @@ static void handleConfigAck(JsonDocument &doc, double epoch) {
 // ============================================================================
 // Client Data FTP Archive
 // ============================================================================
-// Archives a client's tank records and hot-tier history to FTP before removal.
+// Archives a client's sensor records and hot-tier history to FTP before removal.
 // Only archives if: FTP is enabled, client has been active for >30 days, and
-// has at least one tank record. The archive filename includes the site name
+// has at least one sensor record. The archive filename includes the site name
 // and date range (first seen → last update) so archived entries are uniquely
 // identifiable even if a new client with the same name is created later.
 // File path: {ftpPath}/archived_clients/{Site}_{YYYYMM}-{YYYYMM}_{uid_suffix}.json
@@ -10160,21 +10174,21 @@ static void handleConfigAck(JsonDocument &doc, double epoch) {
 static bool archiveClientToFtp(const char *clientUid) {
   if (!gConfig.ftpEnabled) return false;
 
-  // Gather all tank records for this client
+  // Gather all sensor records for this client
   double earliestSeen = 1e18;
   double latestUpdate = 0.0;
   const char *siteName = "";
   uint8_t sensorCount = 0;
 
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    if (strcmp(gTankRecords[i].clientUid, clientUid) != 0) continue;
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    if (strcmp(gSensorRecords[i].clientUid, clientUid) != 0) continue;
     sensorCount++;
-    if (gTankRecords[i].site[0] != '\0') siteName = gTankRecords[i].site;
-    double fs = gTankRecords[i].firstSeenEpoch;
-    if (fs <= 0.0) fs = gTankRecords[i].lastUpdateEpoch;  // Fallback for pre-upgrade records
+    if (gSensorRecords[i].site[0] != '\0') siteName = gSensorRecords[i].site;
+    double fs = gSensorRecords[i].firstSeenEpoch;
+    if (fs <= 0.0) fs = gSensorRecords[i].lastUpdateEpoch;  // Fallback for pre-upgrade records
     if (fs < earliestSeen) earliestSeen = fs;
-    if (gTankRecords[i].lastUpdateEpoch > latestUpdate) {
-      latestUpdate = gTankRecords[i].lastUpdateEpoch;
+    if (gSensorRecords[i].lastUpdateEpoch > latestUpdate) {
+      latestUpdate = gSensorRecords[i].lastUpdateEpoch;
     }
   }
   if (sensorCount == 0 || latestUpdate <= 0.0) return false;
@@ -10226,12 +10240,12 @@ static bool archiveClientToFtp(const char *clientUid) {
   doc["firstSeenEpoch"] = earliestSeen;
   doc["lastUpdateEpoch"] = latestUpdate;
 
-  // Archive all tank records
-  JsonArray tanksArr = doc["tanks"].to<JsonArray>();
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    if (strcmp(gTankRecords[i].clientUid, clientUid) != 0) continue;
-    const TankRecord &rec = gTankRecords[i];
-    JsonObject obj = tanksArr.add<JsonObject>();
+  // Archive all sensor records
+  JsonArray sensorsArr = doc["sensors"].to<JsonArray>();
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    if (strcmp(gSensorRecords[i].clientUid, clientUid) != 0) continue;
+    const SensorRecord &rec = gSensorRecords[i];
+    JsonObject obj = sensorsArr.add<JsonObject>();
     obj["sensorIndex"] = rec.sensorIndex;
     if (rec.userNumber > 0) obj["userNumber"] = rec.userNumber;
     obj["site"] = rec.site;
@@ -10250,8 +10264,8 @@ static bool archiveClientToFtp(const char *clientUid) {
 
   // Archive hot-tier history snapshots for this client
   JsonArray historyArr = doc["history"].to<JsonArray>();
-  for (uint8_t h = 0; h < gTankHistoryCount; ++h) {
-    TankHourlyHistory &hist = gTankHistory[h];
+  for (uint8_t h = 0; h < gSensorHistoryCount; ++h) {
+    SensorHourlyHistory &hist = gSensorHistory[h];
     if (strcmp(hist.clientUid, clientUid) != 0) continue;
     if (hist.snapshotCount == 0) continue;
 
@@ -10260,7 +10274,7 @@ static bool archiveClientToFtp(const char *clientUid) {
     hObj["heightInches"] = hist.heightInches;
     JsonArray readings = hObj["readings"].to<JsonArray>();
     for (uint16_t j = 0; j < hist.snapshotCount; ++j) {
-      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
       TelemetrySnapshot &snap = hist.snapshots[idx];
       JsonArray pt = readings.add<JsonArray>();
       pt.add(snap.timestamp);
@@ -10375,7 +10389,7 @@ static bool archiveClientToFtp(const char *clientUid) {
 // ============================================================================
 // Client Data Removal Helper
 // ============================================================================
-// Removes all data for a given client: tank records, metadata, config
+// Removes all data for a given client: sensor records, metadata, config
 // snapshots, and serial buffers. Used by both the manual "Remove Client"
 // API and the automatic stale-client pruning system. Returns true if any
 // data was removed.
@@ -10383,22 +10397,22 @@ static bool archiveClientToFtp(const char *clientUid) {
 static bool removeClientData(const char *clientUid) {
   bool removedAny = false;
 
-  // Remove tank records for this client
+  // Remove sensor records for this client
   uint8_t writeIdx = 0;
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    if (strcmp(gTankRecords[i].clientUid, clientUid) != 0) {
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    if (strcmp(gSensorRecords[i].clientUid, clientUid) != 0) {
       if (writeIdx != i) {
-        memcpy(&gTankRecords[writeIdx], &gTankRecords[i], sizeof(TankRecord));
+        memcpy(&gSensorRecords[writeIdx], &gSensorRecords[i], sizeof(SensorRecord));
       }
       writeIdx++;
     } else {
       removedAny = true;
     }
   }
-  if (writeIdx != gTankRecordCount) {
-    gTankRecordCount = writeIdx;
-    rebuildTankHashTable();
-    gTankRegistryDirty = true;
+  if (writeIdx != gSensorRecordCount) {
+    gSensorRecordCount = writeIdx;
+    rebuildSensorHashTable();
+    gSensorRegistryDirty = true;
   }
 
   // Remove client metadata
@@ -10475,9 +10489,9 @@ static void handleClientDeleteRequest(EthernetClient &client, const String &body
     Serial.println(clientUid);
     
     // Force immediate persistence save
-    saveTankRegistry();
+    saveSensorRegistry();
     saveClientMetadataCache();
-    gTankRegistryDirty = false;
+    gSensorRegistryDirty = false;
     gClientMetadataDirty = false;
     
     respondStatus(client, 200, F("Client removed"));
@@ -10827,11 +10841,11 @@ static void sendHistoryJson(EthernetClient &client, const String &query) {
     if (maxDays <= 0) maxDays = 0;
   }
   
-  // Default: 90 days for all-tanks overview, full range for single tank
+  // Default: 90 days for all-sensors overview, full range for single sensor
   double cutoffEpoch = 0.0;
   double nowEpoch = 0.0;
   
-  JsonArray tanksArray = doc["tanks"].to<JsonArray>();
+  JsonArray sensorsArray = doc["sensors"].to<JsonArray>();
   JsonArray alarmsArray = doc["alarms"].to<JsonArray>();
   JsonArray voltageArray = doc["voltage"].to<JsonArray>();
   
@@ -10845,9 +10859,9 @@ static void sendHistoryJson(EthernetClient &client, const String &query) {
     cutoffEpoch = nowEpoch - (double)maxDays * 86400.0;
   }
   
-  // Use stored tank history for trend data
-  for (uint8_t h = 0; h < gTankHistoryCount; h++) {
-    TankHourlyHistory &hist = gTankHistory[h];
+  // Use stored sensor history for trend data
+  for (uint8_t h = 0; h < gSensorHistoryCount; h++) {
+    SensorHourlyHistory &hist = gSensorHistory[h];
     if (hist.snapshotCount == 0) continue;
     
     // Apply single-sensor filter if specified (format: "clientUid:sensorIndex")
@@ -10862,21 +10876,21 @@ static void sendHistoryJson(EthernetClient &client, const String &query) {
       }
     }
     
-    JsonObject tankObj = tanksArray.add<JsonObject>();
-    tankObj["client"] = hist.clientUid;
-    tankObj["site"] = strlen(hist.siteName) > 0 ? (const char*)hist.siteName : "Unknown Site";
-    tankObj["sensorIndex"] = hist.sensorIndex;
-    tankObj["label"] = "Tank";  // Would get from clientData
-    tankObj["heightInches"] = hist.heightInches;
+    JsonObject sensorObj = sensorsArray.add<JsonObject>();
+    sensorObj["client"] = hist.clientUid;
+    sensorObj["site"] = strlen(hist.siteName) > 0 ? (const char*)hist.siteName : "Unknown Site";
+    sensorObj["sensorIndex"] = hist.sensorIndex;
+    sensorObj["label"] = "Sensor";  // Would get from clientData
+    sensorObj["heightInches"] = hist.heightInches;
     
     // Find most recent level
-    uint16_t latestIdx = (hist.writeIndex - 1 + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
-    tankObj["currentLevel"] = hist.snapshots[latestIdx].level;
+    uint16_t latestIdx = (hist.writeIndex - 1 + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
+    sensorObj["currentLevel"] = hist.snapshots[latestIdx].level;
     
     // Include readings, filtered by cutoff if set
-    JsonArray readings = tankObj["readings"].to<JsonArray>();
+    JsonArray readings = sensorObj["readings"].to<JsonArray>();
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
       TelemetrySnapshot &snap = hist.snapshots[idx];
       
       // Skip readings older than cutoff
@@ -10891,20 +10905,20 @@ static void sendHistoryJson(EthernetClient &client, const String &query) {
     double yesterday = nowEpoch - 86400.0;
     float oldestRecentLevel = hist.snapshots[latestIdx].level;
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
       if (hist.snapshots[idx].timestamp >= yesterday) {
         oldestRecentLevel = hist.snapshots[idx].level;
         break;
       }
     }
-    tankObj["change24h"] = roundTo(hist.snapshots[latestIdx].level - oldestRecentLevel, 1);
+    sensorObj["change24h"] = roundTo(hist.snapshots[latestIdx].level - oldestRecentLevel, 1);
   }
   
-  // Add stored voltage history from tank snapshots
-  for (uint8_t h = 0; h < gTankHistoryCount; h++) {
-    TankHourlyHistory &hist = gTankHistory[h];
+  // Add stored voltage history from sensor snapshots
+  for (uint8_t h = 0; h < gSensorHistoryCount; h++) {
+    SensorHourlyHistory &hist = gSensorHistory[h];
     for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
       TelemetrySnapshot &snap = hist.snapshots[idx];
       if (cutoffEpoch > 0.0 && snap.timestamp < cutoffEpoch) continue;
       if (snap.voltage > 0) {
@@ -10946,7 +10960,7 @@ static void sendHistoryJson(EthernetClient &client, const String &query) {
   // Data source and tier availability metadata
   JsonObject dataInfo = doc["dataInfo"].to<JsonObject>();
   dataInfo["source"] = "hot";  // Primary data from RAM ring buffer
-  dataInfo["hotTierSnapshots"] = (gTankHistoryCount > 0 && gTankHistory[0].snapshotCount > 0);
+  dataInfo["hotTierSnapshots"] = (gSensorHistoryCount > 0 && gSensorHistory[0].snapshotCount > 0);
   dataInfo["warmTierAvailable"] = true;  // LittleFS daily summaries always available
   dataInfo["coldTierAvailable"] = (gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled);
   
@@ -11010,7 +11024,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   doc["previous"]["year"] = prevYear;
   doc["previous"]["month"] = prevMonth;
   
-  JsonArray comparisons = doc["tanks"].to<JsonArray>();
+  JsonArray comparisons = doc["sensors"].to<JsonArray>();
   
   // Determine current time for hot tier range check
   double nowEpoch = 0.0;
@@ -11036,15 +11050,15 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     }
   }
   
-  // For each tank in hot tier, calculate comparison
-  for (uint8_t h = 0; h < gTankHistoryCount; h++) {
-    TankHourlyHistory &hist = gTankHistory[h];
+  // For each sensor in hot tier, calculate comparison
+  for (uint8_t h = 0; h < gSensorHistoryCount; h++) {
+    SensorHourlyHistory &hist = gSensorHistory[h];
     if (hist.snapshotCount == 0) continue;
     
-    JsonObject tankComp = comparisons.add<JsonObject>();
-    tankComp["client"] = hist.clientUid;
-    tankComp["site"] = hist.siteName;
-    tankComp["sensorIndex"] = hist.sensorIndex;
+    JsonObject sensorComp = comparisons.add<JsonObject>();
+    sensorComp["client"] = hist.clientUid;
+    sensorComp["site"] = hist.siteName;
+    sensorComp["sensorIndex"] = hist.sensorIndex;
     
     // Current period stats from hot tier
     float currMin = 9999.0, currMax = -9999.0, currSum = 0.0;
@@ -11052,7 +11066,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     
     if (currInHotTier) {
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-        uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+        uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist.snapshots[idx];
         if (snap.level < currMin) currMin = snap.level;
         if (snap.level > currMax) currMax = snap.level;
@@ -11061,7 +11075,7 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
       }
     }
     
-    JsonObject currStats = tankComp["currentStats"].to<JsonObject>();
+    JsonObject currStats = sensorComp["currentStats"].to<JsonObject>();
     if (currCount > 0) {
       currStats["min"] = roundTo(currMin, 1);
       currStats["max"] = roundTo(currMax, 1);
@@ -11083,13 +11097,13 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     }
     
     // Previous period stats from appropriate tier
-    JsonObject prevStats = tankComp["previousStats"].to<JsonObject>();
+    JsonObject prevStats = sensorComp["previousStats"].to<JsonObject>();
     if (prevInHotTier) {
       // Rare case: previous month still in hot tier (if retention > 30 days)
       float prevMin = 9999.0, prevMax = -9999.0, prevSum = 0.0;
       int prevCount = 0;
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-        uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+        uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist.snapshots[idx];
         if (snap.level < prevMin) prevMin = snap.level;
         if (snap.level > prevMax) prevMax = snap.level;
@@ -11126,12 +11140,12 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     if (currAvail && prevAvail) {
       float cAvg = currStats["avg"].as<float>();
       float pAvg = prevStats["avg"].as<float>();
-      tankComp["deltaAvg"] = roundTo(cAvg - pAvg, 1);
-      tankComp["deltaAvailable"] = true;
+      sensorComp["deltaAvg"] = roundTo(cAvg - pAvg, 1);
+      sensorComp["deltaAvailable"] = true;
     } else {
-      tankComp["deltaAvailable"] = false;
+      sensorComp["deltaAvailable"] = false;
       if (!prevAvail) {
-        tankComp["deltaMessage"] = "Previous month data not available for comparison";
+        sensorComp["deltaMessage"] = "Previous month data not available for comparison";
       }
     }
   }
@@ -11192,24 +11206,24 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   doc["yearsCompared"] = yearsToCompare;
   
   if (sensorParam.length() == 0) {
-    // Return summary for all tanks
-    JsonArray tankSummaries = doc["tanks"].to<JsonArray>();
+    // Return summary for all sensors
+    JsonArray sensorSummaries = doc["sensors"].to<JsonArray>();
     
-    for (uint8_t h = 0; h < gTankHistoryCount; h++) {
-      TankHourlyHistory &hist = gTankHistory[h];
+    for (uint8_t h = 0; h < gSensorHistoryCount; h++) {
+      SensorHourlyHistory &hist = gSensorHistory[h];
       if (hist.snapshotCount == 0) continue;
       
-      JsonObject tankSum = tankSummaries.add<JsonObject>();
-      tankSum["client"] = hist.clientUid;
-      tankSum["site"] = hist.siteName;
-      tankSum["sensorIndex"] = hist.sensorIndex;
+      JsonObject sensorSum = sensorSummaries.add<JsonObject>();
+      sensorSum["client"] = hist.clientUid;
+      sensorSum["site"] = hist.siteName;
+      sensorSum["sensorIndex"] = hist.sensorIndex;
       
       // Current year stats from hot tier
       float yearMin = 9999.0, yearMax = -9999.0, yearSum = 0.0;
       int yearCount = 0;
       
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-        uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+        uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist.snapshots[idx];
         if (snap.level < yearMin) yearMin = snap.level;
         if (snap.level > yearMax) yearMax = snap.level;
@@ -11217,7 +11231,7 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
         yearCount++;
       }
       
-      JsonObject currentYearStats = tankSum["currentYear"].to<JsonObject>();
+      JsonObject currentYearStats = sensorSum["currentYear"].to<JsonObject>();
       if (yearCount > 0) {
         currentYearStats["min"] = roundTo(yearMin, 1);
         currentYearStats["max"] = roundTo(yearMax, 1);
@@ -11227,7 +11241,7 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       }
       
       // Previous years — attempt warm tier (monthly aggregation) or cold tier (FTP)
-      JsonArray prevYears = tankSum["previousYears"].to<JsonArray>();
+      JsonArray prevYears = sensorSum["previousYears"].to<JsonArray>();
       for (int y = 1; y <= yearsToCompare; y++) {
         int targetYear = currentYear - y;
         JsonObject yearInfo = prevYears.add<JsonObject>();
@@ -11259,8 +11273,8 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
           } else if (gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled) {
             // Try cold tier (FTP archive)
             if (loadFtpArchiveCached(targetYear, m)) {
-              for (uint8_t ci = 0; ci < gFtpArchiveCache.tankCount; ci++) {
-                auto &cached = gFtpArchiveCache.tanks[ci];
+              for (uint8_t ci = 0; ci < gFtpArchiveCache.sensorCount; ci++) {
+                auto &cached = gFtpArchiveCache.sensors[ci];
                 if (strcmp(cached.clientUid, hist.clientUid) != 0 || cached.sensorIndex != hist.sensorIndex) continue;
                 if (cached.minLevel < yMin) yMin = cached.minLevel;
                 if (cached.maxLevel > yMax) yMax = cached.maxLevel;
@@ -11290,25 +11304,25 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       }
     }
   } else {
-    // Return detailed monthly history for specific tank
-    doc["tank"]["client"] = clientUid;
-    doc["tank"]["sensorIndex"] = sensorIdx;
+    // Return detailed monthly history for specific sensor
+    doc["sensor"]["client"] = clientUid;
+    doc["sensor"]["sensorIndex"] = sensorIdx;
     
-    // Find tank in hot tier
-    TankHourlyHistory *hist = nullptr;
-    for (uint8_t h = 0; h < gTankHistoryCount; h++) {
-      if (strcmp(gTankHistory[h].clientUid, clientUid.c_str()) == 0 && 
-          gTankHistory[h].sensorIndex == sensorIdx) {
-        hist = &gTankHistory[h];
+    // Find sensor in hot tier
+    SensorHourlyHistory *hist = nullptr;
+    for (uint8_t h = 0; h < gSensorHistoryCount; h++) {
+      if (strcmp(gSensorHistory[h].clientUid, clientUid.c_str()) == 0 && 
+          gSensorHistory[h].sensorIndex == sensorIdx) {
+        hist = &gSensorHistory[h];
         break;
       }
     }
     
     if (hist && hist->snapshotCount > 0) {
-      doc["tank"]["site"] = hist->siteName;
-      doc["tank"]["found"] = true;
+      doc["sensor"]["site"] = hist->siteName;
+      doc["sensor"]["found"] = true;
       
-      JsonArray monthlyData = doc["tank"]["monthlyData"].to<JsonArray>();
+      JsonArray monthlyData = doc["sensor"]["monthlyData"].to<JsonArray>();
       
       // Current month from hot tier
       JsonObject currMonthObj = monthlyData.add<JsonObject>();
@@ -11318,7 +11332,7 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       float min = 9999.0, max = -9999.0, sum = 0.0;
       int count = 0;
       for (uint16_t j = 0; j < hist->snapshotCount; j++) {
-        uint16_t idx = (hist->writeIndex - hist->snapshotCount + j + MAX_HOURLY_HISTORY_PER_TANK) % MAX_HOURLY_HISTORY_PER_TANK;
+        uint16_t idx = (hist->writeIndex - hist->snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist->snapshots[idx];
         if (snap.level < min) min = snap.level;
         if (snap.level > max) max = snap.level;
@@ -11362,8 +11376,8 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
         if (mMonth < 1) { mMonth = 12; mYear--; }
       }
     } else {
-      doc["tank"]["found"] = false;
-      doc["tank"]["message"] = "Tank not found in hot tier";
+      doc["sensor"]["found"] = false;
+      doc["sensor"]["message"] = "Sensor not found in hot tier";
     }
   }
   
@@ -11600,38 +11614,38 @@ static void handleContactsGet(EthernetClient &client) {
     doc["smsAlertRecipients"].to<JsonArray>();
   }
   
-  // Build list of unique sites from tank records
-  // Use simple linear scan - with typical fleet sizes (< 100 tanks), performance is adequate
+  // Build list of unique sites from sensor records
+  // Use simple linear scan - with typical fleet sizes (< 100 sensors), performance is adequate
   JsonArray sitesArray = doc["sites"].to<JsonArray>();
   sitesArray.clear();
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    if (strlen(gTankRecords[i].site) == 0) continue;
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    if (strlen(gSensorRecords[i].site) == 0) continue;
     
     bool alreadySeen = false;
     for (uint8_t j = 0; j < i; ++j) {
-      if (strcmp(gTankRecords[i].site, gTankRecords[j].site) == 0) {
+      if (strcmp(gSensorRecords[i].site, gSensorRecords[j].site) == 0) {
         alreadySeen = true;
         break;
       }
     }
     if (!alreadySeen) {
-      sitesArray.add(gTankRecords[i].site);
+      sitesArray.add(gSensorRecords[i].site);
     }
   }
   
-  // Build list of alarms (tanks with alarm configurations)
+  // Build list of alarms (sensors with alarm configurations)
   JsonArray alarmsArray = doc["alarms"].to<JsonArray>();
   alarmsArray.clear();
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    TankRecord &tank = gTankRecords[i];
-    if (strlen(tank.alarmType) > 0) {
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    SensorRecord &rec = gSensorRecords[i];
+    if (strlen(rec.alarmType) > 0) {
       JsonObject alarmObj = alarmsArray.add<JsonObject>();
       char alarmId[64];
-      snprintf(alarmId, sizeof(alarmId), "%s_%d", tank.clientUid, tank.sensorIndex);
+      snprintf(alarmId, sizeof(alarmId), "%s_%d", rec.clientUid, rec.sensorIndex);
       alarmObj["id"] = alarmId;
-      alarmObj["site"] = tank.site;
-      alarmObj["label"] = tank.label;
-      alarmObj["type"] = tank.alarmType;
+      alarmObj["site"] = rec.site;
+      alarmObj["label"] = rec.label;
+      alarmObj["type"] = rec.alarmType;
     }
   }
   
@@ -11821,7 +11835,7 @@ static void handleEmailFormatGet(EthernetClient &client) {
   
   // Set defaults if not loaded or missing fields
   if (!loaded) {
-    doc["emailSubject"] = "Daily Tank Summary - {date}";
+    doc["emailSubject"] = "Daily Sensor Summary - {date}";
     doc["companyName"] = "";
     doc["includeDate"] = true;
     doc["includeTime"] = false;
@@ -11830,7 +11844,7 @@ static void handleEmailFormatGet(EthernetClient &client) {
     doc["showSiteSummary"] = true;
     doc["showSiteCapacity"] = false;
     doc["fieldSensorIndex"] = true;
-    doc["fieldTankName"] = true;
+    doc["fieldSensorName"] = true;
     doc["fieldContents"] = true;
     doc["fieldLevelInches"] = true;
     doc["fieldLevelPercent"] = false;
@@ -11841,7 +11855,7 @@ static void handleEmailFormatGet(EthernetClient &client) {
     doc["fieldAlarmStatus"] = true;
     doc["fieldCapacity"] = false;
     doc["includeFleetSummary"] = true;
-    doc["summaryTotalTanks"] = true;
+    doc["summaryTotalSensors"] = true;
     doc["summaryActiveAlarms"] = true;
     doc["summaryDeliveries"] = true;
     doc["summaryStaleWarning"] = true;
@@ -12058,40 +12072,40 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
   respondJson(client, responseStr);
 }
 
-// Find existing tank calibration (read-only, does not create)
-static TankCalibration *findTankCalibration(const char *clientUid, uint8_t sensorIndex) {
+// Find existing sensor calibration (read-only, does not create)
+static SensorCalibration *findSensorCalibration(const char *clientUid, uint8_t sensorIndex) {
   if (!clientUid || strlen(clientUid) == 0) {
     return nullptr;
   }
   
   // Search for existing calibration
-  for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
-    if (strcmp(gTankCalibrations[i].clientUid, clientUid) == 0 && 
-        gTankCalibrations[i].sensorIndex == sensorIndex) {
-      return &gTankCalibrations[i];
+  for (uint8_t i = 0; i < gSensorCalibrationCount; ++i) {
+    if (strcmp(gSensorCalibrations[i].clientUid, clientUid) == 0 && 
+        gSensorCalibrations[i].sensorIndex == sensorIndex) {
+      return &gSensorCalibrations[i];
     }
   }
   
   return nullptr;
 }
 
-static TankCalibration *findOrCreateTankCalibration(const char *clientUid, uint8_t sensorIndex) {
+static SensorCalibration *findOrCreateSensorCalibration(const char *clientUid, uint8_t sensorIndex) {
   if (!clientUid || strlen(clientUid) == 0) {
     return nullptr;
   }
   
   // Search for existing calibration
-  for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
-    if (strcmp(gTankCalibrations[i].clientUid, clientUid) == 0 && 
-        gTankCalibrations[i].sensorIndex == sensorIndex) {
-      return &gTankCalibrations[i];
+  for (uint8_t i = 0; i < gSensorCalibrationCount; ++i) {
+    if (strcmp(gSensorCalibrations[i].clientUid, clientUid) == 0 && 
+        gSensorCalibrations[i].sensorIndex == sensorIndex) {
+      return &gSensorCalibrations[i];
     }
   }
   
   // Create new entry if space available
-  if (gTankCalibrationCount < MAX_CALIBRATION_TANKS) {
-    TankCalibration *cal = &gTankCalibrations[gTankCalibrationCount++];
-    memset(cal, 0, sizeof(TankCalibration));
+  if (gSensorCalibrationCount < MAX_CALIBRATION_SENSORS) {
+    SensorCalibration *cal = &gSensorCalibrations[gSensorCalibrationCount++];
+    memset(cal, 0, sizeof(SensorCalibration));
     strlcpy(cal->clientUid, clientUid, sizeof(cal->clientUid));
     cal->sensorIndex = sensorIndex;
     cal->hasLearnedCalibration = false;
@@ -12119,7 +12133,7 @@ struct CalibrationPoint {
 // Multiple linear regression using calibration log entries
 // Model: level = slope * sensorReading + tempCoef * (temp - refTemp) + offset
 // Falls back to simple linear regression if insufficient temperature data
-static void recalculateCalibration(TankCalibration *cal) {
+static void recalculateCalibration(SensorCalibration *cal) {
   if (!cal) {
     return;
   }
@@ -12153,7 +12167,7 @@ static void recalculateCalibration(TankCalibration *cal) {
       if (pos2 < 0) continue;
       int sensorIdx = line.substring(pos1 + 1, pos2).toInt();
       
-      // Check if this entry matches our tank
+      // Check if this entry matches our sensor
       if (uid != String(cal->clientUid) || sensorIdx != cal->sensorIndex) continue;
       
       int pos3 = line.indexOf('\t', pos2 + 1);
@@ -12231,7 +12245,7 @@ static void recalculateCalibration(TankCalibration *cal) {
       if (pos2 < 0) continue;
       int sensorIdx = line.substring(pos1 + 1, pos2).toInt();
       
-      // Check if this entry matches our tank
+      // Check if this entry matches our sensor
       if (uid != String(cal->clientUid) || sensorIdx != cal->sensorIndex) continue;
       
       int pos3 = line.indexOf('\t', pos2 + 1);
@@ -12510,8 +12524,8 @@ static void saveCalibrationEntry(const char *clientUid, uint8_t sensorIndex, dou
     }
   #endif
   
-  // Update calibration for this tank
-  TankCalibration *cal = findOrCreateTankCalibration(clientUid, sensorIndex);
+  // Update calibration for this sensor
+  SensorCalibration *cal = findOrCreateSensorCalibration(clientUid, sensorIndex);
   if (cal) {
     // recalculateCalibration will read the file and update entryCount
     recalculateCalibration(cal);
@@ -12521,7 +12535,7 @@ static void saveCalibrationEntry(const char *clientUid, uint8_t sensorIndex, dou
 }
 
 static void loadCalibrationData() {
-  gTankCalibrationCount = 0;
+  gSensorCalibrationCount = 0;
   
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -12529,14 +12543,14 @@ static void loadCalibrationData() {
     if (!file) return;
     
     char lineBuffer[384];
-    while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && gTankCalibrationCount < MAX_CALIBRATION_TANKS) {
+    while (fgets(lineBuffer, sizeof(lineBuffer), file) != nullptr && gSensorCalibrationCount < MAX_CALIBRATION_SENSORS) {
       String line = String(lineBuffer);
       line.trim();
       if (line.length() == 0) continue;
       
       // Parse: clientUid\tsensorIndex\tslope\toffset\trSquared\tentryCount\thasCalibration\tlastEpoch\ttempCoef\thasTempComp\ttempEntryCount
-      TankCalibration &cal = gTankCalibrations[gTankCalibrationCount];
-      memset(&cal, 0, sizeof(TankCalibration));
+      SensorCalibration &cal = gSensorCalibrations[gSensorCalibrationCount];
+      memset(&cal, 0, sizeof(SensorCalibration));
       
       int pos1 = line.indexOf('\t');
       if (pos1 < 0) continue;
@@ -12580,7 +12594,7 @@ static void loadCalibrationData() {
       
       cal.tempEntryCount = line.substring(pos10 + 1).toInt();
       
-      gTankCalibrationCount++;
+      gSensorCalibrationCount++;
     }
     
     fclose(file);
@@ -12590,14 +12604,14 @@ static void loadCalibrationData() {
     File file = LittleFS.open("/calibration_data.txt", "r");
     if (!file) return;
     
-    while (file.available() && gTankCalibrationCount < MAX_CALIBRATION_TANKS) {
+    while (file.available() && gSensorCalibrationCount < MAX_CALIBRATION_SENSORS) {
       String line = file.readStringUntil('\n');
       line.trim();
       if (line.length() == 0) continue;
       
       // Parse: clientUid\tsensorIndex\tslope\toffset\trSquared\tentryCount\thasCalibration\tlastEpoch\ttempCoef\thasTempComp\ttempEntryCount
-      TankCalibration &cal = gTankCalibrations[gTankCalibrationCount];
-      memset(&cal, 0, sizeof(TankCalibration));
+      SensorCalibration &cal = gSensorCalibrations[gSensorCalibrationCount];
+      memset(&cal, 0, sizeof(SensorCalibration));
       
       int pos1 = line.indexOf('\t');
       if (pos1 < 0) continue;
@@ -12641,7 +12655,7 @@ static void loadCalibrationData() {
       
       cal.tempEntryCount = line.substring(pos10 + 1).toInt();
       
-      gTankCalibrationCount++;
+      gSensorCalibrationCount++;
     }
     
     file.close();
@@ -12649,8 +12663,8 @@ static void loadCalibrationData() {
 #endif
   
   Serial.print(F("Loaded "));
-  Serial.print(gTankCalibrationCount);
-  Serial.println(F(" tank calibration records"));
+  Serial.print(gSensorCalibrationCount);
+  Serial.println(F(" sensor calibration records"));
 }
 
 static void saveCalibrationData() {
@@ -12658,10 +12672,10 @@ static void saveCalibrationData() {
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     // Accumulate into String, then atomic write (~80 bytes/line)
     String output;
-    output.reserve(gTankCalibrationCount * 100);
-    for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
-      TankCalibration &cal = gTankCalibrations[i];
-      // Format: uid\ttank\tslope\toffset\trSquared\tentryCount\thasLearned\tlastEpoch\ttempCoef\thasTempComp\ttempEntryCount
+    output.reserve(gSensorCalibrationCount * 100);
+    for (uint8_t i = 0; i < gSensorCalibrationCount; ++i) {
+      SensorCalibration &cal = gSensorCalibrations[i];
+      // Format: uid\tsensorIndex\tslope\toffset\trSquared\tentryCount\thasLearned\tlastEpoch\ttempCoef\thasTempComp\ttempEntryCount
       char line[128];
       snprintf(line, sizeof(line), "%s\t%d\t%.6f\t%.2f\t%.4f\t%d\t%d\t%.0f\t%.6f\t%d\t%d\n",
                cal.clientUid, cal.sensorIndex, cal.learnedSlope, cal.learnedOffset,
@@ -12675,9 +12689,9 @@ static void saveCalibrationData() {
   #else
     // LittleFS branch: accumulate into String, then atomic write
     String output;
-    output.reserve(gTankCalibrationCount * 100);
-    for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
-      TankCalibration &cal = gTankCalibrations[i];
+    output.reserve(gSensorCalibrationCount * 100);
+    for (uint8_t i = 0; i < gSensorCalibrationCount; ++i) {
+      SensorCalibration &cal = gSensorCalibrations[i];
       char line[128];
       snprintf(line, sizeof(line), "%s\t%d\t%.6f\t%.2f\t%.4f\t%d\t%d\t%.0f\t%.6f\t%d\t%d\n",
                cal.clientUid, cal.sensorIndex, cal.learnedSlope, cal.learnedOffset,
@@ -12697,10 +12711,10 @@ static void handleCalibrationGet(EthernetClient &client) {
   // ~4000 + ~10000 + 512 = ~15KB; ArduinoJson v7 auto-sizes
   JsonDocument doc;
   
-  // Add calibration status for each tank
+  // Add calibration status for each sensor
   JsonArray calibrationsArr = doc["calibrations"].to<JsonArray>();
-  for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
-    TankCalibration &cal = gTankCalibrations[i];
+  for (uint8_t i = 0; i < gSensorCalibrationCount; ++i) {
+    SensorCalibration &cal = gSensorCalibrations[i];
     JsonObject obj = calibrationsArr.add<JsonObject>();
     obj["clientUid"] = cal.clientUid;
     obj["sensorIndex"] = cal.sensorIndex;
@@ -12913,16 +12927,16 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   // Optional fields
   float sensorReading = doc["sensorReading"].as<float>();
   if (!doc["sensorReading"] || sensorReading < 4.0f || sensorReading > 20.0f) {
-    // Try to get raw sensorMa from tank record (sent directly from client)
+    // Try to get raw sensorMa from sensor record (sent directly from client)
     sensorReading = 0.0f;
     
-    // Look up tank record to get raw sensorMa from latest telemetry
-    for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-      if (strcmp(gTankRecords[i].clientUid, clientUid) == 0 && 
-          gTankRecords[i].sensorIndex == sensorIndex) {
+    // Look up sensor record to get raw sensorMa from latest telemetry
+    for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+      if (strcmp(gSensorRecords[i].clientUid, clientUid) == 0 && 
+          gSensorRecords[i].sensorIndex == sensorIndex) {
         // Use raw sensorMa if available (sent directly from client device)
-        if (gTankRecords[i].sensorMa >= 4.0f && gTankRecords[i].sensorMa <= 20.0f) {
-          sensorReading = gTankRecords[i].sensorMa;
+        if (gSensorRecords[i].sensorMa >= 4.0f && gSensorRecords[i].sensorMa <= 20.0f) {
+          sensorReading = gSensorRecords[i].sensorMa;
           Serial.print(F("Using raw sensorMa from telemetry: "));
           Serial.print(sensorReading, 2);
           Serial.println(F(" mA"));
@@ -12971,7 +12985,7 @@ static void handleCalibrationPost(EthernetClient &client, const String &body) {
   
   Serial.print(F("Calibration entry added for "));
   Serial.print(clientUid);
-  Serial.print(F(" tank "));
+  Serial.print(F(" sensor "));
   Serial.print(sensorIndex);
   Serial.print(F(": "));
   Serial.print(verifiedLevelInches, 1);
@@ -13026,36 +13040,36 @@ static void handleCalibrationDelete(EthernetClient &client, const String &body) 
   
   Serial.print(F("Reset calibration requested for "));
   Serial.print(clientUid);
-  Serial.print(F(" tank "));
+  Serial.print(F(" sensor "));
   Serial.println(sensorIndex);
   
-  // Find and reset the TankCalibration entry
+  // Find and reset the SensorCalibration entry
   bool foundCalibration = false;
-  for (uint8_t i = 0; i < gTankCalibrationCount; ++i) {
-    if (strcmp(gTankCalibrations[i].clientUid, clientUid) == 0 && 
-        gTankCalibrations[i].sensorIndex == sensorIndex) {
+  for (uint8_t i = 0; i < gSensorCalibrationCount; ++i) {
+    if (strcmp(gSensorCalibrations[i].clientUid, clientUid) == 0 && 
+        gSensorCalibrations[i].sensorIndex == sensorIndex) {
       // Reset calibration fields but keep identity
-      gTankCalibrations[i].learnedSlope = 0.0f;
-      gTankCalibrations[i].learnedOffset = 0.0f;
-      gTankCalibrations[i].learnedTempCoef = 0.0f;
-      gTankCalibrations[i].hasLearnedCalibration = false;
-      gTankCalibrations[i].hasTempCompensation = false;
-      gTankCalibrations[i].entryCount = 0;
-      gTankCalibrations[i].tempEntryCount = 0;
-      gTankCalibrations[i].rSquared = 0.0f;
-      gTankCalibrations[i].lastCalibrationEpoch = 0.0;
-      gTankCalibrations[i].minSensorMa = 0.0f;
-      gTankCalibrations[i].maxSensorMa = 0.0f;
-      gTankCalibrations[i].minLevelInches = 0.0f;
-      gTankCalibrations[i].maxLevelInches = 0.0f;
+      gSensorCalibrations[i].learnedSlope = 0.0f;
+      gSensorCalibrations[i].learnedOffset = 0.0f;
+      gSensorCalibrations[i].learnedTempCoef = 0.0f;
+      gSensorCalibrations[i].hasLearnedCalibration = false;
+      gSensorCalibrations[i].hasTempCompensation = false;
+      gSensorCalibrations[i].entryCount = 0;
+      gSensorCalibrations[i].tempEntryCount = 0;
+      gSensorCalibrations[i].rSquared = 0.0f;
+      gSensorCalibrations[i].lastCalibrationEpoch = 0.0;
+      gSensorCalibrations[i].minSensorMa = 0.0f;
+      gSensorCalibrations[i].maxSensorMa = 0.0f;
+      gSensorCalibrations[i].minLevelInches = 0.0f;
+      gSensorCalibrations[i].maxLevelInches = 0.0f;
       foundCalibration = true;
-      Serial.println(F("TankCalibration entry reset"));
+      Serial.println(F("SensorCalibration entry reset"));
       break;
     }
   }
   
 #ifdef FILESYSTEM_AVAILABLE
-  // Remove entries from calibration_log.txt for this tank
+  // Remove entries from calibration_log.txt for this sensor
   // We need to read the entire file, filter out matching entries, then rewrite
   int removedCount = 0;
   
@@ -13084,10 +13098,10 @@ static void handleCalibrationDelete(EthernetClient &client, const String &body) 
           keepEntries.push_back(line);
           continue;
         }
-        int entryTank = line.substring(pos1 + 1, pos2).toInt();
+        int entrySensor = line.substring(pos1 + 1, pos2).toInt();
         
-        // Check if this entry matches the tank to delete
-        if (entryUid == String(clientUid) && entryTank == (int)sensorIndex) {
+        // Check if this entry matches the sensor to delete
+        if (entryUid == String(clientUid) && entrySensor == (int)sensorIndex) {
           removedCount++;
         } else {
           keepEntries.push_back(line);
@@ -13137,9 +13151,9 @@ static void handleCalibrationDelete(EthernetClient &client, const String &body) 
             keepEntries.push_back(line);
             continue;
           }
-          int entryTank = line.substring(pos1 + 1, pos2).toInt();
+          int entrySensor = line.substring(pos1 + 1, pos2).toInt();
           
-          if (entryUid == String(clientUid) && entryTank == (int)sensorIndex) {
+          if (entryUid == String(clientUid) && entrySensor == (int)sensorIndex) {
             removedCount++;
           } else {
             keepEntries.push_back(line);
@@ -13172,7 +13186,7 @@ static void handleCalibrationDelete(EthernetClient &client, const String &body) 
   // Save updated calibration data
   saveCalibrationData();
   
-  String responseMsg = F("Calibration reset for tank ");
+  String responseMsg = F("Calibration reset for sensor ");
   responseMsg += String(sensorIndex);
   if (removedCount > 0) {
     responseMsg += F(", removed ");
@@ -13273,24 +13287,24 @@ static void handleDfuStatusGet(EthernetClient &client) {
   respondJson(client, responseStr);
 }
 
-// Brute-force dedup of tank records (linear scan — does not rely on hash table)
+// Brute-force dedup of sensor records (linear scan — does not rely on hash table)
 // Keeps the most recently updated record for each clientUid+sensorIndex pair.
 // Returns the number of duplicates removed.
-static uint8_t deduplicateTankRecordsLinear() {
+static uint8_t deduplicateSensorRecordsLinear() {
   uint8_t removed = 0;
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    for (uint8_t j = i + 1; j < gTankRecordCount; ) {
-      if (strcmp(gTankRecords[i].clientUid, gTankRecords[j].clientUid) == 0 &&
-          gTankRecords[i].sensorIndex == gTankRecords[j].sensorIndex) {
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    for (uint8_t j = i + 1; j < gSensorRecordCount; ) {
+      if (strcmp(gSensorRecords[i].clientUid, gSensorRecords[j].clientUid) == 0 &&
+          gSensorRecords[i].sensorIndex == gSensorRecords[j].sensorIndex) {
         // Duplicate found — keep the one with the newer lastUpdateEpoch
-        if (gTankRecords[j].lastUpdateEpoch > gTankRecords[i].lastUpdateEpoch) {
-          memcpy(&gTankRecords[i], &gTankRecords[j], sizeof(TankRecord));
+        if (gSensorRecords[j].lastUpdateEpoch > gSensorRecords[i].lastUpdateEpoch) {
+          memcpy(&gSensorRecords[i], &gSensorRecords[j], sizeof(SensorRecord));
         }
         // Remove record j by moving last record into its slot
-        if (j < gTankRecordCount - 1) {
-          memcpy(&gTankRecords[j], &gTankRecords[gTankRecordCount - 1], sizeof(TankRecord));
+        if (j < gSensorRecordCount - 1) {
+          memcpy(&gSensorRecords[j], &gSensorRecords[gSensorRecordCount - 1], sizeof(SensorRecord));
         }
-        gTankRecordCount--;
+        gSensorRecordCount--;
         removed++;
         // Don't increment j — re-check the slot we just moved into
       } else {
@@ -13299,19 +13313,19 @@ static uint8_t deduplicateTankRecordsLinear() {
     }
   }
   if (removed > 0) {
-    rebuildTankHashTable();
-    gTankRegistryDirty = true;
+    rebuildSensorHashTable();
+    gSensorRegistryDirty = true;
     Serial.print(F("Dedup removed "));
     Serial.print(removed);
-    Serial.println(F(" duplicate tank records"));
-    addServerSerialLog("Duplicate tank records removed", "info", "registry");
+    Serial.println(F(" duplicate sensor records"));
+    addServerSerialLog("Duplicate sensor records removed", "info", "registry");
   }
   return removed;
 }
 
-// Debug endpoint: POST /api/debug/tanks with {"pin":"XXXX"} — dump raw tank records
-// POST /api/debug/tanks with {"pin":"XXXX","action":"dedup"} — force dedup
-static void handleDebugTanks(EthernetClient &client, const String &method, const String &body, const String &queryString) {
+// Debug endpoint: POST /api/debug/sensors with {"pin":"XXXX"} — dump raw sensor records
+// POST /api/debug/sensors with {"pin":"XXXX","action":"dedup"} — force dedup
+static void handleDebugSensors(EthernetClient &client, const String &method, const String &body, const String &queryString) {
   if (method != "POST") {
     respondStatus(client, 405, "Use POST with {\"pin\":\"XXXX\"} in body");
     return;
@@ -13329,18 +13343,18 @@ static void handleDebugTanks(EthernetClient &client, const String &method, const
 
   const char *action = doc["action"] | "";
   if (strcmp(action, "dedup") == 0) {
-    uint8_t removed = deduplicateTankRecordsLinear();
+    uint8_t removed = deduplicateSensorRecordsLinear();
     if (removed > 0) {
-      saveTankRegistry();
-      gTankRegistryDirty = false;
+      saveSensorRegistry();
+      gSensorRegistryDirty = false;
     }
-    String rsp = "{\"removed\":" + String(removed) + ",\"remaining\":" + String(gTankRecordCount) + "}";
+    String rsp = "{\"removed\":" + String(removed) + ",\"remaining\":" + String(gSensorRecordCount) + "}";
     respondJson(client, rsp);
     return;
   }
-  String responseStr = "{\"count\":" + String(gTankRecordCount) + ",\"records\":[";
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
-    const TankRecord &rec = gTankRecords[i];
+  String responseStr = "{\"count\":" + String(gSensorRecordCount) + ",\"records\":[";
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+    const SensorRecord &rec = gSensorRecords[i];
     if (i > 0) responseStr += ",";
     responseStr += "{\"i\":" + String(i);
     responseStr += ",\"c\":\"" + String(rec.clientUid) + "\"";

@@ -1,6 +1,6 @@
 /*
   Tank Alarm Viewer 112025 - Arduino Opta + Blues Notecard
-  Version: 1.1.8
+  Version: 1.1.9
 
   Purpose:
   - Read-only kiosk that renders the server dashboard without exposing control paths
@@ -102,7 +102,7 @@ struct ViewerConfig {
   uint8_t staticDns[4];          // DNS server
 };
 
-struct TankRecord {
+struct SensorRecord {
   char clientUid[48];
   char site[32];
   char label[24];
@@ -134,8 +134,8 @@ static ViewerConfig gConfig = {
   { 8, 8, 8, 8 }                 // staticDns
 };
 
-static TankRecord gTankRecords[MAX_TANK_RECORDS];
-static uint8_t gTankRecordCount = 0;
+static SensorRecord gSensorRecords[MAX_SENSOR_RECORDS];
+static uint8_t gSensorRecordCount = 0;
 
 static Notecard notecard;
 static EthernetServer gWebServer(ETHERNET_PORT);
@@ -163,7 +163,7 @@ static bool gNotecardAvailable = true;
 static uint16_t gNotecardFailureCount = 0;
 static unsigned long gLastSuccessfulNotecardComm = 0;
 
-static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tank Alarm Viewer</title><style>:root{--bg:#f8fafc;--text:#0f172a;--header-bg:#ffffff;--meta-color:#475569;--card-bg:#ffffff;--table-border:rgba(15,23,42,0.08)}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);transition:background 0.3s,color 0.3s}header{padding:20px 28px;background:var(--header-bg);box-shadow:0 2px 10px rgba(0,0,0,0.15)}header h1{margin:0;font-size:1.7rem}header .meta{margin-top:12px;font-size:0.95rem;color:var(--meta-color);display:flex;gap:16px;flex-wrap:wrap}.title-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start}.header-actions{display:flex;gap:12px;align-items:center}.icon-button{width:40px;height:40px;border:1px solid rgba(148,163,184,0.4);background:var(--card-bg);color:var(--text);font-size:1.1rem;cursor:pointer}main{padding:24px;max-width:1400px;margin:0 auto}.card{background:var(--card-bg);padding:20px;box-shadow:0 25px 60px rgba(15,23,42,0.15);border:1px solid rgba(15,23,42,0.08)}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--table-border)}th{text-transform:uppercase;letter-spacing:0.05em;font-size:0.75rem;color:var(--meta-color)}tr:last-child td{border-bottom:none}tr.alarm{background:rgba(220,38,38,0.08)}.status-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;font-size:0.85rem}.status-pill.ok{background:rgba(16,185,129,0.15);color:#34d399}.status-pill.alarm{background:rgba(248,113,113,0.2);color:#fca5a5}.timestamp{font-feature-settings:"tnum";color:var(--meta-color);font-size:0.9rem}footer{margin-top:20px;color:var(--meta-color);font-size:0.85rem;text-align:center}</style></head><body><header><div class="title-row"><div><h1 id="viewerName">Tank Alarm Viewer</h1><div class="meta"><span>Viewer UID: <code id="viewerUid">--</code></span><span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span><span>Summary Generated: <span id="summaryGenerated">--</span></span><span>Last Fetch: <span id="lastFetch">--</span></span><span>Next Scheduled Fetch: <span id="nextFetch">--</span></span><span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span></div></div></div></header><main><section class="card"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"><h2 style="margin:0;font-size:1.2rem">Fleet Snapshot</h2><span class="timestamp">Dashboard auto-refresh: )HTML" STR(WEB_REFRESH_MINUTES) R"HTML( min</span></div><table><thead><tr><th>Site</th><th>Tank</th><th>Level (ft/in)</th><th>24hr Change</th><th>Updated</th></tr></thead><tbody id="tankBody"></tbody></table></section><footer>Viewer nodes are read-only mirrors. Configuration and permissions stay on the server fleet.</footer></main><script>(()=>{const REFRESH_SECONDS=)HTML" STR(WEB_REFRESH_SECONDS)R"HTML(;const els={viewerName:document.getElementById('viewerName'),viewerUid:document.getElementById('viewerUid'),sourceServer:document.getElementById('sourceServer'),sourceUid:document.getElementById('sourceUid'),summaryGenerated:document.getElementById('summaryGenerated'),lastFetch:document.getElementById('lastFetch'),nextFetch:document.getElementById('nextFetch'),refreshHint:document.getElementById('refreshHint'),tankBody:document.getElementById('tankBody')};const state={tanks:[]};function applyTankData(d){els.viewerName.textContent=d.vn||'Tank Alarm Viewer';els.viewerUid.textContent=d.vi||'--';els.sourceServer.textContent=d.sn||'Server';els.sourceUid.textContent=d.si||'--';els.summaryGenerated.textContent=formatEpoch(d.ge);els.lastFetch.textContent=formatEpoch(d.lf);els.nextFetch.textContent=formatEpoch(d.nf);els.refreshHint.textContent=describeCadence(d.rs,d.bh);state.tanks=d.tanks||[];renderTankRows()}async function fetchTanks(){try{const res=await fetch('/api/tanks');if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();applyTankData(data)}catch(err){console.error('Viewer refresh failed',err)}}function renderTankRows(){const tbody=els.tankBody;tbody.innerHTML='';const rows=state.tanks;if(!rows.length){const tr=document.createElement('tr');tr.innerHTML='<td colspan="5">No tank data available</td>';tbody.appendChild(tr);return}const now=Date.now();const staleThresholdMs=93600000;rows.forEach(t=>{const tr=document.createElement('tr');const alarm=t.a;if(alarm)tr.classList.add('alarm');const lastUpdate=t.u;const isStale=lastUpdate&&((now-(lastUpdate*1000))>staleThresholdMs);const staleWarning=isStale?' ⚠️':'';tr.innerHTML=`<td>${escapeHtml(t.s,'--')}</td><td>${escapeHtml(t.n||'Tank')}${t.un?' #'+t.un:''}</td><td>${formatFeetInches(t.l)}</td><td>${format24hChange(t)}</td><td>${formatEpoch(lastUpdate)}${staleWarning}</td>`;if(isStale){tr.style.opacity='0.6';tr.title='Data is over 26 hours old'}tbody.appendChild(tr)})}function statusBadge(t){const alarm=t.a;if(!alarm){return'<span class="status-pill ok">Normal</span>'}const label=escapeHtml(t.at||'Alarm','Alarm');return`<span class="status-pill alarm">${label}</span>`}function formatFeetInches(inches){if(typeof inches!=='number'||!isFinite(inches)||inches<0)return'--';const feet=Math.floor(inches/12);const remainingInches=inches-(feet*12);return`${feet}' ${remainingInches.toFixed(1)}"`}function format24hChange(t){const d=t.d;if(d===undefined||d===null||typeof d!=='number'||!isFinite(d))return'--';const sign=d>0?'+':'';return`${sign}${d.toFixed(1)}"`}function formatEpoch(epoch){if(!epoch)return'--';const date=new Date(epoch*1000);if(isNaN(date.getTime()))return'--';return date.toLocaleString()}function describeCadence(seconds,baseHour){const hours=seconds?(seconds/3600).toFixed(1).replace(/\.0$/,''):'6';const hourLabel=(typeof baseHour==='number')?baseHour:6;return`${hours}h cadence · starts ${hourLabel}:00`}function escapeHtml(value,fallback=''){if(value===undefined||value===null||value==='')return fallback;const entityMap={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};return String(value).replace(/[&<>"']/g,c=>entityMap[c]||c)}fetchTanks();setInterval(()=>fetchTanks(),REFRESH_SECONDS*1000)})();</script></body></html>)HTML";
+static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tank Alarm Viewer</title><style>:root{--bg:#f8fafc;--text:#0f172a;--header-bg:#ffffff;--meta-color:#475569;--card-bg:#ffffff;--table-border:rgba(15,23,42,0.08)}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);transition:background 0.3s,color 0.3s}header{padding:20px 28px;background:var(--header-bg);box-shadow:0 2px 10px rgba(0,0,0,0.15)}header h1{margin:0;font-size:1.7rem}header .meta{margin-top:12px;font-size:0.95rem;color:var(--meta-color);display:flex;gap:16px;flex-wrap:wrap}.title-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start}.header-actions{display:flex;gap:12px;align-items:center}.icon-button{width:40px;height:40px;border:1px solid rgba(148,163,184,0.4);background:var(--card-bg);color:var(--text);font-size:1.1rem;cursor:pointer}main{padding:24px;max-width:1400px;margin:0 auto}.card{background:var(--card-bg);padding:20px;box-shadow:0 25px 60px rgba(15,23,42,0.15);border:1px solid rgba(15,23,42,0.08)}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--table-border)}th{text-transform:uppercase;letter-spacing:0.05em;font-size:0.75rem;color:var(--meta-color)}tr:last-child td{border-bottom:none}tr.alarm{background:rgba(220,38,38,0.08)}.status-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;font-size:0.85rem}.status-pill.ok{background:rgba(16,185,129,0.15);color:#34d399}.status-pill.alarm{background:rgba(248,113,113,0.2);color:#fca5a5}.timestamp{font-feature-settings:"tnum";color:var(--meta-color);font-size:0.9rem}footer{margin-top:20px;color:var(--meta-color);font-size:0.85rem;text-align:center}</style></head><body><header><div class="title-row"><div><h1 id="viewerName">Tank Alarm Viewer</h1><div class="meta"><span>Viewer UID: <code id="viewerUid">--</code></span><span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span><span>Summary Generated: <span id="summaryGenerated">--</span></span><span>Last Fetch: <span id="lastFetch">--</span></span><span>Next Scheduled Fetch: <span id="nextFetch">--</span></span><span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span></div></div></div></header><main><section class="card"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"><h2 style="margin:0;font-size:1.2rem">Fleet Snapshot</h2><span class="timestamp">Dashboard auto-refresh: )HTML" STR(WEB_REFRESH_MINUTES) R"HTML( min</span></div><table><thead><tr><th>Site</th><th>Tank</th><th>Level (ft/in)</th><th>24hr Change</th><th>Updated</th></tr></thead><tbody id="sensorBody"></tbody></table></section><footer>Viewer nodes are read-only mirrors. Configuration and permissions stay on the server fleet.</footer></main><script>(()=>{const REFRESH_SECONDS=)HTML" STR(WEB_REFRESH_SECONDS)R"HTML(;const els={viewerName:document.getElementById('viewerName'),viewerUid:document.getElementById('viewerUid'),sourceServer:document.getElementById('sourceServer'),sourceUid:document.getElementById('sourceUid'),summaryGenerated:document.getElementById('summaryGenerated'),lastFetch:document.getElementById('lastFetch'),nextFetch:document.getElementById('nextFetch'),refreshHint:document.getElementById('refreshHint'),sensorBody:document.getElementById('sensorBody')};const state={sensors:[]};function applySensorData(d){els.viewerName.textContent=d.vn||'Tank Alarm Viewer';els.viewerUid.textContent=d.vi||'--';els.sourceServer.textContent=d.sn||'Server';els.sourceUid.textContent=d.si||'--';els.summaryGenerated.textContent=formatEpoch(d.ge);els.lastFetch.textContent=formatEpoch(d.lf);els.nextFetch.textContent=formatEpoch(d.nf);els.refreshHint.textContent=describeCadence(d.rs,d.bh);state.sensors=d.sensors||[];renderSensorRows()}async function fetchSensors(){try{const res=await fetch('/api/sensors');if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();applySensorData(data)}catch(err){console.error('Viewer refresh failed',err)}}function renderSensorRows(){const tbody=els.sensorBody;tbody.innerHTML='';const rows=state.sensors;if(!rows.length){const tr=document.createElement('tr');tr.innerHTML='<td colspan="5">No sensor data available</td>';tbody.appendChild(tr);return}const now=Date.now();const staleThresholdMs=93600000;rows.forEach(t=>{const tr=document.createElement('tr');const alarm=t.a;if(alarm)tr.classList.add('alarm');const lastUpdate=t.u;const isStale=lastUpdate&&((now-(lastUpdate*1000))>staleThresholdMs);const staleWarning=isStale?' ⚠️':'';tr.innerHTML=`<td>${escapeHtml(t.s,'--')}</td><td>${escapeHtml(t.n||'Tank')}${t.un?' #'+t.un:''}</td><td>${formatFeetInches(t.l)}</td><td>${format24hChange(t)}</td><td>${formatEpoch(lastUpdate)}${staleWarning}</td>`;if(isStale){tr.style.opacity='0.6';tr.title='Data is over 26 hours old'}tbody.appendChild(tr)})}function statusBadge(t){const alarm=t.a;if(!alarm){return'<span class="status-pill ok">Normal</span>'}const label=escapeHtml(t.at||'Alarm','Alarm');return`<span class="status-pill alarm">${label}</span>`}function formatFeetInches(inches){if(typeof inches!=='number'||!isFinite(inches)||inches<0)return'--';const feet=Math.floor(inches/12);const remainingInches=inches-(feet*12);return`${feet}' ${remainingInches.toFixed(1)}"`}function format24hChange(t){const d=t.d;if(d===undefined||d===null||typeof d!=='number'||!isFinite(d))return'--';const sign=d>0?'+':'';return`${sign}${d.toFixed(1)}"`}function formatEpoch(epoch){if(!epoch)return'--';const date=new Date(epoch*1000);if(isNaN(date.getTime()))return'--';return date.toLocaleString()}function describeCadence(seconds,baseHour){const hours=seconds?(seconds/3600).toFixed(1).replace(/\.0$/,''):'6';const hourLabel=(typeof baseHour==='number')?baseHour:6;return`${hours}h cadence · starts ${hourLabel}:00`}function escapeHtml(value,fallback=''){if(value===undefined||value===null||value==='')return fallback;const entityMap={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};return String(value).replace(/[&<>"']/g,c=>entityMap[c]||c)}fetchSensors();setInterval(()=>fetchSensors(),REFRESH_SECONDS*1000)})();</script></body></html>)HTML";
 
 static void initializeNotecard();
 static void initializeEthernet();
@@ -172,7 +172,7 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
 static void respondJson(EthernetClient &client, const String &body);
 static void respondStatus(EthernetClient &client, int status, const char *message);
 static void sendDashboard(EthernetClient &client);
-static void sendTankJson(EthernetClient &client);
+static void sendSensorJson(EthernetClient &client);
 static void ensureTimeSync();
 static double currentEpoch();
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
@@ -528,8 +528,8 @@ static void handleWebRequests() {
 
   if (method == "GET" && path == "/") {
     sendDashboard(client);
-  } else if (method == "GET" && path == "/api/tanks") {
-    sendTankJson(client);
+  } else if (method == "GET" && path == "/api/sensors") {
+    sendSensorJson(client);
   } else {
     respondStatus(client, 404, "Not Found");
   }
@@ -689,7 +689,7 @@ static void sendDashboard(EthernetClient &client) {
   }
 }
 
-static void sendTankJson(EthernetClient &client) {
+static void sendSensorJson(EthernetClient &client) {
   std::unique_ptr<JsonDocument> docPtr(new (std::nothrow) JsonDocument());
   if (!docPtr) {
     respondStatus(client, 500, "Out of Memory");
@@ -707,37 +707,37 @@ static void sendTankJson(EthernetClient &client) {
   doc["rs"] = gSourceRefreshSeconds;
   doc["bh"] = gSourceBaseHour;
   doc["sf"] = VIEWER_SUMMARY_FILE;
-  doc["rc"] = gTankRecordCount;
+  doc["rc"] = gSensorRecordCount;
   doc["ls"] = gLastSyncedEpoch;
 
-  JsonArray arr = doc["tanks"].to<JsonArray>();
-  for (uint8_t i = 0; i < gTankRecordCount; ++i) {
+  JsonArray arr = doc["sensors"].to<JsonArray>();
+  for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
     JsonObject obj = arr.add<JsonObject>();
-    obj["c"] = gTankRecords[i].clientUid;
-    obj["s"] = gTankRecords[i].site;
-    obj["n"] = gTankRecords[i].label;
-    obj["k"] = gTankRecords[i].sensorIndex;
-    if (gTankRecords[i].userNumber > 0) {
-      obj["un"] = gTankRecords[i].userNumber;
+    obj["c"] = gSensorRecords[i].clientUid;
+    obj["s"] = gSensorRecords[i].site;
+    obj["n"] = gSensorRecords[i].label;
+    obj["k"] = gSensorRecords[i].sensorIndex;
+    if (gSensorRecords[i].userNumber > 0) {
+      obj["un"] = gSensorRecords[i].userNumber;
     }
-    obj["l"] = gTankRecords[i].levelInches;
-    obj["a"] = gTankRecords[i].alarmActive;
-    obj["at"] = gTankRecords[i].alarmType;
-    obj["u"] = gTankRecords[i].lastUpdateEpoch;
-    if (gTankRecords[i].vinVoltage > 0.0f) {
-      obj["v"] = gTankRecords[i].vinVoltage;
+    obj["l"] = gSensorRecords[i].levelInches;
+    obj["a"] = gSensorRecords[i].alarmActive;
+    obj["at"] = gSensorRecords[i].alarmType;
+    obj["u"] = gSensorRecords[i].lastUpdateEpoch;
+    if (gSensorRecords[i].vinVoltage > 0.0f) {
+      obj["v"] = gSensorRecords[i].vinVoltage;
     }
-    if (gTankRecords[i].objectType[0] != '\0') {
-      obj["ot"] = gTankRecords[i].objectType;
+    if (gSensorRecords[i].objectType[0] != '\0') {
+      obj["ot"] = gSensorRecords[i].objectType;
     }
-    if (gTankRecords[i].sensorType[0] != '\0') {
-      obj["st"] = gTankRecords[i].sensorType;
+    if (gSensorRecords[i].sensorType[0] != '\0') {
+      obj["st"] = gSensorRecords[i].sensorType;
     }
-    if (gTankRecords[i].measurementUnit[0] != '\0') {
-      obj["mu"] = gTankRecords[i].measurementUnit;
+    if (gSensorRecords[i].measurementUnit[0] != '\0') {
+      obj["mu"] = gSensorRecords[i].measurementUnit;
     }
-    if (gTankRecords[i].hasChange24h) {
-      obj["d"] = gTankRecords[i].change24h;
+    if (gSensorRecords[i].hasChange24h) {
+      obj["d"] = gSensorRecords[i].change24h;
     }
   }
 
@@ -849,19 +849,19 @@ static void handleViewerSummary(JsonDocument &doc, double epoch) {
     gLastSummaryGeneratedEpoch = (epoch > 0.0) ? epoch : currentEpoch();
   }
 
-  gTankRecordCount = 0;
-  JsonArray arr = doc["tanks"].as<JsonArray>();
+  gSensorRecordCount = 0;
+  JsonArray arr = doc["sensors"].as<JsonArray>();
   if (arr) {
     for (JsonVariantConst item : arr) {
-      if (gTankRecordCount >= MAX_TANK_RECORDS) {
+      if (gSensorRecordCount >= MAX_SENSOR_RECORDS) {
         break;
       }
-      TankRecord &rec = gTankRecords[gTankRecordCount++];
-      memset(&rec, 0, sizeof(TankRecord));
+      SensorRecord &rec = gSensorRecords[gSensorRecordCount++];
+      memset(&rec, 0, sizeof(SensorRecord));
       strlcpy(rec.clientUid, item["c"] | "", sizeof(rec.clientUid));
       strlcpy(rec.site, item["s"] | "", sizeof(rec.site));
       strlcpy(rec.label, item["n"] | "Tank", sizeof(rec.label));
-      rec.sensorIndex = item["k"].is<uint8_t>() ? item["k"].as<uint8_t>() : gTankRecordCount;
+      rec.sensorIndex = item["k"].is<uint8_t>() ? item["k"].as<uint8_t>() : gSensorRecordCount;
       rec.userNumber = item["un"].is<uint8_t>() ? item["un"].as<uint8_t>() : 0;
       rec.levelInches = item["l"].as<float>();
       rec.alarmActive = item["a"].as<bool>();
@@ -880,8 +880,8 @@ static void handleViewerSummary(JsonDocument &doc, double epoch) {
 
   gLastSummaryFetchEpoch = currentEpoch();
   Serial.print(F("Viewer summary applied ("));
-  Serial.print(gTankRecordCount);
-  Serial.println(F(" tanks)"));
+  Serial.print(gSensorRecordCount);
+  Serial.println(F(" sensors)"));
 }
 
 // ========================== DFU Functions ==========================
