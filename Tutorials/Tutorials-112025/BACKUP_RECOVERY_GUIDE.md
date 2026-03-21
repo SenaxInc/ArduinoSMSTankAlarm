@@ -166,8 +166,8 @@ Client Fleet: tankalarm-clients
 
 Contact Information
 ==================
-Primary SMS: +1234567890
-Secondary SMS: +1234567891
+Primary SMS: +15555555555
+Secondary SMS: +15555555555
 Daily Email: alerts@company.com
 ```
 

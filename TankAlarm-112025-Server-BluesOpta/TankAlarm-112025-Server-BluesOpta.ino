@@ -2984,8 +2984,8 @@ static void createDefaultConfig(ServerConfig &cfg) {
   strlcpy(cfg.serverFleet, "tankalarm-server", sizeof(cfg.serverFleet));
   strlcpy(cfg.clientFleet, "tankalarm-clients", sizeof(cfg.clientFleet));
   strlcpy(cfg.productUid, DEFAULT_SERVER_PRODUCT_UID, sizeof(cfg.productUid));  // From ServerConfig.h or Server Settings web page
-  strlcpy(cfg.smsPrimary, "+12223334444", sizeof(cfg.smsPrimary));
-  strlcpy(cfg.smsSecondary, "+15556667777", sizeof(cfg.smsSecondary));
+  strlcpy(cfg.smsPrimary, "+15555555555", sizeof(cfg.smsPrimary));
+  strlcpy(cfg.smsSecondary, "+15555555555", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, "reports@example.com", sizeof(cfg.dailyEmail));
   strlcpy(cfg.configPin, DEFAULT_ADMIN_PIN, sizeof(cfg.configPin));
   cfg.dailyHour = DAILY_EMAIL_HOUR_DEFAULT;
@@ -3067,8 +3067,8 @@ static bool loadConfig(ServerConfig &cfg) {
   strlcpy(cfg.serverFleet, doc["serverFleet"].as<const char *>() ? doc["serverFleet"].as<const char *>() : "tankalarm-server", sizeof(cfg.serverFleet));
   strlcpy(cfg.clientFleet, doc["clientFleet"].as<const char *>() ? doc["clientFleet"].as<const char *>() : "tankalarm-clients", sizeof(cfg.clientFleet));
   strlcpy(cfg.productUid, doc["productUid"].as<const char *>() ? doc["productUid"].as<const char *>() : "", sizeof(cfg.productUid));
-  strlcpy(cfg.smsPrimary, doc["smsPrimary"].as<const char *>() ? doc["smsPrimary"].as<const char *>() : "+12223334444", sizeof(cfg.smsPrimary));
-  strlcpy(cfg.smsSecondary, doc["smsSecondary"].as<const char *>() ? doc["smsSecondary"].as<const char *>() : "+15556667777", sizeof(cfg.smsSecondary));
+  strlcpy(cfg.smsPrimary, doc["smsPrimary"].as<const char *>() ? doc["smsPrimary"].as<const char *>() : "+15555555555", sizeof(cfg.smsPrimary));
+  strlcpy(cfg.smsSecondary, doc["smsSecondary"].as<const char *>() ? doc["smsSecondary"].as<const char *>() : "+15555555555", sizeof(cfg.smsSecondary));
   strlcpy(cfg.dailyEmail, doc["dailyEmail"].as<const char *>() ? doc["dailyEmail"].as<const char *>() : "reports@example.com", sizeof(cfg.dailyEmail));
   bool pinFromFile = false;
   const char *filePin = doc["configPin"].as<const char *>();

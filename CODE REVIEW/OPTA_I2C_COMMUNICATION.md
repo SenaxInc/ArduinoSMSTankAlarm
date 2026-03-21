@@ -411,7 +411,7 @@ Returns firmware version, DeviceUID, SKU, board version. Also returns the `"devi
 {"req": "hub.get"}
 ```
 
-Returns the `"device"` field containing the DeviceUID (e.g., `"dev:860322068056529"`).
+Returns the `"device"` field containing the DeviceUID (e.g., `"dev:XXXXXXXXXXXX"`).
 
 ---
 

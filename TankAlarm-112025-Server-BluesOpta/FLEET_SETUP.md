@@ -85,8 +85,8 @@ The server configuration file (`/server_config.json` on LittleFS) includes:
 {
   "serverName": "Tank Alarm Server",
   "clientFleet": "tankalarm-clients",
-  "smsPrimary": "+12223334444",
-  "smsSecondary": "+15556667777",
+  "smsPrimary": "+15555555555",
+  "smsSecondary": "+15555555555",
   "dailyEmail": "reports@example.com",
   "dailyHour": 6,
   "dailyMinute": 0,

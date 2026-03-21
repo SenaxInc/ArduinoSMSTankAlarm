@@ -13,7 +13,7 @@
 
 #### Client Configuration (`tank_config.txt`)
 - [ ] HOLOGRAM_DEVICE_KEY set to actual device key (not "your_device_key_here")
-- [ ] ALARM_PHONE_PRIMARY set to valid phone number (not "+12223334444")
+- [ ] ALARM_PHONE_PRIMARY set to valid phone number (not "+15555555555")
 - [ ] ALARM_PHONE_SECONDARY configured (optional but recommended)
 - [ ] DAILY_REPORT_PHONE configured
 - [ ] SITE_LOCATION_NAME set to meaningful site name

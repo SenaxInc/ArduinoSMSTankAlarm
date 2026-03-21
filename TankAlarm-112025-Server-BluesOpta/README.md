@@ -140,8 +140,8 @@ Stored in `/server_config.json` on LittleFS. Default values:
 {
   "serverName": "Tank Alarm Server",
   "clientFleet": "tankalarm-clients",
-  "smsPrimary": "+12223334444",
-  "smsSecondary": "+15556667777",
+  "smsPrimary": "+15555555555",
+  "smsSecondary": "+15555555555",
   "smsTertiary": "",
   "emailPrimary": "alerts@example.com",
   "emailSecondary": "",

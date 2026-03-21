@@ -921,7 +921,7 @@ Serial monitor shows:
 ```json
 {
   "smsEnabled": true,
-  "smsNumber": "+1234567890"  ← Valid number?
+  "smsNumber": "+15555555555"  ← Valid number?
 }
 ```
 

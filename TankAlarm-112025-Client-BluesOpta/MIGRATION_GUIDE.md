@@ -284,7 +284,7 @@ Once verified working:
 ```json
 {
   "serverName": "Tank Alarm Server",
-  "smsPrimary": "+12223334444",
+  "smsPrimary": "+15555555555",
   ...
 }
 ```
@@ -294,7 +294,7 @@ Once verified working:
 {
   "serverName": "Tank Alarm Server",
   "clientFleet": "tankalarm-clients",
-  "smsPrimary": "+12223334444",
+  "smsPrimary": "+15555555555",
   ...
 }
 ```

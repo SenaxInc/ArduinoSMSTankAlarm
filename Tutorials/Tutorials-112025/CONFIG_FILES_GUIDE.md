@@ -190,8 +190,44 @@ TankAlarm-112025-Viewer-BluesOpta/
 |---|---|---|
 | Fresh deployment, want it working on first boot | **Yes** | — |
 | Server already running, pushing config to clients | **No** | Use Config Generator |
-| Production fleet, credentials in CI/CD | **Yes** | Build-time injection |
+| Production fleet, credentials in CI/CD | **Yes** | Build-time injection via GitHub secret |
 | Just testing locally | **No** | Set via web dashboard |
+
+---
+
+## CI/CD: Build-Time Injection via GitHub Secret (Optional)
+
+If you use the **GitHub Actions firmware build workflow** (`.github/workflows/build-firmware-112025.yml`), you can inject the Product UID at build time using a GitHub repository secret. This is **optional** — you only need this if you want CI-built `.bin` files to have the Product UID baked in. If you build locally with your own Config.h files, or configure devices at runtime through the web dashboard, you can skip this section entirely.
+
+### Step 1: Add the Secret
+
+1. Go to your GitHub repository on github.com
+2. Click **Settings** → **Secrets and variables** → **Actions**
+3. Click **New repository secret**
+4. Set the name to: `BLUES_PRODUCT_UID`
+5. Set the value to your Product UID (e.g. `com.your-company.your-product:your-project`)
+6. Click **Add secret**
+
+### Step 2: That's It
+
+The build workflow already has a step that generates all three Config.h files from this secret before compiling:
+
+- `ClientConfig.h` → `DEFAULT_PRODUCT_UID`
+- `ServerConfig.h` → `DEFAULT_SERVER_PRODUCT_UID`
+- `ViewerConfig.h` → `DEFAULT_VIEWER_PRODUCT_UID`
+
+The generated files are never committed — they only exist during the build.
+
+### What Happens Without the Secret?
+
+If you don't add the `BLUES_PRODUCT_UID` secret, the workflow still runs and compiles successfully. The Config.h files are generated with an empty Product UID, which means:
+
+- Firmware `.bin` files will work but devices start with no Product UID configured
+- You'll need to set the Product UID at runtime (server web dashboard, or push config to clients)
+
+This is the same behavior as building locally without a Config.h file.
+
+---
 
 ### What If I Don't Create One?
 

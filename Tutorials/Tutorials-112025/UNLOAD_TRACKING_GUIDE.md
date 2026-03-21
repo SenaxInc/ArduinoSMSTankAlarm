@@ -619,9 +619,9 @@ Solution:
 **Server Settings:**
 ```json
 {
-  "smsPrimary": "+1234567890",
-  "smsSecondary": "+1234567891",
-  "smsTertiary": "+1234567892"
+  "smsPrimary": "+15555555555",
+  "smsSecondary": "+15555555555",
+  "smsTertiary": "+15555555555"
 }
 ```
 
@@ -643,10 +643,10 @@ Solution:
 ```
 Serial Monitor Output:
   "Unload detected for Tank A"
-  "Sending SMS to +1234567890: Fail - no SMS credits"
+  "Sending SMS to +15555555555: Fail - no SMS credits"
   
 or:
-  "SMS sent successfully to +1234567890"
+  "SMS sent successfully to +15555555555"
   
 or:
   "Email queued for next daily report"

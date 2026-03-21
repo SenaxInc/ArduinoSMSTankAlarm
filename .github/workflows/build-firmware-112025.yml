@@ -40,6 +40,31 @@ jobs:
           arduino-cli lib install "ArduinoRS485"
           arduino-cli lib install "ArduinoModbus"
 
+      - name: Generate config headers from secret
+        run: |
+          cat > TankAlarm-112025-Client-BluesOpta/ClientConfig.h << EOF
+          #ifndef CLIENT_CONFIG_H
+          #define CLIENT_CONFIG_H
+          #define DEFAULT_PRODUCT_UID "${PRODUCT_UID}"
+          #endif // CLIENT_CONFIG_H
+          EOF
+
+          cat > TankAlarm-112025-Server-BluesOpta/ServerConfig.h << EOF
+          #ifndef SERVER_CONFIG_H
+          #define SERVER_CONFIG_H
+          #define DEFAULT_SERVER_PRODUCT_UID "${PRODUCT_UID}"
+          #endif // SERVER_CONFIG_H
+          EOF
+
+          cat > TankAlarm-112025-Viewer-BluesOpta/ViewerConfig.h << EOF
+          #ifndef VIEWER_CONFIG_H
+          #define VIEWER_CONFIG_H
+          #define DEFAULT_VIEWER_PRODUCT_UID "${PRODUCT_UID}"
+          #endif // VIEWER_CONFIG_H
+          EOF
+        env:
+          PRODUCT_UID: ${{ secrets.BLUES_PRODUCT_UID }}
+
       - name: Build client firmware (.bin)
         run: |
           arduino-cli compile --fqbn arduino:mbed_opta:opta \
