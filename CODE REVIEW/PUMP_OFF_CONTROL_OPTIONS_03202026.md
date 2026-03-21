@@ -260,6 +260,86 @@ RPM monitoring (Option F) plus vibration analysis (Option B). Same dual-factor a
 
 **POC Accuracy:** 85-92%
 
+### Option I: Altronic CD200 Ignition System (RPM via Modbus RTU) ⭐
+
+**How it works:** The [Altronic CD200](https://www.altronic-llc.com/product/ignition-systems/cd200/) is a high-energy, digital, capacitor-discharge ignition system designed for 1- to 16-cylinder industrial gas engines. It replaces the standard Starfire CDI ignition on the Arrow C-Series. Critically, it includes **standard Modbus-RTU communications** — meaning the TankAlarm Client Opta can read RPM, diagnostics, and timing data directly from the ignition system over the existing RS-485 bus, with no separate proximity sensor or RPM transmitter needed.
+
+Arrow explicitly lists Altronic ignition as an option on the C-Series:
+> *"Also available as options are high-tension or solid-state magnetos, or Altronic ignition systems."*
+
+**Hardware:**
+| Component | Example | Cost | Link |
+|---|---|---|---|
+| Altronic CD200 Ignition (unshielded 70 Series) | CD200-70 | Call for pricing | [Altronic CD200](https://www.altronic-llc.com/product/ignition-systems/cd200/) |
+| Altronic CD200 Ignition (shielded 80/90 Series) | CD200-80/90 | Call for pricing | [Altronic CD200](https://www.altronic-llc.com/product/ignition-systems/cd200/) |
+| Magnetic Pickup (included or paired) | Altronic MPU | Included/bundled | [Altronic](https://www.altronic-llc.com/) |
+
+**Key Specs:**
+| Spec | Detail |
+|---|---|
+| **Cylinder Count** | 1 to 16 (Arrow C-Series = single cylinder ✅) |
+| **Fuel Type** | Natural gas industrial engines ✅ |
+| **Power** | DC powered (12V battery system ✅) |
+| **Communications** | **Modbus-RTU (standard)** — RS-485, same bus as SunSaver solar charger |
+| **Timing Reference** | Magnetic pickup on crankshaft/flywheel disc |
+| **Features** | Adjustable output energy, automatic timing curves (RPM or analog input), overspeed setpoint, primary/secondary discharge diagnostics, LED diagnostics, Windows configuration tool |
+| **Series 90** | Also supports Hall-effect pickup with magnet disc |
+
+**Pros:**
+- **Free RPM data over Modbus** — no separate proximity sensor or RPM transmitter needed; reads RPM registers from CD200 on the same RS-485 bus as SunSaver (different slave ID)
+- **Arrow-compatible** — Altronic ignition is explicitly listed as an option on Arrow C-Series engines
+- Replaces maintenance-intensive Starfire CDI with higher-energy capacitor-discharge system
+- **Built-in overspeed setpoint** — ignition-level overspeed protection independent of Opta firmware (additional safety layer for PID throttle control)
+- **Automatic timing adjustment curves** — can optimize ignition timing based on RPM or analog input, improving fuel efficiency during slow-pump POC mode
+- **Analog control input** — could be driven by A0602 DAC (0-10V) to influence timing advance during different POC operating modes
+- Extends spark plug life 3-5x vs. inductive ignition
+- No moving parts (replaces mechanical distributor systems)
+- Field-serviceable: Windows config tool + flashing LED diagnostics
+- Modbus diagnostics enable remote ignition health monitoring via TankAlarm telemetry
+
+**Cons:**
+- More expensive than a simple proximity sensor ($15-40) — this is a full ignition system replacement
+- Modbus register map not on public product page — need to request CD200 Modbus Protocol Document from Altronic to confirm register addresses, baud rate, and slave ID conventions
+- Physical installation requires replacing the existing Starfire ignition and fabricating/installing a timing disc on the crankshaft or flywheel
+- RS-485 bus shared with SunSaver solar charger — need distinct slave IDs and potentially managed polling intervals
+
+**Integration with existing firmware:**
+```cpp
+// Read RPM from CD200 via Modbus RTU — same bus as SunSaver, different slave ID
+// (Register address TBD — request CD200 Modbus Protocol Document from Altronic)
+#define CD200_SLAVE_ID        2    // SunSaver is slave ID 1
+#define CD200_RPM_REGISTER    0x00 // TBD from Altronic Modbus map
+
+float readCd200Rpm(uint8_t slaveId) {
+  if (!ModbusRTUClient.requestFrom(slaveId, HOLDING_REGISTERS, CD200_RPM_REGISTER, 1)) {
+    return -1.0f;  // Read failed
+  }
+  uint16_t raw = ModbusRTUClient.read();
+  return (float)raw;  // RPM value
+}
+```
+
+**Connection diagram:**
+```
+Arrow C-Series Engine
+  └─ Flywheel/Crankshaft ─── Timing Disc + Magnetic Pickup ─── CD200 Ignition
+                                                                 │
+                                                          RS-485 A/B wires
+                                                                 │
+                                                        ┌────────┴────────┐
+                                                        │  RS-485 Bus     │
+                                                        │  Slave 1: SunSaver
+                                                        │  Slave 2: CD200  │
+                                                        └────────┬────────┘
+                                                                 │
+                                                          Client Opta
+                                                          (Modbus Master)
+```
+
+**Why this is compelling:** If a customer is already planning to upgrade their Arrow C-Series ignition to an Altronic system (common in the field for reliability), the CD200's Modbus interface provides RPM telemetry as a free bonus — the RS-485 wiring and Modbus polling infrastructure already exists in TankAlarm firmware for the SunSaver solar charger. This makes the GOOD tier for gas engine POC essentially **$0 incremental cost** on top of the ignition upgrade.
+
+**POC Accuracy:** 75-85% (RPM threshold from Modbus data, same as Option F but with cleaner digital RPM vs. pulse counting)
+
 ---
 
 ## 5. Throttle Control — PID Speed Modulation
@@ -394,6 +474,38 @@ Designed for fuel-injected engines 3,500-10,000 HP (Cooper Bessemer, Clark, Whit
 [Product Page](https://www.altronic-llc.com/product/controls/epc-50-50e/)
 
 Not speed control, but relevant for emissions compliance on small carbureted gas engines. Uses stepper motor valve + O2 sensor for closed-loop A/F ratio. 24VDC power (12-30V). Low horsepower, carbureted — matches Arrow C-Series exactly.
+
+#### CD200 — Capacitor-Discharge Ignition with Modbus RTU ⭐
+
+[Product Page](https://www.altronic-llc.com/product/ignition-systems/cd200/)
+
+> *"The Altronic CD200 Series are high energy, digital, capacitor-discharge ignition systems designed for use on 1- to 16-cylinder industrial gas engines. Available in unshielded (70 Series) and shielded (80, 90 Series), these DC-powered systems eliminate maintenance-intensive mechanical distributor ignition systems."*
+
+| Spec | Detail |
+|---|---|
+| **Cylinders** | 1 to 16 (single-cylinder Arrow C-Series ✅) |
+| **Fuel** | Natural gas industrial engines ✅ |
+| **Power** | DC (12V ✅) |
+| **Comms** | **Modbus-RTU (standard)** — RS-485 |
+| **Timing** | Magnetic pickup on crankshaft/flywheel timing disc |
+| **Features** | Adjustable output energy, automatic timing curves (RPM or analog input), overspeed setpoint, primary/secondary diagnostics, LED diagnostics, Windows config tool |
+| **Series 90** | Hall-effect pickup support (magnet disc) — replacement for Altronic DISN series |
+
+**Pros:**
+- **Provides RPM data over Modbus-RTU** — reads on the same RS-485 bus as the SunSaver, eliminating the need for a separate proximity sensor or RPM transmitter
+- Direct replacement for Arrow C-Series Starfire CDI ignition (Altronic is an Arrow-listed option)
+- Built-in overspeed setpoint adds an ignition-level safety layer for PID throttle control
+- Automatic timing advance curves can optimize efficiency during slow-pump POC mode
+- Analog control input could accept A0602 DAC 0-10V signal to adjust timing per POC operating mode
+- Extends spark plug life 3-5x
+- Remote diagnostics via Modbus — ignition health data flows through TankAlarm telemetry
+
+**Cons:**
+- Full ignition system replacement, not just a sensor — higher cost and installation effort
+- Modbus register map must be requested from Altronic (not on public product page)
+- RS-485 bus shared with SunSaver — needs distinct slave IDs and managed polling
+
+**Integration:** `Client Opta (Modbus master) → RS-485 → CD200 (slave 2) → RPM register read`
 
 #### DE-1550 — Small Engine/Compressor Monitoring System
 
@@ -1349,6 +1461,7 @@ void pollPocOpta() {
 | Tier | Components | Est. Cost | Notes |
 |---|---|---|---|
 | **GOOD** | Inductive proximity sensor + bracket | $15-40 | No new Opta; uses existing `SENSOR_PULSE` |
+| **GOOD** (alt) | Altronic CD200 ignition upgrade (RPM via Modbus) | $0 incremental* | *If already upgrading ignition; RPM data is free over RS-485 |
 | **BETTER** | Proximity + ADXL355 + wiring | $40-75 | Same Opta; stop/start cycling |
 | **BEST** | POC Opta ($151) + A0602 ($229) + proximity + ADXL355 + AGV5 or actuator ($200-500+) | $620-955+ | Separate firmware; PID throttle control |
 
@@ -1359,6 +1472,7 @@ void pollPocOpta() {
 | AGV5 Smart Gas Control Valve | 4-20mA proportional fuel valve | Call for pricing | [Altronic AGV5](https://www.altronic-llc.com/product/controls/agv5-smart-gas-control-valve/) |
 | ActuCOM R8 | Rotary throttle actuator/governor | Call for pricing | [Altronic ActuCOM R8](https://www.altronic-llc.com/product/controls/actucom-r8/) |
 | EPC-50/50e | A/F ratio controller (emissions) | Call for pricing | [Altronic EPC-50](https://www.altronic-llc.com/product/controls/epc-50-50e/) |
+| CD200 Ignition System | CD ignition + Modbus RPM telemetry | Call for pricing | [Altronic CD200](https://www.altronic-llc.com/product/ignition-systems/cd200/) |
 | Magnetic Pickup (MPU) | RPM sensing on flywheel | $30-60 | [Altronic Controls](https://www.altronic-llc.com/product-category/controls/) |
 
 > Contact Altronic: +1 (330) 545-9768 / info@altronic-llc.com
@@ -1410,7 +1524,9 @@ void pollPocOpta() {
 
 8. **Contact Altronic re: AGV5 sizing for Arrow C-Series** — confirm a model is available for 5-32 HP single-cylinder engines before committing to that actuator path. The ActuCOM R8 may be the better physical fit.
 
-9. **Production estimation from stroke counting** is a low-effort, high-value feature that falls out naturally from RPM monitoring — consider including this in v1.2.0 even without full POC detection.
+9. **Request the CD200 Modbus Protocol Document from Altronic** — this is needed to confirm register addresses for RPM, timing advance, and diagnostics. If the customer is already upgrading to Altronic ignition, the CD200 Modbus interface makes the GOOD tier for gas engine POC essentially free (RPM data over the existing RS-485 bus). Also confirm baud rate and slave ID defaults to verify coexistence with SunSaver on the same bus.
+
+10. **Production estimation from stroke counting** is a low-effort, high-value feature that falls out naturally from RPM monitoring — consider including this in v1.2.0 even without full POC detection.
 
 ### What NOT to Do
 
@@ -1420,4 +1536,4 @@ void pollPocOpta() {
 
 ---
 
-*Document prepared from analysis of TankAlarm firmware v1.1.9, Arduino Opta Lite hardware capabilities, A0602 expansion module (Arduino_Opta_Blueprint library), Arrow Engine C-Series specifications, and Altronic LLC product catalog.*
+*Document prepared from analysis of TankAlarm firmware v1.1.9, Arduino Opta Lite hardware capabilities, A0602 expansion module (Arduino_Opta_Blueprint library), Arrow Engine C-Series specifications, and Altronic LLC product catalog (controls + CD200 ignition system).*
