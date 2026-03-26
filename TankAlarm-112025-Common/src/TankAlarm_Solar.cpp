@@ -85,13 +85,13 @@ void SolarManager::setConfig(const SolarConfig& config) {
 
 bool SolarManager::poll(unsigned long nowMillis) {
   if (!_config.enabled || !_initialized) {
-    return false;
+    return false;  // Not active — no data
   }
   
   // Check if it's time to poll
   unsigned long intervalMs = (unsigned long)_config.pollIntervalSec * 1000UL;
   if (nowMillis - _lastPollMillis < intervalMs) {
-    return false;
+    return false;  // Not due yet — use isCommunicationOk() to distinguish from failure
   }
   
   _lastPollMillis = nowMillis;

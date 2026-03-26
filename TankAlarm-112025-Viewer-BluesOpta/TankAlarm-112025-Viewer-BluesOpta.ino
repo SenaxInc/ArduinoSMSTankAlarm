@@ -74,12 +74,14 @@
 #define WEB_REFRESH_MINUTES (WEB_REFRESH_SECONDS / 60)
 #endif
 
+// VIEWER_SUMMARY_INTERVAL_SECONDS and VIEWER_SUMMARY_BASE_HOUR are defined in TankAlarm_Common.h
+// Local aliases for backward compatibility (used in this file)
 #ifndef SUMMARY_FETCH_INTERVAL_SECONDS
-#define SUMMARY_FETCH_INTERVAL_SECONDS 21600UL
+#define SUMMARY_FETCH_INTERVAL_SECONDS VIEWER_SUMMARY_INTERVAL_SECONDS
 #endif
 
 #ifndef SUMMARY_FETCH_BASE_HOUR
-#define SUMMARY_FETCH_BASE_HOUR 6
+#define SUMMARY_FETCH_BASE_HOUR VIEWER_SUMMARY_BASE_HOUR
 #endif
 
 // Viewer is intended for GET-only use; cap request bodies to avoid memory exhaustion.
@@ -481,7 +483,7 @@ static void initializeEthernet() {
       Serial.print(F("/3 in "));
       Serial.print(retryDelay / 1000);
       Serial.println(F("s..."));
-      delay(retryDelay);
+      safeSleep(retryDelay);
       if (gConfig.useStaticIp) {
         status = Ethernet.begin(gConfig.macAddress, staticIp, staticDns, staticGateway, staticSubnet);
       } else {
@@ -770,7 +772,7 @@ static void fetchViewerSummary() {
       return;
     }
     JAddStringToObject(req, "file", VIEWER_SUMMARY_FILE);
-    JAddBoolToObject(req, "delete", true);
+    // Peek without deleting — delete after successful processing for crash safety
     J *rsp = notecard.requestAndResponse(req);
     if (!rsp) {
       gNotecardFailureCount++;
@@ -817,10 +819,29 @@ static void fetchViewerSummary() {
     }
 
     notecard.deleteResponse(rsp);
+
+    // Consume the note now that it has been processed
+    J *delReq = notecard.newRequest("note.get");
+    if (delReq) {
+      JAddStringToObject(delReq, "file", VIEWER_SUMMARY_FILE);
+      JAddBoolToObject(delReq, "delete", true);
+      J *delRsp = notecard.requestAndResponse(delReq);
+      if (delRsp) notecard.deleteResponse(delRsp);
+    }
   }
 }
 
 static void handleViewerSummary(JsonDocument &doc, double epoch) {
+  // Schema version check — warn if unexpected version
+  if (doc.containsKey("_sv")) {
+    uint8_t sv = doc["_sv"].as<uint8_t>();
+    if (sv != 1) {
+      Serial.print(F("WARNING: Viewer summary schema version "));
+      Serial.print(sv);
+      Serial.println(F(" (expected 1) — fields may be missing or changed"));
+    }
+  }
+
   const char *serverName = doc["sn"] | doc["serverName"] | "Tank Alarm Server";
   const char *serverUid = doc["si"] | doc["serverUid"] | "";
   strlcpy(gSourceServerName, serverName, sizeof(gSourceServerName));
@@ -834,12 +855,17 @@ static void handleViewerSummary(JsonDocument &doc, double epoch) {
   if (gSourceRefreshSeconds == 0) {
     gSourceRefreshSeconds = SUMMARY_FETCH_INTERVAL_SECONDS;
   }
+  // Clamp refresh interval to sane bounds (1 hour to 24 hours)
+  if (gSourceRefreshSeconds < 3600UL) gSourceRefreshSeconds = 3600UL;
+  if (gSourceRefreshSeconds > 86400UL) gSourceRefreshSeconds = 86400UL;
 
   if (doc.containsKey("bh")) {
     gSourceBaseHour = doc["bh"].as<uint8_t>();
   } else if (doc.containsKey("baseHour")) {
     gSourceBaseHour = doc["baseHour"].as<uint8_t>();
   }
+  // Clamp base hour to valid range (0–23)
+  if (gSourceBaseHour > 23) gSourceBaseHour = 6;
 
   if (doc.containsKey("ge")) {
     gLastSummaryGeneratedEpoch = doc["ge"].as<double>();
@@ -958,7 +984,7 @@ static void checkForFirmwareUpdate() {
 /**
  * @brief Enable DFU mode to trigger firmware update
  *
- * Sends dfu.mode request to the Notecard, transitioning it into download mode.
+ * Sends card.dfu request to the Notecard, transitioning it into download mode.
  * The Notecard will download the firmware from Notehub and then reset the host MCU.
  */
 static void enableDfuMode() {
@@ -970,12 +996,13 @@ static void enableDfuMode() {
   Serial.print(F("Enabling DFU mode for version: "));
   Serial.println(gDfuVersion);
 
-  J *req = notecard.newRequest("dfu.status");
+  J *req = notecard.newRequest("card.dfu");
   if (!req) {
     Serial.println(F("DFU request failed (allocation)"));
     return;
   }
 
+  JAddStringToObject(req, "name", "stm32");
   JAddBoolToObject(req, "on", true);
   J *rsp = notecard.requestAndResponse(req);
 

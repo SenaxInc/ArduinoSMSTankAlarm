@@ -215,6 +215,15 @@
 #define VIEWER_SUMMARY_INBOX_FILE "viewer_summary.qi"   // Viewer receives summary
 #endif
 
+// Viewer summary cadence (shared between Server and Viewer)
+#ifndef VIEWER_SUMMARY_INTERVAL_SECONDS
+#define VIEWER_SUMMARY_INTERVAL_SECONDS 21600UL  // 6 hours
+#endif
+
+#ifndef VIEWER_SUMMARY_BASE_HOUR
+#define VIEWER_SUMMARY_BASE_HOUR 6  // Start at 6 AM UTC
+#endif
+
 // --- Health telemetry ---
 #ifndef HEALTH_OUTBOX_FILE
 #define HEALTH_OUTBOX_FILE "health.qo"          // Client sends periodic health status

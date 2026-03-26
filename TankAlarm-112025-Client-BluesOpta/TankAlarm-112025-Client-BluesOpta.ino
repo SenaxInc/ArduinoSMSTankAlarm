@@ -561,6 +561,7 @@ struct MonitorRuntime {
   uint8_t consecutiveFailures;
   uint8_t stuckReadingCount;
   bool sensorFailed;
+  uint8_t recoveryCount;         // Consecutive good readings after failure (debounce)
   // Rate limiting
   unsigned long alarmTimestamps[MAX_ALARMS_PER_HOUR];
   uint8_t alarmCount;
@@ -1302,6 +1303,7 @@ void setup() {
     gMonitorState[i].consecutiveFailures = 0;
     gMonitorState[i].stuckReadingCount = 0;
     gMonitorState[i].sensorFailed = false;
+    gMonitorState[i].recoveryCount = 0;
     gMonitorState[i].alarmCount = 0;
     gMonitorState[i].lastHighAlarmMillis = 0;
     gMonitorState[i].lastLowAlarmMillis = 0;
@@ -2020,7 +2022,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.monitors[0].analogVoltageMax = 10.0f; // Default: 10V (for 0-10V sensors)
   strlcpy(cfg.monitors[0].measurementUnit, "inches", sizeof(cfg.monitors[0].measurementUnit)); // Default: inches
   cfg.monitors[0].expectedPulseRate = 0.0f; // Default: not configured (0 = no baseline)
-  cfg.monitors[0].stuckDetectionEnabled = true; // Default: detect stuck sensors
+  cfg.monitors[0].stuckDetectionEnabled = false; // Default: off (opt-in via config)
   // Tank unload tracking defaults (disabled)
   cfg.monitors[0].trackUnloads = false;     // Default: not a fill-and-empty tank
   cfg.monitors[0].unloadEmptyHeight = UNLOAD_DEFAULT_EMPTY_HEIGHT; // Default empty reading
@@ -3375,7 +3377,7 @@ static void pollForConfigUpdates() {
   }
 
   JAddStringToObject(req, "file", CONFIG_INBOX_FILE);
-  JAddBoolToObject(req, "delete", true);
+  // Peek without deleting — delete after successful processing for crash safety
 
   J *rsp = notecard.requestAndResponse(req);
   if (!rsp) {
@@ -3412,6 +3414,14 @@ static void pollForConfigUpdates() {
         Serial.println(F("OOM processing config update"));
       }
     }
+    // Consume the note now that it has been processed (or attempted)
+    J *delReq = notecard.newRequest("note.get");
+    if (delReq) {
+      JAddStringToObject(delReq, "file", CONFIG_INBOX_FILE);
+      JAddBoolToObject(delReq, "delete", true);
+      J *delRsp = notecard.requestAndResponse(delReq);
+      if (delRsp) notecard.deleteResponse(delRsp);
+    }
   }
 
   notecard.deleteResponse(rsp);
@@ -3442,14 +3452,16 @@ static void reinitializeHardware() {
     if (gMonitorState[i].sensorFailed) {
       Serial.print(F("Sending sensor-recovered for sensor "));
       Serial.println(cfg.name);
-      JsonDocument recovDoc;
-      recovDoc["c"] = gDeviceUID;
-      recovDoc["s"] = gConfig.siteName;
-      recovDoc["k"] = cfg.sensorIndex;
-      recovDoc["y"] = "sensor-recovered";
-      recovDoc["rd"] = 0;
-      recovDoc["t"] = currentEpoch();
-      publishNote(ALARM_FILE, recovDoc, true);
+      if (checkAlarmRateLimit(i, "sensor-recovered")) {
+        JsonDocument recovDoc;
+        recovDoc["c"] = gDeviceUID;
+        recovDoc["s"] = gConfig.siteName;
+        recovDoc["k"] = cfg.sensorIndex;
+        recovDoc["y"] = "sensor-recovered";
+        recovDoc["rd"] = 0;
+        recovDoc["t"] = currentEpoch();
+        publishNote(ALARM_FILE, recovDoc, true);
+      }
     }
 
     // If alarm was latched, send clear to server before resetting
@@ -3634,6 +3646,23 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   if (!doc["powerEcoExitV"].isNull()) gConfig.powerEcoExitV = doc["powerEcoExitV"].as<float>();
   if (!doc["powerLowExitV"].isNull()) gConfig.powerLowExitV = doc["powerLowExitV"].as<float>();
   if (!doc["powerCriticalExitV"].isNull()) gConfig.powerCriticalExitV = doc["powerCriticalExitV"].as<float>();
+
+  // Validate hysteresis: exit voltage must be greater than enter voltage for each tier
+  if (gConfig.powerEcoExitV > 0.0f && gConfig.powerEcoEnterV > 0.0f &&
+      gConfig.powerEcoExitV <= gConfig.powerEcoEnterV) {
+    gConfig.powerEcoExitV = gConfig.powerEcoEnterV + 0.2f;
+    Serial.println(F("WARNING: powerEcoExitV <= powerEcoEnterV — corrected (+0.2V)"));
+  }
+  if (gConfig.powerLowExitV > 0.0f && gConfig.powerLowEnterV > 0.0f &&
+      gConfig.powerLowExitV <= gConfig.powerLowEnterV) {
+    gConfig.powerLowExitV = gConfig.powerLowEnterV + 0.2f;
+    Serial.println(F("WARNING: powerLowExitV <= powerLowEnterV — corrected (+0.2V)"));
+  }
+  if (gConfig.powerCriticalExitV > 0.0f && gConfig.powerCriticalEnterV > 0.0f &&
+      gConfig.powerCriticalExitV <= gConfig.powerCriticalEnterV) {
+    gConfig.powerCriticalExitV = gConfig.powerCriticalEnterV + 0.2f;
+    Serial.println(F("WARNING: powerCriticalExitV <= powerCriticalEnterV — corrected (+0.2V)"));
+  }
 
   // Handle remote-tunable health check interval
   if (!doc["healthCheckBaseIntervalMs"].isNull()) {
@@ -3914,18 +3943,25 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   // Reading is valid - reset failure counters
   state.consecutiveFailures = 0;
   if (state.sensorFailed) {
-    state.sensorFailed = false;
-    Serial.print(F("Sensor recovered for monitor "));
-    Serial.println(cfg.name);
-    // Send recovery notification (no rate limit on recovery)
-    JsonDocument doc;
-    doc["c"] = gDeviceUID;
-    doc["s"] = gConfig.siteName;
-    doc["k"] = cfg.sensorIndex;
-    doc["y"] = "sensor-recovered";
-    doc["rd"] = reading;
-    doc["t"] = currentEpoch();
-    publishNote(ALARM_FILE, doc, true);
+    state.recoveryCount++;
+    // Require 3 consecutive good readings before declaring recovered
+    if (state.recoveryCount >= 3) {
+      state.sensorFailed = false;
+      state.recoveryCount = 0;
+      Serial.print(F("Sensor recovered for monitor "));
+      Serial.println(cfg.name);
+      // Send recovery notification (rate-limited)
+      if (checkAlarmRateLimit(idx, "sensor-recovered")) {
+        JsonDocument doc;
+        doc["c"] = gDeviceUID;
+        doc["s"] = gConfig.siteName;
+        doc["k"] = cfg.sensorIndex;
+        doc["y"] = "sensor-recovered";
+        doc["rd"] = reading;
+        doc["t"] = currentEpoch();
+        publishNote(ALARM_FILE, doc, true);
+      }
+    }
   }
   state.lastValidReading = reading;
   state.hasLastValidReading = true;
