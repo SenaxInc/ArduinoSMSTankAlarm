@@ -339,6 +339,22 @@ enum PowerState : uint8_t {
 #define POWER_LOW_INBOUND_MULTIPLIER       12   // 12x slower
 #endif
 
+// Awaiting-config inbound poll interval (grid mode, software poll only)
+// Used when monitorCount == 0 — device is unconfigured and needs to receive
+// its first config from the server as quickly as possible.
+#ifndef AWAITING_CONFIG_INBOUND_INTERVAL_MS
+#define AWAITING_CONFIG_INBOUND_INTERVAL_MS  60000UL  // 1 minute
+#endif
+
+// Awaiting-config Notecard inbound interval (solar/periodic mode only)
+// Overrides SOLAR_INBOUND_INTERVAL_MINUTES when monitorCount == 0 so the
+// Notecard wakes to check for inbound notes more aggressively during provisioning.
+// Restores to SOLAR_INBOUND_INTERVAL_MINUTES automatically once config arrives
+// (configureNotecardHubMode() is called by applyConfigUpdate).
+#ifndef AWAITING_CONFIG_SOLAR_INBOUND_MINUTES
+#define AWAITING_CONFIG_SOLAR_INBOUND_MINUTES  5  // 5 minutes
+#endif
+
 // Sample interval multiplier
 #ifndef POWER_ECO_SAMPLE_MULTIPLIER
 #define POWER_ECO_SAMPLE_MULTIPLIER        2    // 2x slower
@@ -1595,17 +1611,26 @@ void loop() {
   }
 
   // ---- Power-state-aware polling intervals ----
-  // Determine base polling interval based on power source
-  unsigned long baseInboundInterval = gConfig.solarPowered ? 
-      (unsigned long)SOLAR_INBOUND_INTERVAL_MINUTES * 60000UL : 
-      600000UL; // 10 minutes for grid power
+  // Determine base polling interval based on power source.
+  // When unconfigured (monitorCount == 0) use an aggressive interval regardless
+  // of power source — the device is idle and needs config as fast as possible.
+  unsigned long baseInboundInterval;
+  if (gConfig.monitorCount == 0) {
+    baseInboundInterval = AWAITING_CONFIG_INBOUND_INTERVAL_MS;  // 1 min — awaiting first config
+  } else if (gConfig.solarPowered) {
+    baseInboundInterval = (unsigned long)SOLAR_INBOUND_INTERVAL_MINUTES * 60000UL;
+  } else {
+    baseInboundInterval = 600000UL; // 10 minutes for grid power
+  }
 
-  // Apply power-state multiplier
+  // Apply power-state multiplier (skipped when awaiting config)
   unsigned long inboundInterval = baseInboundInterval;
-  if (gPowerState == POWER_STATE_ECO) {
-    inboundInterval *= POWER_ECO_INBOUND_MULTIPLIER;
-  } else if (gPowerState == POWER_STATE_LOW_POWER) {
-    inboundInterval *= POWER_LOW_INBOUND_MULTIPLIER;
+  if (gConfig.monitorCount > 0) {
+    if (gPowerState == POWER_STATE_ECO) {
+      inboundInterval *= POWER_ECO_INBOUND_MULTIPLIER;
+    } else if (gPowerState == POWER_STATE_LOW_POWER) {
+      inboundInterval *= POWER_LOW_INBOUND_MULTIPLIER;
+    }
   }
   // In CRITICAL_HIBERNATE, skip all inbound polling
 
@@ -2985,10 +3010,17 @@ static void configureNotecardHubMode() {
     
     // Power saving configuration based on power source
     if (gConfig.solarPowered) {
-      // Solar powered: Use periodic mode with extended inbound check to save power
+      // Solar powered: Use periodic mode with extended inbound check to save power.
+      // When unconfigured, use a short inbound interval so the Notecard wakes
+      // frequently to receive the first config push from the server.
+      // configureNotecardHubMode() is called again by applyConfigUpdate(), which
+      // restores SOLAR_INBOUND_INTERVAL_MINUTES once monitors are configured.
+      int inboundMinutes = (gConfig.monitorCount == 0)
+          ? AWAITING_CONFIG_SOLAR_INBOUND_MINUTES
+          : SOLAR_INBOUND_INTERVAL_MINUTES;
       JAddStringToObject(req, "mode", "periodic");
       JAddIntToObject(req, "outbound", SOLAR_OUTBOUND_INTERVAL_MINUTES);  // Sync every 6 hours
-      JAddIntToObject(req, "inbound", SOLAR_INBOUND_INTERVAL_MINUTES);    // Check for inbound every hour (power saving)
+      JAddIntToObject(req, "inbound", inboundMinutes);
     } else {
       // Grid-tied: Use continuous mode for faster response times
       JAddStringToObject(req, "mode", "continuous");
