@@ -643,6 +643,7 @@ static uint32_t gStorageWriteErrorCount = 0;      // Cumulative flash write fail
 static Notecard notecard;
 static char gDeviceUID[48] = {0};
 static unsigned long gLastTelemetryMillis = 0;
+static unsigned long gLastHeartbeatMillis = 0;
 static unsigned long gLastConfigCheckMillis = 0;
 static unsigned long gLastTimeSyncMillis = 0;
 static double gLastSyncedEpoch = 0.0;
@@ -1584,9 +1585,10 @@ void loop() {
       gLastTelemetryMillis = now;
       if (gConfig.monitorCount > 0) {
         sampleMonitors();
-      } else {
-        // No monitors configured — periodically re-register so the server
-        // knows this device is still online and awaiting configuration.
+      } else if (now - gLastHeartbeatMillis >= HEALTH_TELEMETRY_INTERVAL_MS) {
+        // No monitors configured — send infrequent heartbeat (every 6h)
+        // so the server knows this device is still online and awaiting configuration.
+        gLastHeartbeatMillis = now;
         sendRegistration("heartbeat");
       }
     }
