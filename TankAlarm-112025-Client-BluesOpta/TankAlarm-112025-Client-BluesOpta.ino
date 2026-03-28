@@ -3059,8 +3059,8 @@ static void initializeNotecard() {
   tankalarm_ensureNotecardBinding(notecard);
 
   // Configure hub mode (fire-and-forget — if the Notecard isn't ready yet,
-  // these will silently fail and the main loop's checkNotecardHealth() will
-  // detect the Notecard once it comes online and flush buffered notes).
+  // these will silently fail; checkNotecardHealth() reconfigures hub mode
+  // when the Notecard next responds, ensuring inbound sync is established).
   configureNotecardHubMode();
 
   // Try to retrieve the Notecard's Device UID (e.g. "dev:860322068012345").
@@ -3156,6 +3156,10 @@ static bool checkNotecardHealth() {
     Serial.println(F("Notecard recovered - online mode restored"));
     // Re-attach Notecard to Wire in case bus was recovered
     tankalarm_ensureNotecardBinding(notecard);
+    // Reconfigure hub mode — the initial boot-time hub.set may have failed
+    // silently while the Notecard was unresponsive, leaving it in "minimum"
+    // mode which does not pull inbound notes (config.qi would stay on Notehub).
+    configureNotecardHubMode();
   }
   gNotecardAvailable = true;
   gNotecardFailureCount = 0;
