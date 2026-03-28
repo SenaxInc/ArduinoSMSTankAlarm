@@ -3377,8 +3377,8 @@ static void sendConfigAck(bool success, const char *message, const char *configV
     return;
   }
 
-  JAddStringToObject(body, "client", gDeviceUID);
-  JAddStringToObject(body, "status", success ? "applied" : "failed");
+  JAddStringToObject(body, "c", gDeviceUID);
+  JAddStringToObject(body, "st", success ? "applied" : "failed");
   if (configVersion && configVersion[0] != '\0') {
     JAddStringToObject(body, "cv", configVersion);
   }
