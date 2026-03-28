@@ -2440,10 +2440,18 @@ static SerialRequestResult requestClientSerialLogs(const char *clientUid, String
   stampSchemaVersion(body);
   JAddItemToObject(req, "body", body);
 
-  if (!notecard.sendRequest(req)) {
-    errorMessage = F("Failed to queue Notecard request");
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    errorMessage = F("No response from Notecard");
     return SerialRequestResult::NotecardFailure;
   }
+  const char *err = JGetString(rsp, "err");
+  if (err && err[0] != '\0') {
+    errorMessage = err;
+    notecard.deleteResponse(rsp);
+    return SerialRequestResult::NotecardFailure;
+  }
+  notecard.deleteResponse(rsp);
 
   Serial.print(F("Serial log request sent to client: "));
   Serial.println(clientUid);
@@ -7462,10 +7470,19 @@ static bool sendRelayCommand(const char *clientUid, uint8_t relayNum, bool state
   stampSchemaVersion(body);
   JAddItemToObject(req, "body", body);
   
-  bool queued = notecard.sendRequest(req);
-  if (!queued) {
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    Serial.println(F("ERROR: No response from Notecard for relay command"));
     return false;
   }
+  const char *err = JGetString(rsp, "err");
+  if (err && err[0] != '\0') {
+    Serial.print(F("ERROR: Relay command rejected: "));
+    Serial.println(err);
+    notecard.deleteResponse(rsp);
+    return false;
+  }
+  notecard.deleteResponse(rsp);
 
   Serial.print(F("Queued relay command for client "));
   Serial.print(clientUid);
@@ -7512,10 +7529,19 @@ static bool sendRelayClearCommand(const char *clientUid, uint8_t sensorIdx) {
   stampSchemaVersion(body);
   JAddItemToObject(req, "body", body);
   
-  bool queued = notecard.sendRequest(req);
-  if (!queued) {
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    Serial.println(F("ERROR: No response from Notecard for relay clear command"));
     return false;
   }
+  const char *clearErr = JGetString(rsp, "err");
+  if (clearErr && clearErr[0] != '\0') {
+    Serial.print(F("ERROR: Relay clear command rejected: "));
+    Serial.println(clearErr);
+    notecard.deleteResponse(rsp);
+    return false;
+  }
+  notecard.deleteResponse(rsp);
 
   Serial.print(F("Queued relay clear command for client "));
   Serial.print(clientUid);
@@ -8146,7 +8172,7 @@ static void handleTelemetry(JsonDocument &doc, double epoch) {
   }
   
   // Store sensor interface type if provided (digital, analog, currentLoop, pulse)
-  const char *sensorType = doc["si"] | "";
+  const char *sensorType = doc["st"] | "";
   if (sensorType && strlen(sensorType) > 0) {
     // Normalize "rpm" to "pulse" for consistency
     if (strcmp(sensorType, "rpm") == 0) {
@@ -8663,7 +8689,7 @@ static void handleDaily(JsonDocument &doc, double epoch) {
     }
     
     // Store sensor interface type if provided
-    const char *sensorType = t["si"] | "";
+    const char *sensorType = t["st"] | "";
     if (sensorType && strlen(sensorType) > 0) {
       // Normalize "rpm" to "pulse" for consistency
       if (strcmp(sensorType, "rpm") == 0) {

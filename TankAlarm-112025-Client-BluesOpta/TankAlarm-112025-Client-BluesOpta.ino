@@ -3027,10 +3027,20 @@ static void configureNotecardHubMode() {
       // In continuous mode, outbound/inbound are not used - always connected
     }
     
-    // Fire-and-forget: during boot the Notecard may not be ready yet.
-    // If this fails silently, checkNotecardHealth() in the main loop will
-    // detect the Notecard once it's online and retry configuration.
-    notecard.sendRequest(req);
+    // Verify hub mode was set — if this fails the Notecard stays in
+    // "minimum" mode and won't pull inbound notes (config.qi).
+    // checkNotecardHealth() will retry on recovery if it fails here.
+    J *rsp = notecard.requestAndResponse(req);
+    if (rsp) {
+      const char *err = JGetString(rsp, "err");
+      if (err && err[0] != '\0') {
+        Serial.print(F("WARNING: hub.set failed: "));
+        Serial.println(err);
+      }
+      notecard.deleteResponse(rsp);
+    } else {
+      Serial.println(F("WARNING: hub.set no response (Notecard not ready?)"));
+    }
   }
   
   // Disable GPS location tracking for power savings
@@ -3131,6 +3141,15 @@ static bool checkNotecardHealth() {
     return false;
   }
   
+  // Check for error in card.wireless response
+  const char *wirelessErr = JGetString(rsp, "err");
+  if (wirelessErr && wirelessErr[0] != '\0') {
+    Serial.print(F("card.wireless error: "));
+    Serial.println(wirelessErr);
+    notecard.deleteResponse(rsp);
+    return true;  // Notecard is responding (I2C OK), just wireless issue
+  }
+
   // Extract cellular signal strength from card.wireless response
   J *net = JGetObject(rsp, "net");
   if (net) {
@@ -3176,7 +3195,17 @@ static bool checkNotecardHealth() {
     addSerialLog("Modem stall: card.restart issued");
     J *restartReq = notecard.newRequest("card.restart");
     if (restartReq) {
-      notecard.sendRequest(restartReq);  // Fire and forget
+      J *restartRsp = notecard.requestAndResponse(restartReq);
+      if (restartRsp) {
+        const char *restartErr = JGetString(restartRsp, "err");
+        if (restartErr && restartErr[0] != '\0') {
+          Serial.print(F("WARNING: card.restart failed: "));
+          Serial.println(restartErr);
+        }
+        notecard.deleteResponse(restartRsp);
+      } else {
+        Serial.println(F("WARNING: card.restart no response"));
+      }
     }
     gLastSuccessfulNoteSend = millis();  // Reset to avoid repeated restarts
     gNotecardAvailable = false;  // Mark unavailable until next health check confirms recovery
@@ -3392,9 +3421,20 @@ static void sendConfigAck(bool success, const char *message, const char *configV
   JAddNumberToObject(body, "epoch", currentEpoch());
   JAddItemToObject(req, "body", body);
 
-  notecard.sendRequest(req);
-  Serial.print(F("Config ACK sent: "));
-  Serial.println(success ? F("applied") : F("failed"));
+  J *rsp = notecard.requestAndResponse(req);
+  if (rsp) {
+    const char *err = JGetString(rsp, "err");
+    if (err && err[0] != '\0') {
+      Serial.print(F("WARNING: Config ACK failed to queue: "));
+      Serial.println(err);
+    } else {
+      Serial.print(F("Config ACK sent: "));
+      Serial.println(success ? F("applied") : F("failed"));
+    }
+    notecard.deleteResponse(rsp);
+  } else {
+    Serial.println(F("WARNING: Config ACK no response from Notecard"));
+  }
 }
 
 static void pollForConfigUpdates() {
@@ -5611,12 +5651,23 @@ static void checkSolarOnlySunsetProtocol(unsigned long now) {
         // Save state to flash
         saveSolarStateToFlash();
         
-        // Flush any pending telemetry
+        // Flush any pending telemetry — verify sync accepted before shutdown
         if (gNotecardAvailable) {
           J *req = notecard.newRequest("hub.sync");
           if (req) {
-            notecard.sendRequest(req);
-            Serial.println(F("  Flushed pending data"));
+            J *syncRsp = notecard.requestAndResponse(req);
+            if (syncRsp) {
+              const char *syncErr = JGetString(syncRsp, "err");
+              if (syncErr && syncErr[0] != '\0') {
+                Serial.print(F("  WARNING: hub.sync failed: "));
+                Serial.println(syncErr);
+              } else {
+                Serial.println(F("  Flushed pending data"));
+              }
+              notecard.deleteResponse(syncRsp);
+            } else {
+              Serial.println(F("  WARNING: hub.sync no response"));
+            }
           }
         }
         
@@ -6417,10 +6468,19 @@ static void flushBufferedNotes() {
       }
       JAddItemToObject(req, "body", body);
 
-      if (!notecard.sendRequest(req)) {
+      J *addRsp = notecard.requestAndResponse(req);
+      if (!addRsp) {
         wroteFailures = true;
         *tab1 = '\t'; *tab2 = '\t';  // restore tabs for re-serialization
         fprintf(tmp, "%s\n", lineBuffer);
+      } else {
+        const char *addErr = JGetString(addRsp, "err");
+        if (addErr && addErr[0] != '\0') {
+          wroteFailures = true;
+          *tab1 = '\t'; *tab2 = '\t';  // restore tabs for re-serialization
+          fprintf(tmp, "%s\n", lineBuffer);
+        }
+        notecard.deleteResponse(addRsp);
       }
     }
     
@@ -6522,10 +6582,19 @@ static void flushBufferedNotes() {
       }
       JAddItemToObject(req, "body", body);
 
-      if (!notecard.sendRequest(req)) {
+      J *addRsp = notecard.requestAndResponse(req);
+      if (!addRsp) {
         wroteFailures = true;
         *tab1 = '\t'; *tab2 = '\t';  // restore tabs for re-serialization
         tmp.println(lineBuffer);
+      } else {
+        const char *addErr = JGetString(addRsp, "err");
+        if (addErr && addErr[0] != '\0') {
+          wroteFailures = true;
+          *tab1 = '\t'; *tab2 = '\t';  // restore tabs for re-serialization
+          tmp.println(lineBuffer);
+        }
+        notecard.deleteResponse(addRsp);
       }
     }
 
