@@ -3073,6 +3073,23 @@ static void initializeNotecard() {
   // when the Notecard next responds, ensuring inbound sync is established).
   configureNotecardHubMode();
 
+  // Force an immediate sync so any inbound notes queued on Notehub
+  // (e.g. config.qi) are pulled down right away at startup.
+  J *syncReq = notecard.newRequest("hub.sync");
+  if (syncReq) {
+    J *syncRsp = notecard.requestAndResponse(syncReq);
+    if (syncRsp) {
+      const char *syncErr = JGetString(syncRsp, "err");
+      if (syncErr && syncErr[0] != '\0') {
+        Serial.print(F("Startup hub.sync warning: "));
+        Serial.println(syncErr);
+      } else {
+        Serial.println(F("Startup hub.sync initiated"));
+      }
+      notecard.deleteResponse(syncRsp);
+    }
+  }
+
   // Try to retrieve the Notecard's Device UID (e.g. "dev:860322068012345").
   J *req = notecard.newRequest("hub.get");
   if (req) {
