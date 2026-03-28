@@ -1,5 +1,5 @@
 // Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
-// Version: 1.1.9
+// Version: 1.2.0
 // NOTE: Save this file as UTF-8 without BOM to avoid stray character compile errors.
 //
 // Hardware:
