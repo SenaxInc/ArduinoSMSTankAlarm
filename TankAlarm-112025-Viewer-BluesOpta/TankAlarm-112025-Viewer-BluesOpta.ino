@@ -399,6 +399,27 @@ static void initializeNotecard() {
 
   Serial.print(F("Viewer Device UID: "));
   Serial.println(gViewerUid);
+
+  // Enable outboard DFU (ODFU) so Notecard downloads host firmware from Notehub.
+  // Without this, dfu.status will never show available updates.
+  req = notecard.newRequest("card.dfu");
+  if (req) {
+    JAddStringToObject(req, "name", "stm32");
+    JAddBoolToObject(req, "on", true);
+    J *dfuRsp = notecard.requestAndResponse(req);
+    if (dfuRsp) {
+      const char *dfuErr = JGetString(dfuRsp, "err");
+      if (dfuErr && dfuErr[0] != '\0') {
+        Serial.print(F("WARNING: card.dfu enable failed: "));
+        Serial.println(dfuErr);
+      } else {
+        Serial.println(F("Outboard DFU enabled for host firmware updates"));
+      }
+      notecard.deleteResponse(dfuRsp);
+    } else {
+      Serial.println(F("WARNING: card.dfu returned no response"));
+    }
+  }
 }
 
 static void ensureTimeSync() {
@@ -942,9 +963,9 @@ static void checkForFirmwareUpdate() {
     return;
   }
 
-  // Check mode field
+  // Check mode and version fields
   const char *mode = JGetString(rsp, "mode");
-  const char *body = JGetString(rsp, "body");
+  const char *version = JGetString(rsp, "version");
 
   // If mode is already "downloading" or "download-pending", update is in progress
   if (mode && (strcmp(mode, "downloading") == 0 || strcmp(mode, "download-pending") == 0)) {
@@ -954,24 +975,22 @@ static void checkForFirmwareUpdate() {
     return;
   }
 
-  // If mode is "ready" and body includes version info, an update is available
+  // If mode is "ready" and version field is populated, an update is available
   bool updateAvailable = false;
-  if (mode && strcmp(mode, "ready") == 0 && body && strlen(body) > 0) {
+  if (version && strlen(version) > 0 &&
+      mode && (strcmp(mode, "ready") == 0 || strcmp(mode, "idle") == 0)) {
     updateAvailable = true;
   }
 
   if (updateAvailable) {
-    Serial.print(F("Firmware update available: "));
-    Serial.println(body);
+    Serial.print(F("Firmware update available: v"));
+    Serial.println(version);
     gDfuUpdateAvailable = true;
-    strlcpy(gDfuVersion, body, sizeof(gDfuVersion));
+    strlcpy(gDfuVersion, version, sizeof(gDfuVersion));
 
-#ifdef DFU_AUTO_ENABLE
+    // Auto-apply: headless device with no UI — apply updates automatically
     Serial.println(F("Auto-enabling DFU..."));
     enableDfuMode();
-#else
-    Serial.println(F("DFU available but auto-enable is disabled"));
-#endif
   } else {
     Serial.println(F("No firmware update available"));
     gDfuUpdateAvailable = false;

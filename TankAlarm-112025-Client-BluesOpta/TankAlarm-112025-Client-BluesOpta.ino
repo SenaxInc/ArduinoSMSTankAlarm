@@ -3090,6 +3090,27 @@ static void initializeNotecard() {
     }
   }
 
+  // Enable outboard DFU (ODFU) so Notecard downloads host firmware from Notehub.
+  // Without this, dfu.status will never show available updates.
+  J *dfuReq = notecard.newRequest("card.dfu");
+  if (dfuReq) {
+    JAddStringToObject(dfuReq, "name", "stm32");
+    JAddBoolToObject(dfuReq, "on", true);
+    J *dfuRsp = notecard.requestAndResponse(dfuReq);
+    if (dfuRsp) {
+      const char *dfuErr = JGetString(dfuRsp, "err");
+      if (dfuErr && dfuErr[0] != '\0') {
+        Serial.print(F("WARNING: card.dfu enable failed: "));
+        Serial.println(dfuErr);
+      } else {
+        Serial.println(F("Outboard DFU enabled for host firmware updates"));
+      }
+      notecard.deleteResponse(dfuRsp);
+    } else {
+      Serial.println(F("WARNING: card.dfu returned no response"));
+    }
+  }
+
   // Try to retrieve the Notecard's Device UID (e.g. "dev:860322068012345").
   J *req = notecard.newRequest("hub.get");
   if (req) {
@@ -3332,16 +3353,33 @@ static void checkForFirmwareUpdate() {
     return;
   }
   
-  // Check if firmware update is available
-  // DFU status response fields:
-  // - "on": true if DFU mode is active
+  // Check for errors in dfu.status response
+  const char *errMsg = JGetString(rsp, "err");
+  if (errMsg && errMsg[0] != '\0') {
+    Serial.print(F("dfu.status error: "));
+    Serial.println(errMsg);
+    notecard.deleteResponse(rsp);
+    return;
+  }
+  
+  // dfu.status response fields:
+  // - "mode": DFU mode string: "idle", "error", "downloading", "ready", "completed"
+  // - "on": true if outboard DFU is enabled (NOT whether update is available)
   // - "version": firmware version available from Notehub
-  // - "body": any additional status info
-  bool dfuActive = JGetBool(rsp, "on");
+  const char *mode = JGetString(rsp, "mode");
   const char *version = JGetString(rsp, "version");
   
-  if (dfuActive && version && strlen(version) > 0) {
-    // Update available
+  // Track downloading state
+  if (mode && (strcmp(mode, "downloading") == 0 || strcmp(mode, "download-pending") == 0)) {
+    Serial.println(F("DFU download in progress..."));
+    gDfuInProgress = true;
+    notecard.deleteResponse(rsp);
+    return;
+  }
+  
+  // Detect update: mode is "ready" and version field is populated
+  if (version && strlen(version) > 0 &&
+      mode && (strcmp(mode, "ready") == 0 || strcmp(mode, "idle") == 0)) {
     if (!gDfuUpdateAvailable || strcmp(gDfuVersion, version) != 0) {
       // New update detected
       gDfuUpdateAvailable = true;
@@ -3352,6 +3390,8 @@ static void checkForFirmwareUpdate() {
       Serial.println(gDfuVersion);
       Serial.print(F("Current version: "));
       Serial.println(F(FIRMWARE_VERSION));
+      Serial.print(F("DFU mode: "));
+      Serial.println(mode);
       Serial.println(F("Device will auto-update on next check"));
       Serial.println(F("========================================"));
       
@@ -3378,8 +3418,6 @@ static void enableDfuMode() {
   Serial.println(F("System will reset when complete"));
   Serial.println(F("========================================"));
   
-  // Mark DFU in progress to prevent multiple triggers
-  gDfuInProgress = true;
   addSerialLog("DFU mode enabled - updating firmware");
   
   // Save any pending config before rebooting
@@ -3387,24 +3425,40 @@ static void enableDfuMode() {
     persistConfigIfDirty();
   }
   
-  // Enable DFU on Notecard (dfu.status with "on":true triggers the download)
-  J *req = notecard.newRequest("dfu.status");
+  // ODFU is already enabled at boot via initializeNotecard().
+  // Verify it's still active (recovery from transient failure).
+  J *req = notecard.newRequest("card.dfu");
   if (!req) {
-    Serial.println(F("ERROR: Failed to create DFU request"));
-    gDfuInProgress = false;
+    Serial.println(F("ERROR: Failed to create card.dfu request"));
+    return;
+  }
+  JAddStringToObject(req, "name", "stm32");
+  JAddBoolToObject(req, "on", true);
+  
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    Serial.println(F("ERROR: card.dfu no response"));
     return;
   }
   
-  JAddBoolToObject(req, "on", true);
-  
-  // Send request - device will reboot after download completes
-  if (!notecard.sendRequest(req)) {
-    Serial.println(F("ERROR: Failed to enable DFU mode"));
-    gDfuInProgress = false;
+  const char *err = JGetString(rsp, "err");
+  if (err && err[0] != '\0') {
+    Serial.print(F("ERROR: card.dfu failed: "));
+    Serial.println(err);
+    notecard.deleteResponse(rsp);
+    return;
   }
+  notecard.deleteResponse(rsp);
   
-  // Device will now download firmware and reset automatically
-  // No need to return from this function - reset is imminent
+  // Mark DFU in progress only after successful enable
+  gDfuInProgress = true;
+  Serial.println(F("DFU enabled - Notecard will download firmware from Notehub"));
+
+  // Force sync to accelerate the firmware download
+  J *syncReq = notecard.newRequest("hub.sync");
+  if (syncReq) {
+    notecard.sendRequest(syncReq);
+  }
 }
 
 static void updateDailyScheduleIfNeeded() {
