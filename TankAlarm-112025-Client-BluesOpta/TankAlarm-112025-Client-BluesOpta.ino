@@ -472,6 +472,7 @@ struct MonitorConfig {
   HallEffectDetectionMethod hallEffectDetection; // Detection method (pulse counting or time-based)
   uint32_t pulseSampleDurationMs; // Sample duration for pulse measurement (default 60000ms = 60s)
   bool pulseAccumulatedMode; // If true, count pulses between telemetry reports for very low rates
+  bool alarmsEnabled;      // True only when alarm thresholds were explicitly configured
   float highAlarmThreshold;   // High threshold for triggering alarm
   float lowAlarmThreshold;    // Low threshold for triggering alarm
   float hysteresisValue;   // Hysteresis band (default 2.0)
@@ -2024,11 +2025,12 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.monitors[0].hallEffectDetection = HALL_DETECT_PULSE; // Default: pulse counting method
   cfg.monitors[0].pulseSampleDurationMs = RPM_SAMPLE_DURATION_MS; // Default: 60 seconds
   cfg.monitors[0].pulseAccumulatedMode = false; // Default: single sample mode
-  cfg.monitors[0].highAlarmThreshold = 100.0f;
-  cfg.monitors[0].lowAlarmThreshold = 20.0f;
+  cfg.monitors[0].alarmsEnabled = false; // No alarms until explicitly configured
+  cfg.monitors[0].highAlarmThreshold = 1e9f;  // Inert default — unreachable for any unit
+  cfg.monitors[0].lowAlarmThreshold = -1e9f;  // Inert default — unreachable for any unit
   cfg.monitors[0].hysteresisValue = 2.0f; // 2 unit hysteresis band
   cfg.monitors[0].enableDailyReport = true;
-  cfg.monitors[0].enableAlarmSms = true;
+  cfg.monitors[0].enableAlarmSms = false; // No SMS until explicitly configured
   cfg.monitors[0].enableServerUpload = true;
   cfg.monitors[0].relayTargetClient[0] = '\0'; // No relay target by default
   cfg.monitors[0].relayMask = 0; // No relays triggered by default
@@ -2135,13 +2137,14 @@ static void initMonitorDefaults(MonitorConfig &mon, uint8_t index) {
   mon.expectedPulseRate = 0.0f;
 
   // Alarm thresholds
-  mon.highAlarmThreshold = 100.0f;
-  mon.lowAlarmThreshold = 20.0f;
+  mon.alarmsEnabled = false; // No alarms until explicitly configured
+  mon.highAlarmThreshold = 1e9f;  // Inert default — unreachable for any unit
+  mon.lowAlarmThreshold = -1e9f;  // Inert default — unreachable for any unit
   mon.hysteresisValue = 2.0f;
 
   // Notifications
   mon.enableDailyReport = true;
-  mon.enableAlarmSms = true;
+  mon.enableAlarmSms = false; // No SMS until explicitly configured
   mon.enableServerUpload = true;
 
   // Relay control
@@ -2274,6 +2277,12 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
   if (t["expectedPulseRate"].is<float>()) mon.expectedPulseRate = t["expectedPulseRate"].as<float>();
 
   // ---- Alarm thresholds ----
+  if (t["alarmsEnabled"].is<bool>()) {
+    mon.alarmsEnabled = t["alarmsEnabled"].as<bool>();
+  } else {
+    // Legacy configs: infer alarmsEnabled from presence of threshold fields
+    mon.alarmsEnabled = t["highAlarm"].is<float>() || t["lowAlarm"].is<float>();
+  }
   if (t["highAlarm"].is<float>()) mon.highAlarmThreshold = t["highAlarm"].as<float>();
   if (t["lowAlarm"].is<float>()) mon.lowAlarmThreshold = t["lowAlarm"].as<float>();
   if (t["hysteresis"].is<float>()) mon.hysteresisValue = t["hysteresis"].as<float>();
@@ -2753,6 +2762,7 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     if (cfg.monitors[i].expectedPulseRate > 0.0f) {
       t["expectedPulseRate"] = cfg.monitors[i].expectedPulseRate;
     }
+    t["alarmsEnabled"] = cfg.monitors[i].alarmsEnabled;
     t["highAlarm"] = cfg.monitors[i].highAlarmThreshold;
     t["lowAlarm"] = cfg.monitors[i].lowAlarmThreshold;
     t["hysteresis"] = cfg.monitors[i].hysteresisValue;
@@ -4341,6 +4351,11 @@ static void sampleMonitors() {
 static void evaluateAlarms(uint8_t idx) {
   const MonitorConfig &cfg = gConfig.monitors[idx];
   MonitorRuntime &state = gMonitorState[idx];
+
+  // Skip alarm evaluation if alarms were never configured
+  if (!cfg.alarmsEnabled) {
+    return;
+  }
 
   // Skip alarm evaluation if sensor has failed
   if (state.sensorFailed) {
