@@ -1899,6 +1899,8 @@ static bool nwsLookupGridPoint(ClientMetadata *meta);
 static float nwsFetchAverageTemperature(ClientMetadata *meta, double timestamp);
 static float nwsGetCalibrationTemperature(const char *clientUid, double timestamp);
 static float getCachedTemperature(const char *clientUid);
+// HTTP response helper (security headers, defined in web server section)
+static void sendSecurityHeaders(EthernetClient &client);
 
 static void handleRefreshPost(EthernetClient &client, const String &body) {
   char clientUid[64] = {0};
