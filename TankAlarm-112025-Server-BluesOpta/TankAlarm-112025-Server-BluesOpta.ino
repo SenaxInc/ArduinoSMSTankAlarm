@@ -743,27 +743,53 @@ static char gSessionToken[17] = "";  // 16 hex chars + null terminator
 #endif
 
 static void generateSessionToken() {
-  // Gather entropy from timing jitter and ADC noise across multiple pins.
-  // Multiple analogRead() calls add thermal/shot noise; timing samples taken
-  // before and after the ADC reads capture execution jitter.
+  // BugFix 04022026 (CRITICAL-1): Use STM32H747 hardware RNG instead of LCG PRNG.
+  // The LCG was algebraically invertible — one observed token allowed prediction of
+  // all future tokens. The STM32H747 has a dedicated TRNG peripheral (RNG)
+  // accessible via HAL, seeded by analog noise sources on-chip.
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_PORTENTA_H7_M7)
+  RNG_HandleTypeDef hrng;
+  memset(&hrng, 0, sizeof(hrng));
+  hrng.Instance = RNG;
+  __HAL_RCC_RNG_CLK_ENABLE();
+  bool hwRngOk = (HAL_RNG_Init(&hrng) == HAL_OK);
+  
+  if (hwRngOk) {
+    static const char charset[] = "0123456789abcdef";
+    for (int i = 0; i < 16; i++) {
+      uint32_t rng = 0;
+      if (HAL_RNG_GenerateRandomNumber(&hrng, &rng) != HAL_OK) {
+        hwRngOk = false;
+        break;
+      }
+      gSessionToken[i] = charset[rng & 0xF];
+    }
+    HAL_RNG_DeInit(&hrng);
+  }
+  
+  if (hwRngOk) {
+    gSessionToken[16] = '\0';
+    return;
+  }
+  // Fall through to software fallback if HW RNG fails
+  Serial.println(F("WARNING: HW RNG failed, falling back to software entropy"));
+#endif
+
+  // Software fallback: gather entropy from timing jitter and ADC noise.
+  // Kept as fallback for non-Opta platforms or HW RNG failure.
   uint32_t t0 = micros();
   uint32_t a0 = (uint32_t)analogRead(VIN_ANALOG_PIN);
   uint32_t a1 = (uint32_t)analogRead(ENTROPY_ADC_PIN_1);
   uint32_t a2 = (uint32_t)analogRead(ENTROPY_ADC_PIN_2);
   uint32_t a3 = (uint32_t)analogRead(ENTROPY_ADC_PIN_3);
-  uint32_t t1 = micros();         // Second timing sample after ADC reads captures jitter
+  uint32_t t1 = micros();
   uint32_t currentMillis = millis();
-  // Build a 64-bit seed by placing independent entropy sources in the high and
-  // low halves; prime-valued shifts reduce correlation between mixed terms.
-  // 64-bit state gives 2^64 possible seeds, making brute-force infeasible.
-  // Cast to uint64_t before shifting to avoid truncating bits in 32-bit arithmetic.
   uint64_t seedHigh = (uint64_t)t0 ^ ((uint64_t)currentMillis << 13) ^ ((uint64_t)a0 << 5) ^ ((uint64_t)a1 << 11);
   uint64_t seedLow  = (uint64_t)t1 ^ ((uint64_t)currentMillis >> 19) ^ ((uint64_t)a0 >> 27) ^ ((uint64_t)a2 << 21) ^ ((uint64_t)a3 << 7);
   uint64_t seed = (seedHigh << 32) | seedLow;
-  // 64-bit LCG constants from Knuth (MMIX) — full-period over 2^64.
   for (int i = 0; i < 16; i++) {
     seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
-    gSessionToken[i] = "0123456789abcdef"[(seed >> 60) & 0xF];  // Top 4 bits of 64-bit state
+    gSessionToken[i] = "0123456789abcdef"[(seed >> 60) & 0xF];
   }
   gSessionToken[16] = '\0';
 }
@@ -5949,8 +5975,10 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
 
   // If no PIN is configured yet (fresh install), accept any valid 4-digit PIN
   // and set it as the admin PIN
+  // BugFix 04022026 (HIGH-6): Added isValidPin() check — previously only checked
+  // strlen(pin) == 4, allowing non-digit characters like "ab!@" as a PIN.
   if (!isValidPin(gConfig.configPin)) {
-    if (pin && strlen(pin) == 4) {
+    if (pin && strlen(pin) == 4 && isValidPin(pin)) {
       strlcpy(gConfig.configPin, pin, sizeof(gConfig.configPin));
       saveConfig(gConfig);
       valid = true;
@@ -5972,6 +6000,7 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
     client.println(F("HTTP/1.1 200 OK"));
     client.println(F("Content-Type: application/json"));
     client.println(F("Connection: close"));
+    sendSecurityHeaders(client);
     client.println();
     client.print(F("{\"success\":true,\"session\":\""));
     client.print(gSessionToken);
@@ -6516,6 +6545,16 @@ static void respondHtml(EthernetClient &client, const String &body) {
   }
 }
 
+// BugFix 04022026 (HIGH-2): Send common security headers on all responses.
+// Prevents CSRF via cross-origin XHR and adds basic security hygiene.
+static void sendSecurityHeaders(EthernetClient &client) {
+  client.println(F("X-Content-Type-Options: nosniff"));
+  client.println(F("X-Frame-Options: DENY"));
+  // Restrict cross-origin requests to same-origin only
+  // Note: We don't send Access-Control-Allow-Origin at all, which means
+  // browsers will block cross-origin XHR/fetch by default (deny policy).
+}
+
 static void respondJson(EthernetClient &client, const String &body, int status) {
   client.print(F("HTTP/1.1 "));
   client.print(status);
@@ -6526,6 +6565,7 @@ static void respondJson(EthernetClient &client, const String &body, int status) 
   }
   client.println(F("Content-Type: application/json"));
   client.println(F("Connection: close"));
+  sendSecurityHeaders(client);
   client.print(F("Content-Length: "));
   client.println(body.length());
   client.println();
@@ -6554,6 +6594,7 @@ static bool respondJson(EthernetClient &client, const JsonDocument &doc, int sta
   }
   client.println(F("Content-Type: application/json"));
   client.println(F("Connection: close"));
+  sendSecurityHeaders(client);
   client.print(F("Content-Length: "));
   client.println(length);
   client.println();
@@ -6670,6 +6711,7 @@ static void respondStatus(EthernetClient &client, int status, const char *messag
   }
   client.println(F("Content-Type: text/plain"));
   client.println(F("Connection: close"));
+  sendSecurityHeaders(client);
   client.print(F("Content-Length: "));
   client.println(strlen(message));
   client.println();
@@ -8409,27 +8451,29 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   gSensorRegistryDirty = true;
 
   // Check rate limit before sending SMS
-  bool smsEnabled = false;  // Default off -- only send SMS when client explicitly requests (se=true)
+  // BugFix 04022026 (HIGH-7): Respect client per-monitor SMS opt-out.
+  // Previously, smsEnabled was force-set to true for all sensor alarm types,
+  // ignoring the client's "se" flag from MonitorConfig.enableAlarmSms.
+  // Now: SMS requires BOTH client opt-in (se=true) AND server policy agreement.
+  bool clientWantsSms = false;
   if (doc["se"]) {
-    smsEnabled = doc["se"].as<bool>();
+    clientWantsSms = doc["se"].as<bool>();
   } else if (doc["smsEnabled"]) {
-    smsEnabled = doc["smsEnabled"].as<bool>();
+    clientWantsSms = doc["smsEnabled"].as<bool>();
   }
-  // For sensor-level alarms (high/low/clear/digital), SMS is controlled by server policy
+  // Server-side SMS policy per alarm type
   bool smsAllowedByServer = false;
   if (strcmp(type, "high") == 0) {
-    smsEnabled = true;  // Sensor alarms always eligible
     smsAllowedByServer = gConfig.smsOnHigh;
   } else if (strcmp(type, "low") == 0) {
-    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnLow;
   } else if (strcmp(type, "clear") == 0) {
-    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnClear;
   } else if (isDigitalAlarm) {
-    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnHigh;
   }
+  // SMS fires only when both client and server agree
+  bool smsEnabled = clientWantsSms && smsAllowedByServer;
 
   if (!isDiagnostic && smsEnabled && smsAllowedByServer && checkSmsRateLimit(rec)) {
     char message[160];
@@ -11105,9 +11149,20 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     int currCount = 0;
     
     if (currInHotTier) {
+      // BugFix 04022026 (MED-17): Filter snapshots by target month.
+      // Previously iterated ALL snapshots — at month boundaries the ring buffer
+      // may contain a few entries from the previous month, contaminating stats.
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
         uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist.snapshots[idx];
+        // Filter by target month
+        if (snap.timestamp > 0.0) {
+          time_t snapTime = (time_t)snap.timestamp;
+          struct tm *snapTm = gmtime(&snapTime);
+          if (snapTm && (snapTm->tm_year + 1900 != currYear || snapTm->tm_mon + 1 != currMonth)) {
+            continue;
+          }
+        }
         if (snap.level < currMin) currMin = snap.level;
         if (snap.level > currMax) currMax = snap.level;
         currSum += snap.level;
@@ -11140,11 +11195,21 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     JsonObject prevStats = sensorComp["previousStats"].to<JsonObject>();
     if (prevInHotTier) {
       // Rare case: previous month still in hot tier (if retention > 30 days)
+      // BugFix 04022026 (MED-17): Filter snapshots by previous month/year.
+      // Same contamination risk as current-month loop above.
       float prevMin = 9999.0, prevMax = -9999.0, prevSum = 0.0;
       int prevCount = 0;
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
         uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist.snapshots[idx];
+        // Filter by target month
+        if (snap.timestamp > 0.0) {
+          time_t snapTime = (time_t)snap.timestamp;
+          struct tm *snapTm = gmtime(&snapTime);
+          if (snapTm && (snapTm->tm_year + 1900 != prevYear || snapTm->tm_mon + 1 != prevMonth)) {
+            continue;
+          }
+        }
         if (snap.level < prevMin) prevMin = snap.level;
         if (snap.level > prevMax) prevMax = snap.level;
         prevSum += snap.level;
@@ -11259,12 +11324,22 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       sensorSum["sensorIndex"] = hist.sensorIndex;
       
       // Current year stats from hot tier
+      // BugFix 04022026 (MED-17): Filter snapshots by current year.
+      // Ring buffer may contain entries from the previous year near Jan 1.
       float yearMin = 9999.0, yearMax = -9999.0, yearSum = 0.0;
       int yearCount = 0;
       
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
         uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist.snapshots[idx];
+        // Filter by current year
+        if (snap.timestamp > 0.0) {
+          time_t snapTime = (time_t)snap.timestamp;
+          struct tm *snapTm = gmtime(&snapTime);
+          if (snapTm && (snapTm->tm_year + 1900 != currentYear)) {
+            continue;
+          }
+        }
         if (snap.level < yearMin) yearMin = snap.level;
         if (snap.level > yearMax) yearMax = snap.level;
         yearSum += snap.level;
@@ -11365,6 +11440,8 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       JsonArray monthlyData = doc["sensor"]["monthlyData"].to<JsonArray>();
       
       // Current month from hot tier
+      // BugFix 04022026 (MED-17): Filter snapshots by current month/year.
+      // Ring buffer may contain entries from the previous month.
       JsonObject currMonthObj = monthlyData.add<JsonObject>();
       currMonthObj["year"] = currentYear;
       currMonthObj["month"] = currentMonth;
@@ -11374,6 +11451,14 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       for (uint16_t j = 0; j < hist->snapshotCount; j++) {
         uint16_t idx = (hist->writeIndex - hist->snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist->snapshots[idx];
+        // Filter by target month
+        if (snap.timestamp > 0.0) {
+          time_t snapTime = (time_t)snap.timestamp;
+          struct tm *snapTm = gmtime(&snapTime);
+          if (snapTm && (snapTm->tm_year + 1900 != currentYear || snapTm->tm_mon + 1 != currentMonth)) {
+            continue;
+          }
+        }
         if (snap.level < min) min = snap.level;
         if (snap.level > max) max = snap.level;
         sum += snap.level;

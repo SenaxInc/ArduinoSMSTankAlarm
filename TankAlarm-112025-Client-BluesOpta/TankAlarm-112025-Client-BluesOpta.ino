@@ -4621,12 +4621,10 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
     return false;
   }
 
-  // Add current timestamp (per-monitor)
-  if (state.alarmCount < MAX_ALARMS_PER_HOUR) {
-    state.alarmTimestamps[state.alarmCount++] = now;
-  }
-
   // Global alarm rate limit — cap total alarms across ALL sensors per hour
+  // BugFix 04022026 (MED-12): Check global cap BEFORE committing per-monitor timestamp.
+  // Previously, per-monitor timestamp was added first, so global rejection still consumed
+  // the per-monitor budget — accelerating per-monitor rate exhaustion.
   {
     uint8_t gValid = 0;
     for (uint8_t g = 0; g < gGlobalAlarmCount; ++g) {
@@ -4644,9 +4642,14 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
       Serial.println(F(")"));
       return false;
     }
-    if (gGlobalAlarmCount < MAX_GLOBAL_ALARMS_PER_HOUR) {
-      gGlobalAlarmTimestamps[gGlobalAlarmCount++] = now;
-    }
+  }
+
+  // Both per-monitor and global checks passed — commit timestamps to both budgets
+  if (state.alarmCount < MAX_ALARMS_PER_HOUR) {
+    state.alarmTimestamps[state.alarmCount++] = now;
+  }
+  if (gGlobalAlarmCount < MAX_GLOBAL_ALARMS_PER_HOUR) {
+    gGlobalAlarmTimestamps[gGlobalAlarmCount++] = now;
   }
 
   // Update last alarm time for this type
@@ -4713,9 +4716,74 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
   bool isAlarm = (strcmp(alarmType, "clear") != 0);
   activateLocalAlarm(idx, isAlarm);
 
-  // Check rate limit before sending remote alarm
+  // BugFix 04022026 (CRITICAL-2): Relay control must execute BEFORE rate limiting.
+  // Previously, relay logic was inside the Notecard transmission block, so rate-limited
+  // alarms never actuated remote relays — a safety-critical gap for pump/valve control.
+  if (cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
+    bool shouldActivateRelay = false;
+    bool shouldDeactivateRelay = false;
+    
+    // Check if this alarm type matches the relay trigger condition
+    if (isAlarm) {
+      if (cfg.relayTrigger == RELAY_TRIGGER_ANY) {
+        shouldActivateRelay = true;
+      } else if (cfg.relayTrigger == RELAY_TRIGGER_HIGH && strcmp(alarmType, "high") == 0) {
+        shouldActivateRelay = true;
+      } else if (cfg.relayTrigger == RELAY_TRIGGER_LOW && strcmp(alarmType, "low") == 0) {
+        shouldActivateRelay = true;
+      }
+    } else {
+      // BugFix 04022026 (CRITICAL-3): UNTIL_CLEAR relay clearing was broken.
+      // When alarmType is "clear", comparing it against "high"/"low" always fails.
+      // Fix: When the relay is active for this monitor and mode is UNTIL_CLEAR,
+      // unconditionally clear — the alarm condition has been resolved regardless
+      // of which specific threshold originally triggered it.
+      if (cfg.relayMode == RELAY_MODE_UNTIL_CLEAR && gRelayActiveForMonitor[idx]) {
+        shouldDeactivateRelay = true;
+      }
+    }
+    
+    if (shouldActivateRelay && !gRelayActiveForMonitor[idx]) {
+      triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, true);
+      gRelayActiveForMonitor[idx] = true;
+      gRelayActiveMaskForMonitor[idx] = cfg.relayMask;
+      // Set per-relay activation times for independent timeout tracking
+      unsigned long activateTime = millis();
+      for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+        if (cfg.relayMask & (1 << r)) {
+          gRelayActivationTime[r] = activateTime;
+        }
+      }
+      Serial.print(F("Relay activated for "));
+      Serial.print(alarmType);
+      Serial.print(F(" alarm (mode: "));
+      switch (cfg.relayMode) {
+        case RELAY_MODE_MOMENTARY: Serial.print(F("momentary 30min")); break;
+        case RELAY_MODE_UNTIL_CLEAR: Serial.print(F("until clear")); break;
+        case RELAY_MODE_MANUAL_RESET: Serial.print(F("manual reset")); break;
+      }
+      Serial.println(F(")"));
+    } else if (shouldDeactivateRelay) {
+      triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
+      // Clear per-relay activation times using the stored mask (not monitor index)
+      // BugFix 02282026: Was gRelayActivationTime[idx] which used the monitor index
+      // instead of iterating the relay bitmask — relay timeouts were not properly
+      // cleared for sensors whose relay mask didn't coincidentally match their index.
+      for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+        if (gRelayActiveMaskForMonitor[idx] & (1 << r)) {
+          gRelayActivationTime[r] = 0;
+        }
+      }
+      gRelayActiveForMonitor[idx] = false;
+      gRelayActiveMaskForMonitor[idx] = 0;
+      Serial.println(F("Relay deactivated on alarm clear"));
+    }
+  }
+
+  // Check rate limit before sending remote alarm notification
+  // Note: Rate limiting only gates Notecard message transmission, NOT relay actuation above
   if (!checkAlarmRateLimit(idx, alarmType)) {
-    return;  // Rate limit exceeded
+    return;  // Rate limit exceeded — relay already handled above
   }
 
   MonitorRuntime &state = gMonitorState[idx];
@@ -4771,75 +4839,6 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
     char logMsg[128];
     snprintf(logMsg, sizeof(logMsg), "Alarm: %s - %s - %.1fin", cfg.name, alarmType, inches);
     addSerialLog(logMsg);
-    
-    // Handle relay control based on mode
-    if (cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
-      bool shouldActivateRelay = false;
-      bool shouldDeactivateRelay = false;
-      
-      // Check if this alarm type matches the relay trigger condition
-      if (isAlarm) {
-        if (cfg.relayTrigger == RELAY_TRIGGER_ANY) {
-          shouldActivateRelay = true;
-        } else if (cfg.relayTrigger == RELAY_TRIGGER_HIGH && strcmp(alarmType, "high") == 0) {
-          shouldActivateRelay = true;
-        } else if (cfg.relayTrigger == RELAY_TRIGGER_LOW && strcmp(alarmType, "low") == 0) {
-          shouldActivateRelay = true;
-        }
-      } else {
-        // Alarm cleared - check if we should deactivate relay
-        // Only deactivate if mode is UNTIL_CLEAR and the clearing alarm matches trigger
-        if (cfg.relayMode == RELAY_MODE_UNTIL_CLEAR && gRelayActiveForMonitor[idx]) {
-          bool shouldClear = false;
-          if (cfg.relayTrigger == RELAY_TRIGGER_ANY) {
-            shouldClear = true; // Any alarm clearing will deactivate
-          } else if (cfg.relayTrigger == RELAY_TRIGGER_HIGH && strcmp(alarmType, "high") == 0) {
-            shouldClear = true;
-          } else if (cfg.relayTrigger == RELAY_TRIGGER_LOW && strcmp(alarmType, "low") == 0) {
-            shouldClear = true;
-          }
-          if (shouldClear) {
-            shouldDeactivateRelay = true;
-          }
-        }
-      }
-      
-      if (shouldActivateRelay && !gRelayActiveForMonitor[idx]) {
-        triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, true);
-        gRelayActiveForMonitor[idx] = true;
-        gRelayActiveMaskForMonitor[idx] = cfg.relayMask;
-        // Set per-relay activation times for independent timeout tracking
-        unsigned long activateTime = millis();
-        for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-          if (cfg.relayMask & (1 << r)) {
-            gRelayActivationTime[r] = activateTime;
-          }
-        }
-        Serial.print(F("Relay activated for "));
-        Serial.print(alarmType);
-        Serial.print(F(" alarm (mode: "));
-        switch (cfg.relayMode) {
-          case RELAY_MODE_MOMENTARY: Serial.print(F("momentary 30min")); break;
-          case RELAY_MODE_UNTIL_CLEAR: Serial.print(F("until clear")); break;
-          case RELAY_MODE_MANUAL_RESET: Serial.print(F("manual reset")); break;
-        }
-        Serial.println(F(")"));
-      } else if (shouldDeactivateRelay) {
-        triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
-        // Clear per-relay activation times using the stored mask (not monitor index)
-        // BugFix 02282026: Was gRelayActivationTime[idx] which used the monitor index
-        // instead of iterating the relay bitmask — relay timeouts were not properly
-        // cleared for sensors whose relay mask didn't coincidentally match their index.
-        for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-          if (gRelayActiveMaskForMonitor[idx] & (1 << r)) {
-            gRelayActivationTime[r] = 0;
-          }
-        }
-        gRelayActiveForMonitor[idx] = false;
-        gRelayActiveMaskForMonitor[idx] = 0;
-        Serial.println(F("Relay deactivated on alarm clear"));
-      }
-    }
   } else {
     Serial.print(F("Network offline - local alarm only for monitor "));
     Serial.print(cfg.name);
@@ -4995,6 +4994,16 @@ static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, 
     // Include measurement unit so server can display correct units
     if (cfg.measurementUnit[0] != '\0') {
       doc["mu"] = cfg.measurementUnit;
+    }
+
+    // BugFix 04022026 (HIGH-8): Include notification preferences so server can
+    // trigger SMS/email for unload events. Previously these fields were missing,
+    // causing handleUnload() on the server to read undefined values.
+    if (cfg.unloadAlarmSms) {
+      doc["sms"] = true;
+    }
+    if (cfg.unloadAlarmEmail) {
+      doc["email"] = true;
     }
 
     publishNote(UNLOAD_FILE, doc, true);
@@ -5919,6 +5928,30 @@ static void updatePowerState() {
         }
         Serial.println(F("CRITICAL HIBERNATE: All relays de-energized for battery protection"));
         addSerialLog("Relays off - critical battery");
+      }
+      
+      // BugFix 04022026 (MED-15): Restore relay state when recovering FROM critical hibernate.
+      // Relays forced OFF during hibernate should be reactivated if the alarm condition
+      // that triggered them (UNTIL_CLEAR / MANUAL_RESET) is still latched.
+      if (oldState == POWER_STATE_CRITICAL_HIBERNATE && gPowerState != POWER_STATE_CRITICAL_HIBERNATE) {
+        for (uint8_t i = 0; i < gConfig.monitorCount; i++) {
+          const MonitorConfig &cfg = gConfig.monitors[i];
+          if (cfg.relayTargetClient[0] == '\0' || cfg.relayMask == 0) continue;
+          if (cfg.relayMode == RELAY_MODE_MOMENTARY) continue;  // Momentary expired during hibernate
+          
+          bool alarmStillActive = gMonitorState[i].highAlarmLatched || gMonitorState[i].lowAlarmLatched;
+          if (alarmStillActive && gRelayActiveForMonitor[i]) {
+            triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, true);
+            unsigned long activateTime = millis();
+            for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+              if (cfg.relayMask & (1 << r)) {
+                gRelayActivationTime[r] = activateTime;
+              }
+            }
+            Serial.print(F("Relay restored after hibernate recovery for monitor "));
+            Serial.println(cfg.name);
+          }
+        }
       }
       
       // Notify server of the state change (entry or recovery)

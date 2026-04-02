@@ -1,7 +1,7 @@
 # TankAlarm Master TODO List
 
-> **Current Version:** 1.1.8 (March 16, 2026)  
-> **Last Updated:** June 9, 2026  
+> **Current Version:** 1.2.2 (April 2, 2026)  
+> **Last Updated:** April 2, 2026  
 > **Purpose:** Comprehensive tracker for all unimplemented changes identified in code reviews and logic reviews. Update after every new review or commit.
 
 ---
@@ -105,10 +105,10 @@ These items represent data loss, safety, or security risks.
 - **Source:** LOGICREVIEW-20260324
 - **Fixed:** June 9, 2026 — Viewer `handleViewerSummary()` updated.
 
-### ~~I-7: Server Overrides Per-Monitor SMS Intent **(S)(C)**~~ — DESIGN CHOICE
-- [x] Server intentionally forces `smsEnabled=true` for sensor alarms (high/low/clear/digital), modulated by server-wide policies (`smsOnHigh`, `smsOnLow`). Non-sensor/diagnostic alarms respect client's `smsEnabled` setting. This is by design — sensor-level alarms are always SMS-eligible.
-- **Source:** LOGICREVIEW-20260324
-- **Verified:** March 24, 2026 — confirmed intentional at Server line ~8382.
+### ~~I-7: Server Overrides Per-Monitor SMS Intent **(S)(C)**~~ ✅ FIXED
+- [x] SMS dispatch now requires BOTH client intent (`doc["se"]` flag) AND server policy (`smsOnHigh`/`smsOnLow`/`smsOnClear`). Previously server force-set `smsEnabled=true` for all sensor alarms, ignoring the client's per-monitor SMS preference.
+- **Source:** LOGICREVIEW-20260324, CODE_REVIEW_04022026_COMPREHENSIVE.md (HIGH-7)
+- **Fixed:** April 2, 2026 — Server `handleAlarm()` rewritten to use `clientWantsSms && smsAllowedByServer`.
 
 ### I-6: Config Retry State Inconsistency **(S)** — STATE MACHINE
 - [ ] Auto-retry leaves `pendingDispatch=true` until ACK. Manual retry clears `pendingDispatch=false` immediately on Notecard send success (line ~7187). If a manual note is lost in transit, no auto re-send happens because `pendingDispatch` was already cleared.
@@ -210,10 +210,10 @@ These items represent data loss, safety, or security risks.
 - **Source:** CODE_REVIEW_RECOMMENDATIONS_02262026.md
 - **Verified:** March 24, 2026.
 
-### JSON API Builders Using String Concatenation **(S)** — PARTIALLY FIXED
-- [~] Uses `+=` incremental concatenation (Server lines ~13228-13232) instead of single massive concat, reducing peak memory. However, still uses `String` class rather than streaming JSON. Heap fragmentation risk remains but is reduced.
-- **Source:** CODE_REVIEW_RECOMMENDATIONS_02262026.md
-- **Verified:** March 24, 2026.
+### JSON API Builders Using String Concatenation **(S)** — PARTIALLY FIXED / DEFERRED
+- [D] Uses `+=` incremental concatenation (Server lines ~13228-13232) instead of single massive concat, reducing peak memory. However, still uses `String` class rather than streaming JSON. Heap fragmentation risk remains but is reduced. Full migration to ArduinoJson deferred — large refactor with low urgency since inputs are from controlled sources.
+- **Source:** CODE_REVIEW_RECOMMENDATIONS_02262026.md, CODE_REVIEW_04022026_COMPREHENSIVE.md (MED-13)
+- **Verified:** March 24, 2026. Deferred April 2, 2026.
 
 ---
 
@@ -347,6 +347,18 @@ Items from the COMMON_HEADER_AUDIT_02192026.md that need cleanup.
 
 Items moved here after implementation. Include version number and date.
 
+### Completed in Code Review Implementation (April 2, 2026)
+- [x] **CRITICAL-1:** Session token PRNG → STM32 hardware RNG with LCG fallback (Server)
+- [x] **CRITICAL-2:** Relay actuation decoupled from rate limiting — relays activate even when SMS is rate-limited (Client)
+- [x] **CRITICAL-3:** UNTIL_CLEAR relay clearing — fixed comparison that always evaluated false (Client)
+- [x] **HIGH-2:** Security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`) on all HTTP responses (Server)
+- [x] **HIGH-6:** PIN digit-only validation added to first-login path (Server)
+- [x] **HIGH-7 / I-7:** SMS dispatch requires both client intent AND server policy (Server)
+- [x] **HIGH-8:** Unload event payload now includes `sms`/`email` notification flags (Client)
+- [x] **MED-12:** Rate limit per-monitor timestamp committed only after both per-monitor and global checks pass (Client)
+- [x] **MED-15:** Relay state restored on recovery from CRITICAL_HIBERNATE (Client)
+- [x] **MED-17:** Hot-tier analytics (MoM + YoY) now filter snapshots by target month/year via `gmtime()` (Server)
+
 ### Completed in Code Review Pass (June 9, 2026)
 - [x] **C-6:** Viewer DFU — `dfu.status` → `card.dfu` with `name:"stm32"` (Viewer)
 - [x] **C-2:** SMS rate limit — fails closed (deny) when no time sync (Server)
@@ -442,6 +454,8 @@ This TODO was compiled from the following documents, sorted by date:
 
 | Date | Document | Type |
 |------|----------|------|
+| 2026-04-02 | CODE_REVIEW_04022026_COMPREHENSIVE.md | Comprehensive review with peer cross-validation |
+| 2026-04-02 | IMPLEMENTATION_PLAN_04022026.md | Implementation plan (11 of 16 findings implemented) |
 | 2026-03-24 | LOGICREVIEW-20260324-* (9 files) | Logic review — multiple AI reviewers |
 | 2026-03-24 | CODE_REVIEW_VIEWER_DECISION_LOGIC_03242026.md | Viewer decision logic review |
 | 2026-03-21 | CODE_REVIEW_PUMP_OFF_CONTROL_03212026.md | Pump off control review |
