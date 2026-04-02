@@ -3862,8 +3862,82 @@ static void applyConfigUpdate(const JsonDocument &doc) {
 
     gConfig.monitorCount = newCount;
     for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
+      // Capture previous state before config update
+      bool wasAlarmsEnabled = gConfig.monitors[i].alarmsEnabled;
+      bool wasStuckEnabled = gConfig.monitors[i].stuckDetectionEnabled;
+      char wasRelayTarget[48];
+      strlcpy(wasRelayTarget, gConfig.monitors[i].relayTargetClient, sizeof(wasRelayTarget));
+      uint8_t wasRelayMask = gConfig.monitors[i].relayMask;
+
       JsonObjectConst t = sensors[i];
       parseMonitorFromJson(gConfig.monitors[i], t, i);
+
+      // BugFix 04022026: When alarmsEnabled transitions from true to false,
+      // clear any latched alarm state and send a "clear" note to the server.
+      // Previously, stale highAlarmLatched/lowAlarmLatched persisted and were
+      // reported in daily reports, causing phantom alarms on the dashboard.
+      if (wasAlarmsEnabled && !gConfig.monitors[i].alarmsEnabled) {
+        if (gMonitorState[i].highAlarmLatched || gMonitorState[i].lowAlarmLatched) {
+          gMonitorState[i].highAlarmLatched = false;
+          gMonitorState[i].lowAlarmLatched = false;
+          gMonitorState[i].highAlarmDebounceCount = 0;
+          gMonitorState[i].lowAlarmDebounceCount = 0;
+          gMonitorState[i].clearDebounceCount = 0;
+          // Send explicit clear so server clears its alarmActive flag
+          sendAlarm(i, "clear", gMonitorState[i].currentInches);
+          // Deactivate any local alarm (relay/buzzer)
+          activateLocalAlarm(i, false);
+        }
+      }
+
+      // BugFix 04022026: When stuckDetectionEnabled transitions true -> false,
+      // clear sensorFailed and related state. Previously, a sensor marked as
+      // failed would remain suppressed (no alarms, no telemetry) until reboot.
+      if (wasStuckEnabled && !gConfig.monitors[i].stuckDetectionEnabled) {
+        if (gMonitorState[i].sensorFailed) {
+          // Send recovery note so server clears its sensor-stuck alarm
+          JsonDocument recovDoc;
+          recovDoc["c"] = gDeviceUID;
+          recovDoc["s"] = gConfig.siteName;
+          recovDoc["k"] = gConfig.monitors[i].sensorIndex;
+          recovDoc["y"] = "sensor-recovered";
+          recovDoc["rd"] = 0;
+          recovDoc["t"] = currentEpoch();
+          publishNote(ALARM_FILE, recovDoc, true);
+        }
+        gMonitorState[i].sensorFailed = false;
+        gMonitorState[i].stuckReadingCount = 0;
+        gMonitorState[i].consecutiveFailures = 0;
+        gMonitorState[i].hasLastValidReading = false;
+        gMonitorState[i].recoveryCount = 0;
+      }
+
+      // BugFix 04022026: When relay config is removed from an existing monitor
+      // (relayMask set to 0 or relayTargetClient cleared), deactivate active
+      // relays that were energized under the old config. Previously, relay
+      // runtime state persisted and relays stayed energized indefinitely.
+      if (gRelayActiveForMonitor[i]) {
+        bool relayRemoved = (gConfig.monitors[i].relayMask == 0) ||
+                            (gConfig.monitors[i].relayTargetClient[0] == '\0');
+        bool relayTargetChanged = (wasRelayTarget[0] != '\0') &&
+                                  (strcmp(wasRelayTarget, gConfig.monitors[i].relayTargetClient) != 0);
+        bool relayMaskChanged = (wasRelayMask != 0) && (wasRelayMask != gConfig.monitors[i].relayMask);
+        if (relayRemoved || relayTargetChanged || relayMaskChanged) {
+          // Deactivate relays using the OLD config (where the target/mask was)
+          if (wasRelayTarget[0] != '\0' && wasRelayMask != 0) {
+            triggerRemoteRelays(wasRelayTarget, wasRelayMask, false);
+          }
+          for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+            if (gRelayActiveMaskForMonitor[i] & (1 << r)) {
+              gRelayActivationTime[r] = 0;
+            }
+          }
+          gRelayActiveForMonitor[i] = false;
+          gRelayActiveMaskForMonitor[i] = 0;
+          Serial.print(F("Relay deactivated: config removed/changed for monitor "));
+          Serial.println(i);
+        }
+      }
 
       // Side effect: reset accumulated state when pulse mode config changes
       if (!t["pulseAccumulatedMode"].isNull() || !t["rpmAccumulatedMode"].isNull()) {
@@ -3871,8 +3945,11 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         gRpmAccumulatedStartMillis[i] = millis();
         gRpmAccumulatedInitialized[i] = false;
       }
-      // Side effect: reset unload tracking when trackUnloads is enabled
-      if (!t["trackUnloads"].isNull() && gConfig.monitors[i].trackUnloads) {
+      // BugFix 04022026: Reset unload tracking unconditionally when the field
+      // is present, not only when enabled. Previously, disabling trackUnloads
+      // left stale peak/epoch state that could cause false unload events if
+      // the feature was later re-enabled.
+      if (!t["trackUnloads"].isNull()) {
         gMonitorState[i].unloadTracking = false;
         gMonitorState[i].unloadPeakInches = 0.0f;
         gMonitorState[i].unloadPeakEpoch = 0.0;
@@ -6113,10 +6190,14 @@ static void sendDailyReport() {
       // Include active alarm summary as backup notification path.
       // If the original alarm note was lost due to weak signal, the server
       // can detect active alarms from this daily report instead.
+      // BugFix 04022026: Only report alarms for monitors with alarmsEnabled.
+      // Previously, stale latched state from before alarmsEnabled was disabled
+      // would be reported, causing phantom alarms on the server dashboard.
       {
         bool anyAlarmActive = false;
         for (uint8_t ai = 0; ai < gConfig.monitorCount; ++ai) {
-          if (gMonitorState[ai].highAlarmLatched || gMonitorState[ai].lowAlarmLatched) {
+          if (gConfig.monitors[ai].alarmsEnabled &&
+              (gMonitorState[ai].highAlarmLatched || gMonitorState[ai].lowAlarmLatched)) {
             anyAlarmActive = true;
             break;
           }
@@ -6124,7 +6205,8 @@ static void sendDailyReport() {
         if (anyAlarmActive) {
           JsonArray alarmsArr = doc["alarms"].to<JsonArray>();
           for (uint8_t ai = 0; ai < gConfig.monitorCount; ++ai) {
-            if (gMonitorState[ai].highAlarmLatched || gMonitorState[ai].lowAlarmLatched) {
+            if (gConfig.monitors[ai].alarmsEnabled &&
+                (gMonitorState[ai].highAlarmLatched || gMonitorState[ai].lowAlarmLatched)) {
               JsonObject a = alarmsArr.add<JsonObject>();
               a["k"] = gConfig.monitors[ai].sensorIndex;
               a["hi"] = gMonitorState[ai].highAlarmLatched;

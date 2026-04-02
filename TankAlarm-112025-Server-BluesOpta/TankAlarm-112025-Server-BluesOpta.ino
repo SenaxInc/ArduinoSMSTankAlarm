@@ -4433,6 +4433,18 @@ static void clearAlarmEvent(const char *clientUid, uint8_t sensorIndex) {
       break;
     }
   }
+
+  // BugFix 04022026: Reset SMS rate limit state so a fresh alarm cycle
+  // is not suppressed by stale timestamps from the previous alarm.
+  // Previously, lastSmsAlertEpoch persisted across alarm clear/re-trigger
+  // cycles, blocking the first SMS if re-trigger occurred within
+  // MIN_SMS_ALERT_INTERVAL_SECONDS of the previous alarm's last SMS.
+  SensorRecord *rec = findSensorByHash(clientUid, sensorIndex);
+  if (rec) {
+    rec->lastSmsAlertEpoch = 0.0;
+    rec->smsAlertsInLastHour = 0;
+    memset(rec->smsAlertTimestamps, 0, sizeof(rec->smsAlertTimestamps));
+  }
 }
 
 // ============================================================================
@@ -8659,10 +8671,14 @@ static void handleDaily(JsonDocument &doc, double epoch) {
         }
       }
     }
+  }
 
-    // Reconciliation: clear alarms on server for sensors that the client
-    // reports as NOT alarming.  This catches orphaned server-side alarms
-    // where the "clear" note was lost or rate-limited.
+  // BugFix 04022026: Reconciliation must run even when the client reports NO
+  // active alarms (i.e. the "alarms" array is absent from the daily report).
+  // Previously this block was nested inside the `if (dailyAlarms)` guard,
+  // so when a client had zero active alarms the server never cleared orphaned
+  // alarmActive flags — causing phantom alarms to persist indefinitely.
+  if (isFirstPart) {
     for (uint8_t ri = 0; ri < gSensorRecordCount; ++ri) {
       if (strcmp(gSensorRecords[ri].clientUid, clientUid) != 0) continue;
       if (!gSensorRecords[ri].alarmActive) continue;
@@ -8672,13 +8688,15 @@ static void handleDaily(JsonDocument &doc, double epoch) {
           strcmp(gSensorRecords[ri].alarmType, "power") == 0) continue;
       // Check if this sensorIndex has an active alarm in the daily report
       bool foundInDaily = false;
-      for (JsonObject a : dailyAlarms) {
-        uint8_t dailyIdx = a["k"] | 0;
-        if (dailyIdx == gSensorRecords[ri].sensorIndex) {
-          bool hiAlarm = a["hi"] | false;
-          bool loAlarm = a["lo"] | false;
-          if (hiAlarm || loAlarm) foundInDaily = true;
-          break;
+      if (dailyAlarms) {
+        for (JsonObject a : dailyAlarms) {
+          uint8_t dailyIdx = a["k"] | 0;
+          if (dailyIdx == gSensorRecords[ri].sensorIndex) {
+            bool hiAlarm = a["hi"] | false;
+            bool loAlarm = a["lo"] | false;
+            if (hiAlarm || loAlarm) foundInDaily = true;
+            break;
+          }
         }
       }
       if (!foundInDaily) {
