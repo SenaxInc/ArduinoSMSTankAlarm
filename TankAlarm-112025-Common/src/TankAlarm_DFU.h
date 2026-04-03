@@ -1,0 +1,559 @@
+/**
+ * TankAlarm_DFU.h
+ *
+ * IAP (In-Application Programming) firmware update via Blues Notecard.
+ *
+ * The Blues Wireless for Opta carrier does NOT route the AUX pins needed for
+ * Outboard DFU (ODFU). This module implements IAP DFU instead:
+ *   1. Notecard downloads firmware from Notehub (automatic, background)
+ *   2. Host polls dfu.status to detect when firmware is "ready"
+ *   3. Host enters DFU mode (hub.set mode=dfu)
+ *   4. Host reads firmware chunks via dfu.get
+ *   5. Host writes chunks to internal flash via Mbed FlashIAP
+ *   6. Host verifies, clears DFU state, restores hub mode, and reboots
+ *
+ * Reference: https://dev.blues.io/notehub/host-firmware-updates/iap-firmware-update/
+ *            https://dev.blues.io/notehub/host-firmware-updates/notecard-api-requests-for-dfu/
+ *
+ * Copyright (c) 2025-2026 Senax Inc. All rights reserved.
+ */
+
+#ifndef TANKALARM_DFU_H
+#define TANKALARM_DFU_H
+
+#include <Arduino.h>
+#include <Notecard.h>
+
+// ============================================================================
+// IAP DFU Configuration
+// ============================================================================
+
+// Chunk size for dfu.get reads (bytes of raw binary per request).
+// Over I2C, must stay within Notecard I2C MTU. 128 bytes is safe and
+// results in ~176 bytes of base64 in the JSON response.
+#ifndef DFU_IAP_CHUNK_SIZE
+#define DFU_IAP_CHUNK_SIZE 128
+#endif
+
+// Maximum retries for a single dfu.get chunk before aborting
+#ifndef DFU_IAP_CHUNK_RETRIES
+#define DFU_IAP_CHUNK_RETRIES 3
+#endif
+
+// Maximum time (ms) to wait for Notecard to enter DFU mode after hub.set
+#ifndef DFU_IAP_MODE_TIMEOUT_MS
+#define DFU_IAP_MODE_TIMEOUT_MS 60000UL
+#endif
+
+// ============================================================================
+// IAP DFU Setup — called from each sketch's initializeNotecard()
+// ============================================================================
+
+/**
+ * Enable IAP firmware download from Notehub to Notecard.
+ * Replaces the ODFU card.dfu setup that doesn't work on Wireless for Opta.
+ *
+ * Sends: dfu.status {"on":true, "name":"user"}
+ *
+ * This allows the Notecard to accept firmware binaries pushed from Notehub.
+ * The firmware sits in Notecard storage until the host reads it via dfu.get.
+ */
+static inline void tankalarm_enableIapDfu(Notecard &notecard) {
+  J *req = notecard.newRequest("dfu.status");
+  if (!req) {
+    Serial.println(F("WARNING: Failed to create dfu.status enable request"));
+    return;
+  }
+  JAddBoolToObject(req, "on", true);
+  JAddStringToObject(req, "name", "user");
+
+  J *rsp = notecard.requestAndResponse(req);
+  if (rsp) {
+    const char *err = JGetString(rsp, "err");
+    if (err && err[0] != '\0') {
+      Serial.print(F("WARNING: dfu.status enable failed: "));
+      Serial.println(err);
+    } else {
+      Serial.println(F("IAP DFU enabled (firmware downloads from Notehub allowed)"));
+    }
+    notecard.deleteResponse(rsp);
+  } else {
+    Serial.println(F("WARNING: dfu.status enable returned no response"));
+  }
+}
+
+// ============================================================================
+// IAP DFU Status Check — called periodically from loop()
+// ============================================================================
+
+/**
+ * IAP DFU status result, populated by tankalarm_checkDfuStatus().
+ */
+struct TankAlarmDfuStatus {
+  bool updateAvailable;       // Firmware is fully downloaded and ready
+  bool downloading;           // Notecard is still downloading from Notehub
+  bool error;                 // DFU error occurred
+  uint32_t firmwareLength;    // Size of firmware binary (when ready)
+  char version[32];           // Available firmware version string
+  char mode[16];              // Raw Notecard DFU mode string
+  char errorMsg[64];          // Error message (if any)
+};
+
+/**
+ * Poll Notecard for IAP DFU status.
+ *
+ * Sends: dfu.status {"name":"user"}
+ *
+ * @param notecard  Reference to Notecard instance
+ * @param status    Output: populated with current DFU state
+ * @return true if Notecard responded (even if no update), false on I2C failure
+ */
+static inline bool tankalarm_checkDfuStatus(Notecard &notecard, TankAlarmDfuStatus &status) {
+  memset(&status, 0, sizeof(status));
+  strlcpy(status.mode, "idle", sizeof(status.mode));
+
+  J *req = notecard.newRequest("dfu.status");
+  if (!req) {
+    return false;
+  }
+  JAddStringToObject(req, "name", "user");
+
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    return false;
+  }
+
+  const char *mode = JGetString(rsp, "mode");
+  const char *version = JGetString(rsp, "version");
+  const char *errMsg = JGetString(rsp, "err");
+
+  if (mode && mode[0] != '\0') {
+    strlcpy(status.mode, mode, sizeof(status.mode));
+  }
+
+  if (version && version[0] != '\0') {
+    strlcpy(status.version, version, sizeof(status.version));
+  }
+
+  if (errMsg && errMsg[0] != '\0') {
+    strlcpy(status.errorMsg, errMsg, sizeof(status.errorMsg));
+    status.error = true;
+  }
+
+  // Parse firmware length from body (available when mode is "ready")
+  J *body = JGetObject(rsp, "body");
+  if (body) {
+    status.firmwareLength = (uint32_t)JGetNumber(body, "length");
+  }
+
+  // Determine state
+  if (mode) {
+    if (strcmp(mode, "ready") == 0) {
+      status.updateAvailable = true;
+    } else if (strcmp(mode, "downloading") == 0 || strcmp(mode, "download-pending") == 0) {
+      status.downloading = true;
+    } else if (strcmp(mode, "error") == 0) {
+      status.error = true;
+    }
+  }
+
+  notecard.deleteResponse(rsp);
+  return true;
+}
+
+// ============================================================================
+// IAP DFU Apply — reads firmware from Notecard and writes to flash
+// ============================================================================
+
+// Only available on Opta/Mbed platforms with FlashIAP
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+#include <FlashIAP.h>
+
+/**
+ * Simple base64 decode (RFC 4648).
+ * Decodes in-place or to a separate output buffer.
+ *
+ * @param dst     Output buffer for decoded bytes
+ * @param src     Null-terminated base64 input string
+ * @param dstLen  Size of dst buffer
+ * @return Number of bytes written to dst, or -1 on error
+ */
+static int tankalarm_b64decode(uint8_t *dst, const char *src, size_t dstLen) {
+  static const int8_t LUT[256] = {
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
+    52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+    -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+    15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+    -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+    41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+  };
+
+  size_t out = 0;
+  uint32_t accum = 0;
+  int bits = 0;
+
+  for (const char *p = src; *p && *p != '='; p++) {
+    int8_t val = LUT[(uint8_t)*p];
+    if (val < 0) continue;  // Skip whitespace/invalid
+    accum = (accum << 6) | (uint32_t)val;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (out >= dstLen) return -1;
+      dst[out++] = (uint8_t)(accum >> bits) & 0xFF;
+    }
+  }
+  return (int)out;
+}
+
+/**
+ * Perform IAP firmware update: read chunks from Notecard, write to flash, reboot.
+ *
+ * This is a BLOCKING operation that takes several minutes for large firmware.
+ * The watchdog must be kicked via the callback. The Notecard is put into DFU
+ * mode (no sync) for the duration.
+ *
+ * @param notecard       Reference to Notecard instance
+ * @param firmwareLength Total firmware size in bytes (from dfu.status body)
+ * @param hubMode        Hub mode to restore if update fails ("continuous" or "periodic")
+ * @param kickWatchdog   Optional watchdog kick callback (called between chunks)
+ * @return true if update succeeded (device will reboot), false on failure
+ */
+static bool tankalarm_performIapUpdate(
+    Notecard &notecard,
+    uint32_t firmwareLength,
+    const char *hubMode,
+    void (*kickWatchdog)() = nullptr
+) {
+  if (firmwareLength == 0 || firmwareLength > 1536 * 1024) {
+    Serial.print(F("IAP DFU: Invalid firmware length: "));
+    Serial.println(firmwareLength);
+    return false;
+  }
+
+  Serial.println(F("========================================"));
+  Serial.println(F("IAP DFU: Starting firmware update"));
+  Serial.print(F("Firmware size: "));
+  Serial.print(firmwareLength);
+  Serial.println(F(" bytes"));
+  Serial.println(F("========================================"));
+
+  // --- Step 1: Put Notecard into DFU mode ---
+  Serial.println(F("IAP DFU: Entering Notecard DFU mode..."));
+  {
+    J *req = notecard.newRequest("hub.set");
+    if (!req) {
+      Serial.println(F("IAP DFU: FAILED to create hub.set request"));
+      return false;
+    }
+    JAddStringToObject(req, "mode", "dfu");
+    J *rsp = notecard.requestAndResponse(req);
+    if (rsp) {
+      const char *err = JGetString(rsp, "err");
+      if (err && err[0] != '\0') {
+        Serial.print(F("IAP DFU: hub.set dfu error: "));
+        Serial.println(err);
+        notecard.deleteResponse(rsp);
+        return false;
+      }
+      notecard.deleteResponse(rsp);
+    } else {
+      Serial.println(F("IAP DFU: hub.set dfu no response"));
+      return false;
+    }
+  }
+
+  // --- Step 2: Wait for Notecard DFU mode to be active ---
+  Serial.println(F("IAP DFU: Waiting for DFU mode to activate..."));
+  {
+    unsigned long start = millis();
+    bool dfuReady = false;
+    while ((millis() - start) < DFU_IAP_MODE_TIMEOUT_MS) {
+      if (kickWatchdog) kickWatchdog();
+      delay(2000);
+
+      J *req = notecard.newRequest("dfu.get");
+      if (!req) continue;
+      JAddNumberToObject(req, "length", 0);
+      J *rsp = notecard.requestAndResponse(req);
+      if (rsp) {
+        const char *err = JGetString(rsp, "err");
+        if (!err || err[0] == '\0') {
+          dfuReady = true;
+          notecard.deleteResponse(rsp);
+          break;
+        }
+        notecard.deleteResponse(rsp);
+      }
+    }
+    if (!dfuReady) {
+      Serial.println(F("IAP DFU: Timeout waiting for DFU mode"));
+      goto iap_restore_hub;
+    }
+  }
+  Serial.println(F("IAP DFU: DFU mode active"));
+
+  // --- Step 3: Initialize flash and erase application area ---
+  {
+    mbed::FlashIAP flash;
+    int flashResult = flash.init();
+    if (flashResult != 0) {
+      Serial.print(F("IAP DFU: FlashIAP init failed: "));
+      Serial.println(flashResult);
+      goto iap_restore_hub;
+    }
+
+    uint32_t flashStart = flash.get_flash_start();
+    uint32_t flashSize = flash.get_flash_size();
+    uint32_t pageSize = flash.get_page_size();
+    uint32_t sectorSize = flash.get_sector_size(flashStart);
+
+    Serial.print(F("Flash: start=0x"));
+    Serial.print(flashStart, HEX);
+    Serial.print(F(" size="));
+    Serial.print(flashSize / 1024);
+    Serial.print(F("KB page="));
+    Serial.print(pageSize);
+    Serial.print(F(" sector="));
+    Serial.println(sectorSize);
+
+    // Application start address — after the Arduino bootloader.
+    // On STM32H747 (Opta), the bootloader occupies the first 256KB (0x40000).
+    // The application binary from Arduino IDE targets 0x08040000.
+    uint32_t appStart = flashStart + 0x40000;
+
+    // Sanity check: firmware must fit in remaining flash
+    if (firmwareLength > (flashStart + flashSize - appStart)) {
+      Serial.println(F("IAP DFU: Firmware too large for flash"));
+      flash.deinit();
+      goto iap_restore_hub;
+    }
+
+    // Erase the sectors covering the firmware area
+    // Round up to sector boundary
+    uint32_t eraseAddr = appStart;
+    uint32_t eraseSizeNeeded = firmwareLength;
+    // Align erase size to sector boundaries
+    uint32_t firstSectorSize = flash.get_sector_size(eraseAddr);
+    uint32_t eraseSize = 0;
+    uint32_t addr = eraseAddr;
+    while (eraseSize < eraseSizeNeeded) {
+      uint32_t ss = flash.get_sector_size(addr);
+      eraseSize += ss;
+      addr += ss;
+    }
+
+    Serial.print(F("IAP DFU: Erasing "));
+    Serial.print(eraseSize / 1024);
+    Serial.print(F("KB at 0x"));
+    Serial.println(eraseAddr, HEX);
+
+    if (kickWatchdog) kickWatchdog();
+    flashResult = flash.erase(eraseAddr, eraseSize);
+    if (flashResult != 0) {
+      Serial.print(F("IAP DFU: Flash erase failed: "));
+      Serial.println(flashResult);
+      flash.deinit();
+      goto iap_restore_hub;
+    }
+    if (kickWatchdog) kickWatchdog();
+
+    Serial.println(F("IAP DFU: Flash erased, reading firmware chunks..."));
+
+    // --- Step 4: Read firmware chunks via dfu.get and program flash ---
+    // Buffer must be page-aligned in size for FlashIAP.program()
+    const uint32_t chunkSize = DFU_IAP_CHUNK_SIZE;
+    // Page-align the program buffer size
+    uint32_t alignedBufSize = ((chunkSize + pageSize - 1) / pageSize) * pageSize;
+    uint8_t *progBuf = (uint8_t *)malloc(alignedBufSize);
+    // Base64 decode buffer (base64 expands 3→4, so 4/3 * chunkSize + padding)
+    size_t b64BufSize = ((chunkSize * 4) / 3) + 16;
+    char *b64Buf = (char *)malloc(b64BufSize);
+
+    if (!progBuf || !b64Buf) {
+      Serial.println(F("IAP DFU: Failed to allocate buffers"));
+      free(progBuf);
+      free(b64Buf);
+      flash.deinit();
+      goto iap_restore_hub;
+    }
+
+    uint32_t offset = 0;
+    uint32_t lastProgressPct = 0;
+
+    while (offset < firmwareLength) {
+      if (kickWatchdog) kickWatchdog();
+
+      uint32_t remaining = firmwareLength - offset;
+      uint32_t thisChunk = (remaining < chunkSize) ? remaining : chunkSize;
+
+      // Retry loop for this chunk
+      bool chunkOk = false;
+      for (uint8_t retry = 0; retry < DFU_IAP_CHUNK_RETRIES; retry++) {
+        J *req = notecard.newRequest("dfu.get");
+        if (!req) {
+          delay(500);
+          continue;
+        }
+        JAddNumberToObject(req, "length", (int)thisChunk);
+        if (offset > 0) {
+          JAddNumberToObject(req, "offset", (int)offset);
+        }
+
+        J *rsp = notecard.requestAndResponse(req);
+        if (!rsp) {
+          Serial.print(F("IAP DFU: dfu.get no response at offset "));
+          Serial.println(offset);
+          delay(500);
+          continue;
+        }
+
+        const char *err = JGetString(rsp, "err");
+        if (err && err[0] != '\0') {
+          Serial.print(F("IAP DFU: dfu.get error: "));
+          Serial.println(err);
+          notecard.deleteResponse(rsp);
+          delay(500);
+          continue;
+        }
+
+        const char *payload = JGetString(rsp, "payload");
+        if (!payload || payload[0] == '\0') {
+          Serial.println(F("IAP DFU: Empty payload"));
+          notecard.deleteResponse(rsp);
+          delay(500);
+          continue;
+        }
+
+        // Decode base64 payload
+        memset(progBuf, flash.get_erase_value(), alignedBufSize);
+        int decoded = tankalarm_b64decode(progBuf, payload, alignedBufSize);
+        notecard.deleteResponse(rsp);
+
+        if (decoded <= 0) {
+          Serial.println(F("IAP DFU: Base64 decode failed"));
+          delay(500);
+          continue;
+        }
+
+        // Program flash — size must be page-aligned
+        uint32_t programSize = ((uint32_t)decoded + pageSize - 1) / pageSize * pageSize;
+        flashResult = flash.program(progBuf, appStart + offset, programSize);
+        if (flashResult != 0) {
+          Serial.print(F("IAP DFU: Flash program failed at 0x"));
+          Serial.print(appStart + offset, HEX);
+          Serial.print(F(": "));
+          Serial.println(flashResult);
+          // Flash programming failure is fatal — do NOT continue
+          free(progBuf);
+          free(b64Buf);
+          flash.deinit();
+          goto iap_restore_hub;
+        }
+
+        offset += (uint32_t)decoded;
+        chunkOk = true;
+        break;
+      }
+
+      if (!chunkOk) {
+        Serial.print(F("IAP DFU: Failed to read chunk at offset "));
+        Serial.print(offset);
+        Serial.println(F(" after retries"));
+        free(progBuf);
+        free(b64Buf);
+        flash.deinit();
+        goto iap_restore_hub;
+      }
+
+      // Progress reporting (every 10%)
+      uint32_t pct = (offset * 100) / firmwareLength;
+      if (pct >= lastProgressPct + 10) {
+        lastProgressPct = pct;
+        Serial.print(F("IAP DFU: "));
+        Serial.print(pct);
+        Serial.print(F("% ("));
+        Serial.print(offset);
+        Serial.print(F("/"));
+        Serial.print(firmwareLength);
+        Serial.println(F(")"));
+      }
+    }
+
+    free(progBuf);
+    free(b64Buf);
+    flash.deinit();
+
+    Serial.println(F("IAP DFU: Firmware written to flash successfully"));
+  }
+
+  // --- Step 5: Clear DFU state and report success ---
+  {
+    J *req = notecard.newRequest("dfu.status");
+    if (req) {
+      JAddBoolToObject(req, "stop", true);
+      JAddStringToObject(req, "status", "firmware update successful");
+      JAddStringToObject(req, "name", "user");
+      J *rsp = notecard.requestAndResponse(req);
+      if (rsp) notecard.deleteResponse(rsp);
+    }
+  }
+
+  // --- Step 6: Restore hub mode ---
+  {
+    J *req = notecard.newRequest("hub.set");
+    if (req) {
+      JAddStringToObject(req, "mode", hubMode);
+      J *rsp = notecard.requestAndResponse(req);
+      if (rsp) notecard.deleteResponse(rsp);
+    }
+  }
+
+  Serial.println(F("========================================"));
+  Serial.println(F("IAP DFU: UPDATE COMPLETE — REBOOTING"));
+  Serial.println(F("========================================"));
+  Serial.flush();
+  delay(500);
+
+  NVIC_SystemReset();
+  // Never reaches here
+  return true;
+
+iap_restore_hub:
+  // Failure path: restore hub mode so device continues normal operation
+  Serial.println(F("IAP DFU: FAILED — restoring normal operation"));
+  {
+    // Report failure to Notehub
+    J *req = notecard.newRequest("dfu.status");
+    if (req) {
+      JAddBoolToObject(req, "stop", true);
+      JAddStringToObject(req, "status", "firmware update failed");
+      JAddStringToObject(req, "name", "user");
+      J *rsp = notecard.requestAndResponse(req);
+      if (rsp) notecard.deleteResponse(rsp);
+    }
+  }
+  {
+    J *req = notecard.newRequest("hub.set");
+    if (req) {
+      JAddStringToObject(req, "mode", hubMode);
+      J *rsp = notecard.requestAndResponse(req);
+      if (rsp) notecard.deleteResponse(rsp);
+    }
+  }
+  return false;
+}
+
+#endif // ARDUINO_OPTA || ARDUINO_ARCH_MBED
+
+#endif // TANKALARM_DFU_H

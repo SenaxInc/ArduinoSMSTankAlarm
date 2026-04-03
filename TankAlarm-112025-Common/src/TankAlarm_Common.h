@@ -14,7 +14,7 @@
 // Firmware Version
 // ============================================================================
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "1.2.3"
+#define FIRMWARE_VERSION "1.3.0"
 #endif
 
 // Notefile schema version — increment when payload field names or semantics change.
@@ -243,9 +243,14 @@
 
 // ============================================================================
 // DFU (Device Firmware Update) Check Interval
+// Each sketch overrides this to match its device-specific polling schedule:
+//   Client (grid): 10 minutes  (matches inbound poll)
+//   Client (solar): 1 hour     (matches inbound sync)
+//   Server: 1 hour             (matches stale check / heartbeat)
+//   Viewer: 1 hour             (matches existing schedule)
 // ============================================================================
 #ifndef DFU_CHECK_INTERVAL_MS
-#define DFU_CHECK_INTERVAL_MS (60UL * 60UL * 1000UL)  // 1 hour
+#define DFU_CHECK_INTERVAL_MS (60UL * 60UL * 1000UL)  // 1 hour default
 #endif
 
 // ============================================================================
@@ -256,6 +261,7 @@
 #include "TankAlarm_Utils.h"
 #include "TankAlarm_I2C.h"
 #include "TankAlarm_Notecard.h"
+#include "TankAlarm_DFU.h"
 #include "TankAlarm_Solar.h"
 #include "TankAlarm_Battery.h"
 #include "TankAlarm_Diagnostics.h"

@@ -1,5 +1,5 @@
 // Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
-// Version: 1.2.3
+// Version: 1.3.0
 // NOTE: Save this file as UTF-8 without BOM to avoid stray character compile errors.
 //
 // Hardware:
@@ -978,6 +978,12 @@ static char gDfuVersion[32] = {0};
 static char gDfuMode[16] = "idle";  // Notecard DFU mode: idle, downloading, ready, error, etc.
 static bool gDfuInProgress = false;
 static char gDfuError[128] = {0};   // Last error message from Notecard dfu.status
+static uint32_t gDfuFirmwareLength = 0;  // Firmware size in bytes (from dfu.status body)
+
+// Watchdog kick wrapper for IAP DFU callback
+static void dfuKickWatchdog() {
+  mbedWatchdog.kick();
+}
 
 // I2C bus health tracking (required by TankAlarm_I2C.h)
 uint32_t gCurrentLoopI2cErrors = 0;    // Not used by Server but required by extern
@@ -5542,25 +5548,9 @@ static void initializeNotecard() {
   Serial.print(F("Server Device UID: "));
   Serial.println(gServerUid[0] != '\0' ? gServerUid : "(not available)");
 
-  // Enable outboard DFU (ODFU) so Notecard checks Notehub for host firmware updates
-  req = notecard.newRequest("card.dfu");
-  if (req) {
-    JAddStringToObject(req, "name", "stm32");
-    JAddBoolToObject(req, "on", true);
-    J *dfuRsp = notecard.requestAndResponse(req);
-    if (dfuRsp) {
-      const char *dfuErr = JGetString(dfuRsp, "err");
-      if (dfuErr && dfuErr[0] != '\0') {
-        Serial.print(F("WARNING: card.dfu enable failed: "));
-        Serial.println(dfuErr);
-      } else {
-        Serial.println(F("Outboard DFU enabled for host firmware updates"));
-      }
-      notecard.deleteResponse(dfuRsp);
-    } else {
-      Serial.println(F("WARNING: card.dfu returned no response"));
-    }
-  }
+  // Enable IAP DFU — Wireless for Opta carrier does NOT route AUX pins
+  // (BOOT0, NRST, UART) needed for outboard DFU (ODFU). Use IAP instead.
+  tankalarm_enableIapDfu(notecard);
 }
 
 static void ensureTimeSync() {
@@ -5676,51 +5666,35 @@ static void checkServerVoltage() {
 }
 
 static void checkForFirmwareUpdate() {
-  // Query Notecard for DFU status
-  J *req = notecard.newRequest("dfu.status");
-  if (!req) {
+  // Poll Notecard for IAP DFU status (replaces ODFU card.dfu polling)
+  TankAlarmDfuStatus status;
+  if (!tankalarm_checkDfuStatus(notecard, status)) {
     return;
   }
-  
-  J *rsp = notecard.requestAndResponse(req);
-  if (!rsp) {
-    return;
-  }
-  
-  // Check if firmware update is available
-  // dfu.status response fields:
-  // - "mode": DFU mode string: "idle", "error", "downloading", "ready", "completed"
-  // - "on": true if outboard DFU is enabled
-  // - "version": firmware version available from Notehub
-  // - "body": object with firmware info (length, crc32, md5, etc.)
-  const char *mode = JGetString(rsp, "mode");
-  const char *version = JGetString(rsp, "version");
-  const char *errMsg = JGetString(rsp, "err");
-  
-  // Track the DFU mode for status reporting
-  if (mode && mode[0] != '\0') {
-    strlcpy(gDfuMode, mode, sizeof(gDfuMode));
-  } else {
-    strlcpy(gDfuMode, "idle", sizeof(gDfuMode));
-  }
-  
-  // Capture error details from Notecard for diagnostics and UI display
-  if (errMsg && errMsg[0] != '\0') {
-    strlcpy(gDfuError, errMsg, sizeof(gDfuError));
+
+  // Track the DFU mode for web UI status reporting
+  strlcpy(gDfuMode, status.mode, sizeof(gDfuMode));
+
+  // Capture error details for diagnostics and UI display
+  if (status.error) {
+    strlcpy(gDfuError, status.errorMsg, sizeof(gDfuError));
     Serial.print(F("DFU error from Notecard: "));
     Serial.println(gDfuError);
   } else if (strcmp(gDfuMode, "error") != 0) {
-    // Clear error message when no longer in error state
     gDfuError[0] = '\0';
   }
-  
+
+  // Track firmware length for IAP apply
+  if (status.firmwareLength > 0) {
+    gDfuFirmwareLength = status.firmwareLength;
+  }
+
   // Detect update: version field is populated and differs from current
-  if (version && strlen(version) > 0) {
-    if (!gDfuUpdateAvailable || strcmp(gDfuVersion, version) != 0) {
-      // New update detected
+  if (status.version[0] != '\0') {
+    if (!gDfuUpdateAvailable || strcmp(gDfuVersion, status.version) != 0) {
       gDfuUpdateAvailable = true;
-      strlcpy(gDfuVersion, version, sizeof(gDfuVersion));
-      
+      strlcpy(gDfuVersion, status.version, sizeof(gDfuVersion));
+
       Serial.println(F("========================================"));
       Serial.print(F("FIRMWARE UPDATE AVAILABLE: v"));
       Serial.println(gDfuVersion);
@@ -5730,16 +5704,14 @@ static void checkForFirmwareUpdate() {
       Serial.println(gDfuMode);
       Serial.println(F("Use web UI 'Install Update' button to apply"));
       Serial.println(F("========================================"));
-      
+
       addServerSerialLog("Firmware update available", "info", "dfu");
     }
   } else if (gDfuUpdateAvailable) {
-    // Update was available but is now gone (applied or cancelled)
     gDfuUpdateAvailable = false;
     gDfuVersion[0] = '\0';
+    gDfuFirmwareLength = 0;
   }
-  
-  notecard.deleteResponse(rsp);
 }
 
 static void enableDfuMode() {
@@ -5748,8 +5720,13 @@ static void enableDfuMode() {
     return;
   }
   
+  if (gDfuFirmwareLength == 0) {
+    Serial.println(F("ERROR: No firmware length — run checkForFirmwareUpdate first"));
+    return;
+  }
+
   Serial.println(F("========================================"));
-  Serial.println(F("ENABLING DFU MODE"));
+  Serial.println(F("ENABLING IAP DFU MODE"));
   Serial.println(F("Device will download and apply update"));
   Serial.println(F("System will reset when complete"));
   Serial.println(F("========================================"));
@@ -5757,7 +5734,7 @@ static void enableDfuMode() {
   // Mark DFU in progress to prevent multiple triggers
   gDfuInProgress = true;
   strlcpy(gDfuMode, "applying", sizeof(gDfuMode));
-  addServerSerialLog("DFU mode enabled - updating firmware", "info", "dfu");
+  addServerSerialLog("IAP DFU mode enabled - updating firmware", "info", "dfu");
   
   // Save all pending data before rebooting
   if (gConfigDirty) {
@@ -5776,47 +5753,17 @@ static void enableDfuMode() {
   saveClientConfigSnapshots();
   saveHistorySettings();
   
-  // Step 1: Ensure ODFU is enabled on the Notecard for host MCU (stm32)
-  J *req = notecard.newRequest("card.dfu");
-  if (!req) {
-    Serial.println(F("ERROR: Failed to create card.dfu request"));
+  // Server always uses "continuous" mode (Ethernet)
+  bool success = tankalarm_performIapUpdate(notecard, gDfuFirmwareLength, "continuous", dfuKickWatchdog);
+  
+  // If we get here, update failed (success path reboots via NVIC_SystemReset)
+  if (!success) {
+    Serial.println(F("IAP DFU update failed — resuming normal operation"));
     gDfuInProgress = false;
     strlcpy(gDfuMode, "error", sizeof(gDfuMode));
-    return;
+    strlcpy(gDfuError, "IAP firmware write failed", sizeof(gDfuError));
+    addServerSerialLog("IAP DFU update failed", "error", "dfu");
   }
-  JAddStringToObject(req, "name", "stm32");
-  JAddBoolToObject(req, "on", true);
-  
-  J *rsp = notecard.requestAndResponse(req);
-  if (rsp) {
-    const char *err = JGetString(rsp, "err");
-    if (err && err[0] != '\0') {
-      Serial.print(F("ERROR: card.dfu failed: "));
-      Serial.println(err);
-      gDfuInProgress = false;
-      strlcpy(gDfuMode, "error", sizeof(gDfuMode));
-      notecard.deleteResponse(rsp);
-      return;
-    }
-    notecard.deleteResponse(rsp);
-  } else {
-    Serial.println(F("ERROR: card.dfu returned no response"));
-    gDfuInProgress = false;
-    strlcpy(gDfuMode, "error", sizeof(gDfuMode));
-    return;
-  }
-  
-  // Step 2: Set DFU mode to start download/apply
-  // Note: For Blues Notecard ODFU, the Notecard downloads the firmware
-  // image from Notehub and makes it available via dfu.get for the host
-  // to read and apply. For host MCU DFU, the device must read chunks
-  // and write to flash. The Notecard handles the download automatically
-  // once card.dfu is enabled.
-  Serial.println(F("DFU enabled - Notecard will download firmware from Notehub"));
-  Serial.println(F("Monitor progress via dfu.status in Serial Monitor or web UI"));
-  
-  // Device will download firmware - check status periodically
-  // The periodic DFU check in loop() will track progress
 }
 
 static void scheduleNextViewerSummary() {
@@ -13561,7 +13508,7 @@ static void handleDfuCheckPost(EthernetClient &client, const String &body) {
   
   // If Notecard is in error state, clear the failed DFU then re-enable.
   // Step 1: dfu.status {"stop":true} aborts/clears the error state
-  // Step 2: card.dfu off/on re-enables outboard DFU
+  // Step 2: Re-enable IAP DFU downloads
   // Step 3: hub.sync forces the Notecard to pull fresh firmware catalog
   if (strcmp(gDfuMode, "error") == 0) {
     Serial.println(F("DFU in error state - clearing and resetting..."));
@@ -13584,31 +13531,8 @@ static void handleDfuCheckPost(EthernetClient &client, const String &body) {
     }
     safeSleep(1000);
 
-    // Step 2: Disable then re-enable outboard DFU
-    J *offReq = notecard.newRequest("card.dfu");
-    if (offReq) {
-      JAddStringToObject(offReq, "name", "stm32");
-      JAddBoolToObject(offReq, "off", true);
-      J *offRsp = notecard.requestAndResponse(offReq);
-      if (offRsp) notecard.deleteResponse(offRsp);
-    }
-    safeSleep(500);
-    J *onReq = notecard.newRequest("card.dfu");
-    if (onReq) {
-      JAddStringToObject(onReq, "name", "stm32");
-      JAddBoolToObject(onReq, "on", true);
-      J *onRsp = notecard.requestAndResponse(onReq);
-      if (onRsp) {
-        const char *err = JGetString(onRsp, "err");
-        if (err && err[0] != '\0') {
-          Serial.print(F("WARNING: card.dfu re-enable failed: "));
-          Serial.println(err);
-        } else {
-          Serial.println(F("Outboard DFU re-enabled successfully"));
-        }
-        notecard.deleteResponse(onRsp);
-      }
-    }
+    // Step 2: Re-enable IAP DFU (replaces ODFU card.dfu off/on cycle)
+    tankalarm_enableIapDfu(notecard);
     safeSleep(500);
     
     // Step 3: Force sync so Notecard pulls fresh firmware info from Notehub
@@ -13627,6 +13551,7 @@ static void handleDfuCheckPost(EthernetClient &client, const String &body) {
     gDfuError[0] = '\0';
     gDfuUpdateAvailable = false;
     gDfuVersion[0] = '\0';
+    gDfuFirmwareLength = 0;
   }
   
   checkForFirmwareUpdate();
