@@ -822,7 +822,7 @@ static void checkForFirmwareUpdate();
 static void enableDfuMode();
 static void pollForConfigUpdates();
 static void applyConfigUpdate(const JsonDocument &doc);
-static void sendConfigAck(bool success, const char *message, const char *configVersion);
+static bool sendConfigAck(bool success, const char *message, const char *configVersion);
 static void persistConfigIfDirty();
 static void sampleMonitors();
 static float readDigitalSensor(const MonitorConfig &cfg, uint8_t idx);
@@ -3477,10 +3477,10 @@ static void updateDailyScheduleIfNeeded() {
   }
 }
 
-static void sendConfigAck(bool success, const char *message, const char *configVersion) {
+static bool sendConfigAck(bool success, const char *message, const char *configVersion) {
   J *req = notecard.newRequest("note.add");
   if (!req) {
-    return;
+    return false;
   }
   JAddStringToObject(req, "file", CONFIG_ACK_OUTBOX_FILE);
   JAddBoolToObject(req, "sync", true);
@@ -3488,7 +3488,7 @@ static void sendConfigAck(bool success, const char *message, const char *configV
   J *body = JCreateObject();
   if (!body) {
     JDelete(req);
-    return;
+    return false;
   }
 
   JAddStringToObject(body, "c", gDeviceUID);
@@ -3502,6 +3502,7 @@ static void sendConfigAck(bool success, const char *message, const char *configV
   JAddNumberToObject(body, "epoch", currentEpoch());
   JAddItemToObject(req, "body", body);
 
+  bool ackQueued = false;
   J *rsp = notecard.requestAndResponse(req);
   if (rsp) {
     const char *err = JGetString(rsp, "err");
@@ -3511,11 +3512,13 @@ static void sendConfigAck(bool success, const char *message, const char *configV
     } else {
       Serial.print(F("Config ACK sent: "));
       Serial.println(success ? F("applied") : F("failed"));
+      ackQueued = true;
     }
     notecard.deleteResponse(rsp);
   } else {
     Serial.println(F("WARNING: Config ACK no response from Notecard"));
   }
+  return ackQueued;
 }
 
 static void pollForConfigUpdates() {
@@ -3552,6 +3555,7 @@ static void pollForConfigUpdates() {
 
   J *body = JGetObject(rsp, "body");
   if (body) {
+    bool ackSent = false;
     char *json = JConvertToJSONString(body);
     if (json) {
       std::unique_ptr<JsonDocument> docPtr(new JsonDocument());
@@ -3563,23 +3567,29 @@ static void pollForConfigUpdates() {
           // Extract config version hash for ACK tracking (injected by server)
           const char *cv = doc["_cv"] | "";
           applyConfigUpdate(doc);
-          sendConfigAck(true, "Config applied", cv);
+          ackSent = sendConfigAck(true, "Config applied", cv);
         } else {
           Serial.println(F("Config update invalid JSON"));
           sendConfigAck(false, "Invalid JSON", nullptr);
+          ackSent = true;  // Delete note even on parse failure (note is useless)
         }
       } else {
         NoteFree(json);
         Serial.println(F("OOM processing config update"));
       }
     }
-    // Consume the note now that it has been processed (or attempted)
-    J *delReq = notecard.newRequest("note.get");
-    if (delReq) {
-      JAddStringToObject(delReq, "file", CONFIG_INBOX_FILE);
-      JAddBoolToObject(delReq, "delete", true);
-      J *delRsp = notecard.requestAndResponse(delReq);
-      if (delRsp) notecard.deleteResponse(delRsp);
+    // Only consume the note if ACK was sent (or note was unparseable).
+    // If ACK failed, keep the note so it is retried on the next poll cycle.
+    if (ackSent) {
+      J *delReq = notecard.newRequest("note.get");
+      if (delReq) {
+        JAddStringToObject(delReq, "file", CONFIG_INBOX_FILE);
+        JAddBoolToObject(delReq, "delete", true);
+        J *delRsp = notecard.requestAndResponse(delReq);
+        if (delRsp) notecard.deleteResponse(delRsp);
+      }
+    } else {
+      Serial.println(F("Config ACK failed — keeping config.qi for retry"));
     }
   }
 

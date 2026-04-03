@@ -1524,7 +1524,7 @@ window.loadConfig=function(c){if(els.siteName)els.siteName.value=c.site||'';if(e
 /* CLOUD & IMPORT */
 function closeSelectClientModal(){els.selectClientModal.classList.add('hidden');}window.closeSelectClientModal=closeSelectClientModal;
 els.loadFromCloudBtn.addEventListener('click',async()=>{els.selectClientModal.classList.remove('hidden');els.clientList.innerHTML='Loading...';try{const r=await fetch('/api/clients?summary=1');const d=await r.json();els.clientList.innerHTML=d.clients.map(c=>`<div class="client-item" onclick="fetchClientConfig('${c.client}')"><strong>${c.label||c.client}</strong> (${c.client})<br>${c.site||''}</div>`).join('');}catch(e){els.clientList.innerHTML='Error loading clients';}});
-window.fetchClientConfig=async(uid)=>{closeSelectClientModal();try{const r=await fetch('/api/client?uid='+encodeURIComponent(uid));if(!r.ok)throw new Error('Failed');const c=await r.json();if(els.clientUid)els.clientUid.value=uid;if(c.config)loadConfig(c.config);else showToast('No config found for client',true);}catch(e){showToast('Error loading config',true);}};
+window.fetchClientConfig=async(uid)=>{closeSelectClientModal();try{const r=await fetch('/api/client?uid='+encodeURIComponent(uid));if(!r.ok)throw new Error('Failed');const c=await r.json();if(els.clientUid)els.clientUid.value=uid;if(c.config)loadConfig(c.config);else showToast('No config found for client',true);const sd=document.getElementById('configStatus');if(sd){if(c.pd){sd.style.display='block';sd.style.background='#fff3cd';sd.style.borderColor='#ffc107';sd.style.color='#856404';sd.textContent='\u26A0 Config dispatch pending'+(c.da?' (attempt '+c.da+')':'')+'.';}else if(c.as){sd.style.display='block';sd.style.background='#d4edda';sd.style.borderColor='#28a745';sd.style.color='#155724';sd.textContent='\u2713 Last config acknowledged: '+c.as+(c.ae?' at '+new Date(c.ae*1000).toLocaleString():'');}else{sd.style.display='none';}}}catch(e){showToast('Error loading config',true);}};
 const importInput=document.getElementById('importFileInput');document.getElementById('importBtn').addEventListener('click',()=>importInput.click());importInput.addEventListener('change',(e)=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=(evt)=>{try{loadConfig(JSON.parse(evt.target.result));}catch(err){showToast('Invalid JSON',true);}};r.readAsText(f);});
 function getQueryParam(name){const params=new URLSearchParams(window.location.search);return params.get(name)||'';}
 async function basicInit(){try{const r=await fetch('/api/clients?summary=1');const d=await r.json();if(d&&d.srv&&d.srv.pu)els.productUid.value=d.srv.pu;if(d&&d.srv&&d.srv.cf)els.clientFleet.value=d.srv.cf;window._siteClients=d;populateRelayTargets(d);}catch(e){}const urlUid=getQueryParam('uid');if(urlUid&&els.clientUid)els.clientUid.value=urlUid;const urlSite=getQueryParam('site');if(urlSite&&els.siteName)els.siteName.value=urlSite;if(urlUid){await fetchClientConfig(urlUid);}else{addSensor();}}function populateRelayTargets(d){const dl=document.getElementById('relayTargetSuggestions');if(!dl||!d||!d.cs)return;const seen=new Set();d.cs.forEach(c=>{const uid=c.c||'';if(uid&&!seen.has(uid)){seen.add(uid);const opt=document.createElement('option');const label=c.n||c.s||'';opt.value=uid;opt.label=label?label+' ('+uid+')':uid;dl.appendChild(opt);}});}basicInit();
@@ -7245,6 +7245,7 @@ static void handleConfigRetryPost(EthernetClient &client, const String &body) {
 
     if (sendConfigViaNotecard(clientUid, snap->payload)) {
       snap->pendingDispatch = false;
+      saveClientConfigSnapshots();
       respondStatus(client, 200, F("Config dispatched to Notecard"));
     } else {
       respondStatus(client, 502, F("Notecard send failed — check serial monitor for details"));
@@ -7265,6 +7266,8 @@ static void handleConfigRetryPost(EthernetClient &client, const String &body) {
       stillPending++;
     }
   }
+
+  saveClientConfigSnapshots();
 
   if (stillPending == 0) {
     char msg[64];
@@ -7991,10 +7994,12 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
 
   // Attempt to send via Notecard
   if (sendConfigViaNotecard(clientUid, buffer)) {
-    // Mark as dispatched but still pending ACK
+    // Successfully queued to Notecard — clear pending flag.
+    // ACK from client updates observability fields but does not gate pendingDispatch.
     ClientConfigSnapshot *snap = findClientConfigSnapshot(clientUid);
     if (snap) {
-      // pendingDispatch stays true until ACK received
+      snap->pendingDispatch = false;
+      saveClientConfigSnapshots();
     }
     return (gLastConfigPurgeCount > 0) ? ConfigDispatchStatus::OkWithPurge : ConfigDispatchStatus::Ok;
   }
@@ -8049,7 +8054,7 @@ static void dispatchPendingConfigs() {
     gClientConfigs[i].lastDispatchEpoch = currentEpoch();
 
     if (sendConfigViaNotecard(gClientConfigs[i].uid, gClientConfigs[i].payload)) {
-      // pendingDispatch stays true until config ACK received from client
+      gClientConfigs[i].pendingDispatch = false;
       Serial.print(F("SUCCESS: Dispatched pending config for "));
       Serial.println(gClientConfigs[i].uid);
     } else {
@@ -9476,6 +9481,27 @@ static void handleClientConfigGet(EthernetClient &client, const String &query) {
   // truncating nested fields (e.g. monitorType inside sensors array).
   String response = F("{\"config\":");
   response += snap->payload;
+  response += F(",\"pd\":");
+  response += snap->pendingDispatch ? F("true") : F("false");
+  if (snap->dispatchAttempts > 0) {
+    response += F(",\"da\":");
+    response += String(snap->dispatchAttempts);
+  }
+  if (snap->lastAckEpoch > 0.0) {
+    char epochBuf[24];
+    response += F(",\"ae\":");
+    snprintf(epochBuf, sizeof(epochBuf), "%.0f", snap->lastAckEpoch);
+    response += epochBuf;
+    response += F(",\"as\":\"");
+    response += snap->lastAckStatus;
+    response += '"';
+  }
+  if (snap->lastDispatchEpoch > 0.0) {
+    char epochBuf[24];
+    response += F(",\"de\":");
+    snprintf(epochBuf, sizeof(epochBuf), "%.0f", snap->lastDispatchEpoch);
+    response += epochBuf;
+  }
   response += '}';
   respondJson(client, response);
 }
