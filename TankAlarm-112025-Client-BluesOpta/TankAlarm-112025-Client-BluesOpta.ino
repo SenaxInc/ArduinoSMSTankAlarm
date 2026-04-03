@@ -1,6 +1,6 @@
 /*
   Tank Alarm Client 112025 - Arduino Opta + Blues Notecard
-  Version: 1.2.1
+  Version: 1.2.3
 
   Hardware:
   - Arduino Opta Lite (STM32H747XI dual-core)
