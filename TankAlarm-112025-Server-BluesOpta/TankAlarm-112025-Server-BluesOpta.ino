@@ -1,5 +1,5 @@
 // Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
-// Version: 1.3.0
+// Version: 1.4.0
 // NOTE: Save this file as UTF-8 without BOM to avoid stray character compile errors.
 //
 // Hardware:
@@ -92,6 +92,10 @@
 
 #ifndef SERVER_HEARTBEAT_PATH
 #define SERVER_HEARTBEAT_PATH "/server_heartbeat.json"
+#endif
+
+#ifndef SERVER_LAST_IP_PATH
+#define SERVER_LAST_IP_PATH "/server_last_ip.txt"
 #endif
 
 #ifndef SERVER_HEARTBEAT_INTERVAL_SECONDS
@@ -966,10 +970,16 @@ static double gLastViewerSummaryEpoch = 0.0;
 static unsigned long gLastPollMillis = 0;
 static unsigned long gLastLinkCheckMillis = 0;
 static bool gLastLinkState = false;
+static bool gEthernetInitialized = false;  // True after successful Ethernet.begin()
 
 static double gLastHeartbeatPersistEpoch = 0.0;
 static double gLastHeartbeatFileEpoch = 0.0;
 static bool gServerDownChecked = false;
+
+// IP change detection state
+static bool gIpChangeDetected = false;    // Set during setup() if IP differs from last boot
+static bool gIpChangeNotified = false;    // Set after email/SMS sent (needs time sync first)
+static char gPreviousIpStr[16] = {0};     // Last-known IP read from LittleFS at boot
 
 // DFU (Device Firmware Update) state tracking
 static unsigned long gLastDfuCheckMillis = 0;
@@ -1772,13 +1782,16 @@ static bool loadContactsConfig(JsonDocument &doc);
 static bool saveContactsConfig(const JsonDocument &doc);
 static double loadServerHeartbeatEpoch();
 static bool saveServerHeartbeatEpoch(double epoch);
+static bool loadLastKnownIp(char *buf, size_t bufSize);
+static void saveLastKnownIp(const char *ipStr);
+static void checkAndNotifyIpChange();
 static void printHardwareRequirements();
 static void initializeNotecard();
 static void ensureTimeSync();
 static double currentEpoch();
 static void scheduleNextDailyEmail();
 static void scheduleNextViewerSummary();
-static void initializeEthernet();
+static bool initializeEthernet();
 static void checkServerVoltage();
 static void checkForFirmwareUpdate();
 static void enableDfuMode();
@@ -2606,7 +2619,42 @@ void setup() {
   }
 
   initializeEthernet();
-  gWebServer.begin();
+  if (gEthernetInitialized) {
+    gWebServer.begin();
+  } else {
+    Serial.println(F("WARNING: Web server NOT started — Ethernet not available"));
+  }
+
+  // Detect IP address changes across reboots
+  {
+    IPAddress currentIp = Ethernet.localIP();
+    char currentIpStr[16];
+    snprintf(currentIpStr, sizeof(currentIpStr), "%d.%d.%d.%d",
+             currentIp[0], currentIp[1], currentIp[2], currentIp[3]);
+
+    // Skip detection if Ethernet failed (IP is 0.0.0.0)
+    if (currentIp != IPAddress(0, 0, 0, 0)) {
+      char previousIp[16] = {0};
+      bool hadPreviousIp = loadLastKnownIp(previousIp, sizeof(previousIp));
+
+      if (!hadPreviousIp) {
+        // Fresh install or filesystem was erased — record it
+        Serial.println(F("No previous IP on file — first boot or filesystem reset"));
+        gIpChangeDetected = true;
+      } else if (strcmp(previousIp, currentIpStr) != 0) {
+        // IP changed
+        strlcpy(gPreviousIpStr, previousIp, sizeof(gPreviousIpStr));
+        gIpChangeDetected = true;
+        Serial.print(F("IP address changed: "));
+        Serial.print(previousIp);
+        Serial.print(F(" -> "));
+        Serial.println(currentIpStr);
+      }
+
+      // Always persist the current IP for next boot comparison
+      saveLastKnownIp(currentIpStr);
+    }
+  }
 
   if (gConfig.ftpEnabled && gConfig.ftpRestoreOnBoot) {
     char err[128];
@@ -2697,7 +2745,23 @@ void loop() {
     gLastLinkCheckMillis = now;
     bool linkUp = (Ethernet.linkStatus() == LinkON);
     if (linkUp && !gLastLinkState) {
-      // Link just came up
+      // Link just came up — attempt Ethernet reinit if we don't have a valid IP
+      IPAddress currentIp = Ethernet.localIP();
+      if (!gEthernetInitialized || currentIp == IPAddress(0, 0, 0, 0)) {
+        Serial.println(F("Link restored — reinitializing Ethernet..."));
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+        // Kick watchdog before reinit — Ethernet.begin() can block up to 60s
+        #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+          mbedWatchdog.kick();
+        #else
+          IWatchdog.reload();
+        #endif
+#endif
+        if (initializeEthernet()) {
+          gWebServer.begin();
+          Serial.println(F("Web server restarted after Ethernet recovery"));
+        }
+      }
       Serial.println(F("----------------------------------"));
       Serial.println(F("Network link established!"));
       Serial.print(F("Local IP Address: "));
@@ -2797,6 +2861,9 @@ void loop() {
       }
       gServerDownChecked = true;
     }
+
+    // Notify admin of IP address change (requires time sync for message)
+    checkAndNotifyIpChange();
 
     if (gLastHeartbeatPersistEpoch <= 0.0 || (nowEpoch - gLastHeartbeatPersistEpoch) >= SERVER_HEARTBEAT_INTERVAL_SECONDS) {
       if (saveServerHeartbeatEpoch(nowEpoch)) {
@@ -3364,6 +3431,95 @@ static bool saveServerHeartbeatEpoch(double epoch) {
 #else
   return false;
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// IP change detection helpers
+// ---------------------------------------------------------------------------
+
+static bool loadLastKnownIp(char *buf, size_t bufSize) {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return false;
+    char fbuf[32] = {0};
+    ssize_t bytesRead = posix_read_file("/fs/server_last_ip.txt", fbuf, sizeof(fbuf));
+    if (bytesRead <= 0) return false;
+    // Trim whitespace/newlines
+    size_t len = strlen(fbuf);
+    while (len > 0 && (fbuf[len - 1] == '\n' || fbuf[len - 1] == '\r' || fbuf[len - 1] == ' ')) {
+      fbuf[--len] = '\0';
+    }
+    if (len == 0 || len >= bufSize) return false;
+    strlcpy(buf, fbuf, bufSize);
+    return true;
+  #else
+    if (!LittleFS.exists(SERVER_LAST_IP_PATH)) return false;
+    File file = LittleFS.open(SERVER_LAST_IP_PATH, "r");
+    if (!file) return false;
+    size_t len = file.readBytesUntil('\0', buf, bufSize - 1);
+    buf[len] = '\0';
+    file.close();
+    // Trim whitespace/newlines
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' ')) {
+      buf[--len] = '\0';
+    }
+    return len > 0;
+  #endif
+#else
+  return false;
+#endif
+}
+
+static void saveLastKnownIp(const char *ipStr) {
+#ifdef FILESYSTEM_AVAILABLE
+  if (!ipStr || ipStr[0] == '\0') return;
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) return;
+    tankalarm_posix_write_file_atomic("/fs/server_last_ip.txt", ipStr, strlen(ipStr));
+  #else
+    tankalarm_littlefs_write_file_atomic(SERVER_LAST_IP_PATH,
+            (const uint8_t *)ipStr, strlen(ipStr));
+  #endif
+#endif
+}
+
+static void checkAndNotifyIpChange() {
+  if (gIpChangeNotified || !gIpChangeDetected) return;
+
+  // Need valid time for the alert message
+  double now = currentEpoch();
+  if (now <= 0.0) return;
+
+  gIpChangeNotified = true;
+
+  // Build the alert message
+  IPAddress currentIp = Ethernet.localIP();
+  char currentIpStr[16];
+  snprintf(currentIpStr, sizeof(currentIpStr), "%d.%d.%d.%d",
+           currentIp[0], currentIp[1], currentIp[2], currentIp[3]);
+
+  // Format MAC string for the alert
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           gMacAddress[0], gMacAddress[1], gMacAddress[2],
+           gMacAddress[3], gMacAddress[4], gMacAddress[5]);
+
+  char message[200];
+  if (gPreviousIpStr[0] != '\0') {
+    snprintf(message, sizeof(message),
+             "Server IP changed: %s -> %s (MAC %s). Update bookmarks/DNS.",
+             gPreviousIpStr, currentIpStr, macStr);
+  } else {
+    snprintf(message, sizeof(message),
+             "Server new IP: %s (MAC %s, no previous IP on file).",
+             currentIpStr, macStr);
+  }
+
+  sendSmsAlert(message);
+  addServerSerialLog(message, "warn", "network");
+
+  Serial.print(F("IP change alert sent: "));
+  Serial.println(message);
 }
 
 // ---------------------------------------------------------------------------
@@ -5771,34 +5927,62 @@ static void scheduleNextViewerSummary() {
   gNextViewerSummaryEpoch = tankalarm_computeNextAlignedEpoch(epoch, VIEWER_SUMMARY_BASE_HOUR, VIEWER_SUMMARY_INTERVAL_SECONDS);
 }
 
-static void initializeEthernet() {
+static bool initializeEthernet() {
   Serial.print(F("Initializing Ethernet..."));
   
   // Check if Ethernet hardware is present
   if (Ethernet.hardwareStatus() == EthernetNoHardware) {
     Serial.println(F(" FAILED - No Ethernet hardware detected!"));
     Serial.println(F("ERROR: Cannot continue without Ethernet. Please check hardware."));
-    // Don't halt, just return and let the main loop handle the lack of network
-    return;
+    gEthernetInitialized = false;
+    return false;
   }
 
-  // Retrieve hardware MAC address if not set
+  // Determine whether to use a manually configured MAC or the hardware MAC.
+  // IMPORTANT: Ethernet.MACAddress() calls get_mac_address() on the Mbed
+  // NetworkInterface, which returns nullptr before Ethernet.begin()/connect().
+  // Reading it before begin() causes a null-pointer read that fills gMacAddress
+  // with garbage from the flash vector table — producing a different "MAC" on
+  // every firmware rebuild and breaking router DHCP reservations.
+  // Fix: pass nullptr to let the EMAC use its factory-burned OTP MAC, then read
+  // the actual MAC *after* begin() when the interface is initialised.
   bool usingFactoryMac = true;
-  if (gMacAddress[0] == 0 && gMacAddress[1] == 0 && gMacAddress[2] == 0 && 
-      gMacAddress[3] == 0 && gMacAddress[4] == 0 && gMacAddress[5] == 0) {
-    // Read MAC into buffer
-    Ethernet.MACAddress(gMacAddress);
-  } else {
-    // Using manually configured MAC
+  bool macManuallySet = !(gMacAddress[0] == 0 && gMacAddress[1] == 0 && gMacAddress[2] == 0 && 
+                          gMacAddress[3] == 0 && gMacAddress[4] == 0 && gMacAddress[5] == 0);
+  uint8_t *macForBegin = macManuallySet ? gMacAddress : nullptr;
+  if (macManuallySet) {
     usingFactoryMac = false;
   }
   
   int status;
   if (gConfig.useStaticIp) {
-    status = Ethernet.begin(gMacAddress, gStaticIp, gStaticDns, gStaticGateway, gStaticSubnet);
+    status = Ethernet.begin(macForBegin, gStaticIp, gStaticDns, gStaticGateway, gStaticSubnet);
   } else {
-    status = Ethernet.begin(gMacAddress);
+    status = Ethernet.begin(macForBegin);
   }
+  
+  // Now that the EMAC is initialised, read the actual MAC in use.
+  if (!macManuallySet) {
+    Ethernet.MACAddress(gMacAddress);
+    // Validate: all-zeros or all-FFs indicates the read failed
+    bool allZero = true, allFF = true;
+    for (int i = 0; i < 6; i++) {
+      if (gMacAddress[i] != 0x00) allZero = false;
+      if (gMacAddress[i] != 0xFF) allFF = false;
+    }
+    if (allZero || allFF) {
+      Serial.println(F("WARNING: Hardware MAC read as 00:00:00:00:00:00 or FF:FF:FF:FF:FF:FF — using fallback"));
+    }
+  }
+
+  // Always log MAC address for DHCP reservation troubleshooting
+  Serial.print(F("Using MAC: "));
+  for (int i = 0; i < 6; i++) {
+    if (i > 0) Serial.print(":");
+    if (gMacAddress[i] < 16) Serial.print("0");
+    Serial.print(gMacAddress[i], HEX);
+  }
+  Serial.println(usingFactoryMac ? F(" (Hardware)") : F(" (Static)"));
 
   if (status == 0) {
     Serial.println(F(" FAILED - Could not configure Ethernet!"));
@@ -5807,9 +5991,10 @@ static void initializeEthernet() {
     } else {
       Serial.println(F("ERROR: Static IP configuration failed."));
     }
-    // Don't halt, just return and let the main loop handle the lack of network
-    return;
+    gEthernetInitialized = false;
+    return false;
   }
+  gEthernetInitialized = true;
   
   // Check link status
   if (Ethernet.linkStatus() == LinkOFF) {
@@ -5817,13 +6002,6 @@ static void initializeEthernet() {
     Serial.println(F("Continuing, but web server will not be accessible."));
   } else {
     Serial.println(F(" ok"));
-    Serial.print(F("Using MAC: "));
-    for (int i=0; i<6; i++) {
-        if (i>0) Serial.print(":");
-        if (gMacAddress[i] < 16) Serial.print("0");
-        Serial.print(gMacAddress[i], HEX);
-    }
-    Serial.println(usingFactoryMac ? " (Hardware)" : " (Static)");
     Serial.print(F("IP Address: "));
     Serial.println(Ethernet.localIP());
     Serial.print(F("Gateway: "));
@@ -5831,6 +6009,7 @@ static void initializeEthernet() {
     Serial.print(F("Subnet: "));
     Serial.println(Ethernet.subnetMask());
   }
+  return true;
 }
 
 static void serveCss(EthernetClient &client) {
