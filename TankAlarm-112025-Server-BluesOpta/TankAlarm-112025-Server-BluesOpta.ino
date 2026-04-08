@@ -1,5 +1,5 @@
 // Tank Alarm Server 112025 - Arduino Opta + Blues Notecard
-// Version: 1.4.0
+// Version: 1.3.0
 // NOTE: Save this file as UTF-8 without BOM to avoid stray character compile errors.
 //
 // Hardware:
@@ -92,10 +92,6 @@
 
 #ifndef SERVER_HEARTBEAT_PATH
 #define SERVER_HEARTBEAT_PATH "/server_heartbeat.json"
-#endif
-
-#ifndef SERVER_LAST_IP_PATH
-#define SERVER_LAST_IP_PATH "/server_last_ip.txt"
 #endif
 
 #ifndef SERVER_HEARTBEAT_INTERVAL_SECONDS
@@ -204,7 +200,13 @@
 #define VIEWER_SUMMARY_FILE VIEWER_SUMMARY_OUTBOX_FILE  // "viewer_summary.qo" — server sends outbound
 #endif
 
-// VIEWER_SUMMARY_INTERVAL_SECONDS and VIEWER_SUMMARY_BASE_HOUR are defined in TankAlarm_Common.h
+// Viewer summary cadence — defined in TankAlarm_Common.h; duplicated here as a fallback
+#ifndef VIEWER_SUMMARY_INTERVAL_SECONDS
+#define VIEWER_SUMMARY_INTERVAL_SECONDS 21600UL  // 6 hours
+#endif
+#ifndef VIEWER_SUMMARY_BASE_HOUR
+#define VIEWER_SUMMARY_BASE_HOUR 6  // Start at 6 AM UTC
+#endif
 
 // MAX_RELAYS and CLIENT_SERIAL_BUFFER_SIZE are defined in TankAlarm_Common.h
 
@@ -640,6 +642,7 @@ static HistorySettings gHistorySettings = {
   0.0,   // lastPruneEpoch
   0      // totalRecordsPruned
 };
+static bool gWarmTierDataExists = false;  // Set true when warm tier data is actually present on disk
 
 // ============================================================================
 // LittleFS Daily Summary Storage (Warm Tier)
@@ -721,7 +724,8 @@ static bool gPaused = false;  // When true, pause Notecard processing for mainte
 // Rate limiting for authentication attempts
 static uint8_t gAuthFailureCount = 0;
 static unsigned long gLastAuthFailureTime = 0;
-static unsigned long gNextAllowedAuthTime = 0;  // Non-blocking rate limit
+static unsigned long gAuthLockoutStart = 0;  // When the current backoff/lockout started
+static unsigned long gAuthLockoutDuration = 0;  // Duration of current lockout in ms
 static const unsigned long AUTH_LOCKOUT_DURATION = 30000;  // 30 seconds after max failures
 static const uint8_t AUTH_MAX_FAILURES = 5;  // Max failures before lockout
 
@@ -747,53 +751,27 @@ static char gSessionToken[17] = "";  // 16 hex chars + null terminator
 #endif
 
 static void generateSessionToken() {
-  // BugFix 04022026 (CRITICAL-1): Use STM32H747 hardware RNG instead of LCG PRNG.
-  // The LCG was algebraically invertible — one observed token allowed prediction of
-  // all future tokens. The STM32H747 has a dedicated TRNG peripheral (RNG)
-  // accessible via HAL, seeded by analog noise sources on-chip.
-#if defined(ARDUINO_OPTA) || defined(ARDUINO_PORTENTA_H7_M7)
-  RNG_HandleTypeDef hrng;
-  memset(&hrng, 0, sizeof(hrng));
-  hrng.Instance = RNG;
-  __HAL_RCC_RNG_CLK_ENABLE();
-  bool hwRngOk = (HAL_RNG_Init(&hrng) == HAL_OK);
-  
-  if (hwRngOk) {
-    static const char charset[] = "0123456789abcdef";
-    for (int i = 0; i < 16; i++) {
-      uint32_t rng = 0;
-      if (HAL_RNG_GenerateRandomNumber(&hrng, &rng) != HAL_OK) {
-        hwRngOk = false;
-        break;
-      }
-      gSessionToken[i] = charset[rng & 0xF];
-    }
-    HAL_RNG_DeInit(&hrng);
-  }
-  
-  if (hwRngOk) {
-    gSessionToken[16] = '\0';
-    return;
-  }
-  // Fall through to software fallback if HW RNG fails
-  Serial.println(F("WARNING: HW RNG failed, falling back to software entropy"));
-#endif
-
-  // Software fallback: gather entropy from timing jitter and ADC noise.
-  // Kept as fallback for non-Opta platforms or HW RNG failure.
+  // Gather entropy from timing jitter and ADC noise across multiple pins.
+  // Multiple analogRead() calls add thermal/shot noise; timing samples taken
+  // before and after the ADC reads capture execution jitter.
   uint32_t t0 = micros();
   uint32_t a0 = (uint32_t)analogRead(VIN_ANALOG_PIN);
   uint32_t a1 = (uint32_t)analogRead(ENTROPY_ADC_PIN_1);
   uint32_t a2 = (uint32_t)analogRead(ENTROPY_ADC_PIN_2);
   uint32_t a3 = (uint32_t)analogRead(ENTROPY_ADC_PIN_3);
-  uint32_t t1 = micros();
+  uint32_t t1 = micros();         // Second timing sample after ADC reads captures jitter
   uint32_t currentMillis = millis();
+  // Build a 64-bit seed by placing independent entropy sources in the high and
+  // low halves; prime-valued shifts reduce correlation between mixed terms.
+  // 64-bit state gives 2^64 possible seeds, making brute-force infeasible.
+  // Cast to uint64_t before shifting to avoid truncating bits in 32-bit arithmetic.
   uint64_t seedHigh = (uint64_t)t0 ^ ((uint64_t)currentMillis << 13) ^ ((uint64_t)a0 << 5) ^ ((uint64_t)a1 << 11);
   uint64_t seedLow  = (uint64_t)t1 ^ ((uint64_t)currentMillis >> 19) ^ ((uint64_t)a0 >> 27) ^ ((uint64_t)a2 << 21) ^ ((uint64_t)a3 << 7);
   uint64_t seed = (seedHigh << 32) | seedLow;
+  // 64-bit LCG constants from Knuth (MMIX) — full-period over 2^64.
   for (int i = 0; i < 16; i++) {
     seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
-    gSessionToken[i] = "0123456789abcdef"[(seed >> 60) & 0xF];
+    gSessionToken[i] = "0123456789abcdef"[(seed >> 60) & 0xF];  // Top 4 bits of 64-bit state
   }
   gSessionToken[16] = '\0';
 }
@@ -859,6 +837,7 @@ static void insertSensorIntoHash(uint8_t recordIndex) {
     }
   }
   // Table full - should not happen if SENSOR_HASH_TABLE_SIZE >= 2 * MAX_SENSOR_RECORDS
+  Serial.println(F("WARNING: Sensor hash table full, cannot insert record"));
 }
 
 // Rebuild hash table from scratch (call after bulk operations)
@@ -970,16 +949,10 @@ static double gLastViewerSummaryEpoch = 0.0;
 static unsigned long gLastPollMillis = 0;
 static unsigned long gLastLinkCheckMillis = 0;
 static bool gLastLinkState = false;
-static bool gEthernetInitialized = false;  // True after successful Ethernet.begin()
 
 static double gLastHeartbeatPersistEpoch = 0.0;
 static double gLastHeartbeatFileEpoch = 0.0;
 static bool gServerDownChecked = false;
-
-// IP change detection state
-static bool gIpChangeDetected = false;    // Set during setup() if IP differs from last boot
-static bool gIpChangeNotified = false;    // Set after email/SMS sent (needs time sync first)
-static char gPreviousIpStr[16] = {0};     // Last-known IP read from LittleFS at boot
 
 // DFU (Device Firmware Update) state tracking
 static unsigned long gLastDfuCheckMillis = 0;
@@ -988,12 +961,6 @@ static char gDfuVersion[32] = {0};
 static char gDfuMode[16] = "idle";  // Notecard DFU mode: idle, downloading, ready, error, etc.
 static bool gDfuInProgress = false;
 static char gDfuError[128] = {0};   // Last error message from Notecard dfu.status
-static uint32_t gDfuFirmwareLength = 0;  // Firmware size in bytes (from dfu.status body)
-
-// Watchdog kick wrapper for IAP DFU callback
-static void dfuKickWatchdog() {
-  mbedWatchdog.kick();
-}
 
 // I2C bus health tracking (required by TankAlarm_I2C.h)
 uint32_t gCurrentLoopI2cErrors = 0;    // Not used by Server but required by extern
@@ -1201,9 +1168,9 @@ static uint8_t purgePendingConfigNotes(const char *clientUid);
 static bool isAuthRateLimited(EthernetClient &client) {
   unsigned long now = millis();
   
-  // Check if we're in an active rate limit window
-  if (now < gNextAllowedAuthTime) {
-    unsigned long remaining = (gNextAllowedAuthTime - now) / 1000;
+  // Check if we're in an active backoff/lockout window (overflow-safe subtraction)
+  if (gAuthLockoutDuration > 0 && (now - gAuthLockoutStart) < gAuthLockoutDuration) {
+    unsigned long remaining = (gAuthLockoutDuration - (now - gAuthLockoutStart)) / 1000;
     String msg = "Too many failed attempts. Try again in ";
     msg += String(remaining);
     msg += " seconds.";
@@ -1224,33 +1191,33 @@ static bool isAuthRateLimited(EthernetClient &client) {
     } else {
       // Lockout period expired, reset counter
       gAuthFailureCount = 0;
-      gNextAllowedAuthTime = 0;
+      gAuthLockoutDuration = 0;
     }
   }
   
   return false;
 }
 
-// Record a failed authentication attempt and calculate next allowed time (non-blocking)
+// Record a failed authentication attempt and calculate lockout duration (overflow-safe)
 static void recordAuthFailure() {
   unsigned long now = millis();
   gAuthFailureCount++;
   gLastAuthFailureTime = now;
+  gAuthLockoutStart = now;
   
   // Calculate exponential backoff: 1s, 2s, 4s, 8s, 16s
   if (gAuthFailureCount > 0 && gAuthFailureCount <= 5) {
-    unsigned long delayMs = 1000UL << (gAuthFailureCount - 1);  // 2^(n-1) seconds
-    gNextAllowedAuthTime = now + delayMs;
+    gAuthLockoutDuration = 1000UL << (gAuthFailureCount - 1);  // 2^(n-1) seconds
   } else if (gAuthFailureCount > AUTH_MAX_FAILURES) {
     // Enter full lockout period
-    gNextAllowedAuthTime = now + AUTH_LOCKOUT_DURATION;
+    gAuthLockoutDuration = AUTH_LOCKOUT_DURATION;
   }
 }
 
 // Reset auth failure tracking on successful authentication
 static void resetAuthFailures() {
   gAuthFailureCount = 0;
-  gNextAllowedAuthTime = 0;
+  gAuthLockoutDuration = 0;
 }
 
 // Require that a valid admin PIN is configured and an active session exists.
@@ -1498,7 +1465,7 @@ const inputActions=[{value:'clear_relays',label:'Clear All Relay Alarms'},{value
 const inputModes=[{value:'active_low',label:'Active LOW(Button to GND,internal pullup)'},{value:'active_high',label:'Active HIGH(Button to VCC,external pull-down)'}];
 let sensorCount=0;let inputIdCounter=0;
 /* SENSOR CARD HTML */
-function createSensorHtml(id){return `<div class="sensor-card" id="sensor-${id}"><div class="sensor-header"><span class="sensor-title">Sensor #${id+1}</span><button type="button" class="remove-btn" onclick="removeSensor(${id})">Remove</button></div><div class="form-grid"><label class="field"><span>Monitor Type</span><select class="monitor-type" onchange="updateMonitorFields(${id})">${monitorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label><label class="field tank-num-field"><span>Display Number (optional)</span><input type="number" class="tank-num" placeholder="e.g. 1, 2, 3"></label><label class="field"><span><span class="name-label">Name</span></span><input type="text" class="tank-name" placeholder="Name"></label><label class="field contents-field"><span>Contents</span><input type="text" class="tank-contents" placeholder="e.g. Diesel, Water"></label><label class="field"><span>Sensor Type</span><select class="sensor-type" onchange="updatePinOptions(${id})">${sensorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label><label class="field"><span>Pin / Channel</span><select class="sensor-pin">${optaPins.map(p=>`<option value="${p.value}">${p.label}</option>`).join('')}</select></label><label class="field switch-mode-field" style="display:none;"><span>Switch Mode<span class="tooltip-icon" tabindex="0" data-tooltip="NO(Normally-Open): Switch is open by default, closes when fluid is present. NC(Normally-Closed): Switch is closed by default, opens when fluid is present.">?</span></span><select class="switch-mode"><option value="NO">Normally-Open(NO)</option><option value="NC">Normally-Closed(NC)</option></select></label><label class="field pulses-per-rev-field" style="display:none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label><label class="field current-loop-type-field" style="display:none;"><span>4-20mA Sensor Type<span class="tooltip-icon" tabindex="0" data-tooltip="Select the type of 4-20mA sensor: Pressure sensors are mounted near the sensor bottom and measure liquid pressure. Ultrasonic sensors are mounted on top of the sensor and measure distance to the liquid surface.">?</span></span><select class="current-loop-type" onchange="updateCurrentLoopFields(${id})"><option value="pressure">Pressure Sensor(Bottom-Mounted)</option><option value="ultrasonic">Ultrasonic Sensor(Top-Mounted)</option></select></label><label class="field sensor-range-field" style="display:none;"><span><span class="sensor-range-label">Sensor Range</span><span class="tooltip-icon sensor-range-tooltip" tabindex="0" data-tooltip="Native measurement range of the sensor (e.g., 0-5 PSI for pressure, 0-10m for ultrasonic). This is the range that corresponds to 4-20mA output.">?</span></span><div style="display:flex;gap:8px;align-items:center;"><input type="number" class="sensor-range-min" value="0" step="0.1" style="width:70px;" placeholder="Min"><span>to</span><input type="number" class="sensor-range-max" value="5" step="0.1" style="width:70px;" placeholder="Max"><select class="sensor-range-unit" style="width:70px;"><option value="PSI">PSI</option><option value="bar">bar</option><option value="m">m</option><option value="ft">ft</option><option value="in">in</option><option value="cm">cm</option></select></div></label><label class="field sensor-mount-height-field" style="display:none;"><span><span class="mount-height-label">Sensor Mount Height(in)</span><span class="tooltip-icon mount-height-tooltip" tabindex="0" data-tooltip="For pressure sensors: height of sensor above tank bottom (usually 0-2 inches). For ultrasonic sensors: distance from sensor to tank bottom when empty.">?</span></span><input type="number" class="sensor-mount-height" value="0" step="0.1" min="0"></label><label class="field analog-voltage-field" style="display:none;"><span><span class="analog-voltage-label">Sensor Voltage Range</span><span class="tooltip-icon analog-voltage-tooltip" tabindex="0" data-tooltip="The voltage output range of the analog sensor. Common ranges: 0-10V, 0-5V, 1-5V.">?</span></span><div style="display:flex;gap:8px;align-items:center;"><input type="number" class="analog-voltage-min" value="0" step="0.1" style="width:70px;" placeholder="Min"><span>to</span><input type="number" class="analog-voltage-max" value="10" step="0.1" style="width:70px;" placeholder="Max"><span>V</span></div></label></div><label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" class="stuck-detection" checked> Stuck Sensor Detection<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, the system flags a sensor as failed if it reports the same reading 10 consecutive times. Disable for sensors where readings naturally stay constant (e.g., gas pressure monitors).">?</span></label><label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" class="calibration-enabled" checked> Calibration Learning<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, you can submit manual verification readings on the Calibration page to teach the system the actual relationship between sensor output and measured values. Recommended for tank level sensors. For gas pressure or RPM sensors, disable unless you have reference gauges for comparison.">?</span></label><div class="digital-sensor-info" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-top:8px;font-size:0.9rem;color:var(--muted);"><strong>Float Switch Mode:</strong> This sensor only detects whether fluid has reached the switch position.<br><br><strong>Wiring Note:</strong> Connect the switch between the input pin and GND. The software uses an internal pull-up resistor.</div><div class="current-loop-sensor-info" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-top:8px;font-size:0.9rem;color:var(--muted);"><div class="pressure-sensor-info"><strong>Pressure Sensor(Bottom-Mounted):</strong> Measures the pressure of the liquid column above it.<br>- 4mA = Empty tank (0 pressure)<br>- 20mA = Full tank (max pressure)<br>- Sensor Range: The native pressure range (e.g., 0-5 PSI)<br>- Mount Height: Distance from sensor to tank bottom</div><div class="ultrasonic-sensor-info" style="display:none;"><strong>Ultrasonic Sensor(Top-Mounted):</strong> Measures the distance from the sensor to the liquid surface.<br>- 4mA = Full tank (liquid close to sensor)<br>- 20mA = Empty tank (liquid far from sensor)<br>- Sensor Range: The native distance range (e.g., 0-10m)<br>- Sensor Mount Height: Distance from sensor to tank bottom when empty</div></div><button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button><div class="collapsible-section alarm-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;"><span class="alarm-section-title">Alarm Thresholds</span><button type="button" class="remove-btn" onclick="removeAlarmSection(${id})" style="float:right;">Remove Alarm</button></h4><div class="form-grid alarm-thresholds-grid"><div class="field"><span><label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="high-alarm-enabled" checked> High Alarm</label></span><input type="number" class="high-alarm" value="100"></div><div class="field"><span><label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="low-alarm-enabled" checked> Low Alarm</label></span><input type="number" class="low-alarm" value="20"></div></div><div class="form-grid digital-alarm-grid" style="display:none;"><div class="field" style="grid-column:1 / -1;"><span>Trigger Condition<span class="tooltip-icon" tabindex="0" data-tooltip="Select when the alarm should trigger based on the float switch state.">?</span></span><select class="digital-trigger-state"><option value="activated">When Switch is Activated (fluid detected)</option><option value="not_activated">When Switch is NOT Activated (no fluid)</option></select></div></div></div><button type="button" class="add-section-btn add-relay-btn hidden" onclick="toggleRelaySection(${id})">+ Add Relay Control</button><div class="collapsible-section relay-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;">Relay Switch Control<button type="button" class="remove-btn" onclick="removeRelaySection(${id})" style="float:right;">Remove Relay</button></h4><div class="form-grid"><label class="field"><span>Target Client UID</span><input type="text" class="relay-target" list="relayTargetSuggestions" placeholder="dev:IMEI (optional)"></label><label class="field"><span>Trigger On</span><select class="relay-trigger"><option value="any">Any Alarm (High or Low)</option><option value="high">High Alarm Only</option><option value="low">Low Alarm Only</option></select></label><label class="field"><span>Relay Mode</span><select class="relay-mode" onchange="toggleRelayDurations(${id})"><option value="momentary">Momentary (configurable duration)</option><option value="until_clear">Stay On Until Alarm Clears</option><option value="manual_reset">Stay On Until Manual Server Reset</option></select></label><div class="field"><span>Relay Outputs</span><div style="display:flex;gap:12px;padding:8px 0;"><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-1" value="1"> R1</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-2" value="2"> R2</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-3" value="4"> R3</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-4" value="8"> R4</label></div></div><div class="relay-durations-section" style="grid-column:1 / -1;display:block;"><span style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:8px;display:block;">Momentary Duration per Relay (seconds, 0 = default 30 min):</span><div style="display:flex;gap:12px;flex-wrap:wrap;"><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R1:<input type="number" class="relay-duration-1" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R2:<input type="number" class="relay-duration-2" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R3:<input type="number" class="relay-duration-3" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R4:<input type="number" class="relay-duration-4" value="0" min="0" max="86400" style="width:70px;"></label></div></div></div></div><button type="button" class="add-section-btn add-sms-btn hidden" onclick="toggleSmsSection(${id})">+ Add SMS Alert</button><div class="collapsible-section sms-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;">SMS Alert Notifications<button type="button" class="remove-btn" onclick="removeSmsSection(${id})" style="float:right;">Remove SMS Alert</button></h4><div class="form-grid"><label class="field" style="grid-column:1 / -1;"><span>Phone Numbers<span class="tooltip-icon" tabindex="0" data-tooltip="Enter phone numbers with country code (e.g., +15551234567). Separate multiple numbers with commas.">?</span></span><input type="text" class="sms-phones" placeholder="+15551234567,+15559876543"></label><label class="field"><span>Trigger On</span><select class="sms-trigger"><option value="any">Any Alarm (High or Low)</option><option value="high">High Alarm Only</option><option value="low">Low Alarm Only</option></select></label><label class="field" style="grid-column:span 2;"><span>Custom Message (optional)</span><input type="text" class="sms-message" placeholder="Tank alarm triggered"></label></div></div></div>`;}
+function createSensorHtml(id){return `<div class="sensor-card" id="sensor-${id}"><div class="sensor-header"><span class="sensor-title">Sensor #${id+1}</span><button type="button" class="remove-btn" onclick="removeSensor(${id})">Remove</button></div><div class="form-grid"><label class="field"><span>Monitor Type</span><select class="monitor-type" onchange="updateMonitorFields(${id})">${monitorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label><label class="field tank-num-field"><span>Display Number (optional)</span><input type="number" class="tank-num" placeholder="e.g. 1, 2, 3"></label><label class="field"><span><span class="name-label">Name</span></span><input type="text" class="tank-name" placeholder="Name"></label><label class="field contents-field"><span>Contents</span><input type="text" class="tank-contents" placeholder="e.g. Diesel, Water"></label><label class="field"><span>Sensor Type</span><select class="sensor-type" onchange="updatePinOptions(${id})">${sensorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label><label class="field"><span>Pin / Channel</span><select class="sensor-pin">${optaPins.map(p=>`<option value="${p.value}">${p.label}</option>`).join('')}</select></label><label class="field switch-mode-field" style="display:none;"><span>Switch Mode<span class="tooltip-icon" tabindex="0" data-tooltip="NO(Normally-Open): Switch is open by default, closes when fluid is present. NC(Normally-Closed): Switch is closed by default, opens when fluid is present.">?</span></span><select class="switch-mode"><option value="NO">Normally-Open(NO)</option><option value="NC">Normally-Closed(NC)</option></select></label><label class="field pulses-per-rev-field" style="display:none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label><label class="field current-loop-type-field" style="display:none;"><span>4-20mA Sensor Type<span class="tooltip-icon" tabindex="0" data-tooltip="Select the type of 4-20mA sensor: Pressure sensors are mounted near the sensor bottom and measure liquid pressure. Ultrasonic sensors are mounted on top of the sensor and measure distance to the liquid surface.">?</span></span><select class="current-loop-type" onchange="updateCurrentLoopFields(${id})"><option value="pressure">Pressure Sensor(Bottom-Mounted)</option><option value="ultrasonic">Ultrasonic Sensor(Top-Mounted)</option></select></label><label class="field sensor-range-field" style="display:none;"><span><span class="sensor-range-label">Sensor Range</span><span class="tooltip-icon sensor-range-tooltip" tabindex="0" data-tooltip="Native measurement range of the sensor (e.g., 0-5 PSI for pressure, 0-10m for ultrasonic). This is the range that corresponds to 4-20mA output.">?</span></span><div style="display:flex;gap:8px;align-items:center;"><input type="number" class="sensor-range-min" value="0" step="0.1" style="width:70px;" placeholder="Min"><span>to</span><input type="number" class="sensor-range-max" value="5" step="0.1" style="width:70px;" placeholder="Max"><select class="sensor-range-unit" style="width:70px;"><option value="PSI">PSI</option><option value="bar">bar</option><option value="m">m</option><option value="ft">ft</option><option value="in">in</option><option value="cm">cm</option></select></div></label><label class="field sensor-mount-height-field" style="display:none;"><span><span class="mount-height-label">Sensor Mount Height(in)</span><span class="tooltip-icon mount-height-tooltip" tabindex="0" data-tooltip="For pressure sensors: height of sensor above tank bottom (usually 0-2 inches). For ultrasonic sensors: distance from sensor to tank bottom when empty.">?</span></span><input type="number" class="sensor-mount-height" value="0" step="0.1" min="0"></label><label class="field analog-voltage-field" style="display:none;"><span><span class="analog-voltage-label">Sensor Voltage Range</span><span class="tooltip-icon analog-voltage-tooltip" tabindex="0" data-tooltip="The voltage output range of the analog sensor. Common ranges: 0-10V, 0-5V, 1-5V.">?</span></span><div style="display:flex;gap:8px;align-items:center;"><input type="number" class="analog-voltage-min" value="0" step="0.1" style="width:70px;" placeholder="Min"><span>to</span><input type="number" class="analog-voltage-max" value="10" step="0.1" style="width:70px;" placeholder="Max"><span>V</span></div></label></div><label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" class="stuck-detection" checked> Stuck Sensor Detection<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, the system flags a sensor as failed if it reports the same reading 10 consecutive times. Disable for sensors where readings naturally stay constant (e.g., gas pressure monitors).">?</span></label><label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" class="calibration-enabled" checked> Calibration Learning<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, you can submit manual verification readings on the Calibration page to teach the system the actual relationship between sensor output and measured values. Recommended for tank level sensors. For gas pressure or RPM sensors, disable unless you have reference gauges for comparison.">?</span></label><div class="digital-sensor-info" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-top:8px;font-size:0.9rem;color:var(--muted);"><strong>Float Switch Mode:</strong> This sensor only detects whether fluid has reached the switch position.<br><br><strong>Wiring Note:</strong> Connect the switch between the input pin and GND. The software uses an internal pull-up resistor.</div><div class="current-loop-sensor-info" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-top:8px;font-size:0.9rem;color:var(--muted);"><div class="pressure-sensor-info"><strong>Pressure Sensor(Bottom-Mounted):</strong> Measures the pressure of the liquid column above it.<br>- 4mA = Empty tank (0 pressure)<br>- 20mA = Full tank (max pressure)<br>- Sensor Range: The native pressure range (e.g., 0-5 PSI)<br>- Mount Height: Distance from sensor to tank bottom</div><div class="ultrasonic-sensor-info" style="display:none;"><strong>Ultrasonic Sensor(Top-Mounted):</strong> Measures the distance from the sensor to the liquid surface.<br>- 4mA = Full tank (liquid close to sensor)<br>- 20mA = Empty tank (liquid far from sensor)<br>- Sensor Range: The native distance range (e.g., 0-10m)<br>- Sensor Mount Height: Distance from sensor to tank bottom when empty</div></div><button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button><div class="collapsible-section alarm-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;"><span class="alarm-section-title">Alarm Thresholds</span><button type="button" class="remove-btn" onclick="removeAlarmSection(${id})" style="float:right;">Remove Alarm</button></h4><div class="form-grid alarm-thresholds-grid"><div class="field"><span><label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="high-alarm-enabled" checked> High Alarm</label></span><input type="number" class="high-alarm" value="100"></div><div class="field"><span><label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="low-alarm-enabled" checked> Low Alarm</label></span><input type="number" class="low-alarm" value="20"></div></div><div class="form-grid digital-alarm-grid" style="display:none;"><div class="field" style="grid-column:1 / -1;"><span>Trigger Condition<span class="tooltip-icon" tabindex="0" data-tooltip="Select when the alarm should trigger based on the float switch state.">?</span></span><select class="digital-trigger-state"><option value="activated">When Switch is Activated (fluid detected)</option><option value="not_activated">When Switch is NOT Activated (no fluid)</option></select></div></div></div><button type="button" class="add-section-btn add-relay-btn hidden" onclick="toggleRelaySection(${id})">+ Add Relay Control</button><div class="collapsible-section relay-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;">Relay Switch Control<button type="button" class="remove-btn" onclick="removeRelaySection(${id})" style="float:right;">Remove Relay</button></h4><div class="form-grid"><label class="field"><span>Target Client UID</span><input type="text" class="relay-target" list="relayTargetSuggestions" placeholder="dev:IMEI (optional)"></label><label class="field"><span>Trigger On</span><select class="relay-trigger"><option value="any">Any Alarm (High or Low)</option><option value="high">High Alarm Only</option><option value="low">Low Alarm Only</option></select></label><label class="field"><span>Relay Mode</span><select class="relay-mode" onchange="toggleRelayDurations(${id})"><option value="momentary">Momentary (configurable duration)</option><option value="until_clear">Stay On Until Alarm Clears</option><option value="manual_reset">Stay On Until Manual Server Reset</option></select></label><div class="field"><span>Relay Outputs</span><div style="display:flex;gap:12px;padding:8px 0;"><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-1" value="1"> R1</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-2" value="2"> R2</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-3" value="4"> R3</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-4" value="8"> R4</label></div></div><div class="relay-durations-section" style="grid-column:1 / -1;display:block;"><span style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:8px;display:block;">Momentary Duration per Relay (seconds, 0 = default 30 min):</span><div style="display:flex;gap:12px;flex-wrap:wrap;"><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R1:<input type="number" class="relay-duration-1" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R2:<input type="number" class="relay-duration-2" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R3:<input type="number" class="relay-duration-3" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R4:<input type="number" class="relay-duration-4" value="0" min="0" max="86400" style="width:70px;"></label></div></div><label class="field relay-max-on-section" style="grid-column:1 / -1;display:none;"><span>Safety Max ON Duration (seconds, 0 = no limit)<span class="tooltip-icon" tabindex="0" data-tooltip="Maximum time a relay can stay ON in manual_reset mode. After this duration the relay is forced OFF and a relay_timeout alarm is sent. Set to 0 to disable. Max 604800 (7 days).">?</span></span><input type="number" class="relay-max-on" value="0" min="0" max="604800" style="width:120px;"></label></div></div><button type="button" class="add-section-btn add-sms-btn hidden" onclick="toggleSmsSection(${id})">+ Add SMS Alert</button><div class="collapsible-section sms-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;">SMS Alert Notifications<button type="button" class="remove-btn" onclick="removeSmsSection(${id})" style="float:right;">Remove SMS Alert</button></h4><div class="form-grid"><label class="field" style="grid-column:1 / -1;"><span>Phone Numbers<span class="tooltip-icon" tabindex="0" data-tooltip="Enter phone numbers with country code (e.g., +15551234567). Separate multiple numbers with commas.">?</span></span><input type="text" class="sms-phones" placeholder="+15551234567,+15559876543"></label><label class="field"><span>Trigger On</span><select class="sms-trigger"><option value="any">Any Alarm (High or Low)</option><option value="high">High Alarm Only</option><option value="low">Low Alarm Only</option></select></label><label class="field" style="grid-column:span 2;"><span>Custom Message (optional)</span><input type="text" class="sms-message" placeholder="Tank alarm triggered"></label></div></div></div>`;}
 /* SENSOR FUNCTIONS */
 function normalizeBulletText(root){if(!root)return;root.querySelectorAll('.current-loop-sensor-info').forEach(el=>{el.innerHTML=el.innerHTML.replace(/[^\x20-\x7E]+/g,'-');});}
 function addSensor(){const container=document.getElementById('sensorsContainer');const div=document.createElement('div');div.innerHTML=createSensorHtml(sensorCount);container.appendChild(div.firstElementChild);normalizeBulletText(div.firstElementChild);updateSensorTypeFields(sensorCount);sensorCount++;}
@@ -1506,10 +1473,10 @@ window.removeSensor=function(id){const el=document.getElementById(`sensor-${id}`
 window.toggleAlarmSection=function(id){const card=document.getElementById(`sensor-${id}`);const alarmSection=card.querySelector('.alarm-section');const addAlarmBtn=card.querySelector('.add-alarm-btn');const addRelayBtn=card.querySelector('.add-relay-btn');const addSmsBtn=card.querySelector('.add-sms-btn');alarmSection.classList.add('visible');addAlarmBtn.classList.add('hidden');addRelayBtn.classList.remove('hidden');addSmsBtn.classList.remove('hidden');};
 window.removeAlarmSection=function(id){const card=document.getElementById(`sensor-${id}`);const alarmSection=card.querySelector('.alarm-section');const addAlarmBtn=card.querySelector('.add-alarm-btn');const addRelayBtn=card.querySelector('.add-relay-btn');const addSmsBtn=card.querySelector('.add-sms-btn');const relaySection=card.querySelector('.relay-section');const smsSection=card.querySelector('.sms-section');alarmSection.classList.remove('visible');addAlarmBtn.classList.remove('hidden');addRelayBtn.classList.add('hidden');addSmsBtn.classList.add('hidden');relaySection.classList.remove('visible');smsSection.classList.remove('visible');card.querySelector('.high-alarm').value='100';card.querySelector('.low-alarm').value='20';card.querySelector('.high-alarm-enabled').checked=true;card.querySelector('.low-alarm-enabled').checked=true;card.querySelector('.relay-target').value='';card.querySelector('.relay-trigger').value='any';card.querySelector('.relay-mode').value='momentary';['relay-1','relay-2','relay-3','relay-4'].forEach(cls=>{card.querySelector('.'+cls).checked=false;});card.querySelector('.sms-phones').value='';card.querySelector('.sms-trigger').value='any';card.querySelector('.sms-message').value='';};
 window.toggleRelaySection=function(id){const card=document.getElementById(`sensor-${id}`);const relaySection=card.querySelector('.relay-section');const addBtn=card.querySelector('.add-relay-btn');relaySection.classList.add('visible');addBtn.classList.add('hidden');};
-window.removeRelaySection=function(id){const card=document.getElementById(`sensor-${id}`);const relaySection=card.querySelector('.relay-section');const addBtn=card.querySelector('.add-relay-btn');relaySection.classList.remove('visible');addBtn.classList.remove('hidden');card.querySelector('.relay-target').value='';card.querySelector('.relay-trigger').value='any';card.querySelector('.relay-mode').value='momentary';['relay-1','relay-2','relay-3','relay-4'].forEach(cls=>{card.querySelector('.'+cls).checked=false;});['relay-duration-1','relay-duration-2','relay-duration-3','relay-duration-4'].forEach(cls=>{card.querySelector('.'+cls).value='0';});card.querySelector('.relay-durations-section').style.display='block';};
+window.removeRelaySection=function(id){const card=document.getElementById(`sensor-${id}`);const relaySection=card.querySelector('.relay-section');const addBtn=card.querySelector('.add-relay-btn');relaySection.classList.remove('visible');addBtn.classList.remove('hidden');card.querySelector('.relay-target').value='';card.querySelector('.relay-trigger').value='any';card.querySelector('.relay-mode').value='momentary';['relay-1','relay-2','relay-3','relay-4'].forEach(cls=>{card.querySelector('.'+cls).checked=false;});['relay-duration-1','relay-duration-2','relay-duration-3','relay-duration-4'].forEach(cls=>{card.querySelector('.'+cls).value='0';});card.querySelector('.relay-max-on').value='0';card.querySelector('.relay-durations-section').style.display='block';card.querySelector('.relay-max-on-section').style.display='none';};
 window.toggleSmsSection=function(id){const card=document.getElementById(`sensor-${id}`);const smsSection=card.querySelector('.sms-section');const addBtn=card.querySelector('.add-sms-btn');smsSection.classList.add('visible');addBtn.classList.add('hidden');};
 window.removeSmsSection=function(id){const card=document.getElementById(`sensor-${id}`);const smsSection=card.querySelector('.sms-section');const addBtn=card.querySelector('.add-sms-btn');smsSection.classList.remove('visible');addBtn.classList.remove('hidden');card.querySelector('.sms-phones').value='';card.querySelector('.sms-trigger').value='any';card.querySelector('.sms-message').value='';};
-window.toggleRelayDurations=function(id){const card=document.getElementById(`sensor-${id}`);const relayMode=card.querySelector('.relay-mode').value;const durationsSection=card.querySelector('.relay-durations-section');if(relayMode==='momentary'){durationsSection.style.display='block';}else{durationsSection.style.display='none';}};
+window.toggleRelayDurations=function(id){const card=document.getElementById(`sensor-${id}`);const relayMode=card.querySelector('.relay-mode').value;const durationsSection=card.querySelector('.relay-durations-section');const maxOnSection=card.querySelector('.relay-max-on-section');if(relayMode==='momentary'){durationsSection.style.display='block';maxOnSection.style.display='none';}else if(relayMode==='manual_reset'){durationsSection.style.display='none';maxOnSection.style.display='flex';}else{durationsSection.style.display='none';maxOnSection.style.display='none';}};
 window.updateMonitorFields=function(id){const card=document.getElementById(`sensor-${id}`);const type=card.querySelector('.monitor-type').value;const numField=card.querySelector('.tank-num-field');const numFieldLabel=numField.querySelector('span');const nameLabel=card.querySelector('.name-label');const sensorTypeSelect=card.querySelector('.sensor-type');const pulsesPerRevField=card.querySelector('.pulses-per-rev-field');const contentsField=card.querySelector('.contents-field');const calCheckbox=card.querySelector('.calibration-enabled');if(type==='gas'){numField.style.display='flex';numFieldLabel.textContent='Display Number (optional)';nameLabel.textContent='System Name';pulsesPerRevField.style.display='none';contentsField.style.display='flex';sensorTypeSelect.value='2';calCheckbox.checked=false;updatePinOptions(id);}else if(type==='rpm'){numField.style.display='flex';numFieldLabel.textContent='Engine Number (optional)';nameLabel.textContent='Engine Name';pulsesPerRevField.style.display='flex';contentsField.style.display='none';sensorTypeSelect.value='3';calCheckbox.checked=false;updatePinOptions(id);}else{numField.style.display='flex';numFieldLabel.textContent='Tank Number (optional)';nameLabel.textContent='Name';pulsesPerRevField.style.display='none';contentsField.style.display='flex';calCheckbox.checked=true;}updateSensorTypeFields(id);};
 window.updatePinOptions=function(id){const card=document.getElementById(`sensor-${id}`);const typeSelect=card.querySelector('.sensor-type');const pinSelect=card.querySelector('.sensor-pin');const type=parseInt(typeSelect.value);pinSelect.innerHTML='';let options=[];if(type===2){options=expansionChannels;}else{options=optaPins;}options.forEach(opt=>{const option=document.createElement('option');option.value=opt.value;option.textContent=opt.label;pinSelect.appendChild(option);});updateSensorTypeFields(id);};
 window.updateSensorTypeFields=function(id){const card=document.getElementById(`sensor-${id}`);const type=parseInt(card.querySelector('.sensor-type').value);const digitalInfoBox=card.querySelector('.digital-sensor-info');const currentLoopInfoBox=card.querySelector('.current-loop-sensor-info');const alarmThresholdsGrid=card.querySelector('.alarm-thresholds-grid');const digitalAlarmGrid=card.querySelector('.digital-alarm-grid');const alarmSectionTitle=card.querySelector('.alarm-section-title');const pulsesPerRevField=card.querySelector('.pulses-per-rev-field');const switchModeField=card.querySelector('.switch-mode-field');const currentLoopTypeField=card.querySelector('.current-loop-type-field');const sensorMountHeightField=card.querySelector('.sensor-mount-height-field');const sensorRangeField=card.querySelector('.sensor-range-field');const analogVoltageField=card.querySelector('.analog-voltage-field');if(type===0){digitalInfoBox.style.display='block';currentLoopInfoBox.style.display='none';switchModeField.style.display='flex';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';analogVoltageField.style.display='none';alarmThresholdsGrid.style.display='none';digitalAlarmGrid.style.display='grid';alarmSectionTitle.textContent='Float Switch Alarm';pulsesPerRevField.style.display='none';}else if(type===2){const monitorType=card.querySelector('.monitor-type').value;digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='block';switchModeField.style.display='none';analogVoltageField.style.display='none';const loopTypeSelect=card.querySelector('.current-loop-type');if(monitorType==='tank'){currentLoopTypeField.style.display='flex';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor(Bottom-Mounted)</option><option value="ultrasonic">Ultrasonic Sensor(Top-Mounted)</option>';sensorMountHeightField.style.display='flex';sensorRangeField.style.display='flex';}else if(monitorType==='gas'){currentLoopTypeField.style.display='none';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor</option>';loopTypeSelect.value='pressure';sensorMountHeightField.style.display='none';sensorRangeField.style.display='flex';}else{currentLoopTypeField.style.display='flex';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor</option>';loopTypeSelect.value='pressure';sensorMountHeightField.style.display='none';sensorRangeField.style.display='flex';}alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='none';updateCurrentLoopFields(id);}else if(type===3){digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='none';switchModeField.style.display='none';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';analogVoltageField.style.display='none';alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='flex';}else{const monitorType=card.querySelector('.monitor-type').value;digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='none';switchModeField.style.display='none';currentLoopTypeField.style.display='none';analogVoltageField.style.display='flex';sensorRangeField.style.display='flex';if(monitorType==='tank'){sensorMountHeightField.style.display='flex';}else{sensorMountHeightField.style.display='none';}alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='none';}};
@@ -1523,7 +1490,7 @@ document.getElementById('addInputBtn').addEventListener('click',addInput);
 function sensorKeyFromValue(value){switch(value){case 0:return 'digital';case 2:return 'current';case 3:return 'rpm';default:return 'analog';}}
 function collectConfig(){const sMinutes=Math.max(1,Math.min(1440,parseInt(document.getElementById('sampleMinutes').value,10)||30));const time=(document.getElementById('reportTime').value||'05:00').split(':');const reportHour=parseInt(time[0])||5;const reportMinute=parseInt(time[1])||0;const ps=document.getElementById('powerSource').value||'grid';const hasVin=ps.includes('vin');const isSolarOnly=ps.startsWith('solar_nobat');const cfg={productUid:document.getElementById('productUid').value.trim(),deviceUid:(document.getElementById('clientUid').value||'').trim(),site:document.getElementById('siteName').value.trim(),deviceLabel:document.getElementById('deviceLabel').value.trim()||'Unconfigured Client',clientFleet:(document.getElementById('clientFleet').value||'').trim(),serverFleet:document.getElementById('serverFleet').value.trim()||'tankalarm-server',sampleSeconds:sMinutes*60,reportHour:reportHour,reportMinute:reportMinute,dailyEmail:document.getElementById('dailyEmail').value.trim(),powerSource:ps,solarPowered:ps.includes('solar'),mpptEnabled:ps.includes('mppt'),solarCharger:{enabled:ps==='solar_modbus_mppt'},vinMonitor:{enabled:hasVin,pin:hasVin?parseInt(document.getElementById('vinPin').value)||0:0,r1Kohm:hasVin?parseFloat(document.getElementById('vinR1').value)||22:22,r2Kohm:hasVin?parseFloat(document.getElementById('vinR2').value)||47:47},solarOnlyConfig:{enabled:isSolarOnly,startupDebounceVoltage:(isSolarOnly&&hasVin)?parseFloat(document.getElementById('solarOnlyDebounceV').value)||10:10,startupDebounceSec:(isSolarOnly&&hasVin)?parseInt(document.getElementById('solarOnlyDebounceSec').value)||30:30,startupWarmupSec:(isSolarOnly&&!hasVin)?parseInt(document.getElementById('solarOnlyWarmupSec').value)||60:60,sensorGateVoltage:(isSolarOnly&&hasVin)?parseFloat(document.getElementById('solarOnlySensorGateV').value)||11:11,sunsetVoltage:(isSolarOnly&&hasVin)?parseFloat(document.getElementById('solarOnlySunsetV').value)||10:10,sunsetConfirmSec:isSolarOnly?parseInt(document.getElementById('solarOnlySunsetSec').value)||120:120,opportunisticReportHours:isSolarOnly?parseInt(document.getElementById('solarOnlyReportHours').value)||20:20,batteryFailureFallback:(!isSolarOnly&&ps.includes('solar'))?!!document.getElementById('solarOnlyBatFail').checked:false,batteryFailureThreshold:parseInt(document.getElementById('solarOnlyBatFailCount').value)||10},sensors:[],clearButtonPin:-1,clearButtonActiveHigh:false};
 const sensorCards=document.querySelectorAll('#sensorsContainer .sensor-card');if(!sensorCards.length){showToast('Add at least one sensor',true);return null;}
-sensorCards.forEach((card,index)=>{const monitorType=card.querySelector('.monitor-type').value;const type=parseInt(card.querySelector('.sensor-type').value);const pin=parseInt(card.querySelector('.sensor-pin').value);let userNum=parseInt(card.querySelector('.tank-num').value)||0;let name=card.querySelector('.tank-name').value;const contents=card.querySelector('.tank-contents')?.value||'';if(monitorType==='gas'){if(!name)name=`Gas System ${userNum||index+1}`;}else if(monitorType==='rpm'){if(!name)name=`Engine ${userNum||index+1}`;}else{if(!name)name=`Tank ${userNum||index+1}`;}const sensor=sensorKeyFromValue(type);const pulsesPerRev=Math.max(1,Math.min(255,parseInt(card.querySelector('.pulses-per-rev').value)||1));const switchMode=card.querySelector('.switch-mode').value;const alarmSectionVisible=card.querySelector('.alarm-section').classList.contains('visible');const highAlarmEnabled=card.querySelector('.high-alarm-enabled').checked;const lowAlarmEnabled=card.querySelector('.low-alarm-enabled').checked;const highAlarmValue=card.querySelector('.high-alarm').value;const lowAlarmValue=card.querySelector('.low-alarm').value;const tank={id:String.fromCharCode(65+index),monitorType:monitorType,name:name,contents:contents,number:index+1,userNumber:userNum,sensor:sensor,primaryPin:sensor==='current'?0:pin,secondaryPin:-1,loopChannel:sensor==='current'?pin:-1,rpmPin:sensor==='rpm'?pin:-1,hysteresis:sensor==='digital'?0:2.0,daily:true,upload:true,stuckDetection:card.querySelector('.stuck-detection').checked,calibrationEnabled:card.querySelector('.calibration-enabled').checked};if(sensor==='digital'){tank.digitalSwitchMode=switchMode;}let sUnit='';if(sensor==='current'){const currentLoopType=card.querySelector('.current-loop-type').value;const sensorMountHeight=parseFloat(card.querySelector('.sensor-mount-height').value)||0;const sMin=parseFloat(card.querySelector('.sensor-range-min').value)||0;const sMax=parseFloat(card.querySelector('.sensor-range-max').value)||5;sUnit=card.querySelector('.sensor-range-unit').value||'PSI';tank.currentLoopType=currentLoopType;tank.sensorMountHeight=sensorMountHeight;tank.sensorRangeMin=sMin;tank.sensorRangeMax=sMax;tank.sensorRangeUnit=sUnit;}else if(sensor==='analog'){const sensorMountHeight=parseFloat(card.querySelector('.sensor-mount-height').value)||0;const sMin=parseFloat(card.querySelector('.sensor-range-min').value)||0;const sMax=parseFloat(card.querySelector('.sensor-range-max').value)||5;sUnit=card.querySelector('.sensor-range-unit').value||'PSI';tank.sensorMountHeight=sensorMountHeight;tank.sensorRangeMin=sMin;tank.sensorRangeMax=sMax;tank.sensorRangeUnit=sUnit;tank.analogVoltageMin=parseFloat(card.querySelector('.analog-voltage-min').value)||0;tank.analogVoltageMax=parseFloat(card.querySelector('.analog-voltage-max').value)||10;}if(monitorType==='gas'){tank.measurementUnit=sUnit?sUnit.toLowerCase():'psi';}else if(monitorType==='rpm'){tank.measurementUnit='rpm';}else if(monitorType==='flow'){tank.measurementUnit='gpm';}if(alarmSectionVisible){if(sensor==='digital'){const digitalTriggerState=card.querySelector('.digital-trigger-state').value;tank.digitalTrigger=digitalTriggerState;if(digitalTriggerState==='activated'){tank.highAlarm=1;}else{tank.lowAlarm=0;}tank.alarmsEnabled=true;tank.alarmSms=true;}else if(highAlarmEnabled||lowAlarmEnabled){if(highAlarmEnabled&&highAlarmValue!==''){const v=parseFloat(highAlarmValue);if(!isNaN(v))tank.highAlarm=v;}if(lowAlarmEnabled&&lowAlarmValue!==''){const v=parseFloat(lowAlarmValue);if(!isNaN(v))tank.lowAlarm=v;}tank.alarmsEnabled=true;tank.alarmSms=true;}else{tank.alarmsEnabled=false;tank.alarmSms=false;}}else{tank.alarmsEnabled=false;tank.alarmSms=false;}if(sensor==='rpm'){tank.pulsesPerRev=pulsesPerRev;}const relaySectionVisible=card.querySelector('.relay-section').classList.contains('visible');if(relaySectionVisible){let relayMask=0;['relay-1','relay-2','relay-3','relay-4'].forEach(cls=>{const cb=card.querySelector('.'+cls);if(cb.checked)relayMask|=parseInt(cb.value);});const relayTarget=card.querySelector('.relay-target').value.trim();const relayTrigger=card.querySelector('.relay-trigger').value;const relayMode=card.querySelector('.relay-mode').value;if(relayTarget){tank.relayTargetClient=relayTarget;tank.relayMask=relayMask;tank.relayTrigger=relayTrigger;tank.relayMode=relayMode;if(relayMode==='momentary'){tank.relayMomentaryDurations=[parseInt(card.querySelector('.relay-duration-1').value)||0,parseInt(card.querySelector('.relay-duration-2').value)||0,parseInt(card.querySelector('.relay-duration-3').value)||0,parseInt(card.querySelector('.relay-duration-4').value)||0];}}}const smsSectionVisible=card.querySelector('.sms-section').classList.contains('visible');if(smsSectionVisible){const smsPhones=card.querySelector('.sms-phones').value.trim();const smsTrigger=card.querySelector('.sms-trigger').value;const smsMessage=card.querySelector('.sms-message').value.trim();if(smsPhones){const phoneArray=smsPhones.split(',').map(p=>p.trim()).filter(p=>p.length>0);if(phoneArray.length>0){tank.smsAlert={phones:phoneArray,trigger:smsTrigger,message:smsMessage||'Tank alarm triggered'};}}}cfg.sensors.push(tank);});
+sensorCards.forEach((card,index)=>{const monitorType=card.querySelector('.monitor-type').value;const type=parseInt(card.querySelector('.sensor-type').value);const pin=parseInt(card.querySelector('.sensor-pin').value);let userNum=parseInt(card.querySelector('.tank-num').value)||0;let name=card.querySelector('.tank-name').value;const contents=card.querySelector('.tank-contents')?.value||'';if(monitorType==='gas'){if(!name)name=`Gas System ${userNum||index+1}`;}else if(monitorType==='rpm'){if(!name)name=`Engine ${userNum||index+1}`;}else{if(!name)name=`Tank ${userNum||index+1}`;}const sensor=sensorKeyFromValue(type);const pulsesPerRev=Math.max(1,Math.min(255,parseInt(card.querySelector('.pulses-per-rev').value)||1));const switchMode=card.querySelector('.switch-mode').value;const alarmSectionVisible=card.querySelector('.alarm-section').classList.contains('visible');const highAlarmEnabled=card.querySelector('.high-alarm-enabled').checked;const lowAlarmEnabled=card.querySelector('.low-alarm-enabled').checked;const highAlarmValue=card.querySelector('.high-alarm').value;const lowAlarmValue=card.querySelector('.low-alarm').value;const tank={id:String.fromCharCode(65+index),monitorType:monitorType,name:name,contents:contents,number:index+1,userNumber:userNum,sensor:sensor,primaryPin:sensor==='current'?0:pin,secondaryPin:-1,loopChannel:sensor==='current'?pin:-1,rpmPin:sensor==='rpm'?pin:-1,hysteresis:sensor==='digital'?0:2.0,daily:true,upload:true,stuckDetection:card.querySelector('.stuck-detection').checked,calibrationEnabled:card.querySelector('.calibration-enabled').checked};if(sensor==='digital'){tank.digitalSwitchMode=switchMode;}let sUnit='';if(sensor==='current'){const currentLoopType=card.querySelector('.current-loop-type').value;const sensorMountHeight=parseFloat(card.querySelector('.sensor-mount-height').value)||0;const sMin=parseFloat(card.querySelector('.sensor-range-min').value)||0;const sMax=parseFloat(card.querySelector('.sensor-range-max').value)||5;sUnit=card.querySelector('.sensor-range-unit').value||'PSI';tank.currentLoopType=currentLoopType;tank.sensorMountHeight=sensorMountHeight;tank.sensorRangeMin=sMin;tank.sensorRangeMax=sMax;tank.sensorRangeUnit=sUnit;}else if(sensor==='analog'){const sensorMountHeight=parseFloat(card.querySelector('.sensor-mount-height').value)||0;const sMin=parseFloat(card.querySelector('.sensor-range-min').value)||0;const sMax=parseFloat(card.querySelector('.sensor-range-max').value)||5;sUnit=card.querySelector('.sensor-range-unit').value||'PSI';tank.sensorMountHeight=sensorMountHeight;tank.sensorRangeMin=sMin;tank.sensorRangeMax=sMax;tank.sensorRangeUnit=sUnit;tank.analogVoltageMin=parseFloat(card.querySelector('.analog-voltage-min').value)||0;tank.analogVoltageMax=parseFloat(card.querySelector('.analog-voltage-max').value)||10;}if(monitorType==='gas'){tank.measurementUnit=sUnit?sUnit.toLowerCase():'psi';}else if(monitorType==='rpm'){tank.measurementUnit='rpm';}else if(monitorType==='flow'){tank.measurementUnit='gpm';}if(alarmSectionVisible){if(sensor==='digital'){const digitalTriggerState=card.querySelector('.digital-trigger-state').value;tank.digitalTrigger=digitalTriggerState;if(digitalTriggerState==='activated'){tank.highAlarm=1;}else{tank.lowAlarm=0;}tank.alarmsEnabled=true;tank.alarmSms=true;}else if(highAlarmEnabled||lowAlarmEnabled){if(highAlarmEnabled&&highAlarmValue!==''){const v=parseFloat(highAlarmValue);if(!isNaN(v))tank.highAlarm=v;}if(lowAlarmEnabled&&lowAlarmValue!==''){const v=parseFloat(lowAlarmValue);if(!isNaN(v))tank.lowAlarm=v;}tank.alarmsEnabled=true;tank.alarmSms=true;}else{tank.alarmsEnabled=false;tank.alarmSms=false;}}else{tank.alarmsEnabled=false;tank.alarmSms=false;}if(sensor==='rpm'){tank.pulsesPerRev=pulsesPerRev;}const relaySectionVisible=card.querySelector('.relay-section').classList.contains('visible');if(relaySectionVisible){let relayMask=0;['relay-1','relay-2','relay-3','relay-4'].forEach(cls=>{const cb=card.querySelector('.'+cls);if(cb.checked)relayMask|=parseInt(cb.value);});const relayTarget=card.querySelector('.relay-target').value.trim();const relayTrigger=card.querySelector('.relay-trigger').value;const relayMode=card.querySelector('.relay-mode').value;if(relayTarget){tank.relayTargetClient=relayTarget;tank.relayMask=relayMask;tank.relayTrigger=relayTrigger;tank.relayMode=relayMode;if(relayMode==='momentary'){tank.relayMomentaryDurations=[parseInt(card.querySelector('.relay-duration-1').value)||0,parseInt(card.querySelector('.relay-duration-2').value)||0,parseInt(card.querySelector('.relay-duration-3').value)||0,parseInt(card.querySelector('.relay-duration-4').value)||0];}if(relayMode==='manual_reset'){const maxOn=parseInt(card.querySelector('.relay-max-on').value)||0;if(maxOn>0)tank.relayMaxOnSeconds=Math.min(maxOn,604800);}}}const smsSectionVisible=card.querySelector('.sms-section').classList.contains('visible');if(smsSectionVisible){const smsPhones=card.querySelector('.sms-phones').value.trim();const smsTrigger=card.querySelector('.sms-trigger').value;const smsMessage=card.querySelector('.sms-message').value.trim();if(smsPhones){const phoneArray=smsPhones.split(',').map(p=>p.trim()).filter(p=>p.length>0);if(phoneArray.length>0){tank.smsAlert={phones:phoneArray,trigger:smsTrigger,message:smsMessage||'Tank alarm triggered'};}}}cfg.sensors.push(tank);});
 const inputCards=document.querySelectorAll('#inputsContainer .sensor-card');let clearButtonConfigured=false;inputCards.forEach(card=>{const inputAction=card.querySelector('.input-action').value;if(inputAction==='clear_relays'&&!clearButtonConfigured){cfg.clearButtonPin=parseInt(card.querySelector('.input-pin').value)||0;cfg.clearButtonActiveHigh=(card.querySelector('.input-mode').value==='active_high');clearButtonConfigured=true;}});return cfg;}
 /* SUBMIT & DOWNLOAD */
 const retryBtn=document.getElementById('retryConfigBtn');
@@ -1536,11 +1503,11 @@ if(syncBtn)syncBtn.addEventListener('click',requestSync);
 if(els.form)els.form.addEventListener('submit',submitConfig);
 document.getElementById('downloadBtn').addEventListener('click',()=>{const cfg=collectConfig();if(!cfg)return;const blob=new Blob([JSON.stringify(cfg,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='client_config.json';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);});
 /* LOAD CONFIG */
-window.loadConfig=function(c){if(els.siteName)els.siteName.value=c.site||'';if(els.clientUid)els.clientUid.value=c.deviceUid||'';if(els.deviceLabel)els.deviceLabel.value=c.deviceLabel||'';if(els.clientFleet)els.clientFleet.value=c.clientFleet||'';if(els.productUid)els.productUid.value=c.productUid||'';if(els.sampleMinutes)els.sampleMinutes.value=(c.sampleSeconds||1800)/60;if(els.dailyEmail)els.dailyEmail.value=c.dailyEmail||'';const h=String(c.reportHour||5).padStart(2,'0');const m=String(c.reportMinute||0).padStart(2,'0');if(els.reportTime)els.reportTime.value=`${h}:${m}`;if(els.powerSource)els.powerSource.value=c.powerSource||'grid';updatePowerConfigInfo();if(c.vinMonitor){if(c.vinMonitor.pin!==undefined)document.getElementById('vinPin').value=c.vinMonitor.pin;if(c.vinMonitor.r1Kohm!==undefined)document.getElementById('vinR1').value=c.vinMonitor.r1Kohm;if(c.vinMonitor.r2Kohm!==undefined)document.getElementById('vinR2').value=c.vinMonitor.r2Kohm;updateVinCalc();}if(c.solarOnlyConfig){const so=c.solarOnlyConfig;if(so.startupDebounceVoltage!==undefined)document.getElementById('solarOnlyDebounceV').value=so.startupDebounceVoltage;if(so.startupDebounceSec!==undefined)document.getElementById('solarOnlyDebounceSec').value=so.startupDebounceSec;if(so.startupWarmupSec!==undefined)document.getElementById('solarOnlyWarmupSec').value=so.startupWarmupSec;if(so.sensorGateVoltage!==undefined)document.getElementById('solarOnlySensorGateV').value=so.sensorGateVoltage;if(so.sunsetVoltage!==undefined)document.getElementById('solarOnlySunsetV').value=so.sunsetVoltage;if(so.sunsetConfirmSec!==undefined)document.getElementById('solarOnlySunsetSec').value=so.sunsetConfirmSec;if(so.opportunisticReportHours!==undefined)document.getElementById('solarOnlyReportHours').value=so.opportunisticReportHours;if(so.batteryFailureFallback!==undefined)document.getElementById('solarOnlyBatFail').checked=so.batteryFailureFallback;if(so.batteryFailureThreshold!==undefined)document.getElementById('solarOnlyBatFailCount').value=so.batteryFailureThreshold;}document.getElementById('sensorsContainer').innerHTML='';sensorCount=0;if(c.sensors)c.sensors.forEach(t=>{addSensor();const card=document.getElementById(`sensor-${sensorCount-1}`);if(card){const monitorSel=card.querySelector('.monitor-type');if(t.monitorType){monitorSel.value=t.monitorType;}else if(t.name&&t.name.match(/gas/i)){monitorSel.value='gas';}else if(t.sensor==='rpm'){monitorSel.value='rpm';}else{monitorSel.value='tank';}updateMonitorFields(sensorCount-1);card.querySelector('.tank-num').value=t.userNumber||'';card.querySelector('.tank-name').value=t.name||'';card.querySelector('.tank-contents').value=t.contents||'';const sensorVal=t.sensor==='digital'?0:(t.sensor==='current'?2:(t.sensor==='rpm'?3:1));card.querySelector('.sensor-type').value=sensorVal;updatePinOptions(sensorCount-1);if(t.sensor==='current'){card.querySelector('.sensor-pin').value=t.loopChannel||0;}else if(t.sensor==='rpm'){card.querySelector('.sensor-pin').value=t.rpmPin||0;}else{card.querySelector('.sensor-pin').value=t.primaryPin||0;}if(t.digitalSwitchMode)card.querySelector('.switch-mode').value=t.digitalSwitchMode;if(t.pulsesPerRev)card.querySelector('.pulses-per-rev').value=t.pulsesPerRev;if(t.currentLoopType)card.querySelector('.current-loop-type').value=t.currentLoopType;if(t.sensorMountHeight!==undefined)card.querySelector('.sensor-mount-height').value=t.sensorMountHeight;if(t.highAlarm!==undefined||t.lowAlarm!==undefined||t.alarmSms){toggleAlarmSection(sensorCount-1);if(t.highAlarm!==undefined){card.querySelector('.high-alarm').value=t.highAlarm;card.querySelector('.high-alarm-enabled').checked=true;}if(t.lowAlarm!==undefined){card.querySelector('.low-alarm').value=t.lowAlarm;card.querySelector('.low-alarm-enabled').checked=true;}}if(t.relayTargetClient){toggleRelaySection(sensorCount-1);card.querySelector('.relay-target').value=t.relayTargetClient;if(t.relayTrigger)card.querySelector('.relay-trigger').value=t.relayTrigger;if(t.relayMode)card.querySelector('.relay-mode').value=t.relayMode;if(t.relayMask){if(t.relayMask&1)card.querySelector('.relay-1').checked=true;if(t.relayMask&2)card.querySelector('.relay-2').checked=true;if(t.relayMask&4)card.querySelector('.relay-3').checked=true;if(t.relayMask&8)card.querySelector('.relay-4').checked=true;}if(t.relayMomentaryDurations){card.querySelector('.relay-duration-1').value=t.relayMomentaryDurations[0]||0;card.querySelector('.relay-duration-2').value=t.relayMomentaryDurations[1]||0;card.querySelector('.relay-duration-3').value=t.relayMomentaryDurations[2]||0;card.querySelector('.relay-duration-4').value=t.relayMomentaryDurations[3]||0;}toggleRelayDurations(sensorCount-1);}if(t.smsAlert&&t.smsAlert.phones){toggleSmsSection(sensorCount-1);card.querySelector('.sms-phones').value=t.smsAlert.phones.join(',');if(t.smsAlert.trigger)card.querySelector('.sms-trigger').value=t.smsAlert.trigger;if(t.smsAlert.message)card.querySelector('.sms-message').value=t.smsAlert.message;}updateSensorTypeFields(sensorCount-1);if(t.sensorRangeMin!==undefined)card.querySelector('.sensor-range-min').value=t.sensorRangeMin;if(t.sensorRangeMax!==undefined)card.querySelector('.sensor-range-max').value=t.sensorRangeMax;if(t.sensorRangeUnit)card.querySelector('.sensor-range-unit').value=t.sensorRangeUnit;if(t.analogVoltageMin!==undefined)card.querySelector('.analog-voltage-min').value=t.analogVoltageMin;if(t.analogVoltageMax!==undefined)card.querySelector('.analog-voltage-max').value=t.analogVoltageMax;if(t.stuckDetection!==undefined)card.querySelector('.stuck-detection').checked=t.stuckDetection;if(t.calibrationEnabled!==undefined)card.querySelector('.calibration-enabled').checked=t.calibrationEnabled;}});showToast('Configuration loaded');};
+window.loadConfig=function(c){if(els.siteName)els.siteName.value=c.site||'';if(els.clientUid)els.clientUid.value=c.deviceUid||'';if(els.deviceLabel)els.deviceLabel.value=c.deviceLabel||'';if(els.clientFleet)els.clientFleet.value=c.clientFleet||'';if(els.productUid)els.productUid.value=c.productUid||'';if(els.sampleMinutes)els.sampleMinutes.value=(c.sampleSeconds||1800)/60;if(els.dailyEmail)els.dailyEmail.value=c.dailyEmail||'';const h=String(c.reportHour||5).padStart(2,'0');const m=String(c.reportMinute||0).padStart(2,'0');if(els.reportTime)els.reportTime.value=`${h}:${m}`;if(els.powerSource)els.powerSource.value=c.powerSource||'grid';updatePowerConfigInfo();if(c.vinMonitor){if(c.vinMonitor.pin!==undefined)document.getElementById('vinPin').value=c.vinMonitor.pin;if(c.vinMonitor.r1Kohm!==undefined)document.getElementById('vinR1').value=c.vinMonitor.r1Kohm;if(c.vinMonitor.r2Kohm!==undefined)document.getElementById('vinR2').value=c.vinMonitor.r2Kohm;updateVinCalc();}if(c.solarOnlyConfig){const so=c.solarOnlyConfig;if(so.startupDebounceVoltage!==undefined)document.getElementById('solarOnlyDebounceV').value=so.startupDebounceVoltage;if(so.startupDebounceSec!==undefined)document.getElementById('solarOnlyDebounceSec').value=so.startupDebounceSec;if(so.startupWarmupSec!==undefined)document.getElementById('solarOnlyWarmupSec').value=so.startupWarmupSec;if(so.sensorGateVoltage!==undefined)document.getElementById('solarOnlySensorGateV').value=so.sensorGateVoltage;if(so.sunsetVoltage!==undefined)document.getElementById('solarOnlySunsetV').value=so.sunsetVoltage;if(so.sunsetConfirmSec!==undefined)document.getElementById('solarOnlySunsetSec').value=so.sunsetConfirmSec;if(so.opportunisticReportHours!==undefined)document.getElementById('solarOnlyReportHours').value=so.opportunisticReportHours;if(so.batteryFailureFallback!==undefined)document.getElementById('solarOnlyBatFail').checked=so.batteryFailureFallback;if(so.batteryFailureThreshold!==undefined)document.getElementById('solarOnlyBatFailCount').value=so.batteryFailureThreshold;}document.getElementById('sensorsContainer').innerHTML='';sensorCount=0;if(c.sensors)c.sensors.forEach(t=>{addSensor();const card=document.getElementById(`sensor-${sensorCount-1}`);if(card){const monitorSel=card.querySelector('.monitor-type');if(t.monitorType){monitorSel.value=t.monitorType;}else if(t.name&&t.name.match(/gas/i)){monitorSel.value='gas';}else if(t.sensor==='rpm'){monitorSel.value='rpm';}else{monitorSel.value='tank';}updateMonitorFields(sensorCount-1);card.querySelector('.tank-num').value=t.userNumber||'';card.querySelector('.tank-name').value=t.name||'';card.querySelector('.tank-contents').value=t.contents||'';const sensorVal=t.sensor==='digital'?0:(t.sensor==='current'?2:(t.sensor==='rpm'?3:1));card.querySelector('.sensor-type').value=sensorVal;updatePinOptions(sensorCount-1);if(t.sensor==='current'){card.querySelector('.sensor-pin').value=t.loopChannel||0;}else if(t.sensor==='rpm'){card.querySelector('.sensor-pin').value=t.rpmPin||0;}else{card.querySelector('.sensor-pin').value=t.primaryPin||0;}if(t.digitalSwitchMode)card.querySelector('.switch-mode').value=t.digitalSwitchMode;if(t.pulsesPerRev)card.querySelector('.pulses-per-rev').value=t.pulsesPerRev;if(t.currentLoopType)card.querySelector('.current-loop-type').value=t.currentLoopType;if(t.sensorMountHeight!==undefined)card.querySelector('.sensor-mount-height').value=t.sensorMountHeight;if(t.highAlarm!==undefined||t.lowAlarm!==undefined||t.alarmSms){toggleAlarmSection(sensorCount-1);if(t.highAlarm!==undefined){card.querySelector('.high-alarm').value=t.highAlarm;card.querySelector('.high-alarm-enabled').checked=true;}if(t.lowAlarm!==undefined){card.querySelector('.low-alarm').value=t.lowAlarm;card.querySelector('.low-alarm-enabled').checked=true;}}if(t.relayTargetClient){toggleRelaySection(sensorCount-1);card.querySelector('.relay-target').value=t.relayTargetClient;if(t.relayTrigger)card.querySelector('.relay-trigger').value=t.relayTrigger;if(t.relayMode)card.querySelector('.relay-mode').value=t.relayMode;if(t.relayMask){if(t.relayMask&1)card.querySelector('.relay-1').checked=true;if(t.relayMask&2)card.querySelector('.relay-2').checked=true;if(t.relayMask&4)card.querySelector('.relay-3').checked=true;if(t.relayMask&8)card.querySelector('.relay-4').checked=true;}if(t.relayMomentaryDurations){card.querySelector('.relay-duration-1').value=t.relayMomentaryDurations[0]||0;card.querySelector('.relay-duration-2').value=t.relayMomentaryDurations[1]||0;card.querySelector('.relay-duration-3').value=t.relayMomentaryDurations[2]||0;card.querySelector('.relay-duration-4').value=t.relayMomentaryDurations[3]||0;}if(t.relayMaxOnSeconds){card.querySelector('.relay-max-on').value=t.relayMaxOnSeconds;}toggleRelayDurations(sensorCount-1);}if(t.smsAlert&&t.smsAlert.phones){toggleSmsSection(sensorCount-1);card.querySelector('.sms-phones').value=t.smsAlert.phones.join(',');if(t.smsAlert.trigger)card.querySelector('.sms-trigger').value=t.smsAlert.trigger;if(t.smsAlert.message)card.querySelector('.sms-message').value=t.smsAlert.message;}updateSensorTypeFields(sensorCount-1);if(t.sensorRangeMin!==undefined)card.querySelector('.sensor-range-min').value=t.sensorRangeMin;if(t.sensorRangeMax!==undefined)card.querySelector('.sensor-range-max').value=t.sensorRangeMax;if(t.sensorRangeUnit)card.querySelector('.sensor-range-unit').value=t.sensorRangeUnit;if(t.analogVoltageMin!==undefined)card.querySelector('.analog-voltage-min').value=t.analogVoltageMin;if(t.analogVoltageMax!==undefined)card.querySelector('.analog-voltage-max').value=t.analogVoltageMax;if(t.stuckDetection!==undefined)card.querySelector('.stuck-detection').checked=t.stuckDetection;if(t.calibrationEnabled!==undefined)card.querySelector('.calibration-enabled').checked=t.calibrationEnabled;}});showToast('Configuration loaded');};
 /* CLOUD & IMPORT */
 function closeSelectClientModal(){els.selectClientModal.classList.add('hidden');}window.closeSelectClientModal=closeSelectClientModal;
-els.loadFromCloudBtn.addEventListener('click',async()=>{els.selectClientModal.classList.remove('hidden');els.clientList.innerHTML='Loading...';try{const r=await fetch('/api/clients?summary=1');const d=await r.json();els.clientList.innerHTML=d.clients.map(c=>`<div class="client-item" onclick="fetchClientConfig('${c.client}')"><strong>${c.label||c.client}</strong> (${c.client})<br>${c.site||''}</div>`).join('');}catch(e){els.clientList.innerHTML='Error loading clients';}});
-window.fetchClientConfig=async(uid)=>{closeSelectClientModal();try{const r=await fetch('/api/client?uid='+encodeURIComponent(uid));if(!r.ok)throw new Error('Failed');const c=await r.json();if(els.clientUid)els.clientUid.value=uid;if(c.config)loadConfig(c.config);else showToast('No config found for client',true);const sd=document.getElementById('configStatus');if(sd){if(c.pd){sd.style.display='block';sd.style.background='#fff3cd';sd.style.borderColor='#ffc107';sd.style.color='#856404';sd.textContent='\u26A0 Config dispatch pending'+(c.da?' (attempt '+c.da+')':'')+'.';}else if(c.as){sd.style.display='block';sd.style.background='#d4edda';sd.style.borderColor='#28a745';sd.style.color='#155724';sd.textContent='\u2713 Last config acknowledged: '+c.as+(c.ae?' at '+new Date(c.ae*1000).toLocaleString():'');}else{sd.style.display='none';}}}catch(e){showToast('Error loading config',true);}};
+els.loadFromCloudBtn.addEventListener('click',async()=>{els.selectClientModal.classList.remove('hidden');els.clientList.innerHTML='Loading...';try{const r=await fetch('/api/clients?summary=1');const d=await r.json();const clients=d.cs||[];els.clientList.innerHTML=clients.map(c=>{const uid=c.c||'';const label=c.n||uid;const site=c.s||'';return `<div class="client-item" onclick="fetchClientConfig('${escapeHtml(uid)}')"><strong>${escapeHtml(label)}</strong> (${escapeHtml(uid)})<br>${escapeHtml(site)}</div>`;}).join('');}catch(e){els.clientList.innerHTML='Error loading clients';}});
+window.fetchClientConfig=async(uid)=>{closeSelectClientModal();try{const r=await fetch('/api/client?uid='+encodeURIComponent(uid));if(!r.ok)throw new Error('Failed');const c=await r.json();if(els.clientUid)els.clientUid.value=uid;if(c.config)loadConfig(c.config);else showToast('No config found for client',true);}catch(e){showToast('Error loading config',true);}};
 const importInput=document.getElementById('importFileInput');document.getElementById('importBtn').addEventListener('click',()=>importInput.click());importInput.addEventListener('change',(e)=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=(evt)=>{try{loadConfig(JSON.parse(evt.target.result));}catch(err){showToast('Invalid JSON',true);}};r.readAsText(f);});
 function getQueryParam(name){const params=new URLSearchParams(window.location.search);return params.get(name)||'';}
 async function basicInit(){try{const r=await fetch('/api/clients?summary=1');const d=await r.json();if(d&&d.srv&&d.srv.pu)els.productUid.value=d.srv.pu;if(d&&d.srv&&d.srv.cf)els.clientFleet.value=d.srv.cf;window._siteClients=d;populateRelayTargets(d);}catch(e){}const urlUid=getQueryParam('uid');if(urlUid&&els.clientUid)els.clientUid.value=urlUid;const urlSite=getQueryParam('site');if(urlSite&&els.siteName)els.siteName.value=urlSite;if(urlUid){await fetchClientConfig(urlUid);}else{addSensor();}}function populateRelayTargets(d){const dl=document.getElementById('relayTargetSuggestions');if(!dl||!d||!d.cs)return;const seen=new Set();d.cs.forEach(c=>{const uid=c.c||'';if(uid&&!seen.has(uid)){seen.add(uid);const opt=document.createElement('option');const label=c.n||c.s||'';opt.value=uid;opt.label=label?label+' ('+uid+')':uid;dl.appendChild(opt);}});}basicInit();
@@ -1585,7 +1552,7 @@ async funct)HTML" R"HTML(ion togglePauseFlow(){const targetPaused=!pause_state.p
 funct)HTML" R"HTML(ion showToast(message,isError){const toast = document.getElementById('toast');toast.textContent = message;toast.style.background = isError ? '#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=> toast.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion formatEpoch(epoch){if(!epoch)return '--';const date = new Date(epoch * 1000);if(isNaN(date.getTime()))return '--';return date.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
 funct)HTML" R"HTML(ion formatLevel(value,unit){if(typeof value !== 'number' || !isFinite(value)|| value < 0){return '--';}if(!unit||unit==='inches'){const feet = Math.floor(value / 12);const remainingInches = value % 12;if(feet === 0){return `${remainingInches.toFixed(1)}"`;}return `${feet}' ${remainingInches.toFixed(1)}"`;}return `${value.toFixed(2)} ${unit}`;}function getSensorUnit(clientUid,sensorIdx){const t=sensors.find(x=>x.client===clientUid&&x.sensorIndex===sensorIdx);if(t&&t.measurementUnit&&t.measurementUnit!=='inches')return t.measurementUnit;if(t&&t.objectType&&t.objectType!=='tank')return t.measurementUnit||'units';return 'inches';}let sensors = [];let calibrations = [];let calibrationLogs = [];async funct)HTML" R"HTML(ion loadSensors(){try{const response = await fetch('/api/sensors');if(!response.ok)throw new Error('Failed to load sensors');const data = await response.json();sensors = (data.sensors || []).map(t=>({client:t.c,sensorIndex:t.k,site:t.s,label:t.n,contents:t.cn||'',levelInches:t.l,sensorMa:t.ma||0,sensorType:t.st||'',objectType:t.ot||'tank',measurementUnit:t.mu||'inches',delta:t.d,previousEpoch:t.pe,alarmActive:t.a,alarmType:t.at,lastUpdate:t.u,userNumber:t.un||0}));populateSensorDropdowns();}catch(err){console.error('Error loading sensors:',err);showToast('Failed to load tank list',true);}}
-funct)HTML" R"HTML(ion populateSensorDropdowns(){const sensorSelect = document.getElementById('sensorSelect');const logSensorFilter = document.getElementById('logSensorFilter');sensorSelect.innerHTML = '<option value="">-- Select a sensor --</option>';logSensorFilter.innerHTML = '<option value="">All Sensors</option>';const uniqueTanks = new Map();sensors.forEach(t =>{const key = `${t.client}:${t.sensorIndex}`;if(!uniqueTanks.has(key)){uniqueTanks.set(key,{client:t.client,sensorIndex:t.sensorIndex,site:t.site,label:t.label || `Sensor ${t.sensorIndex}`,heightInches:t.heightInches || 0,levelInches:t.levelInches || 0,sensorMa:t.sensorMa || 0,lastUpdate:t.lastUpdate || 0,objectType:t.objectType||'tank',measurementUnit:t.measurementUnit||'inches',userNumber:t.userNumber||0});}});uniqueTanks.forEach((tank,key)=>{const option = document.createElement('option');option.value = key;const typeTag=tank.objectType==='tank'?'':'['+tank.objectType.toUpperCase()+'] ';option.textContent = `${typeTag}${rec.site} - ${rec.label}${tank.userNumber?' #'+tank.userNumber:''}`;sensorSelect.appendChild(option.cloneNode(true));logSensorFilter.appendChild(option);});}function updateLevelInput(){const sel=document.getElementById('sensorSelect').value;if(!sel){document.getElementById('levelInputTank').style.display='flex';document.getElementById('levelInputGeneric').style.display='none';return;}const [uid,tn]=sel.split(':');const tank=sensors.find(t=>t.client===uid&&t.sensorIndex===parseInt(tn));const ot=tank?tank.objectType:'tank';const mu=tank?tank.measurementUnit:'inches';if(ot==='tank'||mu==='inches'){document.getElementById('levelInputTank').style.display='flex';document.getElementById('levelInputGeneric').style.display='none';}else{document.getElementById('levelInputTank').style.display='none';document.getElementById('levelInputGeneric').style.display='block';document.getElementById('levelUnitLabel').textContent=mu.toUpperCase();}}document.getElementById('sensorSelect').addEventListener('change',updateLevelInput);
+funct)HTML" R"HTML(ion populateSensorDropdowns(){const sensorSelect = document.getElementById('sensorSelect');const logSensorFilter = document.getElementById('logSensorFilter');sensorSelect.innerHTML = '<option value="">-- Select a sensor --</option>';logSensorFilter.innerHTML = '<option value="">All Sensors</option>';const uniqueTanks = new Map();sensors.forEach(t =>{const key = `${t.client}:${t.sensorIndex}`;if(!uniqueTanks.has(key)){uniqueTanks.set(key,{client:t.client,sensorIndex:t.sensorIndex,site:t.site,label:t.label || `Sensor ${t.sensorIndex}`,heightInches:t.heightInches || 0,levelInches:t.levelInches || 0,sensorMa:t.sensorMa || 0,lastUpdate:t.lastUpdate || 0,objectType:t.objectType||'tank',measurementUnit:t.measurementUnit||'inches',userNumber:t.userNumber||0});}});uniqueTanks.forEach((tank,key)=>{const option = document.createElement('option');option.value = key;const typeTag=tank.objectType==='tank'?'':'['+tank.objectType.toUpperCase()+'] ';option.textContent = `${typeTag}${tank.site} - ${tank.label}${tank.userNumber?' #'+tank.userNumber:''}`;sensorSelect.appendChild(option.cloneNode(true));logSensorFilter.appendChild(option);});}function updateLevelInput(){const sel=document.getElementById('sensorSelect').value;if(!sel){document.getElementById('levelInputTank').style.display='flex';document.getElementById('levelInputGeneric').style.display='none';return;}const [uid,tn]=sel.split(':');const tank=sensors.find(t=>t.client===uid&&t.sensorIndex===parseInt(tn));const ot=tank?tank.objectType:'tank';const mu=tank?tank.measurementUnit:'inches';if(ot==='tank'||mu==='inches'){document.getElementById('levelInputTank').style.display='flex';document.getElementById('levelInputGeneric').style.display='none';}else{document.getElementById('levelInputTank').style.display='none';document.getElementById('levelInputGeneric').style.display='block';document.getElementById('levelUnitLabel').textContent=mu.toUpperCase();}}document.getElementById('sensorSelect').addEventListener('change',updateLevelInput);
 async funct)HTML" R"HTML(ion loadCalibrationData(){try{const response = await fetch('/api/calibration');if(!response.ok)throw new Error('Failed to load calibration data');const data = await response.json();calibrations = data.calibrations || [];calibrationLogs = data.logs || [];updateCalibrationStats();updateCalibrationTable();updateCalibrationLog();}catch(err){console.error('Error loading calibration data:',err);}}
 funct)HTML" R"HTML(ion updateCalibrationStats(){const total = sensors.length > 0 ? new Set(sensors.map(t => `${t.client}:${t.sensorIndex}`)).size:0;const calibrated = calibrations.filter(c => c.hasLearnedCalibration).length;const learning = calibrations.filter(c => !c.hasLearnedCalibration && c.entryCount > 0).length;const uncalibrated = total - calibrated - learning;document.getElementById('statTotalTanks').textContent = total;document.getElementById('statCalibrated').textContent = calibrated;document.getElementById('statLearning').textContent = learning;document.getElementById('statUncalibrated').textContent = Math.max(0,uncalibrated);}
 funct)HTML" R"HTML(ion updateCalibrationTable(){const tbody = document.getElementById('calibrationTableBody');tbody.innerHTML = '';if(calibrations.length === 0){tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);">No calibration data yet. Add readings to start learning.</td></tr>';return;}calibrations.forEach(cal =>{const tr = document.createElement('tr');const sensorInfo = sensors.find(t => t.client === cal.clientUid && t.sensorIndex === cal.sensorIndex);const sensorName = sensorInfo ? `${sensorInfo.label || 'Sensor ' + cal.sensorIndex}${sensorInfo.userNumber?' #'+sensorInfo.userNumber:''}`:`Sensor ${cal.sensorIndex}`;const site = sensorInfo ? sensorInfo.site:'--';let statusClass = 'uncalibrated';let statusText = 'Uncalibrated';let warnings = [];if(cal.hasLearnedCalibration){statusClass = 'calibrated';statusText = cal.hasTempCompensation ? 'Calibrated+Temp' : 'Calibrated';if(cal.rSquared < 0.95){warnings.push('Low R&sup2; fit (<95%)');}if(cal.entryCount === 2){warnings.push('Only 2 data points');}}else if(cal.entryCount > 0){statusClass = 'learning';statusText = 'Learning';if(cal.entryCount === 1){warnings.push('Need 1 more point');}}const sensorRange = cal.maxSensorMa - cal.minSensorMa;const levelRange = cal.maxLevelInches - cal.minLevelInches;if(cal.hasLearnedCalibration && sensorRange < 4){warnings.push('Narrow sensor range (<4mA)');}let driftText = '--';let driftClass = 'low';if(cal.hasLearnedCalibration && cal.originalMaxValue > 0){const originalSlope = cal.originalMaxValue / 16.0;const drift = Math.abs((cal.learnedSlope - originalSlope)/ originalSlope * 100);driftText = drift.toFixed(1)+ '%';if(drift > 10)driftClass = 'high';else if(drift > 5)driftClass = 'medium';}let tempCoefText = '--';if(cal.hasTempCompensation && cal.learnedTempCoef !== undefined){tempCoefText = cal.learnedTempCoef.toFixed(4) + ' '+getSensorUnit(cal.clientUid,cal.sensorIndex)+'/°F';}else if(cal.tempEntryCount > 0){tempCoefText = `(${cal.tempEntryCount} pts)`;}let rangeText = '--';if(cal.entryCount >= 1){rangeText = `${cal.minSensorMa.toFixed(1)}-${cal.maxSensorMa.toFixed(1)} mA`;}let warningHtml = '';if(warnings.length > 0){warningHtml = `<span class="quality-warning" title="${warnings.join(', ')}">&#x26A0;&#xFE0F;</span>`;}const sensorKey = `${cal.clientUid}:${cal.sensorIndex}`;tr.innerHTML = ` <td><a href="#" class="sensor-link" onclick="viewTankPoints('${sensorKey}');return false;" title="Click to view data points">${escapeHtml(sensorName)}</a>${warningHtml}</td><td>${escapeHtml(site)}</td><td><span class="calibration-status ${statusClass}">${statusText}</span></td><td title="Sensor range: ${rangeText}">${cal.entryCount}</td><td>${cal.hasLearnedCalibration ?(cal.rSquared * 100).toFixed(1)+ '%':'--'}</td><td>${cal.hasLearnedCalibration ? cal.learnedSlope.toFixed(3)+ ' '+getSensorUnit(cal.clientUid,cal.sensorIndex)+'/mA':'--'}</td><td title="Temperature coefficient (${getSensorUnit(cal.clientUid,cal.sensorIndex)} per °F deviation from 70°F)">${tempCoefText}</td><td><span class="drift-indicator ${driftClass}">${driftText}</span></td><td>${formatEpoch(cal.lastCalibrationEpoch)}</td><td><button class="btn-reset" onclick="resetCalibration('${cal.clientUid}',${cal.sensorIndex})" title="Reset calibration for this sensor">Reset</button></td> `;tbody.appendChild(tr);});}
@@ -1596,20 +1563,20 @@ static const char HISTORICAL_DATA_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html l
 const pause_state={paused:false};if(pause_els.btn)pause_els.btn.addEventListener('click',togglePauseFlow);if(pause_els.btn)pause_els.btn.addEventListener('mouseenter',()=>{if(pause_state.paused)pause_els.btn.textContent='Resume';});if(pause_els.btn)pause_els.btn.addEventListener('mouseleave',()=>{renderPauseBtn();});await fetch('/api/clients?summary=1').then(r=>r.json()).then(d=>{if(d&&d.srv){pause_state.paused=!!d.srv.ps;renderPauseBtn();}}).catch(e=>console.error('Failed to load pause state',e));
 funct)HTML" R"HTML(ion showPauseToast(message,isError){if(!pause_els.toast)return;const t=pause_els.toast;t.textContent=message;t.style.background=isError?'#dc2626':'#0284c7';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion renderPauseBtn(){const btn=pause_els.btn;if(!btn)return;if(pause_state.paused){btn.classList.add('paused');btn.style.display='';btn.textContent='Unpause';btn.title='Resume data flow';}else{btn.classList.remove('paused');btn.style.display='none';}}
-async funct)HTML" R"HTML(ion togglePauseFlow(){const targetPaused=!pause_state.paused;try{const res=await fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:targetPaused})});if(!res.ok){const text=await res.text();throw new Error(text||'Pause toggle failed');}const data=await res.json();pause_state.paused=!!data.paused;renderPauseBtn();showPauseToast(pause_state.paused?'Paused for maintenance':'Resumed');}catch(err){showPauseToast(err.message||'Pause toggle failed',true);}}(async ()=>{const CHART_COLORS=['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];let levelChart=null;let alarmChart=null;let voltageChart=null;let historicalData={sites:{},sensors:[],alarms:[],voltage:[]};funct)HTML" R"HTML(ion showToast(message,isError){const toast=document.getElementById('toast');toast.textContent=message;toast.style.background=isError?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}
+async funct)HTML" R"HTML(ion togglePauseFlow(){const targetPaused=!pause_state.paused;try{const res=await fetch('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:targetPaused})});if(!res.ok){const text=await res.text();throw new Error(text||'Pause toggle failed');}const data=await res.json();pause_state.paused=!!data.paused;renderPauseBtn();showPauseToast(pause_state.paused?'Paused for maintenance':'Resumed');}catch(err){showPauseToast(err.message||'Pause toggle failed',true);}}(async ()=>{const CHART_COLORS=['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];function escapeHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}function escapeCsv(s){if(!s)return'';return String(s).replace(/"/g,'""');}let levelChart=null;let alarmChart=null;let voltageChart=null;let historicalData={sites:{},sensors:[],alarms:[],voltage:[]};funct)HTML" R"HTML(ion showToast(message,isError){const toast=document.getElementById('toast');toast.textContent=message;toast.style.background=isError?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}
 funct)HTML" R"HTML(ion formatLevel(inches){if(typeof inches!=='number'||!isFinite(inches))return'--';const feet=Math.floor(inches/12);const rem=inches%12;return feet>0?`${feet}' ${rem.toFixed(1)}"`:`${rem.toFixed(1)}"`;}
 funct)HTML" R"HTML(ion formatEpoch(epoch){if(!epoch)return'--';const d=new Date(epoch*1000);return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
 funct)HTML" R"HTML(ion initEmptyData(){historicalData={sites:{},sensors:[],alarms:[],voltage:[]};}
 funct)HTML" R"HTML(ion updateStats(){const totalSensors=historicalData.sensors.length;const now=Date.now()/1000;const today=now-86400;const week=now-7*86400;const alarmsToday=historicalData.alarms.filter(a=>a.timestamp>today).length;const alarmsWeek=historicalData.alarms.filter(a=>a.timestamp>week).length;document.getElementById('statTotalTanks').textContent=totalSensors;document.getElementById('statAlarmsToday').textContent=alarmsToday;document.getElementById('statAlarmsWeek').textContent=alarmsWeek;}
 funct)HTML" R"HTML(ion populateFilters(){const siteSelect=document.getElementById('siteFilter');const sensorSelect=document.getElementById('sensorFilter');siteSelect.innerHTML='<option value="all">All Sites</option>';Object.keys(historicalData.sites).sort().forEach(site=>{const opt=document.createElement('option');opt.value=site;opt.textContent=site;siteSelect.appendChild(opt);});sensorSelect.innerHTML='<option value="all">All Sensors</option>';historicalData.sensors.forEach((t,i)=>{const opt=document.createElement('option');opt.value=i;opt.textContent=`${t.site} - ${t.label}`;sensorSelect.appendChild(opt);});}
 funct)HTML" R"HTML(ion getFilteredData(){const site=document.getElementById('siteFilter').value;const sensorIdx=document.getElementById('sensorFilter').value;const range=document.getElementById('rangeSelect').value;const now=Date.now()/1000;let cutoff=now-30*86400;let cutoffEnd=now;if(range==='24h')cutoff=now-86400;else if(range==='7d')cutoff=now-7*86400;else if(range==='90d')cutoff=now-90*86400;else if(range==='6mo')cutoff=now-180*86400;else if(range==='1yr')cutoff=now-365*86400;else if(range==='2yr')cutoff=now-730*86400;else if(range==='custom'){const sd=document.getElementById('startDate').value;const ed=document.getElementById('endDate').value;if(sd)cutoff=new Date(sd).getTime()/1000;if(ed)cutoffEnd=new Date(ed+'T23:59:59').getTime()/1000;}let sensors=historicalData.sensors;if(site!=='all')sensors=sensors.filter(t=>t.site===site);if(sensorIdx!=='all')sensors=[historicalData.sensors[parseInt(sensorIdx)]];return{sensors,cutoff,cutoffEnd};}
-funct)HTML" R"HTML(ion renderLevelChart(){const ctx=document.getElementById('levelChart').getContext('2d');const{sensors,cutoff,cutoffEnd}=getFilteredData();if(levelChart)levelChart.destroy();const datasets=sensors.slice(0,8).map((tank,i)=>{const data=tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).map(r=>({x:new Date(r.timestamp*1000),y:r.level}));return{label:`${rec.site} - ${rec.label}`,data,borderColor:CHART_COLORS[i%CHART_COLORS.length],backgroundColor:CHART_COLORS[i%CHART_COLORS.length]+'20',fill:false,tension:0.3,pointRadius:0};});levelChart=new Chart(ctx,{type:'line',data:{datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{intersect:false,mode:'index'},scales:{x:{type:'time',time:{unit:'day',displayFormats:{hour:'MMM d, HH:mm',day:'MMM d'}},grid:{color:'var(--chart-grid)'}},y:{title:{display:true,text:'Level (inches)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{position:'bottom'}}}});}
+funct)HTML" R"HTML(ion renderLevelChart(){const ctx=document.getElementById('levelChart').getContext('2d');const{sensors,cutoff,cutoffEnd}=getFilteredData();if(levelChart)levelChart.destroy();const datasets=sensors.slice(0,8).map((tank,i)=>{const data=tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).map(r=>({x:new Date(r.timestamp*1000),y:r.level}));return{label:`${tank.site} - ${tank.label}`,data,borderColor:CHART_COLORS[i%CHART_COLORS.length],backgroundColor:CHART_COLORS[i%CHART_COLORS.length]+'20',fill:false,tension:0.3,pointRadius:0};});levelChart=new Chart(ctx,{type:'line',data:{datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{intersect:false,mode:'index'},scales:{x:{type:'time',time:{unit:'day',displayFormats:{hour:'MMM d, HH:mm',day:'MMM d'}},grid:{color:'var(--chart-grid)'}},y:{title:{display:true,text:'Level (inches)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{position:'bottom'}}}});}
 funct)HTML" R"HTML(ion renderAlarmChart(){const ctx=document.getElementById('alarmChart').getContext('2d');if(alarmChart)alarmChart.destroy();const sites=Object.keys(historicalData.sites);const highCounts=sites.map(s=>historicalData.alarms.filter(a=>a.site===s&&a.type==='HIGH').length);const lowCounts=sites.map(s=>historicalData.alarms.filter(a=>a.site===s&&a.type==='LOW').length);alarmChart=new Chart(ctx,{type:'bar',data:{labels:sites,datasets:[{label:'High Alarms',data:highCounts,backgroundColor:'#ef4444'},{label:'Low Alarms',data:lowCounts,backgroundColor:'#f59e0b'}]},options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,beginAtZero:true,title:{display:true,text:'Alarm Count'}}},plugins:{legend:{position:'bottom'}}}});}
 funct)HTML" R"HTML(ion renderVoltageChart(){const ctx=document.getElementById('voltageChart').getContext('2d');if(voltageChart)voltageChart.destroy();const data=historicalData.voltage.map(v=>({x:new Date(v.timestamp*1000),y:v.voltage}));if(!data.length){voltageChart=null;return;}var vals=data.map(d=>d.y);var vMin=Math.min(...vals);var vMax=Math.max(...vals);var yMin,yMax;if(vMax<=6){yMin=0;yMax=6;}else if(vMax<=15){yMin=10;yMax=15;}else{yMin=Math.floor(vMin-1);yMax=Math.ceil(vMax+1);}voltageChart=new Chart(ctx,{type:'line',data:{datasets:[{label:'VIN Voltage',data,borderColor:'#10b981',backgroundColor:'#10b98120',fill:true,tension:0.3,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false,scales:{x:{type:'time',time:{unit:'day'},grid:{color:'var(--chart-grid)'}},y:{min:yMin,max:yMax,title:{display:true,text:'Voltage (V)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{display:false}}}});}
 funct)HTML" R"HTML(ion createSparkline(container,data){const width=container.clientWidth||100;const height=40;const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;container.appendChild(canvas);const ctx=canvas.getContext('2d');if(!data||data.length<2)return;const values=data.map(d=>d.level);const min=Math.min(...values);const max=Math.max(...values);const range=max-min||1;ctx.strokeStyle='#2563eb';ctx.lineWidth=1.5;ctx.beginPath();data.forEach((d,i)=>{const x=i/(data.length-1)*width;const y=height-(d.level-min)/range*height;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();}
-funct)HTML" R"HTML(ion renderSites(){const container=document.getElementById('sitesContainer');container.innerHTML='';Object.keys(historicalData.sites).sort().forEach(siteName=>{const sensors=historicalData.sites[siteName];const alarmCount=historicalData.alarms.filter(a=>a.site===siteName).length;const siteCard=document.createElement('div');siteCard.className='site-card';siteCard.innerHTML=`<div class="site-header" onclick="this.nextElementSibling.classList.toggle('expanded')"><h3>${siteName}</h3><div class="site-stats"><span>${sensors.length} Tank${sensors.length!==1?'s':''}</span>${alarmCount>0?`<span class="alarm-badge">${alarmCount} Alarms</span>`:''}</div></div><div class="site-content"><div class="sensor-grid"></div></div>`;const grid=siteCard.querySelector('.sensor-grid');sensors.forEach(tank=>{const change=tank.change24h||0;const changeClass=change>=0?'positive':'negative';const changeSign=change>=0?'+':'';const tankCard=document.createElement('div');tankCard.className='sensor-card';tankCard.innerHTML=`<div class="tank-header"><div><div class="tank-name">${rec.label}</div><div class="sensor-level">${formatLevel(tank.currentLevel)}</div></div><div class="tank-change ${changeClass}">${changeSign}${change.toFixed(1)}" 24h</div></div><div class="sparkline"></div><div class="tank-footer"><span>Updated: ${formatEpoch(tank.readings[tank.readings.length-1]?.timestamp)}</span></div>`;grid.appendChild(tankCard);const sparklineEl=tankCard.querySelector('.sparkline');const last24h=tank.readings.slice(-24);setTimeout(()=>createSparkline(sparklineEl,last24h),0);});container.appendChild(siteCard);});}
+funct)HTML" R"HTML(ion renderSites(){const container=document.getElementById('sitesContainer');container.innerHTML='';Object.keys(historicalData.sites).sort().forEach(siteName=>{const sensors=historicalData.sites[siteName];const alarmCount=historicalData.alarms.filter(a=>a.site===siteName).length;const siteCard=document.createElement('div');siteCard.className='site-card';siteCard.innerHTML=`<div class="site-header" onclick="this.nextElementSibling.classList.toggle('expanded')"><h3>${escapeHtml(siteName)}</h3><div class="site-stats"><span>${sensors.length} Tank${sensors.length!==1?'s':''}</span>${alarmCount>0?`<span class="alarm-badge">${alarmCount} Alarms</span>`:''}</div></div><div class="site-content"><div class="sensor-grid"></div></div>`;const grid=siteCard.querySelector('.sensor-grid');sensors.forEach(tank=>{const change=tank.change24h||0;const changeClass=change>=0?'positive':'negative';const changeSign=change>=0?'+':'';const tankCard=document.createElement('div');tankCard.className='sensor-card';tankCard.innerHTML=`<div class="tank-header"><div><div class="tank-name">${escapeHtml(tank.label)}</div><div class="sensor-level">${formatLevel(tank.currentLevel)}</div></div><div class="tank-change ${changeClass}">${changeSign}${change.toFixed(1)}" 24h</div></div><div class="sparkline"></div><div class="tank-footer"><span>Updated: ${formatEpoch(tank.readings[tank.readings.length-1]?.timestamp)}</span></div>`;grid.appendChild(tankCard);const sparklineEl=tankCard.querySelector('.sparkline');const last24h=tank.readings.slice(-24);setTimeout(()=>createSparkline(sparklineEl,last24h),0);});container.appendChild(siteCard);});}
 async funct)HTML" R"HTML(ion loadHistoricalData(){const sensorIdx=document.getElementById('sensorFilter').value;const range=document.getElementById('rangeSelect').value;let apiDays=90;if(sensorIdx!=='all'){apiDays=0;}else{const rangeDays={'24h':7,'7d':7,'30d':30,'90d':90,'6mo':180,'1yr':365,'2yr':730};apiDays=rangeDays[range]||90;}const url=apiDays>0?'/api/history?days='+apiDays:'/api/history';try{const res=await fetch(url);if(!res.ok)throw new Error('Failed to load historical data');const data=await res.json();if(data.sensors&&data.sensors.length>0){historicalData=data;}else{initEmptyData();}if(data.dataInfo){const banner=document.getElementById('dataSourceBanner');if(banner){let msg='Data: RAM ('+data.settings.hotTierDays+'d)';if(data.dataInfo.warmTierAvailable)msg+=' + Flash ('+data.settings.warmTierMonths+'mo)';if(data.dataInfo.coldTierAvailable)msg+=' + FTP Archive';else msg+=' | Enable FTP for full archive';if(data.dataInfo.rangeNote)msg+=' — '+data.dataInfo.rangeNote;banner.textContent=msg;banner.style.display='';banner.style.background=data.dataInfo.coldTierAvailable?'#d1fae5':'#fef3c7';banner.style.color=data.dataInfo.coldTierAvailable?'#065f46':'#92400e';}}updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}catch(err){console.warn('No historical data available:',err.message);initEmptyData();updateStats();populateFilters();renderLevelChart();renderAlarmChart();renderVoltageChart();renderSites();}}
-window.refreshData=funct)HTML" R"HTML(ion(){loadHistoricalData();showToast('Data refreshed');};window.exportData=funct)HTML" R"HTML(ion(){const{sensors,cutoff,cutoffEnd}=getFilteredData();let csv='Site,Tank,Timestamp,Level (inches)\n';sensors.forEach(tank=>{tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).forEach(r=>{csv+=`"${rec.site}","${rec.label}",${new Date(r.timestamp*1000).toISOString()},${r.level.toFixed(2)}\n`;});});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='tank_history.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');};document.getElementById('siteFilter').addEventListener('change',renderLevelChart);document.getElementById('sensorFilter').addEventListener('change',function(){loadHistoricalData();});document.getElementById('rangeSelect').addEventListener('change',function(){const sd=document.getElementById('startDate');const ed=document.getElementById('endDate');if(this.value==='custom'){sd.style.display='';ed.style.display='';if(!sd.value){const d=new Date();d.setDate(d.getDate()-7);sd.value=d.toISOString().split('T')[0];}if(!ed.value){ed.value=new Date().toISOString().split('T')[0];}}else{sd.style.display='none';ed.style.display='none';}loadHistoricalData();});loadHistoricalData();/* ARCHIVED CLIENTS */let archivedChart=null;async function loadArchivedClients(){try{const res=await fetch('/api/history/archived');if(!res.ok)return;const data=await res.json();const archives=data.archives||[];if(!archives.length)return;const card=document.getElementById('archivedCard');card.style.display='';const list=document.getElementById('archivedList');list.innerHTML='';archives.forEach((a,idx)=>{const div=document.createElement('div');div.className='site-card';div.style.cursor='pointer';div.style.padding='12px 16px';div.style.marginBottom='8px';const d1=a.firstSeenEpoch?new Date(a.firstSeenEpoch*1000).toLocaleDateString(undefined,{month:'short',year:'numeric'}):'?';const d2=a.lastUpdateEpoch?new Date(a.lastUpdateEpoch*1000).toLocaleDateString(undefined,{month:'short',year:'numeric'}):'?';div.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><div><strong>'+escHtml(a.displayLabel||a.site||a.clientUid)+'</strong><div style="font-size:0.85rem;color:var(--muted);margin-top:4px">'+a.sensorCount+' sensor'+(a.sensorCount!==1?'s':'')+' &bull; '+d1+' &mdash; '+d2+'</div></div><button class="pill secondary" style="font-size:0.8rem" data-idx="'+idx+'">Load Data</button></div>';div.querySelector('button').addEventListener('click',function(e){e.stopPropagation();loadArchivedData(a.ftpFile,a.displayLabel||a.site);});list.appendChild(div);});}catch(e){console.warn('Archived clients:',e.message);}}function escHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}async function loadArchivedData(ftpFile,label){try{showToast('Loading archived data from FTP...');const res=await fetch('/api/history/archived?file='+encodeURIComponent(ftpFile));if(!res.ok)throw new Error('Failed to load archive');const data=await res.json();const wrap=document.getElementById('archivedChartWrap');wrap.style.display='';const ctx=document.getElementById('archivedChart').getContext('2d');if(archivedChart)archivedChart.destroy();const datasets=[];const COLORS=['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899'];if(data.history&&data.history.length){data.history.forEach((h,i)=>{const pts=(h.readings||[]).map(r=>({x:new Date(r[0]*1000),y:r[1]}));if(pts.length)datasets.push({label:(data.site||'')+' Sensor '+h.sensorIndex,data:pts,borderColor:COLORS[i%COLORS.length],backgroundColor:COLORS[i%COLORS.length]+'20',fill:false,tension:0.3,pointRadius:0});});}if(!datasets.length){wrap.style.display='none';showToast('No chart data in archive',true);return;}archivedChart=new Chart(ctx,{type:'line',data:{datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{intersect:false,mode:'index'},scales:{x:{type:'time',time:{unit:'day'},grid:{color:'var(--chart-grid)'}},y:{title:{display:true,text:'Level (inches)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{position:'bottom'}}}});showToast('Loaded: '+label);}catch(e){showToast(e.message||'Archive load failed',true);}}loadArchivedClients();})();})();
+window.refreshData=funct)HTML" R"HTML(ion(){loadHistoricalData();showToast('Data refreshed');};window.exportData=funct)HTML" R"HTML(ion(){const{sensors,cutoff,cutoffEnd}=getFilteredData();let csv='Site,Tank,Timestamp,Level (inches)\n';sensors.forEach(tank=>{tank.readings.filter(r=>r.timestamp>=cutoff&&r.timestamp<=cutoffEnd).forEach(r=>{csv+=`"${escapeCsv(tank.site)}","${escapeCsv(tank.label)}",${new Date(r.timestamp*1000).toISOString()},${r.level.toFixed(2)}\n`;});});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='tank_history.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');};document.getElementById('siteFilter').addEventListener('change',renderLevelChart);document.getElementById('sensorFilter').addEventListener('change',function(){loadHistoricalData();});document.getElementById('rangeSelect').addEventListener('change',function(){const sd=document.getElementById('startDate');const ed=document.getElementById('endDate');if(this.value==='custom'){sd.style.display='';ed.style.display='';if(!sd.value){const d=new Date();d.setDate(d.getDate()-7);sd.value=d.toISOString().split('T')[0];}if(!ed.value){ed.value=new Date().toISOString().split('T')[0];}}else{sd.style.display='none';ed.style.display='none';}loadHistoricalData();});loadHistoricalData();/* ARCHIVED CLIENTS */let archivedChart=null;async function loadArchivedClients(){try{const res=await fetch('/api/history/archived');if(!res.ok)return;const data=await res.json();const archives=data.archives||[];if(!archives.length)return;const card=document.getElementById('archivedCard');card.style.display='';const list=document.getElementById('archivedList');list.innerHTML='';archives.forEach((a,idx)=>{const div=document.createElement('div');div.className='site-card';div.style.cursor='pointer';div.style.padding='12px 16px';div.style.marginBottom='8px';const d1=a.firstSeenEpoch?new Date(a.firstSeenEpoch*1000).toLocaleDateString(undefined,{month:'short',year:'numeric'}):'?';const d2=a.lastUpdateEpoch?new Date(a.lastUpdateEpoch*1000).toLocaleDateString(undefined,{month:'short',year:'numeric'}):'?';div.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><div><strong>'+escHtml(a.displayLabel||a.site||a.clientUid)+'</strong><div style="font-size:0.85rem;color:var(--muted);margin-top:4px">'+a.sensorCount+' sensor'+(a.sensorCount!==1?'s':'')+' &bull; '+d1+' &mdash; '+d2+'</div></div><button class="pill secondary" style="font-size:0.8rem" data-idx="'+idx+'">Load Data</button></div>';div.querySelector('button').addEventListener('click',function(e){e.stopPropagation();loadArchivedData(a.ftpFile,a.displayLabel||a.site);});list.appendChild(div);});}catch(e){console.warn('Archived clients:',e.message);}}function escHtml(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}async function loadArchivedData(ftpFile,label){try{showToast('Loading archived data from FTP...');const res=await fetch('/api/history/archived?file='+encodeURIComponent(ftpFile));if(!res.ok)throw new Error('Failed to load archive');const data=await res.json();const wrap=document.getElementById('archivedChartWrap');wrap.style.display='';const ctx=document.getElementById('archivedChart').getContext('2d');if(archivedChart)archivedChart.destroy();const datasets=[];const COLORS=['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899'];if(data.history&&data.history.length){data.history.forEach((h,i)=>{const pts=(h.readings||[]).map(r=>({x:new Date(r[0]*1000),y:r[1]}));if(pts.length)datasets.push({label:(data.site||'')+' Sensor '+h.sensorIndex,data:pts,borderColor:COLORS[i%COLORS.length],backgroundColor:COLORS[i%COLORS.length]+'20',fill:false,tension:0.3,pointRadius:0});});}if(!datasets.length){wrap.style.display='none';showToast('No chart data in archive',true);return;}archivedChart=new Chart(ctx,{type:'line',data:{datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{intersect:false,mode:'index'},scales:{x:{type:'time',time:{unit:'day'},grid:{color:'var(--chart-grid)'}},y:{title:{display:true,text:'Level (inches)'},grid:{color:'var(--chart-grid)'}}},plugins:{legend:{position:'bottom'}}}});showToast('Loaded: '+label);}catch(e){showToast(e.message||'Archive load failed',true);}}loadArchivedClients();})();})();
 </script></body></html>)HTML";
 
 static const char TRANSMISSION_LOG_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Transmission Log - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Outbound Transmission Log</h2><p style="color:var(--muted);margin-bottom:16px;">Log of messages sent from the server to clients and external services via Notehub. Shows the most recent 100 transmissions.</p><div class="controls"><button id="refreshBtn">Refresh</button><select id="typeFilter"><option value="all">All Types</option><option value="sms">SMS</option><option value="email">Email</option><option value="config">Config</option><option value="relay">Relay</option><option value="relay_clear">Relay Clear</option><option value="viewer_summary">Viewer Summary</option><option value="serial_request">Serial Request</option><option value="location_request">Location Request</option></select><select id="statusFilter"><option value="all">All Statuses</option><option value="outbox">Outbox</option><option value="sent">Sent</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select><input type="text" id="searchInput" placeholder="Filter by site or client..." style="max-width:250px;"><button class="secondary" id="exportBtn">Export CSV</button><button class="secondary" id="cancelAllBtn" style="display:none;background:#fee2e2;color:#991b1b;border-color:#fca5a5;">Cancel All Pending</button></div><table><thead><tr><th>Date/Time</th><th>Site</th><th>Client ID</th><th>Type</th><th>Status</th><th>Detail</th><th style="width:80px;">Actions</th></tr></thead><tbody id="logBody"><tr><td colspan="7" class="empty-state">Loading...</td></tr></tbody></table></div></main><div id="toast"></div><script>(async ()=>{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);)HTML"
@@ -1782,16 +1749,13 @@ static bool loadContactsConfig(JsonDocument &doc);
 static bool saveContactsConfig(const JsonDocument &doc);
 static double loadServerHeartbeatEpoch();
 static bool saveServerHeartbeatEpoch(double epoch);
-static bool loadLastKnownIp(char *buf, size_t bufSize);
-static void saveLastKnownIp(const char *ipStr);
-static void checkAndNotifyIpChange();
 static void printHardwareRequirements();
 static void initializeNotecard();
 static void ensureTimeSync();
 static double currentEpoch();
 static void scheduleNextDailyEmail();
 static void scheduleNextViewerSummary();
-static bool initializeEthernet();
+static void initializeEthernet();
 static void checkServerVoltage();
 static void checkForFirmwareUpdate();
 static void enableDfuMode();
@@ -1918,8 +1882,6 @@ static bool nwsLookupGridPoint(ClientMetadata *meta);
 static float nwsFetchAverageTemperature(ClientMetadata *meta, double timestamp);
 static float nwsGetCalibrationTemperature(const char *clientUid, double timestamp);
 static float getCachedTemperature(const char *clientUid);
-// HTTP response helper (security headers, defined in web server section)
-static void sendSecurityHeaders(EthernetClient &client);
 
 static void handleRefreshPost(EthernetClient &client, const String &body) {
   char clientUid[64] = {0};
@@ -2619,42 +2581,7 @@ void setup() {
   }
 
   initializeEthernet();
-  if (gEthernetInitialized) {
-    gWebServer.begin();
-  } else {
-    Serial.println(F("WARNING: Web server NOT started — Ethernet not available"));
-  }
-
-  // Detect IP address changes across reboots
-  {
-    IPAddress currentIp = Ethernet.localIP();
-    char currentIpStr[16];
-    snprintf(currentIpStr, sizeof(currentIpStr), "%d.%d.%d.%d",
-             currentIp[0], currentIp[1], currentIp[2], currentIp[3]);
-
-    // Skip detection if Ethernet failed (IP is 0.0.0.0)
-    if (currentIp != IPAddress(0, 0, 0, 0)) {
-      char previousIp[16] = {0};
-      bool hadPreviousIp = loadLastKnownIp(previousIp, sizeof(previousIp));
-
-      if (!hadPreviousIp) {
-        // Fresh install or filesystem was erased — record it
-        Serial.println(F("No previous IP on file — first boot or filesystem reset"));
-        gIpChangeDetected = true;
-      } else if (strcmp(previousIp, currentIpStr) != 0) {
-        // IP changed
-        strlcpy(gPreviousIpStr, previousIp, sizeof(gPreviousIpStr));
-        gIpChangeDetected = true;
-        Serial.print(F("IP address changed: "));
-        Serial.print(previousIp);
-        Serial.print(F(" -> "));
-        Serial.println(currentIpStr);
-      }
-
-      // Always persist the current IP for next boot comparison
-      saveLastKnownIp(currentIpStr);
-    }
-  }
+  gWebServer.begin();
 
   if (gConfig.ftpEnabled && gConfig.ftpRestoreOnBoot) {
     char err[128];
@@ -2745,23 +2672,7 @@ void loop() {
     gLastLinkCheckMillis = now;
     bool linkUp = (Ethernet.linkStatus() == LinkON);
     if (linkUp && !gLastLinkState) {
-      // Link just came up — attempt Ethernet reinit if we don't have a valid IP
-      IPAddress currentIp = Ethernet.localIP();
-      if (!gEthernetInitialized || currentIp == IPAddress(0, 0, 0, 0)) {
-        Serial.println(F("Link restored — reinitializing Ethernet..."));
-#ifdef TANKALARM_WATCHDOG_AVAILABLE
-        // Kick watchdog before reinit — Ethernet.begin() can block up to 60s
-        #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-          mbedWatchdog.kick();
-        #else
-          IWatchdog.reload();
-        #endif
-#endif
-        if (initializeEthernet()) {
-          gWebServer.begin();
-          Serial.println(F("Web server restarted after Ethernet recovery"));
-        }
-      }
+      // Link just came up
       Serial.println(F("----------------------------------"));
       Serial.println(F("Network link established!"));
       Serial.print(F("Local IP Address: "));
@@ -2861,9 +2772,6 @@ void loop() {
       }
       gServerDownChecked = true;
     }
-
-    // Notify admin of IP address change (requires time sync for message)
-    checkAndNotifyIpChange();
 
     if (gLastHeartbeatPersistEpoch <= 0.0 || (nowEpoch - gLastHeartbeatPersistEpoch) >= SERVER_HEARTBEAT_INTERVAL_SECONDS) {
       if (saveServerHeartbeatEpoch(nowEpoch)) {
@@ -3434,95 +3342,6 @@ static bool saveServerHeartbeatEpoch(double epoch) {
 }
 
 // ---------------------------------------------------------------------------
-// IP change detection helpers
-// ---------------------------------------------------------------------------
-
-static bool loadLastKnownIp(char *buf, size_t bufSize) {
-#ifdef FILESYSTEM_AVAILABLE
-  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    if (!mbedFS) return false;
-    char fbuf[32] = {0};
-    ssize_t bytesRead = posix_read_file("/fs/server_last_ip.txt", fbuf, sizeof(fbuf));
-    if (bytesRead <= 0) return false;
-    // Trim whitespace/newlines
-    size_t len = strlen(fbuf);
-    while (len > 0 && (fbuf[len - 1] == '\n' || fbuf[len - 1] == '\r' || fbuf[len - 1] == ' ')) {
-      fbuf[--len] = '\0';
-    }
-    if (len == 0 || len >= bufSize) return false;
-    strlcpy(buf, fbuf, bufSize);
-    return true;
-  #else
-    if (!LittleFS.exists(SERVER_LAST_IP_PATH)) return false;
-    File file = LittleFS.open(SERVER_LAST_IP_PATH, "r");
-    if (!file) return false;
-    size_t len = file.readBytesUntil('\0', buf, bufSize - 1);
-    buf[len] = '\0';
-    file.close();
-    // Trim whitespace/newlines
-    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' ')) {
-      buf[--len] = '\0';
-    }
-    return len > 0;
-  #endif
-#else
-  return false;
-#endif
-}
-
-static void saveLastKnownIp(const char *ipStr) {
-#ifdef FILESYSTEM_AVAILABLE
-  if (!ipStr || ipStr[0] == '\0') return;
-  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-    if (!mbedFS) return;
-    tankalarm_posix_write_file_atomic("/fs/server_last_ip.txt", ipStr, strlen(ipStr));
-  #else
-    tankalarm_littlefs_write_file_atomic(SERVER_LAST_IP_PATH,
-            (const uint8_t *)ipStr, strlen(ipStr));
-  #endif
-#endif
-}
-
-static void checkAndNotifyIpChange() {
-  if (gIpChangeNotified || !gIpChangeDetected) return;
-
-  // Need valid time for the alert message
-  double now = currentEpoch();
-  if (now <= 0.0) return;
-
-  gIpChangeNotified = true;
-
-  // Build the alert message
-  IPAddress currentIp = Ethernet.localIP();
-  char currentIpStr[16];
-  snprintf(currentIpStr, sizeof(currentIpStr), "%d.%d.%d.%d",
-           currentIp[0], currentIp[1], currentIp[2], currentIp[3]);
-
-  // Format MAC string for the alert
-  char macStr[18];
-  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-           gMacAddress[0], gMacAddress[1], gMacAddress[2],
-           gMacAddress[3], gMacAddress[4], gMacAddress[5]);
-
-  char message[200];
-  if (gPreviousIpStr[0] != '\0') {
-    snprintf(message, sizeof(message),
-             "Server IP changed: %s -> %s (MAC %s). Update bookmarks/DNS.",
-             gPreviousIpStr, currentIpStr, macStr);
-  } else {
-    snprintf(message, sizeof(message),
-             "Server new IP: %s (MAC %s, no previous IP on file).",
-             currentIpStr, macStr);
-  }
-
-  sendSmsAlert(message);
-  addServerSerialLog(message, "warn", "network");
-
-  Serial.print(F("IP change alert sent: "));
-  Serial.println(message);
-}
-
-// ---------------------------------------------------------------------------
 // FTP backup/restore helpers
 // ---------------------------------------------------------------------------
 
@@ -3652,20 +3471,22 @@ static bool ftpReadResponse(EthernetClient &client, int &code, char *message, si
           
           if (linePos > 3 && line[3] == '-') {
             multilineCode = thisCode;
-            // Append to message if space allows
+            // Append to message if space allows (bounded copy, no strcat)
             size_t currentLen = strlen(message);
             size_t needed = currentLen + linePos + 2;  // +1 for \n, +1 for \0
             if (needed <= maxLen) {
-              strcat(message, line);
-              strcat(message, "\n");
+              memcpy(message + currentLen, line, linePos);
+              message[currentLen + linePos] = '\n';
+              message[currentLen + linePos + 1] = '\0';
             }
           } else if (multilineCode == -1 || thisCode == multilineCode) {
             code = thisCode;
-            // Append last line
+            // Append last line (bounded copy, no strcat)
             size_t currentLen = strlen(message);
             size_t needed = currentLen + linePos + 1;  // +1 for \0
             if (needed <= maxLen) {
-              strcat(message, line);
+              memcpy(message + currentLen, line, linePos);
+              message[currentLen + linePos] = '\0';
             }
             return true;
           }
@@ -4595,18 +4416,6 @@ static void clearAlarmEvent(const char *clientUid, uint8_t sensorIndex) {
       break;
     }
   }
-
-  // BugFix 04022026: Reset SMS rate limit state so a fresh alarm cycle
-  // is not suppressed by stale timestamps from the previous alarm.
-  // Previously, lastSmsAlertEpoch persisted across alarm clear/re-trigger
-  // cycles, blocking the first SMS if re-trigger occurred within
-  // MIN_SMS_ALERT_INTERVAL_SECONDS of the previous alarm's last SMS.
-  SensorRecord *rec = findSensorByHash(clientUid, sensorIndex);
-  if (rec) {
-    rec->lastSmsAlertEpoch = 0.0;
-    rec->smsAlertsInLastHour = 0;
-    memset(rec->smsAlertTimestamps, 0, sizeof(rec->smsAlertTimestamps));
-  }
 }
 
 // ============================================================================
@@ -5333,6 +5142,7 @@ static bool loadDailySummaryMonth(uint16_t year, uint8_t month, JsonDocument &do
   
   DeserializationError err = deserializeJson(doc, buf);
   free(buf);
+  if (err == DeserializationError::Ok) { gWarmTierDataExists = true; }
   return (err == DeserializationError::Ok);
   #endif
 #endif
@@ -5704,9 +5514,25 @@ static void initializeNotecard() {
   Serial.print(F("Server Device UID: "));
   Serial.println(gServerUid[0] != '\0' ? gServerUid : "(not available)");
 
-  // Enable IAP DFU — Wireless for Opta carrier does NOT route AUX pins
-  // (BOOT0, NRST, UART) needed for outboard DFU (ODFU). Use IAP instead.
-  tankalarm_enableIapDfu(notecard);
+  // Enable outboard DFU (ODFU) so Notecard checks Notehub for host firmware updates
+  req = notecard.newRequest("card.dfu");
+  if (req) {
+    JAddStringToObject(req, "name", "stm32");
+    JAddBoolToObject(req, "on", true);
+    J *dfuRsp = notecard.requestAndResponse(req);
+    if (dfuRsp) {
+      const char *dfuErr = JGetString(dfuRsp, "err");
+      if (dfuErr && dfuErr[0] != '\0') {
+        Serial.print(F("WARNING: card.dfu enable failed: "));
+        Serial.println(dfuErr);
+      } else {
+        Serial.println(F("Outboard DFU enabled for host firmware updates"));
+      }
+      notecard.deleteResponse(dfuRsp);
+    } else {
+      Serial.println(F("WARNING: card.dfu returned no response"));
+    }
+  }
 }
 
 static void ensureTimeSync() {
@@ -5822,35 +5648,51 @@ static void checkServerVoltage() {
 }
 
 static void checkForFirmwareUpdate() {
-  // Poll Notecard for IAP DFU status (replaces ODFU card.dfu polling)
-  TankAlarmDfuStatus status;
-  if (!tankalarm_checkDfuStatus(notecard, status)) {
+  // Query Notecard for DFU status
+  J *req = notecard.newRequest("dfu.status");
+  if (!req) {
     return;
   }
-
-  // Track the DFU mode for web UI status reporting
-  strlcpy(gDfuMode, status.mode, sizeof(gDfuMode));
-
-  // Capture error details for diagnostics and UI display
-  if (status.error) {
-    strlcpy(gDfuError, status.errorMsg, sizeof(gDfuError));
+  
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    return;
+  }
+  
+  // Check if firmware update is available
+  // dfu.status response fields:
+  // - "mode": DFU mode string: "idle", "error", "downloading", "ready", "completed"
+  // - "on": true if outboard DFU is enabled
+  // - "version": firmware version available from Notehub
+  // - "body": object with firmware info (length, crc32, md5, etc.)
+  const char *mode = JGetString(rsp, "mode");
+  const char *version = JGetString(rsp, "version");
+  const char *errMsg = JGetString(rsp, "err");
+  
+  // Track the DFU mode for status reporting
+  if (mode && mode[0] != '\0') {
+    strlcpy(gDfuMode, mode, sizeof(gDfuMode));
+  } else {
+    strlcpy(gDfuMode, "idle", sizeof(gDfuMode));
+  }
+  
+  // Capture error details from Notecard for diagnostics and UI display
+  if (errMsg && errMsg[0] != '\0') {
+    strlcpy(gDfuError, errMsg, sizeof(gDfuError));
     Serial.print(F("DFU error from Notecard: "));
     Serial.println(gDfuError);
   } else if (strcmp(gDfuMode, "error") != 0) {
+    // Clear error message when no longer in error state
     gDfuError[0] = '\0';
   }
-
-  // Track firmware length for IAP apply
-  if (status.firmwareLength > 0) {
-    gDfuFirmwareLength = status.firmwareLength;
-  }
-
+  
   // Detect update: version field is populated and differs from current
-  if (status.version[0] != '\0') {
-    if (!gDfuUpdateAvailable || strcmp(gDfuVersion, status.version) != 0) {
+  if (version && strlen(version) > 0) {
+    if (!gDfuUpdateAvailable || strcmp(gDfuVersion, version) != 0) {
+      // New update detected
       gDfuUpdateAvailable = true;
-      strlcpy(gDfuVersion, status.version, sizeof(gDfuVersion));
-
+      strlcpy(gDfuVersion, version, sizeof(gDfuVersion));
+      
       Serial.println(F("========================================"));
       Serial.print(F("FIRMWARE UPDATE AVAILABLE: v"));
       Serial.println(gDfuVersion);
@@ -5860,14 +5702,16 @@ static void checkForFirmwareUpdate() {
       Serial.println(gDfuMode);
       Serial.println(F("Use web UI 'Install Update' button to apply"));
       Serial.println(F("========================================"));
-
+      
       addServerSerialLog("Firmware update available", "info", "dfu");
     }
   } else if (gDfuUpdateAvailable) {
+    // Update was available but is now gone (applied or cancelled)
     gDfuUpdateAvailable = false;
     gDfuVersion[0] = '\0';
-    gDfuFirmwareLength = 0;
   }
+  
+  notecard.deleteResponse(rsp);
 }
 
 static void enableDfuMode() {
@@ -5876,13 +5720,8 @@ static void enableDfuMode() {
     return;
   }
   
-  if (gDfuFirmwareLength == 0) {
-    Serial.println(F("ERROR: No firmware length — run checkForFirmwareUpdate first"));
-    return;
-  }
-
   Serial.println(F("========================================"));
-  Serial.println(F("ENABLING IAP DFU MODE"));
+  Serial.println(F("ENABLING DFU MODE"));
   Serial.println(F("Device will download and apply update"));
   Serial.println(F("System will reset when complete"));
   Serial.println(F("========================================"));
@@ -5890,7 +5729,7 @@ static void enableDfuMode() {
   // Mark DFU in progress to prevent multiple triggers
   gDfuInProgress = true;
   strlcpy(gDfuMode, "applying", sizeof(gDfuMode));
-  addServerSerialLog("IAP DFU mode enabled - updating firmware", "info", "dfu");
+  addServerSerialLog("DFU mode enabled - updating firmware", "info", "dfu");
   
   // Save all pending data before rebooting
   if (gConfigDirty) {
@@ -5909,17 +5748,47 @@ static void enableDfuMode() {
   saveClientConfigSnapshots();
   saveHistorySettings();
   
-  // Server always uses "continuous" mode (Ethernet)
-  bool success = tankalarm_performIapUpdate(notecard, gDfuFirmwareLength, "continuous", dfuKickWatchdog);
-  
-  // If we get here, update failed (success path reboots via NVIC_SystemReset)
-  if (!success) {
-    Serial.println(F("IAP DFU update failed — resuming normal operation"));
+  // Step 1: Ensure ODFU is enabled on the Notecard for host MCU (stm32)
+  J *req = notecard.newRequest("card.dfu");
+  if (!req) {
+    Serial.println(F("ERROR: Failed to create card.dfu request"));
     gDfuInProgress = false;
     strlcpy(gDfuMode, "error", sizeof(gDfuMode));
-    strlcpy(gDfuError, "IAP firmware write failed", sizeof(gDfuError));
-    addServerSerialLog("IAP DFU update failed", "error", "dfu");
+    return;
   }
+  JAddStringToObject(req, "name", "stm32");
+  JAddBoolToObject(req, "on", true);
+  
+  J *rsp = notecard.requestAndResponse(req);
+  if (rsp) {
+    const char *err = JGetString(rsp, "err");
+    if (err && err[0] != '\0') {
+      Serial.print(F("ERROR: card.dfu failed: "));
+      Serial.println(err);
+      gDfuInProgress = false;
+      strlcpy(gDfuMode, "error", sizeof(gDfuMode));
+      notecard.deleteResponse(rsp);
+      return;
+    }
+    notecard.deleteResponse(rsp);
+  } else {
+    Serial.println(F("ERROR: card.dfu returned no response"));
+    gDfuInProgress = false;
+    strlcpy(gDfuMode, "error", sizeof(gDfuMode));
+    return;
+  }
+  
+  // Step 2: Set DFU mode to start download/apply
+  // Note: For Blues Notecard ODFU, the Notecard downloads the firmware
+  // image from Notehub and makes it available via dfu.get for the host
+  // to read and apply. For host MCU DFU, the device must read chunks
+  // and write to flash. The Notecard handles the download automatically
+  // once card.dfu is enabled.
+  Serial.println(F("DFU enabled - Notecard will download firmware from Notehub"));
+  Serial.println(F("Monitor progress via dfu.status in Serial Monitor or web UI"));
+  
+  // Device will download firmware - check status periodically
+  // The periodic DFU check in loop() will track progress
 }
 
 static void scheduleNextViewerSummary() {
@@ -5927,62 +5796,34 @@ static void scheduleNextViewerSummary() {
   gNextViewerSummaryEpoch = tankalarm_computeNextAlignedEpoch(epoch, VIEWER_SUMMARY_BASE_HOUR, VIEWER_SUMMARY_INTERVAL_SECONDS);
 }
 
-static bool initializeEthernet() {
+static void initializeEthernet() {
   Serial.print(F("Initializing Ethernet..."));
   
   // Check if Ethernet hardware is present
   if (Ethernet.hardwareStatus() == EthernetNoHardware) {
     Serial.println(F(" FAILED - No Ethernet hardware detected!"));
     Serial.println(F("ERROR: Cannot continue without Ethernet. Please check hardware."));
-    gEthernetInitialized = false;
-    return false;
+    // Don't halt, just return and let the main loop handle the lack of network
+    return;
   }
 
-  // Determine whether to use a manually configured MAC or the hardware MAC.
-  // IMPORTANT: Ethernet.MACAddress() calls get_mac_address() on the Mbed
-  // NetworkInterface, which returns nullptr before Ethernet.begin()/connect().
-  // Reading it before begin() causes a null-pointer read that fills gMacAddress
-  // with garbage from the flash vector table — producing a different "MAC" on
-  // every firmware rebuild and breaking router DHCP reservations.
-  // Fix: pass nullptr to let the EMAC use its factory-burned OTP MAC, then read
-  // the actual MAC *after* begin() when the interface is initialised.
+  // Retrieve hardware MAC address if not set
   bool usingFactoryMac = true;
-  bool macManuallySet = !(gMacAddress[0] == 0 && gMacAddress[1] == 0 && gMacAddress[2] == 0 && 
-                          gMacAddress[3] == 0 && gMacAddress[4] == 0 && gMacAddress[5] == 0);
-  uint8_t *macForBegin = macManuallySet ? gMacAddress : nullptr;
-  if (macManuallySet) {
+  if (gMacAddress[0] == 0 && gMacAddress[1] == 0 && gMacAddress[2] == 0 && 
+      gMacAddress[3] == 0 && gMacAddress[4] == 0 && gMacAddress[5] == 0) {
+    // Read MAC into buffer
+    Ethernet.MACAddress(gMacAddress);
+  } else {
+    // Using manually configured MAC
     usingFactoryMac = false;
   }
   
   int status;
   if (gConfig.useStaticIp) {
-    status = Ethernet.begin(macForBegin, gStaticIp, gStaticDns, gStaticGateway, gStaticSubnet);
+    status = Ethernet.begin(gMacAddress, gStaticIp, gStaticDns, gStaticGateway, gStaticSubnet);
   } else {
-    status = Ethernet.begin(macForBegin);
+    status = Ethernet.begin(gMacAddress);
   }
-  
-  // Now that the EMAC is initialised, read the actual MAC in use.
-  if (!macManuallySet) {
-    Ethernet.MACAddress(gMacAddress);
-    // Validate: all-zeros or all-FFs indicates the read failed
-    bool allZero = true, allFF = true;
-    for (int i = 0; i < 6; i++) {
-      if (gMacAddress[i] != 0x00) allZero = false;
-      if (gMacAddress[i] != 0xFF) allFF = false;
-    }
-    if (allZero || allFF) {
-      Serial.println(F("WARNING: Hardware MAC read as 00:00:00:00:00:00 or FF:FF:FF:FF:FF:FF — using fallback"));
-    }
-  }
-
-  // Always log MAC address for DHCP reservation troubleshooting
-  Serial.print(F("Using MAC: "));
-  for (int i = 0; i < 6; i++) {
-    if (i > 0) Serial.print(":");
-    if (gMacAddress[i] < 16) Serial.print("0");
-    Serial.print(gMacAddress[i], HEX);
-  }
-  Serial.println(usingFactoryMac ? F(" (Hardware)") : F(" (Static)"));
 
   if (status == 0) {
     Serial.println(F(" FAILED - Could not configure Ethernet!"));
@@ -5991,10 +5832,9 @@ static bool initializeEthernet() {
     } else {
       Serial.println(F("ERROR: Static IP configuration failed."));
     }
-    gEthernetInitialized = false;
-    return false;
+    // Don't halt, just return and let the main loop handle the lack of network
+    return;
   }
-  gEthernetInitialized = true;
   
   // Check link status
   if (Ethernet.linkStatus() == LinkOFF) {
@@ -6002,6 +5842,13 @@ static bool initializeEthernet() {
     Serial.println(F("Continuing, but web server will not be accessible."));
   } else {
     Serial.println(F(" ok"));
+    Serial.print(F("Using MAC: "));
+    for (int i=0; i<6; i++) {
+        if (i>0) Serial.print(":");
+        if (gMacAddress[i] < 16) Serial.print("0");
+        Serial.print(gMacAddress[i], HEX);
+    }
+    Serial.println(usingFactoryMac ? " (Hardware)" : " (Static)");
     Serial.print(F("IP Address: "));
     Serial.println(Ethernet.localIP());
     Serial.print(F("Gateway: "));
@@ -6009,7 +5856,6 @@ static bool initializeEthernet() {
     Serial.print(F("Subnet: "));
     Serial.println(Ethernet.subnetMask());
   }
-  return true;
 }
 
 static void serveCss(EthernetClient &client) {
@@ -6115,10 +5961,8 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
 
   // If no PIN is configured yet (fresh install), accept any valid 4-digit PIN
   // and set it as the admin PIN
-  // BugFix 04022026 (HIGH-6): Added isValidPin() check — previously only checked
-  // strlen(pin) == 4, allowing non-digit characters like "ab!@" as a PIN.
   if (!isValidPin(gConfig.configPin)) {
-    if (pin && strlen(pin) == 4 && isValidPin(pin)) {
+    if (pin && isValidPin(pin)) {
       strlcpy(gConfig.configPin, pin, sizeof(gConfig.configPin));
       saveConfig(gConfig);
       valid = true;
@@ -6140,7 +5984,6 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
     client.println(F("HTTP/1.1 200 OK"));
     client.println(F("Content-Type: application/json"));
     client.println(F("Connection: close"));
-    sendSecurityHeaders(client);
     client.println();
     client.print(F("{\"success\":true,\"session\":\""));
     client.print(gSessionToken);
@@ -6186,8 +6029,8 @@ static void handleWebRequests() {
   // Session validation middleware: all /api/ routes except login and session-check
   // must carry a valid X-Session header matching the active server-side token.
   if (path.startsWith("/api/") &&
-      !path.startsWith("/api/login") &&
-      !path.startsWith("/api/session/check")) {
+      path != "/api/login" &&
+      path != "/api/session/check") {
     if (!sessionTokenMatches(sessionHdr)) {
       respondStatus(client, 401, "Session expired");
       client.stop();
@@ -6452,6 +6295,8 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
   static char lineBuf[514];
   size_t lineLen = 0;
   bool firstLine = true;
+  int headerCount = 0;
+  static const int MAX_HEADERS = 64;  // Prevent excessive header processing
 
   unsigned long start = millis();
   while (client.connected() && millis() - start < 5000UL) {
@@ -6487,6 +6332,10 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
         firstLine = false;
       } else {
         // Parse header: "Key: Value"
+        headerCount++;
+        if (headerCount > MAX_HEADERS) {
+          return false;  // Too many headers — reject request
+        }
         char *colon = strchr(lineBuf, ':');
         if (colon && colon > lineBuf) {
           *colon = '\0';
@@ -6685,16 +6534,6 @@ static void respondHtml(EthernetClient &client, const String &body) {
   }
 }
 
-// BugFix 04022026 (HIGH-2): Send common security headers on all responses.
-// Prevents CSRF via cross-origin XHR and adds basic security hygiene.
-static void sendSecurityHeaders(EthernetClient &client) {
-  client.println(F("X-Content-Type-Options: nosniff"));
-  client.println(F("X-Frame-Options: DENY"));
-  // Restrict cross-origin requests to same-origin only
-  // Note: We don't send Access-Control-Allow-Origin at all, which means
-  // browsers will block cross-origin XHR/fetch by default (deny policy).
-}
-
 static void respondJson(EthernetClient &client, const String &body, int status) {
   client.print(F("HTTP/1.1 "));
   client.print(status);
@@ -6705,7 +6544,6 @@ static void respondJson(EthernetClient &client, const String &body, int status) 
   }
   client.println(F("Content-Type: application/json"));
   client.println(F("Connection: close"));
-  sendSecurityHeaders(client);
   client.print(F("Content-Length: "));
   client.println(body.length());
   client.println();
@@ -6734,7 +6572,6 @@ static bool respondJson(EthernetClient &client, const JsonDocument &doc, int sta
   }
   client.println(F("Content-Type: application/json"));
   client.println(F("Connection: close"));
-  sendSecurityHeaders(client);
   client.print(F("Content-Length: "));
   client.println(length);
   client.println();
@@ -6851,7 +6688,6 @@ static void respondStatus(EthernetClient &client, int status, const char *messag
   }
   client.println(F("Content-Type: text/plain"));
   client.println(F("Connection: close"));
-  sendSecurityHeaders(client);
   client.print(F("Content-Length: "));
   client.println(strlen(message));
   client.println();
@@ -7371,7 +7207,6 @@ static void handleConfigRetryPost(EthernetClient &client, const String &body) {
 
     if (sendConfigViaNotecard(clientUid, snap->payload)) {
       snap->pendingDispatch = false;
-      saveClientConfigSnapshots();
       respondStatus(client, 200, F("Config dispatched to Notecard"));
     } else {
       respondStatus(client, 502, F("Notecard send failed — check serial monitor for details"));
@@ -7392,8 +7227,6 @@ static void handleConfigRetryPost(EthernetClient &client, const String &body) {
       stillPending++;
     }
   }
-
-  saveClientConfigSnapshots();
 
   if (stillPending == 0) {
     char msg[64];
@@ -8120,12 +7953,10 @@ static ConfigDispatchStatus dispatchClientConfig(const char *clientUid, JsonVari
 
   // Attempt to send via Notecard
   if (sendConfigViaNotecard(clientUid, buffer)) {
-    // Successfully queued to Notecard — clear pending flag.
-    // ACK from client updates observability fields but does not gate pendingDispatch.
+    // Mark as dispatched but still pending ACK
     ClientConfigSnapshot *snap = findClientConfigSnapshot(clientUid);
     if (snap) {
-      snap->pendingDispatch = false;
-      saveClientConfigSnapshots();
+      // pendingDispatch stays true until ACK received
     }
     return (gLastConfigPurgeCount > 0) ? ConfigDispatchStatus::OkWithPurge : ConfigDispatchStatus::Ok;
   }
@@ -8180,7 +8011,7 @@ static void dispatchPendingConfigs() {
     gClientConfigs[i].lastDispatchEpoch = currentEpoch();
 
     if (sendConfigViaNotecard(gClientConfigs[i].uid, gClientConfigs[i].payload)) {
-      gClientConfigs[i].pendingDispatch = false;
+      // pendingDispatch stays true until config ACK received from client
       Serial.print(F("SUCCESS: Dispatched pending config for "));
       Serial.println(gClientConfigs[i].uid);
     } else {
@@ -8566,6 +8397,9 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   // Digital sensor (float switch) alarm types
   bool isDigitalAlarm = (strcmp(type, "triggered") == 0) ||
                         (strcmp(type, "not_triggered") == 0);
+  // Relay safety timeout — relay was forced off after exceeding max ON duration
+  // This is an operational event, NOT a sensor alarm clear — do not clear alarmActive
+  bool isRelayTimeout = (strcmp(type, "relay_timeout") == 0);
 
   if (strcmp(type, "clear") == 0 || isRecovery) {
     rec->alarmActive = false;
@@ -8575,6 +8409,14 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
     }
     // Log alarm clear event
     clearAlarmEvent(clientUid, sensorIndex);
+  } else if (isRelayTimeout) {
+    // Record the timeout event but do NOT clear the underlying alarm state
+    // The sensor alarm condition may still be active
+    strlcpy(rec->alarmType, "relay_timeout", sizeof(rec->alarmType));
+    Serial.print(F("Relay safety timeout for "));
+    Serial.print(clientUid);
+    Serial.print(F(" sensor "));
+    Serial.println(sensorIndex);
   } else {
     rec->alarmActive = true;
     strlcpy(rec->alarmType, type, sizeof(rec->alarmType));
@@ -8596,33 +8438,36 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   gSensorRegistryDirty = true;
 
   // Check rate limit before sending SMS
-  // BugFix 04022026 (HIGH-7): Respect client per-monitor SMS opt-out.
-  // Previously, smsEnabled was force-set to true for all sensor alarm types,
-  // ignoring the client's "se" flag from MonitorConfig.enableAlarmSms.
-  // Now: SMS requires BOTH client opt-in (se=true) AND server policy agreement.
-  bool clientWantsSms = false;
+  bool smsEnabled = false;  // Default off -- only send SMS when client explicitly requests (se=true)
   if (doc["se"]) {
-    clientWantsSms = doc["se"].as<bool>();
+    smsEnabled = doc["se"].as<bool>();
   } else if (doc["smsEnabled"]) {
-    clientWantsSms = doc["smsEnabled"].as<bool>();
+    smsEnabled = doc["smsEnabled"].as<bool>();
   }
-  // Server-side SMS policy per alarm type
+  // For sensor-level alarms (high/low/clear/digital), SMS is controlled by server policy
   bool smsAllowedByServer = false;
   if (strcmp(type, "high") == 0) {
+    smsEnabled = true;  // Sensor alarms always eligible
     smsAllowedByServer = gConfig.smsOnHigh;
   } else if (strcmp(type, "low") == 0) {
+    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnLow;
   } else if (strcmp(type, "clear") == 0) {
+    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnClear;
   } else if (isDigitalAlarm) {
+    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnHigh;
+  } else if (isRelayTimeout) {
+    smsEnabled = true;
+    smsAllowedByServer = gConfig.smsOnClear;  // Relay timeout uses clear SMS policy
   }
-  // SMS fires only when both client and server agree
-  bool smsEnabled = clientWantsSms && smsAllowedByServer;
 
   if (!isDiagnostic && smsEnabled && smsAllowedByServer && checkSmsRateLimit(rec)) {
     char message[160];
-    if (isDigitalAlarm) {
+    if (isRelayTimeout) {
+      snprintf(message, sizeof(message), "%s%s%d Relay safety timeout - relay forced OFF", rec->site, rec->userNumber > 0 ? " #" : " sensor ", rec->userNumber > 0 ? rec->userNumber : rec->sensorIndex);
+    } else if (isDigitalAlarm) {
       const char *stateDesc = (strcmp(type, "triggered") == 0) ? "ACTIVATED" : "NOT ACTIVATED";
       snprintf(message, sizeof(message), "%s%s%d Float Switch %s", rec->site, rec->userNumber > 0 ? " #" : " sensor ", rec->userNumber > 0 ? rec->userNumber : rec->sensorIndex, stateDesc);
     } else {
@@ -8802,14 +8647,10 @@ static void handleDaily(JsonDocument &doc, double epoch) {
         }
       }
     }
-  }
 
-  // BugFix 04022026: Reconciliation must run even when the client reports NO
-  // active alarms (i.e. the "alarms" array is absent from the daily report).
-  // Previously this block was nested inside the `if (dailyAlarms)` guard,
-  // so when a client had zero active alarms the server never cleared orphaned
-  // alarmActive flags — causing phantom alarms to persist indefinitely.
-  if (isFirstPart) {
+    // Reconciliation: clear alarms on server for sensors that the client
+    // reports as NOT alarming.  This catches orphaned server-side alarms
+    // where the "clear" note was lost or rate-limited.
     for (uint8_t ri = 0; ri < gSensorRecordCount; ++ri) {
       if (strcmp(gSensorRecords[ri].clientUid, clientUid) != 0) continue;
       if (!gSensorRecords[ri].alarmActive) continue;
@@ -8819,15 +8660,13 @@ static void handleDaily(JsonDocument &doc, double epoch) {
           strcmp(gSensorRecords[ri].alarmType, "power") == 0) continue;
       // Check if this sensorIndex has an active alarm in the daily report
       bool foundInDaily = false;
-      if (dailyAlarms) {
-        for (JsonObject a : dailyAlarms) {
-          uint8_t dailyIdx = a["k"] | 0;
-          if (dailyIdx == gSensorRecords[ri].sensorIndex) {
-            bool hiAlarm = a["hi"] | false;
-            bool loAlarm = a["lo"] | false;
-            if (hiAlarm || loAlarm) foundInDaily = true;
-            break;
-          }
+      for (JsonObject a : dailyAlarms) {
+        uint8_t dailyIdx = a["k"] | 0;
+        if (dailyIdx == gSensorRecords[ri].sensorIndex) {
+          bool hiAlarm = a["hi"] | false;
+          bool loAlarm = a["lo"] | false;
+          if (hiAlarm || loAlarm) foundInDaily = true;
+          break;
         }
       }
       if (!foundInDaily) {
@@ -9607,27 +9446,6 @@ static void handleClientConfigGet(EthernetClient &client, const String &query) {
   // truncating nested fields (e.g. monitorType inside sensors array).
   String response = F("{\"config\":");
   response += snap->payload;
-  response += F(",\"pd\":");
-  response += snap->pendingDispatch ? F("true") : F("false");
-  if (snap->dispatchAttempts > 0) {
-    response += F(",\"da\":");
-    response += String(snap->dispatchAttempts);
-  }
-  if (snap->lastAckEpoch > 0.0) {
-    char epochBuf[24];
-    response += F(",\"ae\":");
-    snprintf(epochBuf, sizeof(epochBuf), "%.0f", snap->lastAckEpoch);
-    response += epochBuf;
-    response += F(",\"as\":\"");
-    response += snap->lastAckStatus;
-    response += '"';
-  }
-  if (snap->lastDispatchEpoch > 0.0) {
-    char epochBuf[24];
-    response += F(",\"de\":");
-    snprintf(epochBuf, sizeof(epochBuf), "%.0f", snap->lastDispatchEpoch);
-    response += epochBuf;
-  }
   response += '}';
   respondJson(client, response);
 }
@@ -11217,7 +11035,7 @@ static void sendHistoryJson(EthernetClient &client, const String &query) {
   JsonObject dataInfo = doc["dataInfo"].to<JsonObject>();
   dataInfo["source"] = "hot";  // Primary data from RAM ring buffer
   dataInfo["hotTierSnapshots"] = (gSensorHistoryCount > 0 && gSensorHistory[0].snapshotCount > 0);
-  dataInfo["warmTierAvailable"] = true;  // LittleFS daily summaries always available
+  dataInfo["warmTierAvailable"] = (gHistorySettings.warmTierRetentionMonths > 0 && gWarmTierDataExists);
   dataInfo["coldTierAvailable"] = (gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled);
   
   // Indicate max available range without FTP
@@ -11287,10 +11105,33 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
   if (gLastSyncedEpoch > 0.0) {
     nowEpoch = gLastSyncedEpoch + (double)(millis() - gLastSyncMillis) / 1000.0;
   }
-  time_t nowTime = (time_t)nowEpoch;
-  struct tm *nowTm = gmtime(&nowTime);
-  bool currInHotTier = (nowTm && nowTm->tm_year + 1900 == currYear && nowTm->tm_mon + 1 == currMonth);
-  bool prevInHotTier = (nowTm && nowTm->tm_year + 1900 == prevYear && nowTm->tm_mon + 1 == prevMonth);
+  // Pre-compute epoch boundaries for month filtering
+  struct tm currStartTm = {0};
+  currStartTm.tm_year = currYear - 1900;
+  currStartTm.tm_mon = currMonth - 1;
+  currStartTm.tm_mday = 1;
+  double currMonthStart = (double)mktime(&currStartTm);
+  struct tm currEndTm = {0};
+  currEndTm.tm_year = (currMonth == 12) ? currYear - 1900 + 1 : currYear - 1900;
+  currEndTm.tm_mon = (currMonth == 12) ? 0 : currMonth;
+  currEndTm.tm_mday = 1;
+  double currMonthEnd = (double)mktime(&currEndTm);
+
+  struct tm prevStartTm = {0};
+  prevStartTm.tm_year = prevYear - 1900;
+  prevStartTm.tm_mon = prevMonth - 1;
+  prevStartTm.tm_mday = 1;
+  double prevMonthStart = (double)mktime(&prevStartTm);
+  struct tm prevEndTm = {0};
+  prevEndTm.tm_year = (prevMonth == 12) ? prevYear - 1900 + 1 : prevYear - 1900;
+  prevEndTm.tm_mon = (prevMonth == 12) ? 0 : prevMonth;
+  prevEndTm.tm_mday = 1;
+  double prevMonthEnd = (double)mktime(&prevEndTm);
+
+  // Hot tier covers last N days — check if requested months overlap retained data
+  double hotTierCutoff = (nowEpoch > 0) ? nowEpoch - (double)gHistorySettings.hotTierRetentionDays * 86400.0 : 0;
+  bool currInHotTier = (nowEpoch > 0 && currMonthEnd > hotTierCutoff && currMonthStart <= nowEpoch);
+  bool prevInHotTier = (nowEpoch > 0 && prevMonthEnd > hotTierCutoff && prevMonthStart <= nowEpoch);
   
   // Try to load previous month from warm tier (LittleFS) or cold tier (FTP)
   bool prevFromWarm = false;
@@ -11304,9 +11145,11 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     if (!prevFromWarm && gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled) {
       prevFromCold = loadFtpArchiveCached(prevYear, prevMonth);
     }
+  }torySettings.ftpArchiveEnabled) {
+      prevFromCold = loadFtpArchiveCached(prevYear, prevMonth);
+    }
   }
-  
-  // For each sensor in hot tier, calculate comparison
+
   for (uint8_t h = 0; h < gSensorHistoryCount; h++) {
     SensorHourlyHistory &hist = gSensorHistory[h];
     if (hist.snapshotCount == 0) continue;
@@ -11321,20 +11164,10 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     int currCount = 0;
     
     if (currInHotTier) {
-      // BugFix 04022026 (MED-17): Filter snapshots by target month.
-      // Previously iterated ALL snapshots — at month boundaries the ring buffer
-      // may contain a few entries from the previous month, contaminating stats.
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
         uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist.snapshots[idx];
-        // Filter by target month
-        if (snap.timestamp > 0.0) {
-          time_t snapTime = (time_t)snap.timestamp;
-          struct tm *snapTm = gmtime(&snapTime);
-          if (snapTm && (snapTm->tm_year + 1900 != currYear || snapTm->tm_mon + 1 != currMonth)) {
-            continue;
-          }
-        }
+        if (snap.timestamp < currMonthStart || snap.timestamp >= currMonthEnd) continue;
         if (snap.level < currMin) currMin = snap.level;
         if (snap.level > currMax) currMax = snap.level;
         currSum += snap.level;
@@ -11367,21 +11200,12 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     JsonObject prevStats = sensorComp["previousStats"].to<JsonObject>();
     if (prevInHotTier) {
       // Rare case: previous month still in hot tier (if retention > 30 days)
-      // BugFix 04022026 (MED-17): Filter snapshots by previous month/year.
-      // Same contamination risk as current-month loop above.
       float prevMin = 9999.0, prevMax = -9999.0, prevSum = 0.0;
       int prevCount = 0;
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
         uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist.snapshots[idx];
-        // Filter by target month
-        if (snap.timestamp > 0.0) {
-          time_t snapTime = (time_t)snap.timestamp;
-          struct tm *snapTm = gmtime(&snapTime);
-          if (snapTm && (snapTm->tm_year + 1900 != prevYear || snapTm->tm_mon + 1 != prevMonth)) {
-            continue;
-          }
-        }
+        if (snap.timestamp < prevMonthStart || snap.timestamp >= prevMonthEnd) continue;
         if (snap.level < prevMin) prevMin = snap.level;
         if (snap.level > prevMax) prevMax = snap.level;
         prevSum += snap.level;
@@ -11482,6 +11306,30 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
   doc["currentMonth"] = currentMonth;
   doc["yearsCompared"] = yearsToCompare;
   
+  // Pre-compute epoch boundaries for year filtering in hot tier
+  struct tm yoyStartTm = {0};
+  yoyStartTm.tm_year = currentYear - 1900;
+  yoyStartTm.tm_mon = 0;
+  yoyStartTm.tm_mday = 1;
+  double currentYearStart = (double)mktime(&yoyStartTm);
+  struct tm yoyEndTm = {0};
+  yoyEndTm.tm_year = currentYear - 1900 + 1;
+  yoyEndTm.tm_mon = 0;
+  yoyEndTm.tm_mday = 1;
+  double currentYearEnd = (double)mktime(&yoyEndTm);
+
+  // Epoch boundaries for current month filtering (single-sensor branch)
+  struct tm yoyCurrMStartTm = {0};
+  yoyCurrMStartTm.tm_year = currentYear - 1900;
+  yoyCurrMStartTm.tm_mon = currentMonth - 1;
+  yoyCurrMStartTm.tm_mday = 1;
+  double currentMonthStart = (double)mktime(&yoyCurrMStartTm);
+  struct tm yoyCurrMEndTm = {0};
+  yoyCurrMEndTm.tm_year = (currentMonth == 12) ? currentYear - 1900 + 1 : currentYear - 1900;
+  yoyCurrMEndTm.tm_mon = (currentMonth == 12) ? 0 : currentMonth;
+  yoyCurrMEndTm.tm_mday = 1;
+  double currentMonthEnd = (double)mktime(&yoyCurrMEndTm);
+
   if (sensorParam.length() == 0) {
     // Return summary for all sensors
     JsonArray sensorSummaries = doc["sensors"].to<JsonArray>();
@@ -11495,23 +11343,14 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       sensorSum["site"] = hist.siteName;
       sensorSum["sensorIndex"] = hist.sensorIndex;
       
-      // Current year stats from hot tier
-      // BugFix 04022026 (MED-17): Filter snapshots by current year.
-      // Ring buffer may contain entries from the previous year near Jan 1.
+      // Current year stats from hot tier (filtered to currentYear only)
       float yearMin = 9999.0, yearMax = -9999.0, yearSum = 0.0;
       int yearCount = 0;
       
       for (uint16_t j = 0; j < hist.snapshotCount; j++) {
         uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist.snapshots[idx];
-        // Filter by current year
-        if (snap.timestamp > 0.0) {
-          time_t snapTime = (time_t)snap.timestamp;
-          struct tm *snapTm = gmtime(&snapTime);
-          if (snapTm && (snapTm->tm_year + 1900 != currentYear)) {
-            continue;
-          }
-        }
+        if (snap.timestamp < currentYearStart || snap.timestamp >= currentYearEnd) continue;
         if (snap.level < yearMin) yearMin = snap.level;
         if (snap.level > yearMax) yearMax = snap.level;
         yearSum += snap.level;
@@ -11612,8 +11451,6 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       JsonArray monthlyData = doc["sensor"]["monthlyData"].to<JsonArray>();
       
       // Current month from hot tier
-      // BugFix 04022026 (MED-17): Filter snapshots by current month/year.
-      // Ring buffer may contain entries from the previous month.
       JsonObject currMonthObj = monthlyData.add<JsonObject>();
       currMonthObj["year"] = currentYear;
       currMonthObj["month"] = currentMonth;
@@ -11623,14 +11460,7 @@ static void handleHistoryYearOverYear(EthernetClient &client, const String &quer
       for (uint16_t j = 0; j < hist->snapshotCount; j++) {
         uint16_t idx = (hist->writeIndex - hist->snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
         TelemetrySnapshot &snap = hist->snapshots[idx];
-        // Filter by target month
-        if (snap.timestamp > 0.0) {
-          time_t snapTime = (time_t)snap.timestamp;
-          struct tm *snapTm = gmtime(&snapTime);
-          if (snapTm && (snapTm->tm_year + 1900 != currentYear || snapTm->tm_mon + 1 != currentMonth)) {
-            continue;
-          }
-        }
+        if (snap.timestamp < currentMonthStart || snap.timestamp >= currentMonthEnd) continue;
         if (snap.level < min) min = snap.level;
         if (snap.level > max) max = snap.level;
         sum += snap.level;
@@ -13521,12 +13351,13 @@ static void handleNotecardStatusGet(EthernetClient &client) {
   }
 
   // Build JSON response
-  String responseStr = "{";
-  responseStr += "\"connected\":" + String(connected ? "true" : "false") + ",";
-  responseStr += "\"productUid\":\"" + productUid + "\",";
-  responseStr += "\"serverUid\":\"" + String(gServerUid) + "\",";
-  responseStr += "\"syncMode\":\"" + syncMode + "\"";
-  responseStr += "}";
+  JsonDocument doc;
+  doc["connected"] = connected;
+  doc["productUid"] = productUid;
+  doc["serverUid"] = String(gServerUid);
+  doc["syncMode"] = syncMode;
+  String responseStr;
+  serializeJson(doc, responseStr);
   respondJson(client, responseStr);
 }
 
@@ -13536,27 +13367,25 @@ static void handleNotecardStatusGet(EthernetClient &client) {
 
 static void handleTransmissionLogGet(EthernetClient &client) {
   // Build JSON response from ring buffer, newest first
-  String responseStr = "{\"entries\":[";
-  bool first = true;
+  JsonDocument doc;
+  JsonArray entries = doc["entries"].to<JsonArray>();
 
   for (int i = (int)gTransmissionLogCount - 1; i >= 0; i--) {
     int idx = (gTransmissionLogWriteIndex - 1 - ((int)gTransmissionLogCount - 1 - i) + MAX_TRANSMISSION_LOG_ENTRIES) % MAX_TRANSMISSION_LOG_ENTRIES;
     const TransmissionLogEntry &e = gTransmissionLog[idx];
 
-    if (!first) responseStr += ",";
-    first = false;
-
-    responseStr += "{";
-    responseStr += "\"timestamp\":" + String(e.timestamp, 0) + ",";
-    responseStr += "\"site\":\"" + String(e.siteName) + "\",";
-    responseStr += "\"client\":\"" + String(e.clientUid) + "\",";
-    responseStr += "\"type\":\"" + String(e.messageType) + "\",";
-    responseStr += "\"status\":\"" + String(e.status) + "\",";
-    responseStr += "\"detail\":\"" + String(e.detail) + "\"";
-    responseStr += "}";
+    JsonObject obj = entries.add<JsonObject>();
+    obj["timestamp"] = e.timestamp;
+    obj["site"] = e.siteName;
+    obj["client"] = e.clientUid;
+    obj["type"] = e.messageType;
+    obj["status"] = e.status;
+    obj["detail"] = e.detail;
   }
 
-  responseStr += "],\"count\":" + String(gTransmissionLogCount) + "}";
+  doc["count"] = gTransmissionLogCount;
+  String responseStr;
+  serializeJson(doc, responseStr);
   respondJson(client, responseStr);
 }
 
@@ -13565,22 +13394,23 @@ static void handleTransmissionLogGet(EthernetClient &client) {
 // ============================================================================
 
 static void handleDfuStatusGet(EthernetClient &client) {
-  String responseStr = "{";
-  responseStr += "\"currentVersion\":\"" + String(FIRMWARE_VERSION) + "\",";
-  responseStr += "\"buildDate\":\"" + String(FIRMWARE_BUILD_DATE) + "\",";
-  responseStr += "\"buildTime\":\"" + String(FIRMWARE_BUILD_TIME) + "\",";
-  responseStr += "\"updateAvailable\":" + String(gDfuUpdateAvailable ? "true" : "false") + ",";
-  responseStr += "\"availableVersion\":\"" + String(gDfuUpdateAvailable ? gDfuVersion : "") + "\",";
-  responseStr += "\"dfuMode\":\"" + String(gDfuMode) + "\",";
-  responseStr += "\"dfuInProgress\":" + String(gDfuInProgress ? "true" : "false") + ",";
-  responseStr += "\"dfuError\":\"" + String(gDfuError) + "\",";
+  JsonDocument doc;
+  doc["currentVersion"] = FIRMWARE_VERSION;
+  doc["buildDate"] = FIRMWARE_BUILD_DATE;
+  doc["buildTime"] = FIRMWARE_BUILD_TIME;
+  doc["updateAvailable"] = gDfuUpdateAvailable;
+  doc["availableVersion"] = gDfuUpdateAvailable ? gDfuVersion : "";
+  doc["dfuMode"] = gDfuMode;
+  doc["dfuInProgress"] = gDfuInProgress;
+  doc["dfuError"] = gDfuError;
   float bestVoltage = (gInputVoltage > 0.5f) ? gInputVoltage : gNotecardVoltage;
-  responseStr += "\"voltage\":" + String(bestVoltage, 2) + ",";
-  responseStr += "\"notecardVoltage\":" + String(gNotecardVoltage, 2) + ",";
-  responseStr += "\"inputVoltage\":" + String(gInputVoltage, 2) + ",";
-  responseStr += "\"voltageEpoch\":" + String(gVoltageEpoch, 0) + ",";
-  responseStr += "\"serverTime\":" + String(currentEpoch(), 0);
-  responseStr += "}";
+  doc["voltage"] = bestVoltage;
+  doc["notecardVoltage"] = gNotecardVoltage;
+  doc["inputVoltage"] = gInputVoltage;
+  doc["voltageEpoch"] = gVoltageEpoch;
+  doc["serverTime"] = currentEpoch();
+  String responseStr;
+  serializeJson(doc, responseStr);
   respondJson(client, responseStr);
 }
 
@@ -13687,7 +13517,7 @@ static void handleDfuCheckPost(EthernetClient &client, const String &body) {
   
   // If Notecard is in error state, clear the failed DFU then re-enable.
   // Step 1: dfu.status {"stop":true} aborts/clears the error state
-  // Step 2: Re-enable IAP DFU downloads
+  // Step 2: card.dfu off/on re-enables outboard DFU
   // Step 3: hub.sync forces the Notecard to pull fresh firmware catalog
   if (strcmp(gDfuMode, "error") == 0) {
     Serial.println(F("DFU in error state - clearing and resetting..."));
@@ -13710,8 +13540,31 @@ static void handleDfuCheckPost(EthernetClient &client, const String &body) {
     }
     safeSleep(1000);
 
-    // Step 2: Re-enable IAP DFU (replaces ODFU card.dfu off/on cycle)
-    tankalarm_enableIapDfu(notecard);
+    // Step 2: Disable then re-enable outboard DFU
+    J *offReq = notecard.newRequest("card.dfu");
+    if (offReq) {
+      JAddStringToObject(offReq, "name", "stm32");
+      JAddBoolToObject(offReq, "off", true);
+      J *offRsp = notecard.requestAndResponse(offReq);
+      if (offRsp) notecard.deleteResponse(offRsp);
+    }
+    safeSleep(500);
+    J *onReq = notecard.newRequest("card.dfu");
+    if (onReq) {
+      JAddStringToObject(onReq, "name", "stm32");
+      JAddBoolToObject(onReq, "on", true);
+      J *onRsp = notecard.requestAndResponse(onReq);
+      if (onRsp) {
+        const char *err = JGetString(onRsp, "err");
+        if (err && err[0] != '\0') {
+          Serial.print(F("WARNING: card.dfu re-enable failed: "));
+          Serial.println(err);
+        } else {
+          Serial.println(F("Outboard DFU re-enabled successfully"));
+        }
+        notecard.deleteResponse(onRsp);
+      }
+    }
     safeSleep(500);
     
     // Step 3: Force sync so Notecard pulls fresh firmware info from Notehub
@@ -13730,7 +13583,6 @@ static void handleDfuCheckPost(EthernetClient &client, const String &body) {
     gDfuError[0] = '\0';
     gDfuUpdateAvailable = false;
     gDfuVersion[0] = '\0';
-    gDfuFirmwareLength = 0;
   }
   
   checkForFirmwareUpdate();
@@ -13817,25 +13669,26 @@ static void handleLocationGet(EthernetClient &client, const String &path) {
   // Look up cached location
   ClientMetadata *meta = findClientMetadata(clientUid.c_str());
   
-  String responseStr = "{";
-  responseStr += "\"clientUid\":\"" + clientUid + "\",";
+  JsonDocument doc;
+  doc["clientUid"] = clientUid;
   
   if (meta && (meta->latitude != 0.0f || meta->longitude != 0.0f)) {
-    responseStr += "\"hasLocation\":true,";
-    responseStr += "\"latitude\":" + String(meta->latitude, 6) + ",";
-    responseStr += "\"longitude\":" + String(meta->longitude, 6) + ",";
-    responseStr += "\"locationEpoch\":" + String(meta->locationEpoch, 0) + ",";
-    responseStr += "\"nwsGridValid\":" + String(meta->nwsGridValid ? "true" : "false");
+    doc["hasLocation"] = true;
+    doc["latitude"] = meta->latitude;
+    doc["longitude"] = meta->longitude;
+    doc["locationEpoch"] = meta->locationEpoch;
+    doc["nwsGridValid"] = meta->nwsGridValid;
     if (meta->nwsGridValid) {
-      responseStr += ",\"nwsGridOffice\":\"" + String(meta->nwsGridOffice) + "\"";
-      responseStr += ",\"nwsGridX\":" + String(meta->nwsGridX);
-      responseStr += ",\"nwsGridY\":" + String(meta->nwsGridY);
+      doc["nwsGridOffice"] = meta->nwsGridOffice;
+      doc["nwsGridX"] = meta->nwsGridX;
+      doc["nwsGridY"] = meta->nwsGridY;
     }
   } else {
-    responseStr += "\"hasLocation\":false";
+    doc["hasLocation"] = false;
   }
   
-  responseStr += "}";
+  String responseStr;
+  serializeJson(doc, responseStr);
   respondJson(client, responseStr);
 }
 

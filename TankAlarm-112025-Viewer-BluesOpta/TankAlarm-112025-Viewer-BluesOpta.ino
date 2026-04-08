@@ -1,6 +1,6 @@
 /*
   Tank Alarm Viewer 112025 - Arduino Opta + Blues Notecard
-  Version: 1.3.0
+  Version: 1.4.0
 
   Purpose:
   - Read-only kiosk that renders the server dashboard without exposing control paths
@@ -810,6 +810,7 @@ static void fetchViewerSummary() {
 
     char *json = JConvertToJSONString(body);
     double epoch = JGetNumber(rsp, "time");
+    bool processedOk = false;
     if (json) {
       std::unique_ptr<JsonDocument> docPtr(new (std::nothrow) JsonDocument());
       if (docPtr) {
@@ -818,6 +819,7 @@ static void fetchViewerSummary() {
         NoteFree(json);
         if (!err) {
           handleViewerSummary(doc, epoch);
+          processedOk = true;
         } else {
           Serial.print(F("Summary parse failed: "));
           Serial.println(err.f_str());
@@ -830,13 +832,32 @@ static void fetchViewerSummary() {
 
     notecard.deleteResponse(rsp);
 
-    // Consume the note now that it has been processed
-    J *delReq = notecard.newRequest("note.get");
-    if (delReq) {
-      JAddStringToObject(delReq, "file", VIEWER_SUMMARY_FILE);
-      JAddBoolToObject(delReq, "delete", true);
-      J *delRsp = notecard.requestAndResponse(delReq);
-      if (delRsp) notecard.deleteResponse(delRsp);
+    // Only consume the note after successful processing
+    static uint8_t summaryParseFailCount = 0;
+    if (processedOk) {
+      summaryParseFailCount = 0;
+      J *delReq = notecard.newRequest("note.get");
+      if (delReq) {
+        JAddStringToObject(delReq, "file", VIEWER_SUMMARY_FILE);
+        JAddBoolToObject(delReq, "delete", true);
+        J *delRsp = notecard.requestAndResponse(delReq);
+        if (delRsp) notecard.deleteResponse(delRsp);
+      }
+    } else {
+      // Parse/OOM failure — delete poison note after 3 consecutive failures
+      summaryParseFailCount++;
+      if (summaryParseFailCount >= 3) {
+        Serial.println(F("Poison note detected — deleting after 3 consecutive failures"));
+        J *delReq = notecard.newRequest("note.get");
+        if (delReq) {
+          JAddStringToObject(delReq, "file", VIEWER_SUMMARY_FILE);
+          JAddBoolToObject(delReq, "delete", true);
+          J *delRsp = notecard.requestAndResponse(delReq);
+          if (delRsp) notecard.deleteResponse(delRsp);
+        }
+        summaryParseFailCount = 0;
+      }
+      break;
     }
   }
 }

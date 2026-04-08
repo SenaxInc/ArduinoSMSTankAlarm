@@ -181,3 +181,72 @@ Recommendation:
 - Verify first-login rejects non-digit PIN values.
 - Inject a malformed viewer summary payload and verify the Viewer leaves the note queued instead of deleting it.
 - Send both alarm-driven and manual relay activations and verify timeout behavior is consistent and explicit.
+
+## Final Review
+- Reviewed the claimed Server, Client, and Viewer fixes against the current source tree.
+- Most of the listed fixes appear structurally correct on static review.
+- Remaining changes needed are below.
+
+### 1. Medium - `publishNote()` overflow is only mitigated, not actually fixed
+Evidence:
+- `TankAlarm-112025-Client-BluesOpta/TankAlarm-112025-Client-BluesOpta.ino:6455`
+- `TankAlarm-112025-Client-BluesOpta/TankAlarm-112025-Client-BluesOpta.ino:6457`
+
+Why this still needs work:
+- The buffer was increased from 1024 to 2048 bytes, which reduces the likelihood of overflow.
+- However, the failure behavior is unchanged: if serialized JSON still exceeds the buffer, the note is logged and dropped immediately.
+- The original issue was silent data loss on oversize payloads. That is still present, just at a larger threshold.
+
+Recommendation:
+- Treat oversize payloads as a retryable/bufferable failure instead of returning immediately.
+- Prefer `measureJson()` plus bounded allocation, or split the payload before serialization.
+
+### 2. Medium - Previous-month hot-tier detection is still based on wall-clock equality, not actual retained data
+Evidence:
+- `TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino:11093`
+
+Why this still needs work:
+- The month boundary filtering added to `handleHistoryCompare()` is correct once the hot-tier branch is entered.
+- But `prevInHotTier` is still only true when the requested previous period equals the device's current month/year.
+- That means a valid previous-month query can still skip hot-tier data even when the retention window actually contains it.
+
+Recommendation:
+- Determine hot-tier membership by scanning retained snapshot timestamps for the requested year/month instead of comparing only to the current calendar month.
+
+### 3. Medium - Viewer parse/OOM retry fix can now head-of-line block the summary queue indefinitely
+Evidence:
+- `TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino:837`
+- `TankAlarm-112025-Viewer-BluesOpta/TankAlarm-112025-Viewer-BluesOpta.ino:846`
+
+Why this still needs work:
+- The new logic correctly stops deleting the note on parse/OOM failure, which fixes the data-loss bug.
+- But a permanently bad summary note now remains at the head of the queue and is retried every cycle.
+- If the Notecard returns notes in order, one corrupt note can block all newer viewer summaries indefinitely.
+
+Recommendation:
+- Add a retry counter, poison-note quarantine, or dead-letter path after repeated failures.
+- Keep the current no-delete-on-first-failure behavior, but do not allow one bad note to starve the queue permanently.
+
+### 4. Low - `warmTierAvailable` is still only checking configuration, not actual warm-tier data presence
+Evidence:
+- `TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino:11020`
+
+Why this still needs work:
+- The previous hardcoded `true` was removed, which is an improvement.
+- But the new value is still derived only from `warmTierRetentionMonths > 0`.
+- Fresh systems or systems with missing/corrupt summary files can still advertise flash historical data that is not actually available.
+
+Recommendation:
+- Base `warmTierAvailable` on real summary-file existence or successful warm-tier month reads, not only on retention configuration.
+
+### 5. Low - Historical CSV export now HTML-escapes values instead of CSV-escaping them
+Evidence:
+- `TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino:1578`
+
+Why this needs work:
+- Using `escapeHtml()` inside CSV generation avoids HTML injection, but CSV is not HTML.
+- Labels such as `A&B` or `5 < 6` will export as `A&amp;B` and `5 &lt; 6`, which corrupts the exported data.
+- This appears to be a regression introduced while hardening the historical page output.
+
+Recommendation:
+- Replace `escapeHtml()` in CSV export with a CSV-specific escaping helper that doubles quotes and preserves the original text content.

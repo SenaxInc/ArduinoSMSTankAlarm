@@ -1,6 +1,6 @@
 /*
   Tank Alarm Client 112025 - Arduino Opta + Blues Notecard
-  Version: 1.3.0
+  Version: 1.4.0
 
   Hardware:
   - Arduino Opta Lite (STM32H747XI dual-core)
@@ -233,7 +233,7 @@ static inline float roundTo(float val, int decimals) { return tankalarm_roundTo(
 
 // Config schema versioning — bump when adding/removing fields to detect stale configs
 #ifndef CONFIG_SCHEMA_VERSION
-#define CONFIG_SCHEMA_VERSION 1
+#define CONFIG_SCHEMA_VERSION 2
 #endif
 
 #ifndef MIN_ALARM_INTERVAL_SECONDS
@@ -452,6 +452,14 @@ enum RelayMode : uint8_t {
   RELAY_MODE_MANUAL_RESET = 2   // Stay on until manually reset from server
 };
 
+// Source that caused a relay to be activated
+enum RelaySource : uint8_t {
+  RELAY_SRC_NONE = 0,
+  RELAY_SRC_ALARM = 1,
+  RELAY_SRC_MANUAL = 2,
+  RELAY_SRC_CLEAR_BUTTON = 3
+};
+
 // Default relay engagement duration (30 minutes in seconds)
 #define RELAY_DEFAULT_MOMENTARY_SECONDS 1800
 
@@ -484,6 +492,7 @@ struct MonitorConfig {
   RelayTrigger relayTrigger; // Which alarm type triggers the relay (any, high, low)
   RelayMode relayMode;     // How long relay stays on (momentary, until_clear, manual_reset)
   uint16_t relayMomentarySeconds[4]; // Per-relay momentary duration in seconds (0 = use default 30 min)
+  uint32_t relayMaxOnSeconds;  // Max ON duration for MANUAL_RESET mode (0 = no limit, default)
   // Digital sensor (float switch) specific settings
   char digitalTrigger[16]; // 'activated' or 'not_activated' - when to trigger alarm for digital sensors
   char digitalSwitchMode[4]; // 'NO' for normally-open, 'NC' for normally-closed (default: NO)
@@ -571,7 +580,8 @@ struct MonitorRuntime {
   // Debouncing state
   uint8_t highAlarmDebounceCount;
   uint8_t lowAlarmDebounceCount;
-  uint8_t clearDebounceCount;
+  uint8_t highClearDebounceCount;
+  uint8_t lowClearDebounceCount;
   // Sensor failure detection
   float lastValidReading;
   bool hasLastValidReading;
@@ -709,13 +719,15 @@ static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
 static bool gRelayState[MAX_RELAYS] = {false, false, false, false};
 static unsigned long gLastRelayCheckMillis = 0;
 
-// Per-relay activation tracking for momentary mode timeout
-// Each relay in a monitor's mask can have a different momentary duration,
-// so we track activation time per-relay (not per-monitor) to support
-// independent timeout behavior.
-static unsigned long gRelayActivationTime[MAX_RELAYS] = {0};
-static bool gRelayActiveForMonitor[MAX_MONITORS] = {false};
-static uint8_t gRelayActiveMaskForMonitor[MAX_MONITORS] = {0}; // Which relays are currently active for each monitor
+// Per-relay runtime state — unified tracking for alarm, manual, and timeout paths
+struct RelayRuntime {
+  bool active;
+  uint8_t ownerMonitor;        // Index of owning monitor, or MAX_MONITORS if standalone manual
+  RelaySource source;
+  unsigned long activatedAt;   // millis() timestamp when relay was turned on
+  uint32_t customDurationSec;  // Duration override from manual command (0 = use monitor config)
+};
+static RelayRuntime gRelayRuntime[MAX_RELAYS] = {};
 
 // Clear button state for debouncing
 static unsigned long gClearButtonLastPressTime = 0;
@@ -1287,20 +1299,23 @@ void setup() {
 
   // Initialize RPM sensor state arrays dynamically
   for (uint8_t i = 0; i < MAX_MONITORS; ++i) {
-    gRpmLastPinState[i] = HIGH;
+    // Read actual pin state if RPM pin is configured, to avoid phantom edge detection
+    int rpmPin = (i < gConfig.monitorCount) ? gConfig.monitors[i].pulsePin : -1;
+    if (rpmPin >= 0) {
+      pinMode(rpmPin, INPUT_PULLUP);
+      gRpmLastPinState[i] = digitalRead(rpmPin);
+    } else {
+      gRpmLastPinState[i] = HIGH;
+    }
     gRpmLastSampleMillis[i] = 0;
     gRpmLastReading[i] = 0.0f;
     gRpmLastPulseTime[i] = 0;
     gRpmPulsePeriodMs[i] = 0;
   }
 
-  // Explicitly initialize relay state tracking arrays for clarity and consistency
+  // Explicitly initialize relay runtime state
   for (uint8_t i = 0; i < MAX_RELAYS; ++i) {
-    gRelayActivationTime[i] = 0;
-  }
-  for (uint8_t i = 0; i < MAX_MONITORS; ++i) {
-    gRelayActiveForMonitor[i] = false;
-    gRelayActiveMaskForMonitor[i] = 0;
+    gRelayRuntime[i] = {};
   }
 
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
@@ -1315,7 +1330,8 @@ void setup() {
     gMonitorState[i].lastAlarmSendMillis = 0;
     gMonitorState[i].highAlarmDebounceCount = 0;
     gMonitorState[i].lowAlarmDebounceCount = 0;
-    gMonitorState[i].clearDebounceCount = 0;
+    gMonitorState[i].highClearDebounceCount = 0;
+    gMonitorState[i].lowClearDebounceCount = 0;
     gMonitorState[i].lastValidReading = 0.0f;
     gMonitorState[i].hasLastValidReading = false;
     gMonitorState[i].consecutiveFailures = 0;
@@ -1794,10 +1810,16 @@ void loop() {
 
       // Fallback: if Notecard time never syncs (no cellular/GPS), fire daily
       // report based on millis() every 24h to avoid permanent blackout.
-      if (!reportDue && currentEpoch() <= 0.0 && millis() > 24UL * 60UL * 60UL * 1000UL) {
+      if (!reportDue && currentEpoch() <= 0.0) {
         static unsigned long lastFallbackReportMillis = 0;
-        if (lastFallbackReportMillis == 0 ||
-            (millis() - lastFallbackReportMillis) >= 24UL * 60UL * 60UL * 1000UL) {
+        if (lastFallbackReportMillis == 0) {
+          // First check: only fire after 24h of uptime (allow time for Notecard sync)
+          if (millis() >= 24UL * 60UL * 60UL * 1000UL) {
+            Serial.println(F("WARNING: No time sync — sending daily report via millis fallback"));
+            reportDue = true;
+            lastFallbackReportMillis = millis();
+          }
+        } else if ((millis() - lastFallbackReportMillis) >= 24UL * 60UL * 60UL * 1000UL) {
           Serial.println(F("WARNING: No time sync — sending daily report via millis fallback"));
           reportDue = true;
           lastFallbackReportMillis = millis();
@@ -2324,6 +2346,10 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
     }
   }
 
+  // Max ON duration safety timeout for MANUAL_RESET mode (0 = no limit)
+  mon.relayMaxOnSeconds = t["relayMaxOnSeconds"] | (uint32_t)0;
+  if (mon.relayMaxOnSeconds > 604800) mon.relayMaxOnSeconds = 604800;  // Cap at 7 days
+
   // ---- Digital sensor ----
   const char *digitalTriggerStr = t["digitalTrigger"].as<const char *>();
   if (digitalTriggerStr) strlcpy(mon.digitalTrigger, digitalTriggerStr, sizeof(mon.digitalTrigger));
@@ -2639,6 +2665,19 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     parseMonitorFromJson(cfg.monitors[i], t, i);
   }
 
+  // Warn about overlapping relay ownership (ambiguous timeout behavior)
+  for (uint8_t i = 0; i < cfg.monitorCount; i++) {
+    for (uint8_t j = i + 1; j < cfg.monitorCount; j++) {
+      if (cfg.monitors[i].relayMask & cfg.monitors[j].relayMask) {
+        Serial.print(F("WARNING: Monitors "));
+        Serial.print(i);
+        Serial.print(F(" and "));
+        Serial.print(j);
+        Serial.println(F(" share relay bits - timeout behavior may be ambiguous"));
+      }
+    }
+  }
+
   return true;
 #else
   return false; // Filesystem not available
@@ -2792,6 +2831,10 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     JsonArray durations = t["relayMomentaryDurations"].to<JsonArray>();
     for (uint8_t r = 0; r < 4; ++r) {
       durations.add(cfg.monitors[i].relayMomentarySeconds[r]);
+    }
+    // Save max ON duration for MANUAL_RESET safety timeout
+    if (cfg.monitors[i].relayMaxOnSeconds > 0) {
+      t["relayMaxOnSeconds"] = cfg.monitors[i].relayMaxOnSeconds;
     }
     // Save digital sensor trigger state (for float switches)
     if (cfg.monitors[i].digitalTrigger[0] != '\0') {
@@ -3612,7 +3655,8 @@ static void reinitializeHardware() {
     // Reset monitor runtime state for hardware changes
     gMonitorState[i].highAlarmDebounceCount = 0;
     gMonitorState[i].lowAlarmDebounceCount = 0;
-    gMonitorState[i].clearDebounceCount = 0;
+    gMonitorState[i].highClearDebounceCount = 0;
+    gMonitorState[i].lowClearDebounceCount = 0;
     gMonitorState[i].highAlarmLatched = false;
     gMonitorState[i].lowAlarmLatched = false;
     gMonitorState[i].consecutiveFailures = 0;
@@ -3854,7 +3898,8 @@ static void applyConfigUpdate(const JsonDocument &doc) {
           gMonitorState[i].lowAlarmLatched = false;
           gMonitorState[i].highAlarmDebounceCount = 0;
           gMonitorState[i].lowAlarmDebounceCount = 0;
-          gMonitorState[i].clearDebounceCount = 0;
+          gMonitorState[i].highClearDebounceCount = 0;
+          gMonitorState[i].lowClearDebounceCount = 0;
           // Send explicit clear so server clears its alarmActive flag
           sendAlarm(i, "clear", gMonitorState[i].currentInches);
           // Deactivate any local alarm (relay/buzzer)
@@ -3888,7 +3933,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
       // (relayMask set to 0 or relayTargetClient cleared), deactivate active
       // relays that were energized under the old config. Previously, relay
       // runtime state persisted and relays stayed energized indefinitely.
-      if (gRelayActiveForMonitor[i]) {
+      if (isMonitorRelayActive(i)) {
         bool relayRemoved = (gConfig.monitors[i].relayMask == 0) ||
                             (gConfig.monitors[i].relayTargetClient[0] == '\0');
         bool relayTargetChanged = (wasRelayTarget[0] != '\0') &&
@@ -3899,13 +3944,8 @@ static void applyConfigUpdate(const JsonDocument &doc) {
           if (wasRelayTarget[0] != '\0' && wasRelayMask != 0) {
             triggerRemoteRelays(wasRelayTarget, wasRelayMask, false);
           }
-          for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-            if (gRelayActiveMaskForMonitor[i] & (1 << r)) {
-              gRelayActivationTime[r] = 0;
-            }
-          }
-          gRelayActiveForMonitor[i] = false;
-          gRelayActiveMaskForMonitor[i] = 0;
+          uint8_t activeMask = getMonitorActiveRelayMask(i);
+          deactivateRelayForMonitor(i, activeMask);
           Serial.print(F("Relay deactivated: config removed/changed for monitor "));
           Serial.println(i);
         }
@@ -4451,7 +4491,7 @@ static void evaluateAlarms(uint8_t idx) {
     // Handle alarm state with debouncing
     if (shouldAlarm && !state.highAlarmLatched) {
       state.highAlarmDebounceCount++;
-      state.clearDebounceCount = 0;
+      state.highClearDebounceCount = 0;
       if (state.highAlarmDebounceCount >= ALARM_DEBOUNCE_COUNT) {
         state.highAlarmLatched = true;
         state.highAlarmDebounceCount = 0;
@@ -4460,17 +4500,17 @@ static void evaluateAlarms(uint8_t idx) {
         sendAlarm(idx, alarmType, state.currentInches);
       }
     } else if (!shouldAlarm && state.highAlarmLatched) {
-      state.clearDebounceCount++;
+      state.highClearDebounceCount++;
       state.highAlarmDebounceCount = 0;
-      if (state.clearDebounceCount >= ALARM_DEBOUNCE_COUNT) {
+      if (state.highClearDebounceCount >= ALARM_DEBOUNCE_COUNT) {
         state.highAlarmLatched = false;
-        state.clearDebounceCount = 0;
+        state.highClearDebounceCount = 0;
         sendAlarm(idx, "clear", state.currentInches);
       }
     } else if (!shouldAlarm) {
       state.highAlarmDebounceCount = 0;
     } else {
-      state.clearDebounceCount = 0;
+      state.highClearDebounceCount = 0;
     }
     return;  // Skip the standard analog threshold evaluation
   }
@@ -4489,7 +4529,7 @@ static void evaluateAlarms(uint8_t idx) {
   if (highCondition && !state.highAlarmLatched) {
     state.highAlarmDebounceCount++;
     state.lowAlarmDebounceCount = 0;
-    state.clearDebounceCount = 0;
+    state.highClearDebounceCount = 0;
     if (state.highAlarmDebounceCount >= ALARM_DEBOUNCE_COUNT) {
       state.highAlarmLatched = true;
       state.lowAlarmLatched = false;
@@ -4497,23 +4537,25 @@ static void evaluateAlarms(uint8_t idx) {
       sendAlarm(idx, "high", state.currentInches);
     }
   } else if (state.highAlarmLatched && clearCondition) {
-    state.clearDebounceCount++;
+    state.highClearDebounceCount++;
     state.highAlarmDebounceCount = 0;
-    state.lowAlarmDebounceCount = 0;
-    if (state.clearDebounceCount >= ALARM_DEBOUNCE_COUNT) {
+    if (state.highClearDebounceCount >= ALARM_DEBOUNCE_COUNT) {
       state.highAlarmLatched = false;
-      state.clearDebounceCount = 0;
+      state.highClearDebounceCount = 0;
       sendAlarm(idx, "clear", state.currentInches);
     }
   } else if (!highCondition && !clearCondition) {
     state.highAlarmDebounceCount = 0;
+  }
+  if (highCondition) {
+    state.highClearDebounceCount = 0;
   }
 
   // Handle low alarm with debouncing
   if (lowCondition && !state.lowAlarmLatched) {
     state.lowAlarmDebounceCount++;
     state.highAlarmDebounceCount = 0;
-    state.clearDebounceCount = 0;
+    state.lowClearDebounceCount = 0;
     if (state.lowAlarmDebounceCount >= ALARM_DEBOUNCE_COUNT) {
       state.lowAlarmLatched = true;
       state.highAlarmLatched = false;
@@ -4521,21 +4563,18 @@ static void evaluateAlarms(uint8_t idx) {
       sendAlarm(idx, "low", state.currentInches);
     }
   } else if (state.lowAlarmLatched && clearCondition) {
-    state.clearDebounceCount++;
-    state.highAlarmDebounceCount = 0;
+    state.lowClearDebounceCount++;
     state.lowAlarmDebounceCount = 0;
-    if (state.clearDebounceCount >= ALARM_DEBOUNCE_COUNT) {
+    if (state.lowClearDebounceCount >= ALARM_DEBOUNCE_COUNT) {
       state.lowAlarmLatched = false;
-      state.clearDebounceCount = 0;
+      state.lowClearDebounceCount = 0;
       sendAlarm(idx, "clear", state.currentInches);
     }
   } else if (!lowCondition && !clearCondition) {
     state.lowAlarmDebounceCount = 0;
   }
-
-  // Reset clear counter if we're back in alarm territory
-  if (highCondition || lowCondition) {
-    state.clearDebounceCount = 0;
+  if (lowCondition) {
+    state.lowClearDebounceCount = 0;
   }
 }
 
@@ -4762,17 +4801,21 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
   bool allowSmsEscalation = cfg.enableAlarmSms;
 
   // Always activate local alarm regardless of rate limits
-  bool isAlarm = (strcmp(alarmType, "clear") != 0);
+  // relay_timeout is an operational notification, not an alarm condition
+  bool isRelayTimeout = (strcmp(alarmType, "relay_timeout") == 0);
+  bool isAlarm = (strcmp(alarmType, "clear") != 0) && !isRelayTimeout;
   activateLocalAlarm(idx, isAlarm);
 
   // BugFix 04022026 (CRITICAL-2): Relay control must execute BEFORE rate limiting.
   // Previously, relay logic was inside the Notecard transmission block, so rate-limited
   // alarms never actuated remote relays — a safety-critical gap for pump/valve control.
+  // BugFix v1.6.0: relay_timeout must NOT re-activate relays (would defeat safety timeout).
   if (cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
     bool shouldActivateRelay = false;
     bool shouldDeactivateRelay = false;
     
     // Check if this alarm type matches the relay trigger condition
+    // relay_timeout is excluded — it is a notification, not an alarm trigger
     if (isAlarm) {
       if (cfg.relayTrigger == RELAY_TRIGGER_ANY) {
         shouldActivateRelay = true;
@@ -4781,28 +4824,20 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
       } else if (cfg.relayTrigger == RELAY_TRIGGER_LOW && strcmp(alarmType, "low") == 0) {
         shouldActivateRelay = true;
       }
-    } else {
+    } else if (!isRelayTimeout) {
       // BugFix 04022026 (CRITICAL-3): UNTIL_CLEAR relay clearing was broken.
       // When alarmType is "clear", comparing it against "high"/"low" always fails.
       // Fix: When the relay is active for this monitor and mode is UNTIL_CLEAR,
       // unconditionally clear — the alarm condition has been resolved regardless
       // of which specific threshold originally triggered it.
-      if (cfg.relayMode == RELAY_MODE_UNTIL_CLEAR && gRelayActiveForMonitor[idx]) {
+      if (cfg.relayMode == RELAY_MODE_UNTIL_CLEAR && isMonitorRelayActive(idx)) {
         shouldDeactivateRelay = true;
       }
     }
     
-    if (shouldActivateRelay && !gRelayActiveForMonitor[idx]) {
+    if (shouldActivateRelay && !isMonitorRelayActive(idx)) {
       triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, true);
-      gRelayActiveForMonitor[idx] = true;
-      gRelayActiveMaskForMonitor[idx] = cfg.relayMask;
-      // Set per-relay activation times for independent timeout tracking
-      unsigned long activateTime = millis();
-      for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-        if (cfg.relayMask & (1 << r)) {
-          gRelayActivationTime[r] = activateTime;
-        }
-      }
+      activateRelayForMonitor(idx, cfg.relayMask, RELAY_SRC_ALARM, millis());
       Serial.print(F("Relay activated for "));
       Serial.print(alarmType);
       Serial.print(F(" alarm (mode: "));
@@ -4813,18 +4848,9 @@ static void sendAlarm(uint8_t idx, const char *alarmType, float inches) {
       }
       Serial.println(F(")"));
     } else if (shouldDeactivateRelay) {
-      triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
-      // Clear per-relay activation times using the stored mask (not monitor index)
-      // BugFix 02282026: Was gRelayActivationTime[idx] which used the monitor index
-      // instead of iterating the relay bitmask — relay timeouts were not properly
-      // cleared for sensors whose relay mask didn't coincidentally match their index.
-      for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-        if (gRelayActiveMaskForMonitor[idx] & (1 << r)) {
-          gRelayActivationTime[r] = 0;
-        }
-      }
-      gRelayActiveForMonitor[idx] = false;
-      gRelayActiveMaskForMonitor[idx] = 0;
+      uint8_t activeMask = getMonitorActiveRelayMask(idx);
+      triggerRemoteRelays(cfg.relayTargetClient, activeMask, false);
+      deactivateRelayForMonitor(idx, activeMask);
       Serial.println(F("Relay deactivated on alarm clear"));
     }
   }
@@ -5989,14 +6015,9 @@ static void updatePowerState() {
           if (cfg.relayMode == RELAY_MODE_MOMENTARY) continue;  // Momentary expired during hibernate
           
           bool alarmStillActive = gMonitorState[i].highAlarmLatched || gMonitorState[i].lowAlarmLatched;
-          if (alarmStillActive && gRelayActiveForMonitor[i]) {
+          if (alarmStillActive && isMonitorRelayActive(i)) {
             triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, true);
-            unsigned long activateTime = millis();
-            for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-              if (cfg.relayMask & (1 << r)) {
-                gRelayActivationTime[r] = activateTime;
-              }
-            }
+            activateRelayForMonitor(i, cfg.relayMask, RELAY_SRC_ALARM, millis());
             Serial.print(F("Relay restored after hibernate recovery for monitor "));
             Serial.println(cfg.name);
           }
@@ -6438,11 +6459,36 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
   // fileName is already a plain .qo notefile name (e.g., "telemetry.qo")
   // Cross-device routing is handled by Notehub Routes — no fleet: prefix needed
 
-  // Static buffer to avoid 1 KB stack pressure on every call path
-  static char buffer[1024];
-  size_t len = serializeJson(doc, buffer, sizeof(buffer));
-  if (len == 0 || len >= sizeof(buffer)) {
-    Serial.println(F("publishNote: JSON serialization failed or exceeded buffer"));
+  // Measure JSON first to handle oversized payloads via dynamic allocation
+  size_t needed = measureJson(doc);
+  if (needed == 0) {
+    Serial.println(F("publishNote: empty JSON document"));
+    return;
+  }
+
+  // Static buffer for typical payloads; heap fallback for oversized ones
+  static char staticBuf[2048];
+  char *dynamicBuf = nullptr;
+  char *buffer = staticBuf;
+  size_t bufSize = sizeof(staticBuf);
+
+  if (needed >= sizeof(staticBuf)) {
+    dynamicBuf = (char *)malloc(needed + 1);
+    if (dynamicBuf) {
+      buffer = dynamicBuf;
+      bufSize = needed + 1;
+    } else {
+      Serial.print(F("publishNote: payload needs "));
+      Serial.print(needed);
+      Serial.println(F(" bytes, heap alloc failed — dropping"));
+      return;
+    }
+  }
+
+  size_t len = serializeJson(doc, buffer, bufSize);
+  if (len == 0 || len >= bufSize) {
+    Serial.println(F("publishNote: JSON serialization failed"));
+    if (dynamicBuf) free(dynamicBuf);
     return;
   }
   buffer[len] = '\0';
@@ -6450,6 +6496,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
   if (!gNotecardAvailable) {
     Serial.println(F("publishNote: Notecard unavailable — buffering"));
     bufferNoteForRetry(fileName, buffer, syncNow);
+    if (dynamicBuf) free(dynamicBuf);
     return;
   }
 
@@ -6458,6 +6505,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
     Serial.println(F("publishNote: newRequest(note.add) returned null"));
     gNotecardFailureCount++;
     bufferNoteForRetry(fileName, buffer, syncNow);
+    if (dynamicBuf) free(dynamicBuf);
     return;
   }
 
@@ -6471,6 +6519,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
     Serial.println(F("publishNote: JParse failed on serialized JSON"));
     JDelete(req);
     bufferNoteForRetry(fileName, buffer, syncNow);
+    if (dynamicBuf) free(dynamicBuf);
     return;
   }
 
@@ -6511,6 +6560,7 @@ static void publishNote(const char *fileName, const JsonDocument &doc, bool sync
     gNotecardFailureCount++;
     bufferNoteForRetry(fileName, buffer, syncNow);
   }
+  if (dynamicBuf) free(dynamicBuf);
 }
 
 static void bufferNoteForRetry(const char *fileName, const char *payload, bool syncNow) {
@@ -6970,6 +7020,61 @@ static void setRelayState(uint8_t relayNum, bool state) {
   }
 }
 
+// Find which monitor owns a given relay bit (first match wins)
+static uint8_t findMonitorForRelay(uint8_t relayNum) {
+  for (uint8_t i = 0; i < gConfig.monitorCount; i++) {
+    if (gConfig.monitors[i].relayMask & (1 << relayNum)) return i;
+  }
+  return MAX_MONITORS;  // Sentinel: no owner
+}
+
+// Activate relays with full runtime bookkeeping (used by alarm and manual paths)
+static void activateRelayForMonitor(uint8_t monitorIdx, uint8_t relayMask,
+                                     RelaySource source, unsigned long now,
+                                     uint32_t customDurationSec = 0) {
+  for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+    if (relayMask & (1 << r)) {
+      setRelayState(r, true);
+      gRelayRuntime[r].active = true;
+      gRelayRuntime[r].ownerMonitor = monitorIdx;
+      gRelayRuntime[r].source = source;
+      gRelayRuntime[r].activatedAt = now;
+      gRelayRuntime[r].customDurationSec = customDurationSec;
+    }
+  }
+}
+
+// Deactivate relays with full runtime bookkeeping
+static void deactivateRelayForMonitor(uint8_t monitorIdx, uint8_t relayMask) {
+  for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+    if (relayMask & (1 << r)) {
+      setRelayState(r, false);
+      gRelayRuntime[r] = {};  // Zero-init all fields
+    }
+  }
+}
+
+// Check if a monitor has any active relays in gRelayRuntime
+static bool isMonitorRelayActive(uint8_t monitorIdx) {
+  for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+    if (gRelayRuntime[r].active && gRelayRuntime[r].ownerMonitor == monitorIdx) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Get the bitmask of relays currently active for a monitor
+static uint8_t getMonitorActiveRelayMask(uint8_t monitorIdx) {
+  uint8_t mask = 0;
+  for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+    if (gRelayRuntime[r].active && gRelayRuntime[r].ownerMonitor == monitorIdx) {
+      mask |= (1 << r);
+    }
+  }
+  return mask;
+}
+
 static void pollForRelayCommands() {
   // Skip if notecard is known to be offline
   if (!gNotecardAvailable) {
@@ -7087,21 +7192,16 @@ static void processRelayCommand(const JsonDocument &doc) {
   Serial.print(F(" -> "));
   Serial.println(state ? "ON" : "OFF");
 
-  setRelayState(relayNum, state);
-
-  // Handle timed auto-off if duration specified
-  // Note: Custom duration is not currently implemented - use relay modes instead:
-  //   - RELAY_MODE_MOMENTARY: 30-minute auto-off
-  //   - RELAY_MODE_UNTIL_CLEAR: Stays on until alarm clears
-  //   - RELAY_MODE_MANUAL_RESET: Stays on until server reset
-  // The duration parameter in relay commands is reserved for future use.
-  if (!doc["duration"].isNull() && state) {
-    uint16_t duration = doc["duration"].as<uint16_t>();
-    if (duration > 0) {
-      Serial.print(F("Note: Custom duration ("));
-      Serial.print(duration);
-      Serial.println(F(" sec) ignored - use relay modes instead"));
-    }
+  // Activate/deactivate through unified helpers (which handle GPIO + bookkeeping)
+  if (state) {
+    uint8_t mask = 1 << relayNum;
+    uint8_t monIdx = findMonitorForRelay(relayNum);
+    uint32_t dur = doc["duration"] | (uint32_t)0;
+    activateRelayForMonitor(monIdx, mask, RELAY_SRC_MANUAL, millis(), dur);
+  } else {
+    uint8_t mask = 1 << relayNum;
+    uint8_t monIdx = findMonitorForRelay(relayNum);
+    deactivateRelayForMonitor(monIdx, mask);
   }
 }
 
@@ -7160,59 +7260,78 @@ static void triggerRemoteRelays(const char *targetClient, uint8_t relayMask, boo
   }
 }
 
-// Check and deactivate relays that have exceeded their individual momentary timeout.
-// Each relay in a monitor's mask is tracked independently, allowing different durations
-// (e.g., relay 0 = 10 min, relay 2 = 60 min) to expire at their own times.
+// Check and deactivate relays that have exceeded their individual momentary timeout
+// or the safety max-on timeout for MANUAL_RESET mode.
+// Each relay is tracked independently via gRelayRuntime[].
 static void checkRelayMomentaryTimeout(unsigned long now) {
-  for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
-    const MonitorConfig &cfg = gConfig.monitors[i];
+  for (uint8_t r = 0; r < MAX_RELAYS; r++) {
+    if (!gRelayRuntime[r].active) continue;
     
-    // Only check sensors with active relays in momentary mode
-    if (!gRelayActiveForMonitor[i] || cfg.relayMode != RELAY_MODE_MOMENTARY) {
-      continue;
-    }
+    uint8_t monIdx = gRelayRuntime[r].ownerMonitor;
+    uint32_t elapsedMs = now - gRelayRuntime[r].activatedAt;
     
-    // Check each relay in this monitor's active mask independently
-    uint8_t expiredMask = 0;
-    for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-      if (!(gRelayActiveMaskForMonitor[i] & (1 << r))) {
-        continue; // Relay not active for this monitor
+    bool expired = false;
+    const char *reason = nullptr;
+    bool hasOwner = (monIdx < gConfig.monitorCount);
+    
+    if (hasOwner) {
+      const MonitorConfig &cfg = gConfig.monitors[monIdx];
+      
+      // Check momentary mode timeout
+      if (cfg.relayMode == RELAY_MODE_MOMENTARY) {
+        uint16_t seconds = cfg.relayMomentarySeconds[r];
+        if (seconds == 0) {
+          seconds = DEFAULT_RELAY_MOMENTARY_SECONDS;
+        }
+        uint32_t durationMs = (uint32_t)seconds * 1000UL;
+        if (elapsedMs >= durationMs) {
+          expired = true;
+          reason = "momentary timeout";
+        }
       }
       
-      uint16_t seconds = cfg.relayMomentarySeconds[r];
-      if (seconds == 0) {
-        seconds = DEFAULT_RELAY_MOMENTARY_SECONDS; // Use default for 0
+      // Check manual-reset safety timeout (relayMaxOnSeconds or custom duration)
+      if (!expired && (cfg.relayMode == RELAY_MODE_MANUAL_RESET || gRelayRuntime[r].source == RELAY_SRC_MANUAL)) {
+        uint32_t limit = gRelayRuntime[r].customDurationSec;
+        if (limit == 0) limit = cfg.relayMaxOnSeconds;
+        if (limit > 0) {
+          uint32_t elapsedSec = elapsedMs / 1000UL;
+          if (elapsedSec >= limit) {
+            expired = true;
+            reason = "safety max-on timeout";
+          }
+        }
       }
-      uint32_t durationMs = (uint32_t)seconds * 1000UL;
+    } else if (gRelayRuntime[r].source == RELAY_SRC_MANUAL && gRelayRuntime[r].customDurationSec > 0) {
+      // Ownerless manual relay with explicit duration — still honor the timeout
+      uint32_t elapsedSec = elapsedMs / 1000UL;
+      if (elapsedSec >= gRelayRuntime[r].customDurationSec) {
+        expired = true;
+        reason = "manual duration timeout";
+      }
+    }
+    
+    if (expired) {
+      Serial.print(F("Relay "));
+      Serial.print(r + 1);
+      Serial.print(F(": "));
+      Serial.print(reason);
+      Serial.print(F(" after "));
+      Serial.print(elapsedMs / 1000UL);
+      Serial.print(F("s for monitor "));
+      Serial.println(monIdx);
       
-      // Note: Unsigned subtraction correctly handles millis() overflow
-      if (now - gRelayActivationTime[r] >= durationMs) {
-        expiredMask |= (1 << r);
-        Serial.print(F("Momentary relay "));
-        Serial.print(r);
-        Serial.print(F(" timeout ("));
-        Serial.print(seconds / 60);
-        Serial.print(F(" min) for monitor "));
-        Serial.println(i);
+      // Deactivate the single relay
+      if (hasOwner && gConfig.monitors[monIdx].relayTargetClient[0] != '\0') {
+        triggerRemoteRelays(gConfig.monitors[monIdx].relayTargetClient, 1 << r, false);
       }
-    }
-    
-    // Deactivate expired relays
-    if (expiredMask != 0 && cfg.relayTargetClient[0] != '\0') {
-      triggerRemoteRelays(cfg.relayTargetClient, expiredMask, false);
-    }
-    
-    // Update active mask — remove expired relays
-    gRelayActiveMaskForMonitor[i] &= ~expiredMask;
-    for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-      if (expiredMask & (1 << r)) {
-        gRelayActivationTime[r] = 0;
+      deactivateRelayForMonitor(monIdx, 1 << r);
+      
+      // Send timeout notification through alarm pipeline for safety timeouts
+      // (only when we have an owning monitor to route the alarm through)
+      if (hasOwner && strcmp(reason, "safety max-on timeout") == 0) {
+        sendAlarm(monIdx, "relay_timeout", gMonitorState[monIdx].currentInches);
       }
-    }
-    
-    // If no relays remain active for this monitor, clear the monitor-level flag
-    if (gRelayActiveMaskForMonitor[i] == 0) {
-      gRelayActiveForMonitor[i] = false;
     }
   }
 }
@@ -7224,20 +7343,14 @@ static void resetRelayForMonitor(uint8_t idx) {
   }
   
   const MonitorConfig &cfg = gConfig.monitors[idx];
+  uint8_t activeMask = getMonitorActiveRelayMask(idx);
   
-  if (gRelayActiveForMonitor[idx] && cfg.relayTargetClient[0] != '\0' && cfg.relayMask != 0) {
-    triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, false);
+  if (activeMask != 0 && cfg.relayTargetClient[0] != '\0') {
+    triggerRemoteRelays(cfg.relayTargetClient, activeMask, false);
     Serial.print(F("Manual relay reset for monitor "));
     Serial.println(idx);
   }
-  gRelayActiveForMonitor[idx] = false;
-  // Clear per-relay activation times for relays in this monitor's mask
-  for (uint8_t r = 0; r < MAX_RELAYS; r++) {
-    if (gRelayActiveMaskForMonitor[idx] & (1 << r)) {
-      gRelayActivationTime[r] = 0;
-    }
-  }
-  gRelayActiveMaskForMonitor[idx] = 0;
+  deactivateRelayForMonitor(idx, activeMask);
 }
 
 // ============================================================================
@@ -7318,16 +7431,17 @@ static void clearAllRelayAlarms() {
   bool anyCleared = false;
   
   for (uint8_t i = 0; i < gConfig.monitorCount; ++i) {
-    if (gRelayActiveForMonitor[i]) {
+    if (isMonitorRelayActive(i)) {
       resetRelayForMonitor(i);
       anyCleared = true;
     }
   }
   
-  // Also turn off any locally controlled relays
+  // Also turn off any locally controlled relays (including ownerless manual relays)
   for (uint8_t r = 0; r < MAX_RELAYS; ++r) {
-    if (gRelayState[r]) {
+    if (gRelayState[r] || gRelayRuntime[r].active) {
       setRelayState(r, false);
+      gRelayRuntime[r] = {};  // Clear stale bookkeeping
       anyCleared = true;
     }
   }

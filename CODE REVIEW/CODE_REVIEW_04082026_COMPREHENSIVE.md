@@ -649,3 +649,56 @@ This codebase demonstrates strong embedded engineering practices:
 *Items marked with "Cross-referenced from Copilot code/logic review 04/08/2026" were identified by a parallel peer review (GPT-5.3-Codex) and verified against the source code before inclusion.*
 
 The most urgent action items are CRIT-01 and CRIT-02 (DFU safety), HIGH-04 and HIGH-05 (broken UI pages), and MED-01 (auth lockout after millis overflow). HIGH-06 and HIGH-07 should be addressed before relying on month-over-month or year-over-year analytics. All other issues have effective mitigations in place or affect edge cases unlikely to occur in normal operation.
+
+---
+
+## 9. Final Review (Post-Fix Verification - 2026-04-08)
+
+This section validates the implemented fixes in current source and lists updates required in this review document.
+
+### 9.1 Fixes Verified as Implemented
+
+The following previously-open items are now fixed in code and should be marked **Resolved** in this document:
+
+- Server: HIGH-04, HIGH-05, HIGH-06, HIGH-07, MED-01, MED-07, MED-08, MED-11, LOW-02, LOW-05
+- Client: MED-05, LOW-01
+- Viewer: HIGH-02
+
+### 9.2 Partially Fixed / Keep Open
+
+The following items are improved but not fully resolved and should remain open:
+
+1. **MED-09 (Stored XSS hardening): PARTIAL**
+    - Historical rendering now escapes visible fields, but Config Generator still injects untrusted UID into an inline `onclick` JavaScript string. HTML escaping alone is not sufficient for JS-string context.
+2. **MED-10 (Auth middleware route exemptions): PARTIAL**
+    - Middleware now uses exact path checks, but route dispatch still accepts `startsWith("/api/session/check")`.
+    - Requests like `/api/session/check?x=1` can be incorrectly challenged by middleware.
+3. **LOW-07 (`warmTierAvailable` semantics): PARTIAL**
+    - `warmTierAvailable` now reflects retention configuration (`warmTierRetentionMonths > 0`) but does not prove warm-tier records are actually present for the selected range.
+4. **HIGH-01 (Client publish payload limit): PARTIAL**
+    - Buffer was increased to 2048 bytes, but oversized payloads are still dropped instead of chunked/compressed or safely rejected with upstream signaling.
+
+### 9.3 Newly Introduced Issues (Need New Entries)
+
+These items were introduced or exposed by the fix patch set and should be added to this review document as new findings:
+
+1. **New High - Alarm SMS intent override**
+    - In server alarm handling, client-provided SMS intent (`se` / `smsEnabled`) is overwritten to `true` for sensor alarms, changing behavior from opt-in to forced eligibility.
+    - Action: preserve client intent and apply server policy as an additional gate (logical AND), not as an override.
+
+2. **New Medium - CSV export data corruption risk**
+    - Historical CSV export uses `escapeHtml()` for CSV cell content, producing HTML entities in downloaded CSV (e.g., `&#39;`) instead of proper CSV escaping.
+    - Action: replace with CSV escaping (`"` -> `""`) and leave characters otherwise unchanged.
+
+3. **New Medium - Session-check query mismatch**
+    - Middleware exemption is exact-match, while handler dispatch accepts prefix.
+    - Action: normalize request path (strip query before middleware check) or exempt with the same predicate used by dispatch.
+
+### 9.4 Required Document Updates
+
+Apply these review-document changes now:
+
+1. Move the resolved items listed in 9.1 out of open findings and into a closed/resolved subsection.
+2. Keep MED-09, MED-10, LOW-07, and HIGH-01 open with updated "partial" status and narrower remediation steps.
+3. Add the 3 new findings from 9.3 with severities and remediation notes.
+4. Update summary counts so resolved items are no longer included in active totals.

@@ -217,11 +217,30 @@ static int tankalarm_b64decode(uint8_t *dst, const char *src, size_t dstLen) {
 }
 
 /**
+ * CRC-32 (ISO 3309 / ITU-T V.42 / zlib polynomial 0xEDB88320).
+ * Computes incrementally: pass previous crc to continue, or 0xFFFFFFFF to start.
+ * Final result must be XORed with 0xFFFFFFFF (done internally when starting from ~0).
+ */
+static uint32_t tankalarm_crc32(const uint8_t *data, size_t len, uint32_t crc = 0xFFFFFFFF) {
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (uint8_t bit = 0; bit < 8; bit++) {
+      crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+    }
+  }
+  return crc;
+}
+
+/**
  * Perform IAP firmware update: read chunks from Notecard, write to flash, reboot.
  *
  * This is a BLOCKING operation that takes several minutes for large firmware.
  * The watchdog must be kicked via the callback. The Notecard is put into DFU
  * mode (no sync) for the duration.
+ *
+ * CRC-32 integrity verification: a running CRC is accumulated during download,
+ * then compared against a read-back CRC of the written flash region. On mismatch,
+ * the update is aborted and the device continues normal operation.
  *
  * @param notecard       Reference to Notecard instance
  * @param firmwareLength Total firmware size in bytes (from dfu.status body)
@@ -376,20 +395,17 @@ static bool tankalarm_performIapUpdate(
     // Page-align the program buffer size
     uint32_t alignedBufSize = ((chunkSize + pageSize - 1) / pageSize) * pageSize;
     uint8_t *progBuf = (uint8_t *)malloc(alignedBufSize);
-    // Base64 decode buffer (base64 expands 3→4, so 4/3 * chunkSize + padding)
-    size_t b64BufSize = ((chunkSize * 4) / 3) + 16;
-    char *b64Buf = (char *)malloc(b64BufSize);
 
-    if (!progBuf || !b64Buf) {
-      Serial.println(F("IAP DFU: Failed to allocate buffers"));
+    if (!progBuf) {
+      Serial.println(F("IAP DFU: Failed to allocate program buffer"));
       free(progBuf);
-      free(b64Buf);
       flash.deinit();
       goto iap_restore_hub;
     }
 
     uint32_t offset = 0;
     uint32_t lastProgressPct = 0;
+    uint32_t downloadCrc = 0xFFFFFFFF;  // Running CRC over downloaded bytes
 
     while (offset < firmwareLength) {
       if (kickWatchdog) kickWatchdog();
@@ -446,6 +462,21 @@ static bool tankalarm_performIapUpdate(
           continue;
         }
 
+        // Bounds check: decoded bytes must not exceed requested chunk or remaining firmware
+        if ((uint32_t)decoded > thisChunk || (uint32_t)decoded > remaining) {
+          Serial.print(F("IAP DFU: Decoded size "));
+          Serial.print(decoded);
+          Serial.print(F(" exceeds expected "));
+          Serial.print(thisChunk);
+          Serial.println(F(" — aborting"));
+          free(progBuf);
+          flash.deinit();
+          goto iap_restore_hub;
+        }
+
+        // Accumulate CRC over raw decoded bytes (not page-alignment padding)
+        downloadCrc = tankalarm_crc32(progBuf, (size_t)decoded, downloadCrc);
+
         // Program flash — size must be page-aligned
         uint32_t programSize = ((uint32_t)decoded + pageSize - 1) / pageSize * pageSize;
         flashResult = flash.program(progBuf, appStart + offset, programSize);
@@ -456,7 +487,6 @@ static bool tankalarm_performIapUpdate(
           Serial.println(flashResult);
           // Flash programming failure is fatal — do NOT continue
           free(progBuf);
-          free(b64Buf);
           flash.deinit();
           goto iap_restore_hub;
         }
@@ -471,7 +501,6 @@ static bool tankalarm_performIapUpdate(
         Serial.print(offset);
         Serial.println(F(" after retries"));
         free(progBuf);
-        free(b64Buf);
         flash.deinit();
         goto iap_restore_hub;
       }
@@ -491,10 +520,47 @@ static bool tankalarm_performIapUpdate(
     }
 
     free(progBuf);
-    free(b64Buf);
-    flash.deinit();
 
-    Serial.println(F("IAP DFU: Firmware written to flash successfully"));
+    // Finalize download CRC
+    downloadCrc ^= 0xFFFFFFFF;
+
+    Serial.println(F("IAP DFU: Firmware written to flash, verifying CRC..."));
+
+    // --- Step 4b: Read-back CRC verification ---
+    // Re-use a small read buffer to compute CRC over the written flash region.
+    // Reading directly from flash memory-mapped address (appStart) is safe on STM32.
+    {
+      const uint8_t *flashPtr = (const uint8_t *)appStart;
+      uint32_t readbackCrc = 0xFFFFFFFF;
+      const uint32_t readChunk = 4096;
+      uint32_t remaining = firmwareLength;
+      uint32_t pos = 0;
+
+      while (remaining > 0) {
+        if (kickWatchdog) kickWatchdog();
+        uint32_t toRead = (remaining < readChunk) ? remaining : readChunk;
+        readbackCrc = tankalarm_crc32(flashPtr + pos, toRead, readbackCrc);
+        pos += toRead;
+        remaining -= toRead;
+      }
+      readbackCrc ^= 0xFFFFFFFF;
+
+      Serial.print(F("IAP DFU: Download CRC=0x"));
+      Serial.print(downloadCrc, HEX);
+      Serial.print(F("  Flash CRC=0x"));
+      Serial.println(readbackCrc, HEX);
+
+      if (downloadCrc != readbackCrc) {
+        Serial.println(F("IAP DFU: *** CRC MISMATCH — firmware corrupted during flash write ***"));
+        Serial.println(F("IAP DFU: Aborting update, device will NOT reboot"));
+        flash.deinit();
+        goto iap_restore_hub;
+      }
+
+      Serial.println(F("IAP DFU: CRC verified OK"));
+    }
+
+    flash.deinit();
   }
 
   // --- Step 5: Clear DFU state and report success ---
