@@ -1,7 +1,7 @@
 # TankAlarm Master TODO List
 
-> **Current Version:** 1.2.2 (April 2, 2026)  
-> **Last Updated:** April 2, 2026  
+> **Current Version:** 1.6.1 (April 8, 2026)  
+> **Last Updated:** April 8, 2026  
 > **Purpose:** Comprehensive tracker for all unimplemented changes identified in code reviews and logic reviews. Update after every new review or commit.
 
 ---
@@ -347,6 +347,24 @@ Items from the COMMON_HEADER_AUDIT_02192026.md that need cleanup.
 
 Items moved here after implementation. Include version number and date.
 
+### Completed in v1.6.1 Implementation Review Fixes (April 8, 2026)
+- [x] **CRITICAL:** `relay_timeout` re-activation loop — `sendAlarm()` now excludes `relay_timeout` from `isAlarm`, preventing infinite timeout→activate→timeout cycle (Client)
+- [x] **HIGH:** Server clears alarm state on `relay_timeout` — separated into own branch that preserves `alarmActive` and does not call `clearAlarmEvent()` (Server)
+- [x] **MEDIUM:** Ownerless manual relay duration ignored — `checkRelayMomentaryTimeout()` now handles `RELAY_SRC_MANUAL` relays with `customDurationSec` even without an owning monitor (Client)
+- [x] **MEDIUM:** Duplicate `setRelayState()` in `processRelayCommand()` — removed bare GPIO call; unified helpers already call it internally (Client)
+- [x] **LOW:** Unused `b64Buf` in DFU — removed allocation, null-check, and all `free(b64Buf)` calls (Common/TankAlarm_DFU.h)
+- [x] **LOW:** Missing DFU decoded length bounds check — added abort if `decoded > thisChunk || decoded > remaining` (Common/TankAlarm_DFU.h)
+- [x] **LOW:** `clearAllRelayAlarms()` stale `gRelayRuntime[]` — fallback loop now checks `.active` and zeros runtime struct (Client)
+- [x] **FALSE POSITIVE:** DFU CRC padding mismatch (Gemini claim) — verified readback uses `firmwareLength`, not page-aligned size; no fix needed
+- [x] **DESIGN DECISION:** Relay overlap validation warn-only — preserved; `findMonitorForRelay()` uses first-match
+- [x] **DEFERRED:** DFU erase-before-download — known Phase 2 limitation, deferred to A/B partitioning
+
+### Completed in v1.6.0 Implementation (April 8, 2026)
+- [x] **PR-1:** Relay Runtime + Safety Timeout — `RelayRuntime` struct, `gRelayRuntime[]`, `relayMaxOnSeconds` config field, helper functions (Client)
+- [x] **PR-2:** Debounce Split — separate high/low debounce counters per monitor (Client)
+- [x] **PR-4:** DFU CRC Verification — running download CRC + flash readback CRC comparison (Common/TankAlarm_DFU.h)
+- [x] **PR-6:** Documentation — V1.6.0 release notes, CONFIG_SCHEMA_VERSION bump to 2
+
 ### Completed in Code Review Implementation (April 2, 2026)
 - [x] **CRITICAL-1:** Session token PRNG → STM32 hardware RNG with LCG fallback (Server)
 - [x] **CRITICAL-2:** Relay actuation decoupled from rate limiting — relays activate even when SMS is rate-limited (Client)
@@ -454,6 +472,7 @@ This TODO was compiled from the following documents, sorted by date:
 
 | Date | Document | Type |
 |------|----------|------|
+| 2026-04-08 | FUTURE_WORK_04082026.md §12-13 | v1.6.0 implementation reviews (GPT-5.3-Codex, Gemini 3.1 Pro, GPT-5.4) + v1.6.1 fixes |
 | 2026-04-02 | CODE_REVIEW_04022026_COMPREHENSIVE.md | Comprehensive review with peer cross-validation |
 | 2026-04-02 | IMPLEMENTATION_PLAN_04022026.md | Implementation plan (11 of 16 findings implemented) |
 | 2026-03-24 | LOGICREVIEW-20260324-* (9 files) | Logic review — multiple AI reviewers |

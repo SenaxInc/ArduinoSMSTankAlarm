@@ -10,6 +10,8 @@
 #ifndef TANKALARM_COMMON_H
 #define TANKALARM_COMMON_H
 
+#include <stdint.h>
+
 // ============================================================================
 // Firmware Version
 // ============================================================================
@@ -58,6 +60,23 @@
 #ifndef MAX_RELAYS
 #define MAX_RELAYS 4  // Arduino Opta has 4 relay outputs (D0-D3)
 #endif
+
+// Source that caused a relay to be activated
+enum RelaySource : uint8_t {
+  RELAY_SRC_NONE = 0,
+  RELAY_SRC_ALARM = 1,
+  RELAY_SRC_MANUAL = 2,
+  RELAY_SRC_CLEAR_BUTTON = 3
+};
+
+// Per-relay runtime state — unified tracking for alarm, manual, and timeout paths
+struct RelayRuntime {
+  bool active;
+  uint8_t ownerMonitor;        // Index of owning monitor, or MAX_MONITORS if standalone manual
+  RelaySource source;
+  unsigned long activatedAt;   // millis() timestamp when relay was turned on
+  uint32_t customDurationSec;  // Duration override from manual command (0 = use monitor config)
+};
 
 // ============================================================================
 // Serial Buffer Configuration

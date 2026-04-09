@@ -11145,9 +11145,6 @@ static void handleHistoryCompare(EthernetClient &client, const String &query) {
     if (!prevFromWarm && gConfig.ftpEnabled && gHistorySettings.ftpArchiveEnabled) {
       prevFromCold = loadFtpArchiveCached(prevYear, prevMonth);
     }
-  }torySettings.ftpArchiveEnabled) {
-      prevFromCold = loadFtpArchiveCached(prevYear, prevMonth);
-    }
   }
 
   for (uint8_t h = 0; h < gSensorHistoryCount; h++) {

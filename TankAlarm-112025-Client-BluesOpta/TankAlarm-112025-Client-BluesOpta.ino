@@ -452,14 +452,6 @@ enum RelayMode : uint8_t {
   RELAY_MODE_MANUAL_RESET = 2   // Stay on until manually reset from server
 };
 
-// Source that caused a relay to be activated
-enum RelaySource : uint8_t {
-  RELAY_SRC_NONE = 0,
-  RELAY_SRC_ALARM = 1,
-  RELAY_SRC_MANUAL = 2,
-  RELAY_SRC_CLEAR_BUTTON = 3
-};
-
 // Default relay engagement duration (30 minutes in seconds)
 #define RELAY_DEFAULT_MOMENTARY_SECONDS 1800
 
@@ -719,15 +711,18 @@ static const size_t DAILY_NOTE_PAYLOAD_LIMIT = 960U;
 static bool gRelayState[MAX_RELAYS] = {false, false, false, false};
 static unsigned long gLastRelayCheckMillis = 0;
 
-// Per-relay runtime state — unified tracking for alarm, manual, and timeout paths
-struct RelayRuntime {
-  bool active;
-  uint8_t ownerMonitor;        // Index of owning monitor, or MAX_MONITORS if standalone manual
-  RelaySource source;
-  unsigned long activatedAt;   // millis() timestamp when relay was turned on
-  uint32_t customDurationSec;  // Duration override from manual command (0 = use monitor config)
-};
+// Per-relay runtime state (RelayRuntime struct defined in TankAlarm_Common.h)
 static RelayRuntime gRelayRuntime[MAX_RELAYS] = {};
+
+// Forward declarations for relay helper functions
+// (Arduino auto-prototyping does not handle default parameters correctly)
+static uint8_t findMonitorForRelay(uint8_t relayNum);
+static void activateRelayForMonitor(uint8_t monitorIdx, uint8_t relayMask,
+                                     RelaySource source, unsigned long now,
+                                     uint32_t customDurationSec = 0);
+static void deactivateRelayForMonitor(uint8_t monitorIdx, uint8_t relayMask);
+static bool isMonitorRelayActive(uint8_t monitorIdx);
+static uint8_t getMonitorActiveRelayMask(uint8_t monitorIdx);
 
 // Clear button state for debouncing
 static unsigned long gClearButtonLastPressTime = 0;
@@ -7031,7 +7026,7 @@ static uint8_t findMonitorForRelay(uint8_t relayNum) {
 // Activate relays with full runtime bookkeeping (used by alarm and manual paths)
 static void activateRelayForMonitor(uint8_t monitorIdx, uint8_t relayMask,
                                      RelaySource source, unsigned long now,
-                                     uint32_t customDurationSec = 0) {
+                                     uint32_t customDurationSec) {
   for (uint8_t r = 0; r < MAX_RELAYS; r++) {
     if (relayMask & (1 << r)) {
       setRelayState(r, true);
