@@ -7206,8 +7206,12 @@ static void handleConfigRetryPost(EthernetClient &client, const String &body) {
     }
 
     if (sendConfigViaNotecard(clientUid, snap->payload)) {
-      snap->pendingDispatch = false;
-      respondStatus(client, 200, F("Config dispatched to Notecard"));
+      // BugFix v1.6.2 (I-6/M-10): Keep pendingDispatch true until client ACK arrives.
+      // Previously, manual retry cleared the flag immediately, so if the Notecard
+      // note was lost in transit, auto-retry would never pick it up again.
+      snap->pendingDispatch = true;
+      snap->dispatchAttempts = 1;  // Reset so auto-retry quota restarts
+      respondStatus(client, 200, F("Config dispatched to Notecard (pending ACK)"));
     } else {
       respondStatus(client, 502, F("Notecard send failed — check serial monitor for details"));
     }
@@ -7220,7 +7224,9 @@ static void handleConfigRetryPost(EthernetClient &client, const String &body) {
   for (uint8_t i = 0; i < gClientConfigCount; ++i) {
     if (gClientConfigs[i].payload[0] == '\0') continue;
     if (sendConfigViaNotecard(gClientConfigs[i].uid, gClientConfigs[i].payload)) {
-      gClientConfigs[i].pendingDispatch = false;
+      // BugFix v1.6.2 (I-6/M-10): Keep pending until client ACK (same as single retry)
+      gClientConfigs[i].pendingDispatch = true;
+      gClientConfigs[i].dispatchAttempts = 1;
       dispatched++;
     } else {
       gClientConfigs[i].pendingDispatch = true;
@@ -8303,25 +8309,34 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
     Serial.println(type);
     addServerSerialLog("System alarm received", "warn", "alarm");
     // SMS for system alarms if client flagged as critical (se=true)
+    // BugFix v1.6.2 (I-14): Rate-limit system alarm SMS — they previously bypassed
+    // the per-sensor rate limiter, allowing SMS floods from rapid power transitions.
+    static double sLastSystemSmsSentEpoch = 0.0;
     bool smsRequested = doc["se"] | false;
     if (smsRequested) {
-      const char *siteName = doc["s"] | "";
-      char message[160];
-      if (strcmp(type, "solar") == 0) {
-        const char *alert = doc["alert"] | "unknown";
-        float bv = doc["bv"] | 0.0f;
-        snprintf(message, sizeof(message), "%s Solar: %s (%.1fV)", siteName, alert, bv);
-      } else if (strcmp(type, "battery") == 0) {
-        const char *alert = doc["alert"] | "unknown";
-        float v = doc["v"] | 0.0f;
-        snprintf(message, sizeof(message), "%s Battery: %s (%.1fV)", siteName, alert, v);
-      } else if (strcmp(type, "power") == 0) {
-        const char *from = doc["from"] | "?";
-        const char *to = doc["to"] | "?";
-        float v = doc["v"] | 0.0f;
-        snprintf(message, sizeof(message), "%s Power: %s->%s (%.1fV)", siteName, from, to, v);
+      double smsNow = currentEpoch();
+      if (smsNow - sLastSystemSmsSentEpoch >= MIN_SMS_ALERT_INTERVAL_SECONDS) {
+        const char *siteName = doc["s"] | "";
+        char message[160];
+        if (strcmp(type, "solar") == 0) {
+          const char *alert = doc["alert"] | "unknown";
+          float bv = doc["bv"] | 0.0f;
+          snprintf(message, sizeof(message), "%s Solar: %s (%.1fV)", siteName, alert, bv);
+        } else if (strcmp(type, "battery") == 0) {
+          const char *alert = doc["alert"] | "unknown";
+          float v = doc["v"] | 0.0f;
+          snprintf(message, sizeof(message), "%s Battery: %s (%.1fV)", siteName, alert, v);
+        } else if (strcmp(type, "power") == 0) {
+          const char *from = doc["from"] | "?";
+          const char *to = doc["to"] | "?";
+          float v = doc["v"] | 0.0f;
+          snprintf(message, sizeof(message), "%s Power: %s->%s (%.1fV)", siteName, from, to, v);
+        }
+        sendSmsAlert(message);
+        sLastSystemSmsSentEpoch = smsNow;
+      } else {
+        Serial.println(F("System alarm SMS suppressed by rate limit"));
       }
-      sendSmsAlert(message);
     }
     return;
   }
@@ -8464,14 +8479,18 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   }
 
   if (!isDiagnostic && smsEnabled && smsAllowedByServer && checkSmsRateLimit(rec)) {
+    // BugFix v1.6.2 (M-16): Pre-truncate site name to leave room for alarm details.
+    // Long site names can consume the entire 160-char SMS budget.
+    char shortSite[24];
+    strlcpy(shortSite, rec->site, sizeof(shortSite));
     char message[160];
     if (isRelayTimeout) {
-      snprintf(message, sizeof(message), "%s%s%d Relay safety timeout - relay forced OFF", rec->site, rec->userNumber > 0 ? " #" : " sensor ", rec->userNumber > 0 ? rec->userNumber : rec->sensorIndex);
+      snprintf(message, sizeof(message), "%s%s%d Relay safety timeout - relay forced OFF", shortSite, rec->userNumber > 0 ? " #" : " sensor ", rec->userNumber > 0 ? rec->userNumber : rec->sensorIndex);
     } else if (isDigitalAlarm) {
       const char *stateDesc = (strcmp(type, "triggered") == 0) ? "ACTIVATED" : "NOT ACTIVATED";
-      snprintf(message, sizeof(message), "%s%s%d Float Switch %s", rec->site, rec->userNumber > 0 ? " #" : " sensor ", rec->userNumber > 0 ? rec->userNumber : rec->sensorIndex, stateDesc);
+      snprintf(message, sizeof(message), "%s%s%d Float Switch %s", shortSite, rec->userNumber > 0 ? " #" : " sensor ", rec->userNumber > 0 ? rec->userNumber : rec->sensorIndex, stateDesc);
     } else {
-      snprintf(message, sizeof(message), "%s%s%d %s alarm %.1f %s", rec->site, rec->userNumber > 0 ? " #" : " sensor ", rec->userNumber > 0 ? rec->userNumber : rec->sensorIndex, rec->alarmType, level, rec->measurementUnit[0] ? rec->measurementUnit : "in");
+      snprintf(message, sizeof(message), "%s%s%d %s alarm %.1f %s", shortSite, rec->userNumber > 0 ? " #" : " sensor ", rec->userNumber > 0 ? rec->userNumber : rec->sensorIndex, rec->alarmType, level, rec->measurementUnit[0] ? rec->measurementUnit : "in");
     }
     sendSmsAlert(message);
   }
@@ -9444,9 +9463,24 @@ static void handleClientConfigGet(EthernetClient &client, const String &query) {
 
   // Send the raw stored JSON directly to avoid JsonDocument overhead
   // truncating nested fields (e.g. monitorType inside sensors array).
+  // BugFix v1.6.2 (M-11): Include dispatch/ACK metadata so the Config Generator
+  // can display delivery status without checking serial logs.
   String response = F("{\"config\":");
   response += snap->payload;
-  response += '}';
+  response += F(",\"dispatch\":{");
+  response += F("\"pending\":");
+  response += snap->pendingDispatch ? F("true") : F("false");
+  response += F(",\"attempts\":");
+  response += String(snap->dispatchAttempts);
+  response += F(",\"lastDispatchEpoch\":");
+  response += String(snap->lastDispatchEpoch, 0);
+  response += F(",\"lastAckEpoch\":");
+  response += String(snap->lastAckEpoch, 0);
+  response += F(",\"lastAckStatus\":\"");
+  response += snap->lastAckStatus;
+  response += F("\",\"configVersion\":\"");
+  response += snap->configVersion;
+  response += F("\"}}");
   respondJson(client, response);
 }
 
@@ -10078,6 +10112,13 @@ static void checkStaleClients() {
       // Client is reporting again — reset stale alert flag
       if (meta.staleAlertSent) {
         meta.staleAlertSent = false;
+        // BugFix v1.6.2 (M-5): Notify operator that a previously-stale client has recovered.
+        char recoveryMsg[160];
+        snprintf(recoveryMsg, sizeof(recoveryMsg),
+                 "Client recovered: %s (%s) - reporting again.",
+                 siteName, meta.clientUid);
+        sendSmsAlert(recoveryMsg);
+        addServerSerialLog(recoveryMsg, "info", "stale");
         Serial.print(F("Stale alert cleared for client: "));
         Serial.println(meta.clientUid);
       }
@@ -10976,16 +11017,42 @@ static void sendHistoryJson(EthernetClient &client, const String &query) {
     }
     
     // Calculate 24h change
+    // BugFix v1.6.2 (M-9): Interpolate between the two snapshots bracketing the
+    // 24h-ago mark, instead of using the first snapshot inside the window.
+    // This gives a much more accurate delta when snapshot intervals are wide.
     double yesterday = nowEpoch - 86400.0;
-    float oldestRecentLevel = hist.snapshots[latestIdx].level;
-    for (uint16_t j = 0; j < hist.snapshotCount; j++) {
-      uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
-      if (hist.snapshots[idx].timestamp >= yesterday) {
-        oldestRecentLevel = hist.snapshots[idx].level;
-        break;
+    float level24hAgo = hist.snapshots[latestIdx].level;  // fallback: no change
+    {
+      // Walk chronologically to find the pair bracketing 'yesterday'
+      float prevLevel = 0.0f;
+      double prevTime = 0.0;
+      bool foundBracket = false;
+      for (uint16_t j = 0; j < hist.snapshotCount; j++) {
+        uint16_t idx = (hist.writeIndex - hist.snapshotCount + j + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
+        double t = hist.snapshots[idx].timestamp;
+        float l = hist.snapshots[idx].level;
+        if (t >= yesterday) {
+          if (j > 0 && prevTime < yesterday && prevTime > 0.0) {
+            // Interpolate between prev and current
+            double frac = (yesterday - prevTime) / (t - prevTime);
+            level24hAgo = prevLevel + (float)(frac * (l - prevLevel));
+          } else {
+            // No earlier snapshot — use the first one in the window
+            level24hAgo = l;
+          }
+          foundBracket = true;
+          break;
+        }
+        prevLevel = l;
+        prevTime = t;
+      }
+      // If all snapshots are older than yesterday, use the most recent one
+      if (!foundBracket && hist.snapshotCount > 0) {
+        uint16_t lastIdx = (hist.writeIndex - 1 + MAX_HOURLY_HISTORY_PER_SENSOR) % MAX_HOURLY_HISTORY_PER_SENSOR;
+        level24hAgo = hist.snapshots[lastIdx].level;
       }
     }
-    sensorObj["change24h"] = roundTo(hist.snapshots[latestIdx].level - oldestRecentLevel, 1);
+    sensorObj["change24h"] = roundTo(hist.snapshots[latestIdx].level - level24hAgo, 1);
   }
   
   // Add stored voltage history from sensor snapshots

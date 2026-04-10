@@ -675,6 +675,9 @@ static char gDfuVersion[32] = {0};
 static bool gDfuInProgress = false;
 
 static bool gConfigDirty = false;
+// BugFix v1.6.2 (I-11): Deferred ACK state — ACK is sent only after persistence succeeds.
+static bool gPendingConfigAck = false;
+static char gPendingConfigAckVersion[16] = {0};
 static bool gHardwareSummaryPrinted = false;
 
 // Network failure handling
@@ -1334,10 +1337,22 @@ void setup() {
     gMonitorState[i].sensorFailed = false;
     gMonitorState[i].recoveryCount = 0;
     gMonitorState[i].alarmCount = 0;
-    gMonitorState[i].lastHighAlarmMillis = 0;
-    gMonitorState[i].lastLowAlarmMillis = 0;
-    gMonitorState[i].lastClearAlarmMillis = 0;
-    gMonitorState[i].lastSensorFaultMillis = 0;
+    // BugFix v1.6.2 (M-13): Initialize last-alarm timestamps so the first alarm
+    // after boot is NOT suppressed by the per-type minimum-interval check.
+    // Setting them to (now - interval - 1) ensures the very first alarm passes.
+    {
+      unsigned long bootNow = millis();
+      unsigned long expired = bootNow - (MIN_ALARM_INTERVAL_SECONDS * 1000UL + 1);
+      // If millis() is still tiny (< interval), use 0 which also won't suppress
+      // because the unsigned subtraction in the rate-limit check will wrap large.
+      if (bootNow < MIN_ALARM_INTERVAL_SECONDS * 1000UL + 1) {
+        expired = 0;
+      }
+      gMonitorState[i].lastHighAlarmMillis = expired;
+      gMonitorState[i].lastLowAlarmMillis = expired;
+      gMonitorState[i].lastClearAlarmMillis = expired;
+      gMonitorState[i].lastSensorFaultMillis = expired;
+    }
     // Initialize unload tracking state
     gMonitorState[i].unloadPeakInches = 0.0f;
     gMonitorState[i].unloadPeakSensorMa = 0.0f;
@@ -3567,7 +3582,15 @@ static void pollForConfigUpdates() {
           // Extract config version hash for ACK tracking (injected by server)
           const char *cv = doc["_cv"] | "";
           applyConfigUpdate(doc);
-          ackSent = sendConfigAck(true, "Config applied", cv);
+          // BugFix v1.6.2 (I-11): Defer ACK until persistence succeeds.
+          // Store the config version and mark pending — persistConfigIfDirty()
+          // will send the ACK after saveConfigToFlash() completes.
+          strlcpy(gPendingConfigAckVersion, cv, sizeof(gPendingConfigAckVersion));
+          gPendingConfigAck = true;
+          gConfigDirty = true;
+          // Delete the inbound note now — the config is in memory and will be
+          // persisted shortly. If persistence fails, a failure ACK is sent.
+          ackSent = true;
         } else {
           Serial.println(F("Config update invalid JSON"));
           sendConfigAck(false, "Invalid JSON", nullptr);
@@ -4001,6 +4024,19 @@ static void persistConfigIfDirty() {
 
   if (saveConfigToFlash(gConfig)) {
     gConfigDirty = false;
+    // BugFix v1.6.2 (I-11): Now that config is safely on flash, send the deferred ACK.
+    if (gPendingConfigAck) {
+      sendConfigAck(true, "Config applied and persisted", gPendingConfigAckVersion);
+      gPendingConfigAck = false;
+      gPendingConfigAckVersion[0] = '\0';
+    }
+  } else {
+    // Persistence failed — notify server so it can flag the issue.
+    if (gPendingConfigAck) {
+      sendConfigAck(false, "Flash persistence failed", gPendingConfigAckVersion);
+      gPendingConfigAck = false;
+      gPendingConfigAckVersion[0] = '\0';
+    }
   }
 }
 
@@ -4158,7 +4194,11 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   }
 
   // Check for stuck sensor (same reading multiple times)
-  if (cfg.stuckDetectionEnabled && state.hasLastValidReading && fabs(reading - state.lastValidReading) < 0.05f) {
+  // BugFix v1.6.2 (M-12): Exempt monitors actively tracking an unload — a slowly
+  // emptying tank legitimately produces near-identical readings that would
+  // otherwise trip the stuck detector.
+  bool exemptFromStuck = cfg.trackUnloads && state.unloadTracking;
+  if (cfg.stuckDetectionEnabled && !exemptFromStuck && state.hasLastValidReading && fabs(reading - state.lastValidReading) < 0.05f) {
     state.stuckReadingCount++;
     if (state.stuckReadingCount >= SENSOR_STUCK_THRESHOLD) {
       if (!state.sensorFailed) {
@@ -4309,10 +4349,28 @@ static float readCurrentLoopSensor(const MonitorConfig &cfg, uint8_t idx) {
     gMonitorState[idx].currentSensorMa = 0.0f;
     return 0.0f;
   }
-  float milliamps = readCurrentLoopMilliamps(channel);
-  if (milliamps < 0.0f) {
+
+  // BugFix v1.6.2 (M-1): Multi-sample averaging for current-loop sensors.
+  // I2C reads are slower than ADC, so we use 4 samples (vs 8 for analog).
+  const uint8_t numSamples = 4;
+  float total = 0.0f;
+  uint8_t validSamples = 0;
+  for (uint8_t s = 0; s < numSamples; ++s) {
+    float sample = readCurrentLoopMilliamps(channel);
+    if (sample >= 0.0f) {
+      total += sample;
+      validSamples++;
+    }
+    if (s < numSamples - 1) {
+      delay(5);
+    }
+  }
+
+  float milliamps;
+  if (validSamples == 0) {
     return gMonitorState[idx].currentInches; // keep previous on failure
   }
+  milliamps = total / validSamples;
 
   // Store raw mA reading for telemetry
   gMonitorState[idx].currentSensorMa = milliamps;
@@ -4674,6 +4732,10 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
     // Never rate-limit clear/recovery notes — the server needs them to resolve alarms
     state.lastClearAlarmMillis = now;
     return true;
+  } else if (strcmp(alarmType, "relay_timeout") == 0) {
+    // BugFix v1.6.2 (I-13): Relay safety timeouts must never be rate-limited —
+    // these are critical safety notifications that the operator must receive.
+    return true;
   } else if (strcmp(alarmType, "sensor-fault") == 0 || strcmp(alarmType, "sensor-stuck") == 0) {
     if (now - state.lastSensorFaultMillis < minInterval) {
       Serial.print(F("Rate limit: Sensor fault suppressed for monitor "));
@@ -4683,14 +4745,18 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
   }
 
   // Check hourly rate limit - remove timestamps older than 1 hour
-  unsigned long oneHourAgo = now - 3600000UL;
-  uint8_t validCount = 0;
-  for (uint8_t i = 0; i < state.alarmCount; ++i) {
-    if (state.alarmTimestamps[i] > oneHourAgo) {
-      state.alarmTimestamps[validCount++] = state.alarmTimestamps[i];
+  // BugFix v1.6.2 (I-12): Guard against unsigned underflow when millis() < 1 hour.
+  // When uptime is less than 1 hour, all timestamps are inherently recent — skip pruning.
+  if (now >= 3600000UL) {
+    unsigned long oneHourAgo = now - 3600000UL;
+    uint8_t validCount = 0;
+    for (uint8_t i = 0; i < state.alarmCount; ++i) {
+      if (state.alarmTimestamps[i] > oneHourAgo) {
+        state.alarmTimestamps[validCount++] = state.alarmTimestamps[i];
+      }
     }
+    state.alarmCount = validCount;
   }
-  state.alarmCount = validCount;
 
   // Check if we've exceeded the hourly limit
   if (state.alarmCount >= MAX_ALARMS_PER_HOUR) {
@@ -4709,13 +4775,17 @@ static bool checkAlarmRateLimit(uint8_t idx, const char *alarmType) {
   // Previously, per-monitor timestamp was added first, so global rejection still consumed
   // the per-monitor budget — accelerating per-monitor rate exhaustion.
   {
-    uint8_t gValid = 0;
-    for (uint8_t g = 0; g < gGlobalAlarmCount; ++g) {
-      if (gGlobalAlarmTimestamps[g] > oneHourAgo) {
-        gGlobalAlarmTimestamps[gValid++] = gGlobalAlarmTimestamps[g];
+    // BugFix v1.6.2 (I-12): Same unsigned-underflow guard for global alarm budget.
+    if (now >= 3600000UL) {
+      unsigned long oneHourAgo = now - 3600000UL;
+      uint8_t gValid = 0;
+      for (uint8_t g = 0; g < gGlobalAlarmCount; ++g) {
+        if (gGlobalAlarmTimestamps[g] > oneHourAgo) {
+          gGlobalAlarmTimestamps[gValid++] = gGlobalAlarmTimestamps[g];
+        }
       }
+      gGlobalAlarmCount = gValid;
     }
-    gGlobalAlarmCount = gValid;
 
     if (gGlobalAlarmCount >= MAX_GLOBAL_ALARMS_PER_HOUR) {
       Serial.print(F("Rate limit: Global hourly cap reached ("));

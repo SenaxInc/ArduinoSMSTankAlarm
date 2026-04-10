@@ -559,6 +559,9 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
 
   String line;
   bool firstLine = true;
+  // BugFix v1.6.2 (M-15): Cap header count to prevent memory exhaustion
+  // from malformed or malicious requests with excessive headers.
+  uint8_t headerCount = 0;
 
   unsigned long start = millis();
   while (client.connected() && millis() - start < 5000UL) {
@@ -588,6 +591,9 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
         path = line.substring(space + 1, nextSpace);
         firstLine = false;
       } else {
+        if (++headerCount > 32) {
+          return false;
+        }
         int colonPos = line.indexOf(':');
         if (colonPos > 0) {
           String headerKey = line.substring(0, colonPos);
@@ -753,9 +759,17 @@ static void sendSensorJson(EthernetClient &client) {
     }
   }
 
-  String body;
-  serializeJson(doc, body);
-  respondJson(client, body);
+  // BugFix v1.6.2 (M-14): Stream JSON directly to client instead of materializing
+  // the entire response in a String. measureJson() provides Content-Length, then
+  // serializeJson() writes directly to the EthernetClient socket.
+  size_t jsonLen = measureJson(doc);
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: application/json"));
+  client.print(F("Content-Length: "));
+  client.println(jsonLen);
+  client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
+  client.println();
+  serializeJson(doc, client);
 }
 
 static void fetchViewerSummary() {

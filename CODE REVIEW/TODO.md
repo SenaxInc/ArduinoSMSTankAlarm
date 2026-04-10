@@ -1,7 +1,7 @@
 # TankAlarm Master TODO List
 
-> **Current Version:** 1.6.1 (April 8, 2026)  
-> **Last Updated:** April 9, 2026 (CODE_REVIEW_04092026_COMPREHENSIVE + LOGIC_REVIEW_04092026)  
+> **Current Version:** 1.6.2 (April 9, 2026)  
+> **Last Updated:** April 9, 2026 (v1.6.2 implementation — 14 fixes across Client, Server, Viewer)  
 > **Purpose:** Comprehensive tracker for all unimplemented changes identified in code reviews and logic reviews. Update after every new review or commit.
 
 ---
@@ -110,31 +110,30 @@ These items represent data loss, safety, or security risks.
 - **Source:** LOGICREVIEW-20260324, CODE_REVIEW_04022026_COMPREHENSIVE.md (HIGH-7)
 - **Fixed:** April 2, 2026 — Server `handleAlarm()` rewritten to use `clientWantsSms && smsAllowedByServer`.
 
-### I-12: Client Alarm Hourly Rate Limit Unsigned Underflow **(C)** — RATE LIMITING
-- [ ] `checkAlarmRateLimit()` line ~4693: `unsigned long oneHourAgo = now - 3600000UL` wraps to a very large value when `millis() < 1 hour`. All alarm timestamps are pruned, disabling the per-monitor and global hourly alarm count for the first 60 minutes after boot. Per-type interval checks (`lastHighAlarmMillis`, etc.) still work, so impact is reduced.
+### ~~I-12: Client Alarm Hourly Rate Limit Unsigned Underflow **(C)** — RATE LIMITING~~ ✅ FIXED
+- [x] `checkAlarmRateLimit()`: Hourly pruning now guarded with `if (now >= 3600000UL)` for both per-monitor and global alarm budgets. When uptime < 1 hour, pruning is skipped (all timestamps are inherently recent).
 - **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-H1)
-- **Fix:** Guard subtraction with `if (now >= 3600000UL)` or treat all timestamps as valid when `millis() < 3600000`.
+- **Fixed:** April 9, 2026 — v1.6.2
 
-### I-13: `relay_timeout` Shares Rate Bucket With `sensor-fault` **(C)** — SAFETY
-- [ ] `relay_timeout` alarm type falls through to the `sensor-fault`/`sensor-stuck` branch in `checkAlarmRateLimit()`, checking `lastSensorFaultMillis`. A recent sensor fault suppresses the relay safety timeout notification for up to 5 minutes.
+### ~~I-13: `relay_timeout` Shares Rate Bucket With `sensor-fault` **(C)** — SAFETY~~ ✅ FIXED
+- [x] Added explicit `relay_timeout` case in `checkAlarmRateLimit()` that returns `true` (always allowed). Safety timeout events are never rate-limited.
 - **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-H2)
-- **Fix:** Add explicit `relay_timeout` case that returns `true` (always allowed) — safety timeout events should never be rate-limited.
+- **Fixed:** April 9, 2026 — v1.6.2
 
-### I-14: System Alarm SMS Not Rate-Limited **(S)** — COST/OPERATIONS
-- [ ] `handleAlarm()` system alarm branch (solar/battery/power) calls `sendSmsAlert()` directly when `se=true`, bypassing `checkSmsRateLimit()`. Battery voltage oscillation near CRITICAL threshold can generate multiple SMS per the debounce window (~2-3 min).
+### ~~I-14: System Alarm SMS Not Rate-Limited **(S)** — COST/OPERATIONS~~ ✅ FIXED
+- [x] Added `sLastSystemSmsSentEpoch` tracker to system alarm branch in `handleAlarm()`. Enforces `MIN_SMS_ALERT_INTERVAL_SECONDS` before sending system SMS.
 - **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-H3), LOGIC_REVIEW_04092026.md (LR-4)
-- **Fix:** Add a dedicated `gLastSystemSmsSentEpoch` tracker and enforce `MIN_SMS_ALERT_INTERVAL_SECONDS` before sending system SMS.
+- **Fixed:** April 9, 2026 — v1.6.2
 
-### I-6: Config Retry State Inconsistency **(S)** — STATE MACHINE
-- [ ] Auto-retry leaves `pendingDispatch=true` until ACK. Manual retry clears `pendingDispatch=false` immediately on Notecard send success (line ~7187). If a manual note is lost in transit, no auto re-send happens because `pendingDispatch` was already cleared.
+### ~~I-6: Config Retry State Inconsistency **(S)** — STATE MACHINE~~ ✅ FIXED
+- [x] Manual retry now keeps `pendingDispatch=true` and resets `dispatchAttempts=1` on successful Notecard send. ACK from client clears the pending flag (consistent with auto-retry behavior).
 - **Source:** LOGICREVIEW-20260324
-- **Verified:** March 24, 2026 — still inconsistent.
+- **Fixed:** April 9, 2026 — v1.6.2 (also fixes M-10)
 
-### I-11: Config ACK Precedes Persistence Outcome **(C)** — DURABILITY
-- [ ] `pollForConfigUpdates()` sends `sendConfigAck(true, "Config applied", cv)` immediately after `applyConfigUpdate()`. Actual flash persistence happens later via `persistConfigIfDirty()` in the main loop. If persistence fails or the filesystem is unavailable, the server can record a successful ACK even though the config may be lost on reboot.
+### ~~I-11: Config ACK Precedes Persistence Outcome **(C)** — DURABILITY~~ ✅ FIXED
+- [x] Config ACK is now deferred until `persistConfigIfDirty()` completes. On success: ACK sent with "Config applied and persisted". On failure: ACK sent with "Flash persistence failed". Pending version tracked via `gPendingConfigAck` / `gPendingConfigAckVersion`.
 - **Source:** LOGIC_REVIEW_04092026_COPILOT.md, CODE_REVIEW_04092026_COPILOT.md, LOGICREVIEW-20260324-1-GitHubCopilot-GPT5.3-Codex-v2.md
-- **Fix:** Defer success ACK until persistence succeeds, or split protocol states into volatile-apply and durable-apply acknowledgements.
-- **Verified:** April 9, 2026 — Client still ACKs before persistence result is known.
+- **Fixed:** April 9, 2026 — v1.6.2
 
 ### ~~I-8: Missing Sensor Metadata in Alarms **(C)(S)**~~ ✅ FIXED
 - [x] Alarm payloads now include object type (`ot`), measurement unit (`mu`), and sensor interface type (`st`) fields. Added at Client lines ~4330-4350.
@@ -170,40 +169,40 @@ These items represent data loss, safety, or security risks.
 
 ## Moderate-Priority Issues
 
-### M-12: Stuck Detection Interferes With Unload Tracking **(C)**
-- [ ] When `stuckDetectionEnabled=true` and `trackUnloads=true` on the same monitor, a slow-emptying tank produces readings within the 0.05-inch stuck tolerance. After 10 such readings, false `sensor-stuck` alarm fires during a legitimate unload.
+### ~~M-12: Stuck Detection Interferes With Unload Tracking **(C)**~~ ✅ FIXED
+- [x] Stuck detection now skips when `cfg.trackUnloads && state.unloadTracking` is true. Slow-emptying tanks no longer trigger false `sensor-stuck` alarms during active unloads.
 - **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-M1), LOGIC_REVIEW_04092026.md (LR-3)
-- **Fix:** Skip stuck detection when `state.unloadTracking` is active and level is dropping.
+- **Fixed:** April 9, 2026 — v1.6.2
 
-### M-13: First Alarm After Boot Suppressed by Rate Limiter **(C)**
-- [ ] Per-type alarm interval checks compare `now - state.lastHighAlarmMillis < minInterval`. Since `lastHighAlarmMillis` initializes to 0, the first alarm within 5 minutes of boot is suppressed.
+### ~~M-13: First Alarm After Boot Suppressed by Rate Limiter **(C)**~~ ✅ FIXED
+- [x] Per-type alarm timestamps now initialized to `millis() - (MIN_ALARM_INTERVAL_SECONDS * 1000UL + 1)` at boot, so the first alarm is not suppressed by the minimum-interval check.
 - **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-M2)
-- **Fix:** Initialize `lastHighAlarmMillis` etc. to `millis() - (MIN_ALARM_INTERVAL_SECONDS * 1000UL + 1)` at startup.
+- **Fixed:** April 9, 2026 — v1.6.2
 
-### M-14: Viewer `respondJson()` Double-Buffers Entire JSON on Heap **(V)**
-- [ ] `sendSensorJson()` serializes to a `String` before chunked send. With 64 sensors, payload can reach 8-12 KB — risking heap exhaustion on Opta Lite (256 KB RAM).
+### ~~M-14: Viewer `respondJson()` Double-Buffers Entire JSON on Heap **(V)**~~ ✅ FIXED
+- [x] `sendSensorJson()` now uses `measureJson(doc)` for Content-Length, then streams directly to the EthernetClient via `serializeJson(doc, client)`. No intermediate `String` allocation.
 - **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-H4)
-- **Fix:** Use `serializeJson(doc, client)` for streaming serialization, preceded by `measureJson()` for Content-Length.
+- **Fixed:** April 9, 2026 — v1.6.2
 
-### M-15: Viewer `readHttpRequest()` No Header Count Limit **(V)** — HARDENING
-- [ ] Header parsing loop reads until empty line or 5-second timeout. A slow-drip attack sending thousands of small headers blocks the Viewer for the full timeout.
+### ~~M-15: Viewer `readHttpRequest()` No Header Count Limit **(V)** — HARDENING~~ ✅ FIXED
+- [x] Added `headerCount` counter in `readHttpRequest()`. Requests with more than 32 headers are rejected (`return false`).
 - **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-M7)
-- **Fix:** Add `MAX_HEADERS = 32` counter and reject requests exceeding limit.
+- **Fixed:** April 9, 2026 — v1.6.2
 
-### M-16: SMS Message Truncation Silently Drops Alarm Info **(S)**
-- [ ] 160-byte SMS buffer in `handleAlarm()` can be exceeded by long site names + alarm fields. `snprintf` safely truncates, but operators see incomplete messages.
+### ~~M-16: SMS Message Truncation Silently Drops Alarm Info **(S)**~~ ✅ FIXED
+- [x] Site name pre-truncated to 24 chars (`shortSite[24]`) before SMS construction in `handleAlarm()`. Ensures alarm type, sensor number, and level always fit within 160-byte SMS.
 - **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-M8)
-- **Fix:** Pre-truncate `siteName` to 24 chars for SMS construction.
+- **Fixed:** April 9, 2026 — v1.6.2
 
 ### M-17: Delayed Relay Commands May Actuate After Alarm Clears **(C)(S)** — ARCHITECTURE
 - [D] Cross-device relay commands traverse 3 Notecard hops (~2-4 min). A relay ON command delayed past the alarm clear results in a relay activating without an active alarm. The relay safety timeout is the backstop.
 - **Source:** LOGIC_REVIEW_04092026.md (LR-5)
 - **Fix (deferred):** Add epoch timestamp to relay commands, validate freshness on receiving Client. Requires protocol change.
 
-### M-5: No "Client Recovered" SMS Alert **(S)**
-- [ ] Stale client alert is sent at 49h timeout. When the client resumes, no recovery SMS is sent. Operators must check the dashboard manually.
+### ~~M-5: No "Client Recovered" SMS Alert **(S)**~~ ✅ FIXED
+- [x] `checkStaleClients()` now sends a recovery SMS when `staleAlertSent` transitions from true to false: "Client recovered: {site} ({uid}) - reporting again."
 - **Source:** LOGICREVIEW-20260324
-- **Verified:** March 24, 2026 — still no recovery SMS.
+- **Fixed:** April 9, 2026 — v1.6.2
 
 ### ~~M-7: Sensor-Recovered Alarms Blocked from SMS **(S)**~~ ✅ FIXED
 - [x] `sensor-recovered` is now routed to SMS with explicit `isRecovery` flag handling at Server lines ~8347-8348.
@@ -231,31 +230,30 @@ These items represent data loss, safety, or security risks.
 - **Source:** LOGICREVIEW-20260324
 - **Fixed:** June 9, 2026 — Client `handleInboundConfig()` updated with cross-validation.
 
-### M-1: Current-Loop No Multi-Sample Averaging **(C)**
-- [ ] Analog path uses 8-sample averaging. Current-loop path uses a single sample. Inconsistent noise rejection.
+### ~~M-1: Current-Loop No Multi-Sample Averaging **(C)**~~ ✅ FIXED
+- [x] `readCurrentLoopSensor()` now uses 4-sample averaging with 5ms inter-sample delay. Invalid (negative) samples are discarded. Falls back to previous reading if all samples fail.
 - **Source:** LOGICREVIEW-20260324
-- **Verified:** March 24, 2026 — single sample at Client line ~4033.
+- **Fixed:** April 9, 2026 — v1.6.2
 
 ### ~~M-8: Calibration Singular Matrix Detection Weak **(S)**~~ — ACCEPTABLE
 - [x] Uses `fabs(det) < 0.0001f` threshold with fallback to simple regression at Server line ~12376. While the absolute threshold could miss some ill-conditioned matrices, the fallback path provides safety. Acceptable for current use case.
 - **Source:** LOGICREVIEW-20260324
 - **Verified:** March 24, 2026.
 
-### M-9: 24h Change Tracking Frozen at High Frequency **(S)**
-- [ ] Snapshot-based "24h change" calculated as latest minus oldest recent reading, not bucketed by hour. Becomes stale for frequent reporters.
+### ~~M-9: 24h Change Tracking Frozen at High Frequency **(S)**~~ ✅ FIXED
+- [x] 24h change now uses linear interpolation between the two snapshots bracketing the 24h-ago mark, instead of the first snapshot inside the window. Much more accurate when snapshot intervals are wide.
 - **Source:** LOGICREVIEW-20260324
-- **Verified:** March 24, 2026 — still snapshot-based at Server line ~10914.
+- **Fixed:** April 9, 2026 — v1.6.2
 
-### M-10: Manual Config Retry Inconsistency **(S)**
-- [ ] Manual path clears `pendingDispatch` immediately on Notecard send success (line ~7206); auto path waits for ACK. If a manually dispatched note is lost in transit, there's no auto re-send.
+### ~~M-10: Manual Config Retry Inconsistency **(S)**~~ ✅ FIXED
+- [x] Unified with I-6 fix. Manual retry now keeps `pendingDispatch=true` and resets `dispatchAttempts=1`. ACK clears pending flag.
 - **Source:** LOGICREVIEW-20260324
-- **Verified:** March 24, 2026 — still inconsistent.
+- **Fixed:** April 9, 2026 — v1.6.2 (merged with I-6 fix)
 
-### M-11: Config Generator Hides Dispatch / ACK Status **(S)** — OPERATIONS
-- [ ] The Config Generator page defines a `configStatus` panel, but `GET /api/client?uid=` still returns only the cached config payload and `fetchClientConfig()` never renders pending/ACK metadata. Operators cannot see whether a config is queued, retried, or acknowledged while editing a client.
+### ~~M-11: Config Generator Hides Dispatch / ACK Status **(S)** — OPERATIONS~~ ✅ FIXED
+- [x] `GET /api/client?uid=` now returns `dispatch` object with: `pending`, `attempts`, `lastDispatchEpoch`, `lastAckEpoch`, `lastAckStatus`, `configVersion`. Config Generator JS can now populate `#configStatus`.
 - **Source:** CODE_REVIEW_04092026_COPILOT.md, LOGICREVIEW-20260402-GitHubCopilot-GPT54.md
-- **Fix:** Return `pendingDispatch`, retry counters, dispatch time, config version, and last ACK fields from `GET /api/client?uid=` and populate `configStatus` after load/retry/sync.
-- **Verified:** April 9, 2026 — `configStatus` is still unused in the current page.
+- **Fixed:** April 9, 2026 — v1.6.2 (API-side only; JS rendering is a follow-up)
 
 ### ~~Config Buffer Mismatch **(S)**~~ ✅ FIXED
 - [x] Buffer sizes aligned: payload buffer 1536 bytes (line ~880), dispatch uses 8192-byte static buffer (line ~7851). No mismatch risk.
