@@ -1,7 +1,7 @@
 # TankAlarm Master TODO List
 
 > **Current Version:** 1.6.1 (April 8, 2026)  
-> **Last Updated:** April 8, 2026  
+> **Last Updated:** April 9, 2026 (CODE_REVIEW_04092026_COMPREHENSIVE + LOGIC_REVIEW_04092026)  
 > **Purpose:** Comprehensive tracker for all unimplemented changes identified in code reviews and logic reviews. Update after every new review or commit.
 
 ---
@@ -110,10 +110,31 @@ These items represent data loss, safety, or security risks.
 - **Source:** LOGICREVIEW-20260324, CODE_REVIEW_04022026_COMPREHENSIVE.md (HIGH-7)
 - **Fixed:** April 2, 2026 — Server `handleAlarm()` rewritten to use `clientWantsSms && smsAllowedByServer`.
 
+### I-12: Client Alarm Hourly Rate Limit Unsigned Underflow **(C)** — RATE LIMITING
+- [ ] `checkAlarmRateLimit()` line ~4693: `unsigned long oneHourAgo = now - 3600000UL` wraps to a very large value when `millis() < 1 hour`. All alarm timestamps are pruned, disabling the per-monitor and global hourly alarm count for the first 60 minutes after boot. Per-type interval checks (`lastHighAlarmMillis`, etc.) still work, so impact is reduced.
+- **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-H1)
+- **Fix:** Guard subtraction with `if (now >= 3600000UL)` or treat all timestamps as valid when `millis() < 3600000`.
+
+### I-13: `relay_timeout` Shares Rate Bucket With `sensor-fault` **(C)** — SAFETY
+- [ ] `relay_timeout` alarm type falls through to the `sensor-fault`/`sensor-stuck` branch in `checkAlarmRateLimit()`, checking `lastSensorFaultMillis`. A recent sensor fault suppresses the relay safety timeout notification for up to 5 minutes.
+- **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-H2)
+- **Fix:** Add explicit `relay_timeout` case that returns `true` (always allowed) — safety timeout events should never be rate-limited.
+
+### I-14: System Alarm SMS Not Rate-Limited **(S)** — COST/OPERATIONS
+- [ ] `handleAlarm()` system alarm branch (solar/battery/power) calls `sendSmsAlert()` directly when `se=true`, bypassing `checkSmsRateLimit()`. Battery voltage oscillation near CRITICAL threshold can generate multiple SMS per the debounce window (~2-3 min).
+- **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-H3), LOGIC_REVIEW_04092026.md (LR-4)
+- **Fix:** Add a dedicated `gLastSystemSmsSentEpoch` tracker and enforce `MIN_SMS_ALERT_INTERVAL_SECONDS` before sending system SMS.
+
 ### I-6: Config Retry State Inconsistency **(S)** — STATE MACHINE
 - [ ] Auto-retry leaves `pendingDispatch=true` until ACK. Manual retry clears `pendingDispatch=false` immediately on Notecard send success (line ~7187). If a manual note is lost in transit, no auto re-send happens because `pendingDispatch` was already cleared.
 - **Source:** LOGICREVIEW-20260324
 - **Verified:** March 24, 2026 — still inconsistent.
+
+### I-11: Config ACK Precedes Persistence Outcome **(C)** — DURABILITY
+- [ ] `pollForConfigUpdates()` sends `sendConfigAck(true, "Config applied", cv)` immediately after `applyConfigUpdate()`. Actual flash persistence happens later via `persistConfigIfDirty()` in the main loop. If persistence fails or the filesystem is unavailable, the server can record a successful ACK even though the config may be lost on reboot.
+- **Source:** LOGIC_REVIEW_04092026_COPILOT.md, CODE_REVIEW_04092026_COPILOT.md, LOGICREVIEW-20260324-1-GitHubCopilot-GPT5.3-Codex-v2.md
+- **Fix:** Defer success ACK until persistence succeeds, or split protocol states into volatile-apply and durable-apply acknowledgements.
+- **Verified:** April 9, 2026 — Client still ACKs before persistence result is known.
 
 ### ~~I-8: Missing Sensor Metadata in Alarms **(C)(S)**~~ ✅ FIXED
 - [x] Alarm payloads now include object type (`ot`), measurement unit (`mu`), and sensor interface type (`st`) fields. Added at Client lines ~4330-4350.
@@ -148,6 +169,36 @@ These items represent data loss, safety, or security risks.
 ---
 
 ## Moderate-Priority Issues
+
+### M-12: Stuck Detection Interferes With Unload Tracking **(C)**
+- [ ] When `stuckDetectionEnabled=true` and `trackUnloads=true` on the same monitor, a slow-emptying tank produces readings within the 0.05-inch stuck tolerance. After 10 such readings, false `sensor-stuck` alarm fires during a legitimate unload.
+- **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-M1), LOGIC_REVIEW_04092026.md (LR-3)
+- **Fix:** Skip stuck detection when `state.unloadTracking` is active and level is dropping.
+
+### M-13: First Alarm After Boot Suppressed by Rate Limiter **(C)**
+- [ ] Per-type alarm interval checks compare `now - state.lastHighAlarmMillis < minInterval`. Since `lastHighAlarmMillis` initializes to 0, the first alarm within 5 minutes of boot is suppressed.
+- **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-M2)
+- **Fix:** Initialize `lastHighAlarmMillis` etc. to `millis() - (MIN_ALARM_INTERVAL_SECONDS * 1000UL + 1)` at startup.
+
+### M-14: Viewer `respondJson()` Double-Buffers Entire JSON on Heap **(V)**
+- [ ] `sendSensorJson()` serializes to a `String` before chunked send. With 64 sensors, payload can reach 8-12 KB — risking heap exhaustion on Opta Lite (256 KB RAM).
+- **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-H4)
+- **Fix:** Use `serializeJson(doc, client)` for streaming serialization, preceded by `measureJson()` for Content-Length.
+
+### M-15: Viewer `readHttpRequest()` No Header Count Limit **(V)** — HARDENING
+- [ ] Header parsing loop reads until empty line or 5-second timeout. A slow-drip attack sending thousands of small headers blocks the Viewer for the full timeout.
+- **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-M7)
+- **Fix:** Add `MAX_HEADERS = 32` counter and reject requests exceeding limit.
+
+### M-16: SMS Message Truncation Silently Drops Alarm Info **(S)**
+- [ ] 160-byte SMS buffer in `handleAlarm()` can be exceeded by long site names + alarm fields. `snprintf` safely truncates, but operators see incomplete messages.
+- **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-M8)
+- **Fix:** Pre-truncate `siteName` to 24 chars for SMS construction.
+
+### M-17: Delayed Relay Commands May Actuate After Alarm Clears **(C)(S)** — ARCHITECTURE
+- [D] Cross-device relay commands traverse 3 Notecard hops (~2-4 min). A relay ON command delayed past the alarm clear results in a relay activating without an active alarm. The relay safety timeout is the backstop.
+- **Source:** LOGIC_REVIEW_04092026.md (LR-5)
+- **Fix (deferred):** Add epoch timestamp to relay commands, validate freshness on receiving Client. Requires protocol change.
 
 ### M-5: No "Client Recovered" SMS Alert **(S)**
 - [ ] Stale client alert is sent at 49h timeout. When the client resumes, no recovery SMS is sent. Operators must check the dashboard manually.
@@ -200,6 +251,12 @@ These items represent data loss, safety, or security risks.
 - **Source:** LOGICREVIEW-20260324
 - **Verified:** March 24, 2026 — still inconsistent.
 
+### M-11: Config Generator Hides Dispatch / ACK Status **(S)** — OPERATIONS
+- [ ] The Config Generator page defines a `configStatus` panel, but `GET /api/client?uid=` still returns only the cached config payload and `fetchClientConfig()` never renders pending/ACK metadata. Operators cannot see whether a config is queued, retried, or acknowledged while editing a client.
+- **Source:** CODE_REVIEW_04092026_COPILOT.md, LOGICREVIEW-20260402-GitHubCopilot-GPT54.md
+- **Fix:** Return `pendingDispatch`, retry counters, dispatch time, config version, and last ACK fields from `GET /api/client?uid=` and populate `configStatus` after load/retry/sync.
+- **Verified:** April 9, 2026 — `configStatus` is still unused in the current page.
+
 ### ~~Config Buffer Mismatch **(S)**~~ ✅ FIXED
 - [x] Buffer sizes aligned: payload buffer 1536 bytes (line ~880), dispatch uses 8192-byte static buffer (line ~7851). No mismatch risk.
 - **Source:** CODE_REVIEW_03122026_COMPREHENSIVE.md (S-4)
@@ -219,6 +276,15 @@ These items represent data loss, safety, or security risks.
 
 ## Minor / Cosmetic Issues
 
+### m-11: `linearMap()` Not in Common Headers **(C)**
+- [ ] `linearMap()` is defined only in the Client sketch. If Server or Viewer ever need inline sensor conversion, function must be duplicated. Consider moving to `TankAlarm_Utils.h`.
+- **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-L1)
+
+### m-12: `posix_read_file()` Silently Truncates Large Files **(S)**
+- [ ] Files exceeding `bufSize - 1` are silently truncated with no error indication. Could corrupt JSON parsing for oversized `sensor_registry.json`.
+- **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-L4)
+- **Fix:** Return error code or log warning when truncation occurs.
+
 ### m-1: Stuck Tolerance Hard-Coded **(C)**
 - [ ] `0.05` inches hard-coded threshold, not proportional to sensor range. High-resolution sensors (0–1 PSI) read within normal noise.
 - **Source:** LOGICREVIEW-20260324
@@ -231,9 +297,10 @@ These items represent data loss, safety, or security risks.
 - [ ] Device sends zero telemetry in deepest sleep state. Server loses visibility entirely.
 - **Source:** LOGICREVIEW-20260324
 
-### m-10: VinVoltage Not Rendered on Dashboard **(V)**
-- [ ] `VinVoltage` data is present in the JSON API but not displayed in the HTML table. Operators can't see client power status.
+### ~~m-10: VinVoltage Not Rendered on Dashboard **(V)**~~ ✅ FIXED
+- [x] Server dashboard and site/client views already render VIN voltage when it is present in telemetry metadata.
 - **Source:** LOGICREVIEW-20260324
+- **Verified:** April 9, 2026 — TODO entry was stale; current UI shows VIN voltage.
 
 ### ~~m-6: Negative Level Clamping Inconsistent **(S)**~~ ✅ FIXED
 - [x] All fallback calculation paths in `convertMilliampsToLevel()` now clamp negative results to 0.0f. Previously only the calibrated path and one fallback had clamping.
@@ -456,6 +523,9 @@ Items moved here after implementation. Include version number and date.
 - [x] Common Header — **A4:** DFU_CHECK_INTERVAL_MS centralized
 - [x] Common Header — **E1:** Dead #ifndef redefinitions removed
 
+### Verified Fixed (April 9, 2026 audit)
+- [x] **m-10:** VinVoltage now renders in the dashboard/site-config UI (Server)
+
 ### Completed (FUTURE work items)
 - [x] **3.1.1** — Notecard `begin()` Idempotency Audit
 - [x] **3.1.2** — Extract I2C Operations to Shared Header (TankAlarm_I2C.h)
@@ -472,6 +542,8 @@ This TODO was compiled from the following documents, sorted by date:
 
 | Date | Document | Type |
 |------|----------|------|
+| 2026-04-09 | CODE_REVIEW_04092026_COMPREHENSIVE.md, LOGIC_REVIEW_04092026.md | Full codebase code + logic review (Claude Opus 4.6). New: I-12 thru I-14, M-12 thru M-17, m-11, m-12 |
+| 2026-04-09 | CODE_REVIEW_04092026_COPILOT.md, LOGIC_REVIEW_04092026_COPILOT.md | Code + logic review update (new findings I-11, M-11; verified m-10 fixed) |
 | 2026-04-08 | FUTURE_WORK_04082026.md §12-13 | v1.6.0 implementation reviews (GPT-5.3-Codex, Gemini 3.1 Pro, GPT-5.4) + v1.6.1 fixes |
 | 2026-04-02 | CODE_REVIEW_04022026_COMPREHENSIVE.md | Comprehensive review with peer cross-validation |
 | 2026-04-02 | IMPLEMENTATION_PLAN_04022026.md | Implementation plan (11 of 16 findings implemented) |
