@@ -159,6 +159,19 @@ static char gDfuVersion[32] = {0};
 static bool gDfuInProgress = false;
 static uint32_t gDfuFirmwareLength = 0;  // Firmware size in bytes (from dfu.status body)
 
+// GitHub release check state
+static bool gGitHubUpdateAvailable = false;
+static char gGitHubLatestVersion[32] = {0};
+static char gGitHubReleaseUrl[128] = {0};
+static bool gGitHubAssetAvailable = false;
+static char gGitHubAssetUrl[256] = {0};
+static uint32_t gGitHubAssetSize = 0;
+static unsigned long gLastGitHubCheckMs = 0;
+static bool gGitHubBootCheckDone = false;
+#define GITHUB_CHECK_INTERVAL_MS 86400000UL  // 24 hours
+#define GITHUB_REPO_OWNER "SenaxInc"
+#define GITHUB_REPO_NAME  "ArduinoSMSTankAlarm"
+
 // Watchdog kick wrapper for IAP DFU callback
 static void dfuKickWatchdog() {
   mbedWatchdog.kick();
@@ -171,7 +184,7 @@ static bool gNotecardAvailable = true;
 static uint16_t gNotecardFailureCount = 0;
 static unsigned long gLastSuccessfulNotecardComm = 0;
 
-static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tank Alarm Viewer</title><style>:root{--bg:#f8fafc;--text:#0f172a;--header-bg:#ffffff;--meta-color:#475569;--card-bg:#ffffff;--table-border:rgba(15,23,42,0.08)}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);transition:background 0.3s,color 0.3s}header{padding:20px 28px;background:var(--header-bg);box-shadow:0 2px 10px rgba(0,0,0,0.15)}header h1{margin:0;font-size:1.7rem}header .meta{margin-top:12px;font-size:0.95rem;color:var(--meta-color);display:flex;gap:16px;flex-wrap:wrap}.title-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start}.header-actions{display:flex;gap:12px;align-items:center}.icon-button{width:40px;height:40px;border:1px solid rgba(148,163,184,0.4);background:var(--card-bg);color:var(--text);font-size:1.1rem;cursor:pointer}main{padding:24px;max-width:1400px;margin:0 auto}.card{background:var(--card-bg);padding:20px;box-shadow:0 25px 60px rgba(15,23,42,0.15);border:1px solid rgba(15,23,42,0.08)}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--table-border)}th{text-transform:uppercase;letter-spacing:0.05em;font-size:0.75rem;color:var(--meta-color)}tr:last-child td{border-bottom:none}tr.alarm{background:rgba(220,38,38,0.08)}.status-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;font-size:0.85rem}.status-pill.ok{background:rgba(16,185,129,0.15);color:#34d399}.status-pill.alarm{background:rgba(248,113,113,0.2);color:#fca5a5}.timestamp{font-feature-settings:"tnum";color:var(--meta-color);font-size:0.9rem}footer{margin-top:20px;color:var(--meta-color);font-size:0.85rem;text-align:center}</style></head><body><header><div class="title-row"><div><h1 id="viewerName">Tank Alarm Viewer</h1><div class="meta"><span>Viewer UID: <code id="viewerUid">--</code></span><span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span><span>Summary Generated: <span id="summaryGenerated">--</span></span><span>Last Fetch: <span id="lastFetch">--</span></span><span>Next Scheduled Fetch: <span id="nextFetch">--</span></span><span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span></div></div></div></header><main><section class="card"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"><h2 style="margin:0;font-size:1.2rem">Fleet Snapshot</h2><span class="timestamp">Dashboard auto-refresh: )HTML" STR(WEB_REFRESH_MINUTES) R"HTML( min</span></div><table><thead><tr><th>Site</th><th>Tank</th><th>Level (ft/in)</th><th>24hr Change</th><th>Updated</th></tr></thead><tbody id="sensorBody"></tbody></table></section><footer>Viewer nodes are read-only mirrors. Configuration and permissions stay on the server fleet.</footer></main><script>(()=>{const REFRESH_SECONDS=)HTML" STR(WEB_REFRESH_SECONDS)R"HTML(;const els={viewerName:document.getElementById('viewerName'),viewerUid:document.getElementById('viewerUid'),sourceServer:document.getElementById('sourceServer'),sourceUid:document.getElementById('sourceUid'),summaryGenerated:document.getElementById('summaryGenerated'),lastFetch:document.getElementById('lastFetch'),nextFetch:document.getElementById('nextFetch'),refreshHint:document.getElementById('refreshHint'),sensorBody:document.getElementById('sensorBody')};const state={sensors:[]};function applySensorData(d){els.viewerName.textContent=d.vn||'Tank Alarm Viewer';els.viewerUid.textContent=d.vi||'--';els.sourceServer.textContent=d.sn||'Server';els.sourceUid.textContent=d.si||'--';els.summaryGenerated.textContent=formatEpoch(d.ge);els.lastFetch.textContent=formatEpoch(d.lf);els.nextFetch.textContent=formatEpoch(d.nf);els.refreshHint.textContent=describeCadence(d.rs,d.bh);state.sensors=d.sensors||[];renderSensorRows()}async function fetchSensors(){try{const res=await fetch('/api/sensors');if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();applySensorData(data)}catch(err){console.error('Viewer refresh failed',err)}}function renderSensorRows(){const tbody=els.sensorBody;tbody.innerHTML='';const rows=state.sensors;if(!rows.length){const tr=document.createElement('tr');tr.innerHTML='<td colspan="5">No sensor data available</td>';tbody.appendChild(tr);return}const now=Date.now();const staleThresholdMs=93600000;rows.forEach(t=>{const tr=document.createElement('tr');const alarm=t.a;if(alarm)tr.classList.add('alarm');const lastUpdate=t.u;const isStale=lastUpdate&&((now-(lastUpdate*1000))>staleThresholdMs);const staleWarning=isStale?' ⚠️':'';tr.innerHTML=`<td>${escapeHtml(t.s,'--')}</td><td>${escapeHtml(t.n||'Tank')}${t.un?' #'+t.un:''}</td><td>${formatFeetInches(t.l)}</td><td>${format24hChange(t)}</td><td>${formatEpoch(lastUpdate)}${staleWarning}</td>`;if(isStale){tr.style.opacity='0.6';tr.title='Data is over 26 hours old'}tbody.appendChild(tr)})}function statusBadge(t){const alarm=t.a;if(!alarm){return'<span class="status-pill ok">Normal</span>'}const label=escapeHtml(t.at||'Alarm','Alarm');return`<span class="status-pill alarm">${label}</span>`}function formatFeetInches(inches){if(typeof inches!=='number'||!isFinite(inches)||inches<0)return'--';const feet=Math.floor(inches/12);const remainingInches=inches-(feet*12);return`${feet}' ${remainingInches.toFixed(1)}"`}function format24hChange(t){const d=t.d;if(d===undefined||d===null||typeof d!=='number'||!isFinite(d))return'--';const sign=d>0?'+':'';return`${sign}${d.toFixed(1)}"`}function formatEpoch(epoch){if(!epoch)return'--';const date=new Date(epoch*1000);if(isNaN(date.getTime()))return'--';return date.toLocaleString()}function describeCadence(seconds,baseHour){const hours=seconds?(seconds/3600).toFixed(1).replace(/\.0$/,''):'6';const hourLabel=(typeof baseHour==='number')?baseHour:6;return`${hours}h cadence · starts ${hourLabel}:00`}function escapeHtml(value,fallback=''){if(value===undefined||value===null||value==='')return fallback;const entityMap={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};return String(value).replace(/[&<>"']/g,c=>entityMap[c]||c)}fetchSensors();setInterval(()=>fetchSensors(),REFRESH_SECONDS*1000)})();</script></body></html>)HTML";
+static const char VIEWER_DASHBOARD_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tank Alarm Viewer</title><style>:root{--bg:#f8fafc;--text:#0f172a;--header-bg:#ffffff;--meta-color:#475569;--card-bg:#ffffff;--table-border:rgba(15,23,42,0.08)}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);transition:background 0.3s,color 0.3s}header{padding:20px 28px;background:var(--header-bg);box-shadow:0 2px 10px rgba(0,0,0,0.15)}header h1{margin:0;font-size:1.7rem}header .meta{margin-top:12px;font-size:0.95rem;color:var(--meta-color);display:flex;gap:16px;flex-wrap:wrap}.title-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start}.header-actions{display:flex;gap:12px;align-items:center}.icon-button{width:40px;height:40px;border:1px solid rgba(148,163,184,0.4);background:var(--card-bg);color:var(--text);font-size:1.1rem;cursor:pointer}main{padding:24px;max-width:1400px;margin:0 auto}.card{background:var(--card-bg);padding:20px;box-shadow:0 25px 60px rgba(15,23,42,0.15);border:1px solid rgba(15,23,42,0.08)}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--table-border)}th{text-transform:uppercase;letter-spacing:0.05em;font-size:0.75rem;color:var(--meta-color)}tr:last-child td{border-bottom:none}tr.alarm{background:rgba(220,38,38,0.08)}.status-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;font-size:0.85rem}.status-pill.ok{background:rgba(16,185,129,0.15);color:#34d399}.status-pill.alarm{background:rgba(248,113,113,0.2);color:#fca5a5}.timestamp{font-feature-settings:"tnum";color:var(--meta-color);font-size:0.9rem}footer{margin-top:20px;color:var(--meta-color);font-size:0.85rem;text-align:center}</style></head><body><header><div class="title-row"><div><h1 id="viewerName">Tank Alarm Viewer</h1><div class="meta"><span>Viewer UID: <code id="viewerUid">--</code></span><span>Source: <strong id="sourceServer">--</strong> (<code id="sourceUid">--</code>)</span><span>Summary Generated: <span id="summaryGenerated">--</span></span><span>Last Fetch: <span id="lastFetch">--</span></span><span>Next Scheduled Fetch: <span id="nextFetch">--</span></span><span>Server cadence: <span id="refreshHint">6h @ 6 AM</span></span></div></div></div></header><div id="ghUpdateBanner" style="display:none;background:#fef9c3;border-bottom:2px solid #ca8a04;padding:10px 20px;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>&#x26A0; New firmware on GitHub: <strong id="ghUpdateVersion"></strong> &mdash; <a id="ghUpdateLink" href="#" target="_blank" rel="noopener noreferrer">View release notes</a> &mdash; Viewer auto-update is direct-first with Notehub fallback</span><button onclick="this.parentElement.style.display='none'" style="background:none;border:none;cursor:pointer;font-size:1.2rem;line-height:1;padding:0 4px;">&times;</button></div><main><section class="card"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"><h2 style="margin:0;font-size:1.2rem">Fleet Snapshot</h2><span class="timestamp">Dashboard auto-refresh: )HTML" STR(WEB_REFRESH_MINUTES) R"HTML( min</span></div><table><thead><tr><th>Site</th><th>Tank</th><th>Level (ft/in)</th><th>24hr Change</th><th>Updated</th></tr></thead><tbody id="sensorBody"></tbody></table></section><footer>Viewer nodes are read-only mirrors. Configuration and permissions stay on the server fleet.</footer></main><script>(()=>{const REFRESH_SECONDS=)HTML" STR(WEB_REFRESH_SECONDS)R"HTML(;const els={viewerName:document.getElementById('viewerName'),viewerUid:document.getElementById('viewerUid'),sourceServer:document.getElementById('sourceServer'),sourceUid:document.getElementById('sourceUid'),summaryGenerated:document.getElementById('summaryGenerated'),lastFetch:document.getElementById('lastFetch'),nextFetch:document.getElementById('nextFetch'),refreshHint:document.getElementById('refreshHint'),sensorBody:document.getElementById('sensorBody')};const state={sensors:[]};function applySensorData(d){els.viewerName.textContent=d.vn||'Tank Alarm Viewer';els.viewerUid.textContent=d.vi||'--';els.sourceServer.textContent=d.sn||'Server';els.sourceUid.textContent=d.si||'--';els.summaryGenerated.textContent=formatEpoch(d.ge);els.lastFetch.textContent=formatEpoch(d.lf);els.nextFetch.textContent=formatEpoch(d.nf);els.refreshHint.textContent=describeCadence(d.rs,d.bh);state.sensors=d.sensors||[];renderSensorRows()}async function fetchSensors(){try{const res=await fetch('/api/sensors');if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();applySensorData(data)}catch(err){console.error('Viewer refresh failed',err)}}function renderSensorRows(){const tbody=els.sensorBody;tbody.innerHTML='';const rows=state.sensors;if(!rows.length){const tr=document.createElement('tr');tr.innerHTML='<td colspan="5">No sensor data available</td>';tbody.appendChild(tr);return}const now=Date.now();const staleThresholdMs=93600000;rows.forEach(t=>{const tr=document.createElement('tr');const alarm=t.a;if(alarm)tr.classList.add('alarm');const lastUpdate=t.u;const isStale=lastUpdate&&((now-(lastUpdate*1000))>staleThresholdMs);const staleWarning=isStale?' ⚠️':'';tr.innerHTML=`<td>${escapeHtml(t.s,'--')}</td><td>${escapeHtml(t.n||'Tank')}${t.un?' #'+t.un:''}</td><td>${formatFeetInches(t.l)}</td><td>${format24hChange(t)}</td><td>${formatEpoch(lastUpdate)}${staleWarning}</td>`;if(isStale){tr.style.opacity='0.6';tr.title='Data is over 26 hours old'}tbody.appendChild(tr)})}function statusBadge(t){const alarm=t.a;if(!alarm){return'<span class="status-pill ok">Normal</span>'}const label=escapeHtml(t.at||'Alarm','Alarm');return`<span class="status-pill alarm">${label}</span>`}function formatFeetInches(inches){if(typeof inches!=='number'||!isFinite(inches)||inches<0)return'--';const feet=Math.floor(inches/12);const remainingInches=inches-(feet*12);return`${feet}' ${remainingInches.toFixed(1)}"`}function format24hChange(t){const d=t.d;if(d===undefined||d===null||typeof d!=='number'||!isFinite(d))return'--';const sign=d>0?'+':'';return`${sign}${d.toFixed(1)}"`}function formatEpoch(epoch){if(!epoch)return'--';const date=new Date(epoch*1000);if(isNaN(date.getTime()))return'--';return date.toLocaleString()}function describeCadence(seconds,baseHour){const hours=seconds?(seconds/3600).toFixed(1).replace(/\.0$/,''):'6';const hourLabel=(typeof baseHour==='number')?baseHour:6;return`${hours}h cadence · starts ${hourLabel}:00`}function escapeHtml(value,fallback=''){if(value===undefined||value===null||value==='')return fallback;const entityMap={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};return String(value).replace(/[&<>"']/g,c=>entityMap[c]||c)}(async()=>{try{const r=await fetch('/api/github/update');if(!r.ok)return;const d=await r.json();if(d.available){const b=document.getElementById('ghUpdateBanner');const v=document.getElementById('ghUpdateVersion');const l=document.getElementById('ghUpdateLink');if(b&&v){v.textContent='v'+d.latestVersion;if(l&&d.releaseUrl)l.href=d.releaseUrl;b.style.display='flex';}}}catch(e){}})();fetchSensors();setInterval(()=>fetchSensors(),REFRESH_SECONDS*1000)})();</script></body></html>)HTML";
 
 static void initializeNotecard();
 static void initializeEthernet();
@@ -184,12 +197,15 @@ static void sendSensorJson(EthernetClient &client);
 static void ensureTimeSync();
 static double currentEpoch();
 static double computeNextAlignedEpoch(double epoch, uint8_t baseHour, uint32_t intervalSeconds);
-static void deriveMacFromUid();
+static bool deriveMacFromUid();
 static void scheduleNextSummaryFetch();
 static void fetchViewerSummary();
 static void handleViewerSummary(JsonDocument &doc, double epoch);
 static void checkForFirmwareUpdate();
 static void enableDfuMode();
+static void checkGitHubForUpdate();
+static void handleGitHubUpdateGet(EthernetClient &client);
+static bool attemptGitHubDirectInstall(String &statusMessage);
 
 // ============================================================================
 // Diagnostics Helpers
@@ -253,7 +269,6 @@ void setup() {
 
   initializeNotecard();
   ensureTimeSync();
-  deriveMacFromUid();
   fetchViewerSummary();  // Drain any queued summaries before serving UI
   scheduleNextSummaryFetch();
   initializeEthernet();
@@ -354,7 +369,33 @@ void loop() {
   unsigned long currentMillis = millis();
   if (!gDfuInProgress && (currentMillis - gLastDfuCheckMillis >= DFU_CHECK_INTERVAL_MS)) {
     gLastDfuCheckMillis = currentMillis;
-    checkForFirmwareUpdate();
+    bool attemptedDirect = false;
+    if (gGitHubUpdateAvailable && gGitHubAssetAvailable) {
+      String directStatus;
+      attemptedDirect = attemptGitHubDirectInstall(directStatus);
+      if (!attemptedDirect) {
+        Serial.print(F("Viewer GitHub Direct unavailable: "));
+        Serial.println(directStatus);
+      }
+    }
+    if (!attemptedDirect) {
+      checkForFirmwareUpdate();
+    }
+  }
+
+  // Periodic GitHub release check (60s after boot, then every 24 hours).
+  // Uses Notecard web.get proxy — works over cellular with or without Ethernet.
+  {
+    const unsigned long GITHUB_BOOT_DELAY_MS = 60000UL;
+    if (!gGitHubBootCheckDone && (currentMillis >= GITHUB_BOOT_DELAY_MS) && gNotecardAvailable) {
+      gGitHubBootCheckDone = true;
+      gLastGitHubCheckMs = currentMillis;
+      checkGitHubForUpdate();
+    } else if (gGitHubBootCheckDone && gNotecardAvailable &&
+               (currentMillis - gLastGitHubCheckMs) >= GITHUB_CHECK_INTERVAL_MS) {
+      gLastGitHubCheckMs = currentMillis;
+      checkGitHubForUpdate();
+    }
   }
 }
 
@@ -435,10 +476,10 @@ static void scheduleNextSummaryFetch() {
  * Uses a simple hash of the UID string to populate the last 4 bytes.
  * Byte 0 is 0x02 (locally administered, unicast).
  * Byte 1 is 0x00 (vendor padding).
- * If UID is empty, falls back to the compile-time default.
+ * Returns true when a UID-derived MAC is written, false if UID is unavailable.
  */
-static void deriveMacFromUid() {
-  if (gViewerUid[0] == '\0') return;  // No UID available — keep default
+static bool deriveMacFromUid() {
+  if (gViewerUid[0] == '\0') return false;  // No UID available
 
   // DJB2 hash of UID string
   uint32_t hash = 5381;
@@ -460,10 +501,35 @@ static void deriveMacFromUid() {
     Serial.print(gConfig.macAddress[i], HEX);
   }
   Serial.println();
+  return true;
 }
 
 static void initializeEthernet() {
   Serial.print(F("Initializing Ethernet..."));
+
+  const uint8_t defaultViewerMac[6] = { 0x02, 0x00, 0x01, 0x11, 0x20, 0x25 };
+  const bool macAllZero =
+      (gConfig.macAddress[0] == 0 && gConfig.macAddress[1] == 0 && gConfig.macAddress[2] == 0 &&
+       gConfig.macAddress[3] == 0 && gConfig.macAddress[4] == 0 && gConfig.macAddress[5] == 0);
+  const bool macIsDefault = (memcmp(gConfig.macAddress, defaultViewerMac, sizeof(defaultViewerMac)) == 0);
+  const bool hasConfiguredMacOverride = (!macAllZero && !macIsDefault);
+
+  const char *macSource = "Configured";
+  if (!hasConfiguredMacOverride) {
+    uint8_t hwMac[6] = {0};
+    Ethernet.MACAddress(hwMac);
+    const bool hwMacAllZero =
+        (hwMac[0] == 0 && hwMac[1] == 0 && hwMac[2] == 0 && hwMac[3] == 0 && hwMac[4] == 0 && hwMac[5] == 0);
+    if (!hwMacAllZero) {
+      memcpy(gConfig.macAddress, hwMac, sizeof(hwMac));
+      macSource = "Hardware";
+    } else if (deriveMacFromUid()) {
+      macSource = "UID-derived";
+    } else {
+      memcpy(gConfig.macAddress, defaultViewerMac, sizeof(defaultViewerMac));
+      macSource = "Default";
+    }
+  }
   
   // Prepare IP addresses from config
   IPAddress staticIp(gConfig.staticIp[0], gConfig.staticIp[1], gConfig.staticIp[2], gConfig.staticIp[3]);
@@ -507,6 +573,15 @@ static void initializeEthernet() {
 
   if (status != 0) {
     Serial.println(F(" ok"));
+    Serial.print(F("Using MAC: "));
+    for (uint8_t i = 0; i < 6; i++) {
+      if (i > 0) Serial.print(':');
+      if (gConfig.macAddress[i] < 0x10) Serial.print('0');
+      Serial.print(gConfig.macAddress[i], HEX);
+    }
+    Serial.print(F(" ("));
+    Serial.print(macSource);
+    Serial.println(F(")"));
     Serial.print(F("IP Address: "));
     Serial.println(Ethernet.localIP());
     Serial.print(F("Gateway: "));
@@ -542,6 +617,8 @@ static void handleWebRequests() {
     sendDashboard(client);
   } else if (method == "GET" && path == "/api/sensors") {
     sendSensorJson(client);
+  } else if (method == "GET" && path == "/api/github/update") {
+    handleGitHubUpdateGet(client);
   } else {
     respondStatus(client, 404, "Not Found");
   }
@@ -958,6 +1035,120 @@ static void handleViewerSummary(JsonDocument &doc, double epoch) {
 // ========================== DFU Functions ==========================
 
 /**
+ * @brief Check GitHub releases API for a newer firmware version.
+ *
+ * Uses the Notecard web.get proxy so this works over cellular regardless of
+ * whether Ethernet is connected.  Updates gGitHubUpdateAvailable and friends.
+ */
+static void checkGitHubForUpdate() {
+  Serial.println(F("Checking GitHub for firmware updates..."));
+  J *req = notecard.newRequest("web.get");
+  if (!req) { return; }
+  JAddStringToObject(req, "url",
+    "https://api.github.com/repos/" GITHUB_REPO_OWNER "/" GITHUB_REPO_NAME "/releases/latest");
+  JAddNumberToObject(req, "timeout", 30);
+  J *hdrs = JCreateObject();
+  if (hdrs) {
+    JAddStringToObject(hdrs, "User-Agent", "TankAlarm-Viewer/" FIRMWARE_VERSION);
+    JAddStringToObject(hdrs, "Accept",     "application/vnd.github.v3+json");
+    JAddItemToObject(req, "headers", hdrs);
+  }
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) { return; }
+  int result = JGetInt(rsp, "result");
+  if (result != 200) {
+    Serial.print(F("GitHub API HTTP "));
+    Serial.println(result);
+    notecard.deleteResponse(rsp);
+    return;
+  }
+  const char *bodyStr = JGetString(rsp, "body");
+  if (!bodyStr || bodyStr[0] == '\0') {
+    notecard.deleteResponse(rsp);
+    return;
+  }
+  StaticJsonDocument<384> filter;
+  filter["tag_name"] = true;
+  filter["html_url"] = true;
+  for (uint8_t i = 0; i < 8; ++i) {
+    filter["assets"][i]["name"] = true;
+    filter["assets"][i]["browser_download_url"] = true;
+    filter["assets"][i]["size"] = true;
+  }
+  StaticJsonDocument<2048> doc;
+  auto err = deserializeJson(doc, bodyStr, DeserializationOption::Filter(filter));
+  notecard.deleteResponse(rsp);
+  if (err) { return; }
+  const char *tag = doc["tag_name"] | "";
+  const char *url = doc["html_url"]  | "";
+  if (tag[0] == 'v' || tag[0] == 'V') { ++tag; }
+  if (tag[0] == '\0') { return; }
+  gGitHubAssetAvailable = false;
+  gGitHubAssetUrl[0] = '\0';
+  gGitHubAssetSize = 0;
+  char expectedAssetName[96];
+  snprintf(expectedAssetName, sizeof(expectedAssetName), "TankAlarm-Viewer-v%s.bin", tag);
+  JsonArray assets = doc["assets"].as<JsonArray>();
+  if (!assets.isNull()) {
+    for (JsonObject asset : assets) {
+      const char *assetName = asset["name"] | "";
+      if (strcmp(assetName, expectedAssetName) == 0) {
+        const char *assetUrl = asset["browser_download_url"] | "";
+        if (assetUrl[0] != '\0') {
+          strlcpy(gGitHubAssetUrl, assetUrl, sizeof(gGitHubAssetUrl));
+          gGitHubAssetSize = asset["size"] | 0;
+          gGitHubAssetAvailable = true;
+        }
+        break;
+      }
+    }
+  }
+  strlcpy(gGitHubReleaseUrl, url, sizeof(gGitHubReleaseUrl));
+  if (strcmp(tag, FIRMWARE_VERSION) != 0) {
+    strlcpy(gGitHubLatestVersion, tag, sizeof(gGitHubLatestVersion));
+    if (!gGitHubUpdateAvailable) {
+      Serial.print(F("GitHub update available: v"));
+      Serial.println(gGitHubLatestVersion);
+    }
+    gGitHubUpdateAvailable = true;
+  } else {
+    gGitHubUpdateAvailable = false;
+    gGitHubLatestVersion[0] = '\0';
+    gGitHubAssetAvailable = false;
+    gGitHubAssetUrl[0] = '\0';
+    gGitHubAssetSize = 0;
+    Serial.println(F("Viewer firmware is up to date."));
+  }
+}
+
+static bool attemptGitHubDirectInstall(String &statusMessage) {
+  // Placeholder for direct Ethernet HTTPS install path.
+  // Viewer policy is direct-first then Notehub fallback; this build currently
+  // falls back to Notehub when direct install is unavailable.
+  if (!gGitHubAssetAvailable || gGitHubAssetUrl[0] == '\0') {
+    statusMessage = "matching Viewer .bin asset is missing";
+    return false;
+  }
+  statusMessage = "direct HTTPS installer unavailable on current build";
+  return false;
+}
+
+static void handleGitHubUpdateGet(EthernetClient &client) {
+  JsonDocument doc;
+  doc["available"]      = gGitHubUpdateAvailable;
+  doc["latestVersion"]  = gGitHubLatestVersion[0] ? gGitHubLatestVersion : FIRMWARE_VERSION;
+  doc["currentVersion"] = FIRMWARE_VERSION;
+  doc["releaseUrl"]     = gGitHubReleaseUrl;
+  doc["assetAvailable"] = gGitHubAssetAvailable;
+  doc["assetUrl"] = gGitHubAssetUrl;
+  doc["assetSize"] = gGitHubAssetSize;
+  doc["assetNamingConvention"] = "TankAlarm-Viewer-vX.Y.Z.bin";
+  String responseStr;
+  serializeJson(doc, responseStr);
+  respondJson(client, responseStr);
+}
+
+/**
  * @brief Check for firmware updates via Blues Notecard IAP DFU
  *
  * Queries the Notecard for available firmware updates. If an update is found
@@ -1037,3 +1228,4 @@ static void enableDfuMode() {
     gDfuInProgress = false;
   }
 }
+
