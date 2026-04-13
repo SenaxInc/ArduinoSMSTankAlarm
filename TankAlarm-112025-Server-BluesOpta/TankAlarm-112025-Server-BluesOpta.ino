@@ -1491,7 +1491,9 @@ let sensorCount=0;let inputIdCounter=0;
 function createSensorHtml(id){return `<div class="sensor-card" id="sensor-${id}"><div class="sensor-header"><span class="sensor-title">Sensor #${id+1}</span><button type="button" class="remove-btn" onclick="removeSensor(${id})">Remove</button></div><div class="form-grid"><label class="field"><span>Monitor Type</span><select class="monitor-type" onchange="updateMonitorFields(${id})">${monitorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label><label class="field tank-num-field"><span>Display Number (optional)</span><input type="number" class="tank-num" placeholder="e.g. 1, 2, 3"></label><label class="field"><span><span class="name-label">Name</span></span><input type="text" class="tank-name" placeholder="Name"></label><label class="field contents-field"><span>Contents</span><input type="text" class="tank-contents" placeholder="e.g. Diesel, Water"></label><label class="field"><span>Sensor Type</span><select class="sensor-type" onchange="updatePinOptions(${id})">${sensorTypes.map(t=>`<option value="${t.value}">${t.label}</option>`).join('')}</select></label><label class="field"><span>Pin / Channel</span><select class="sensor-pin">${optaPins.map(p=>`<option value="${p.value}">${p.label}</option>`).join('')}</select></label><label class="field switch-mode-field" style="display:none;"><span>Switch Mode<span class="tooltip-icon" tabindex="0" data-tooltip="NO(Normally-Open): Switch is open by default, closes when fluid is present. NC(Normally-Closed): Switch is closed by default, opens when fluid is present.">?</span></span><select class="switch-mode"><option value="NO">Normally-Open(NO)</option><option value="NC">Normally-Closed(NC)</option></select></label><label class="field pulses-per-rev-field" style="display:none;"><span>Pulses/Rev</span><input type="number" class="pulses-per-rev" value="1" min="1" max="255"></label><label class="field current-loop-type-field" style="display:none;"><span>4-20mA Sensor Type<span class="tooltip-icon" tabindex="0" data-tooltip="Select the type of 4-20mA sensor: Pressure sensors are mounted near the sensor bottom and measure liquid pressure. Ultrasonic sensors are mounted on top of the sensor and measure distance to the liquid surface.">?</span></span><select class="current-loop-type" onchange="updateCurrentLoopFields(${id})"><option value="pressure">Pressure Sensor(Bottom-Mounted)</option><option value="ultrasonic">Ultrasonic Sensor(Top-Mounted)</option></select></label><label class="field sensor-range-field" style="display:none;"><span><span class="sensor-range-label">Sensor Range</span><span class="tooltip-icon sensor-range-tooltip" tabindex="0" data-tooltip="Native measurement range of the sensor (e.g., 0-5 PSI for pressure, 0-10m for ultrasonic). This is the range that corresponds to 4-20mA output.">?</span></span><div style="display:flex;gap:8px;align-items:center;"><input type="number" class="sensor-range-min" value="0" step="0.1" style="width:70px;" placeholder="Min"><span>to</span><input type="number" class="sensor-range-max" value="5" step="0.1" style="width:70px;" placeholder="Max"><select class="sensor-range-unit" style="width:70px;"><option value="PSI">PSI</option><option value="bar">bar</option><option value="m">m</option><option value="ft">ft</option><option value="in">in</option><option value="cm">cm</option></select></div></label><label class="field sensor-mount-height-field" style="display:none;"><span><span class="mount-height-label">Sensor Mount Height(in)</span><span class="tooltip-icon mount-height-tooltip" tabindex="0" data-tooltip="For pressure sensors: height of sensor above tank bottom (usually 0-2 inches). For ultrasonic sensors: distance from sensor to tank bottom when empty.">?</span></span><input type="number" class="sensor-mount-height" value="0" step="0.1" min="0"></label><label class="field analog-voltage-field" style="display:none;"><span><span class="analog-voltage-label">Sensor Voltage Range</span><span class="tooltip-icon analog-voltage-tooltip" tabindex="0" data-tooltip="The voltage output range of the analog sensor. Common ranges: 0-10V, 0-5V, 1-5V.">?</span></span><div style="display:flex;gap:8px;align-items:center;"><input type="number" class="analog-voltage-min" value="0" step="0.1" style="width:70px;" placeholder="Min"><span>to</span><input type="number" class="analog-voltage-max" value="10" step="0.1" style="width:70px;" placeholder="Max"><span>V</span></div></label></div><label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" class="stuck-detection" checked> Stuck Sensor Detection<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, the system flags a sensor as failed if it reports the same reading 10 consecutive times. Disable for sensors where readings naturally stay constant (e.g., gas pressure monitors).">?</span></label><label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" class="calibration-enabled" checked> Calibration Learning<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, you can submit manual verification readings on the Calibration page to teach the system the actual relationship between sensor output and measured values. Recommended for tank level sensors. For gas pressure or RPM sensors, disable unless you have reference gauges for comparison.">?</span></label><div class="digital-sensor-info" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-top:8px;font-size:0.9rem;color:var(--muted);"><strong>Float Switch Mode:</strong> This sensor only detects whether fluid has reached the switch position.<br><br><strong>Wiring Note:</strong> Connect the switch between the input pin and GND. The software uses an internal pull-up resistor.</div><div class="current-loop-sensor-info" style="display:none;background:var(--chip);border:1px solid var(--card-border);padding:12px;margin-top:8px;font-size:0.9rem;color:var(--muted);"><div class="pressure-sensor-info"><strong>Pressure Sensor(Bottom-Mounted):</strong> Measures the pressure of the liquid column above it.<br>- 4mA = Empty tank (0 pressure)<br>- 20mA = Full tank (max pressure)<br>- Sensor Range: The native pressure range (e.g., 0-5 PSI)<br>- Mount Height: Distance from sensor to tank bottom</div><div class="ultrasonic-sensor-info" style="display:none;"><strong>Ultrasonic Sensor(Top-Mounted):</strong> Measures the distance from the sensor to the liquid surface.<br>- 4mA = Full tank (liquid close to sensor)<br>- 20mA = Empty tank (liquid far from sensor)<br>- Sensor Range: The native distance range (e.g., 0-10m)<br>- Sensor Mount Height: Distance from sensor to tank bottom when empty</div></div><button type="button" class="add-section-btn add-alarm-btn" onclick="toggleAlarmSection(${id})">+ Add Alarm</button><div class="collapsible-section alarm-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;"><span class="alarm-section-title">Alarm Thresholds</span><button type="button" class="remove-btn" onclick="removeAlarmSection(${id})" style="float:right;">Remove Alarm</button></h4><div class="form-grid alarm-thresholds-grid"><div class="field"><span><label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="high-alarm-enabled" checked> High Alarm</label></span><input type="number" class="high-alarm" value="100"></div><div class="field"><span><label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="low-alarm-enabled" checked> Low Alarm</label></span><input type="number" class="low-alarm" value="20"></div></div><div class="form-grid digital-alarm-grid" style="display:none;"><div class="field" style="grid-column:1 / -1;"><span>Trigger Condition<span class="tooltip-icon" tabindex="0" data-tooltip="Select when the alarm should trigger based on the float switch state.">?</span></span><select class="digital-trigger-state"><option value="activated">When Switch is Activated (fluid detected)</option><option value="not_activated">When Switch is NOT Activated (no fluid)</option></select></div></div></div><button type="button" class="add-section-btn add-relay-btn hidden" onclick="toggleRelaySection(${id})">+ Add Relay Control</button><div class="collapsible-section relay-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;">Relay Switch Control<button type="button" class="remove-btn" onclick="removeRelaySection(${id})" style="float:right;">Remove Relay</button></h4><div class="form-grid"><label class="field"><span>Target Client UID</span><input type="text" class="relay-target" list="relayTargetSuggestions" placeholder="dev:IMEI (optional)"></label><label class="field"><span>Trigger On</span><select class="relay-trigger"><option value="any">Any Alarm (High or Low)</option><option value="high">High Alarm Only</option><option value="low">Low Alarm Only</option></select></label><label class="field"><span>Relay Mode</span><select class="relay-mode" onchange="toggleRelayDurations(${id})"><option value="momentary">Momentary (configurable duration)</option><option value="until_clear">Stay On Until Alarm Clears</option><option value="manual_reset">Stay On Until Manual Server Reset</option></select></label><div class="field"><span>Relay Outputs</span><div style="display:flex;gap:12px;padding:8px 0;"><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-1" value="1"> R1</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-2" value="2"> R2</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-3" value="4"> R3</label><label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" class="relay-4" value="8"> R4</label></div></div><div class="relay-durations-section" style="grid-column:1 / -1;display:block;"><span style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:8px;display:block;">Momentary Duration per Relay (seconds, 0 = default 30 min):</span><div style="display:flex;gap:12px;flex-wrap:wrap;"><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R1:<input type="number" class="relay-duration-1" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R2:<input type="number" class="relay-duration-2" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R3:<input type="number" class="relay-duration-3" value="0" min="0" max="86400" style="width:70px;"></label><label style="display:flex;align-items:center;gap:4px;font-size:0.85rem;">R4:<input type="number" class="relay-duration-4" value="0" min="0" max="86400" style="width:70px;"></label></div></div><label class="field relay-max-on-section" style="grid-column:1 / -1;display:none;"><span>Safety Max ON Duration (seconds, 0 = no limit)<span class="tooltip-icon" tabindex="0" data-tooltip="Maximum time a relay can stay ON in manual_reset mode. After this duration the relay is forced OFF and a relay_timeout alarm is sent. Set to 0 to disable. Max 604800 (7 days).">?</span></span><input type="number" class="relay-max-on" value="0" min="0" max="604800" style="width:120px;"></label></div></div><button type="button" class="add-section-btn add-sms-btn hidden" onclick="toggleSmsSection(${id})">+ Add SMS Alert</button><div class="collapsible-section sms-section"><h4 style="margin:16px 0 8px;font-size:0.95rem;border-top:1px solid var(--card-border);padding-top:12px;">SMS Alert Notifications<button type="button" class="remove-btn" onclick="removeSmsSection(${id})" style="float:right;">Remove SMS Alert</button></h4><div class="form-grid"><label class="field" style="grid-column:1 / -1;"><span>Phone Numbers<span class="tooltip-icon" tabindex="0" data-tooltip="Enter phone numbers with country code (e.g., +15551234567). Separate multiple numbers with commas.">?</span></span><input type="text" class="sms-phones" placeholder="+15551234567,+15559876543"></label><label class="field"><span>Trigger On</span><select class="sms-trigger"><option value="any">Any Alarm (High or Low)</option><option value="high">High Alarm Only</option><option value="low">Low Alarm Only</option></select></label><label class="field" style="grid-column:span 2;"><span>Custom Message (optional)</span><input type="text" class="sms-message" placeholder="Tank alarm triggered"></label></div></div></div>`;}
 /* SENSOR FUNCTIONS */
 function normalizeBulletText(root){if(!root)return;root.querySelectorAll('.current-loop-sensor-info').forEach(el=>{el.innerHTML=el.innerHTML.replace(/[^\x20-\x7E]+/g,'-');});}
-function addSensor(){const container=document.getElementById('sensorsContainer');const div=document.createElement('div');div.innerHTML=createSensorHtml(sensorCount);container.appendChild(div.firstElementChild);normalizeBulletText(div.firstElementChild);updateSensorTypeFields(sensorCount);sensorCount++;}
+function ensureSensorGuidance(card){if(!card)return;const alarmGrid=card.querySelector('.alarm-thresholds-grid');if(alarmGrid&&!card.querySelector('.alarm-guidance-note')){const note=document.createElement('div');note.className='alarm-guidance-note';note.style.cssText='grid-column:1 / -1;background:var(--chip);border:1px solid var(--card-border);padding:10px 12px;font-size:0.85rem;color:var(--muted);display:none;';alarmGrid.appendChild(note);}const relaySection=card.querySelector('.relay-durations-section');if(relaySection&&!card.querySelector('.relay-timing-note')){const note=document.createElement('div');note.className='relay-timing-note';note.style.cssText='margin-top:8px;font-size:0.82rem;color:var(--muted);';note.textContent='Momentary relay timers turn off on the next main-loop pass after expiry. Add a small safety margin if you need a tighter pulse width.';relaySection.appendChild(note);}}
+function updateSensorGuidance(id){const card=document.getElementById(`sensor-${id}`);if(!card)return;ensureSensorGuidance(card);const note=card.querySelector('.alarm-guidance-note');if(!note)return;const type=parseInt(card.querySelector('.sensor-type').value,10);const isAnalog=(type!==0&&type!==2&&type!==3);if(isAnalog){note.textContent='Analog voltage thresholds are evaluated in converted inches. Keep hysteresis at 1.0 inch or higher unless you have field-tested noise margins; generated configs default to 2.0 inches.';note.style.display='block';}else{note.style.display='none';}}
+function addSensor(){const container=document.getElementById('sensorsContainer');const div=document.createElement('div');div.innerHTML=createSensorHtml(sensorCount);container.appendChild(div.firstElementChild);normalizeBulletText(div.firstElementChild);ensureSensorGuidance(div.firstElementChild);updateSensorTypeFields(sensorCount);sensorCount++;}
 window.removeSensor=function(id){const el=document.getElementById(`sensor-${id}`);if(el)el.remove();};
 window.toggleAlarmSection=function(id){const card=document.getElementById(`sensor-${id}`);const alarmSection=card.querySelector('.alarm-section');const addAlarmBtn=card.querySelector('.add-alarm-btn');const addRelayBtn=card.querySelector('.add-relay-btn');const addSmsBtn=card.querySelector('.add-sms-btn');alarmSection.classList.add('visible');addAlarmBtn.classList.add('hidden');addRelayBtn.classList.remove('hidden');addSmsBtn.classList.remove('hidden');};
 window.removeAlarmSection=function(id){const card=document.getElementById(`sensor-${id}`);const alarmSection=card.querySelector('.alarm-section');const addAlarmBtn=card.querySelector('.add-alarm-btn');const addRelayBtn=card.querySelector('.add-relay-btn');const addSmsBtn=card.querySelector('.add-sms-btn');const relaySection=card.querySelector('.relay-section');const smsSection=card.querySelector('.sms-section');alarmSection.classList.remove('visible');addAlarmBtn.classList.remove('hidden');addRelayBtn.classList.add('hidden');addSmsBtn.classList.add('hidden');relaySection.classList.remove('visible');smsSection.classList.remove('visible');card.querySelector('.high-alarm').value='100';card.querySelector('.low-alarm').value='20';card.querySelector('.high-alarm-enabled').checked=true;card.querySelector('.low-alarm-enabled').checked=true;card.querySelector('.relay-target').value='';card.querySelector('.relay-trigger').value='any';card.querySelector('.relay-mode').value='momentary';['relay-1','relay-2','relay-3','relay-4'].forEach(cls=>{card.querySelector('.'+cls).checked=false;});card.querySelector('.sms-phones').value='';card.querySelector('.sms-trigger').value='any';card.querySelector('.sms-message').value='';};
@@ -1502,7 +1504,7 @@ window.removeSmsSection=function(id){const card=document.getElementById(`sensor-
 window.toggleRelayDurations=function(id){const card=document.getElementById(`sensor-${id}`);const relayMode=card.querySelector('.relay-mode').value;const durationsSection=card.querySelector('.relay-durations-section');const maxOnSection=card.querySelector('.relay-max-on-section');if(relayMode==='momentary'){durationsSection.style.display='block';maxOnSection.style.display='none';}else if(relayMode==='manual_reset'){durationsSection.style.display='none';maxOnSection.style.display='flex';}else{durationsSection.style.display='none';maxOnSection.style.display='none';}};
 window.updateMonitorFields=function(id){const card=document.getElementById(`sensor-${id}`);const type=card.querySelector('.monitor-type').value;const numField=card.querySelector('.tank-num-field');const numFieldLabel=numField.querySelector('span');const nameLabel=card.querySelector('.name-label');const sensorTypeSelect=card.querySelector('.sensor-type');const pulsesPerRevField=card.querySelector('.pulses-per-rev-field');const contentsField=card.querySelector('.contents-field');const calCheckbox=card.querySelector('.calibration-enabled');if(type==='gas'){numField.style.display='flex';numFieldLabel.textContent='Display Number (optional)';nameLabel.textContent='System Name';pulsesPerRevField.style.display='none';contentsField.style.display='flex';sensorTypeSelect.value='2';calCheckbox.checked=false;updatePinOptions(id);}else if(type==='rpm'){numField.style.display='flex';numFieldLabel.textContent='Engine Number (optional)';nameLabel.textContent='Engine Name';pulsesPerRevField.style.display='flex';contentsField.style.display='none';sensorTypeSelect.value='3';calCheckbox.checked=false;updatePinOptions(id);}else{numField.style.display='flex';numFieldLabel.textContent='Tank Number (optional)';nameLabel.textContent='Name';pulsesPerRevField.style.display='none';contentsField.style.display='flex';calCheckbox.checked=true;}updateSensorTypeFields(id);};
 window.updatePinOptions=function(id){const card=document.getElementById(`sensor-${id}`);const typeSelect=card.querySelector('.sensor-type');const pinSelect=card.querySelector('.sensor-pin');const type=parseInt(typeSelect.value);pinSelect.innerHTML='';let options=[];if(type===2){options=expansionChannels;}else{options=optaPins;}options.forEach(opt=>{const option=document.createElement('option');option.value=opt.value;option.textContent=opt.label;pinSelect.appendChild(option);});updateSensorTypeFields(id);};
-window.updateSensorTypeFields=function(id){const card=document.getElementById(`sensor-${id}`);const type=parseInt(card.querySelector('.sensor-type').value);const digitalInfoBox=card.querySelector('.digital-sensor-info');const currentLoopInfoBox=card.querySelector('.current-loop-sensor-info');const alarmThresholdsGrid=card.querySelector('.alarm-thresholds-grid');const digitalAlarmGrid=card.querySelector('.digital-alarm-grid');const alarmSectionTitle=card.querySelector('.alarm-section-title');const pulsesPerRevField=card.querySelector('.pulses-per-rev-field');const switchModeField=card.querySelector('.switch-mode-field');const currentLoopTypeField=card.querySelector('.current-loop-type-field');const sensorMountHeightField=card.querySelector('.sensor-mount-height-field');const sensorRangeField=card.querySelector('.sensor-range-field');const analogVoltageField=card.querySelector('.analog-voltage-field');if(type===0){digitalInfoBox.style.display='block';currentLoopInfoBox.style.display='none';switchModeField.style.display='flex';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';analogVoltageField.style.display='none';alarmThresholdsGrid.style.display='none';digitalAlarmGrid.style.display='grid';alarmSectionTitle.textContent='Float Switch Alarm';pulsesPerRevField.style.display='none';}else if(type===2){const monitorType=card.querySelector('.monitor-type').value;digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='block';switchModeField.style.display='none';analogVoltageField.style.display='none';const loopTypeSelect=card.querySelector('.current-loop-type');if(monitorType==='tank'){currentLoopTypeField.style.display='flex';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor(Bottom-Mounted)</option><option value="ultrasonic">Ultrasonic Sensor(Top-Mounted)</option>';sensorMountHeightField.style.display='flex';sensorRangeField.style.display='flex';}else if(monitorType==='gas'){currentLoopTypeField.style.display='none';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor</option>';loopTypeSelect.value='pressure';sensorMountHeightField.style.display='none';sensorRangeField.style.display='flex';}else{currentLoopTypeField.style.display='flex';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor</option>';loopTypeSelect.value='pressure';sensorMountHeightField.style.display='none';sensorRangeField.style.display='flex';}alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='none';updateCurrentLoopFields(id);}else if(type===3){digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='none';switchModeField.style.display='none';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';analogVoltageField.style.display='none';alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='flex';}else{const monitorType=card.querySelector('.monitor-type').value;digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='none';switchModeField.style.display='none';currentLoopTypeField.style.display='none';analogVoltageField.style.display='flex';sensorRangeField.style.display='flex';if(monitorType==='tank'){sensorMountHeightField.style.display='flex';}else{sensorMountHeightField.style.display='none';}alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='none';}};
+window.updateSensorTypeFields=function(id){const card=document.getElementById(`sensor-${id}`);const type=parseInt(card.querySelector('.sensor-type').value);const digitalInfoBox=card.querySelector('.digital-sensor-info');const currentLoopInfoBox=card.querySelector('.current-loop-sensor-info');const alarmThresholdsGrid=card.querySelector('.alarm-thresholds-grid');const digitalAlarmGrid=card.querySelector('.digital-alarm-grid');const alarmSectionTitle=card.querySelector('.alarm-section-title');const pulsesPerRevField=card.querySelector('.pulses-per-rev-field');const switchModeField=card.querySelector('.switch-mode-field');const currentLoopTypeField=card.querySelector('.current-loop-type-field');const sensorMountHeightField=card.querySelector('.sensor-mount-height-field');const sensorRangeField=card.querySelector('.sensor-range-field');const analogVoltageField=card.querySelector('.analog-voltage-field');if(type===0){digitalInfoBox.style.display='block';currentLoopInfoBox.style.display='none';switchModeField.style.display='flex';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';analogVoltageField.style.display='none';alarmThresholdsGrid.style.display='none';digitalAlarmGrid.style.display='grid';alarmSectionTitle.textContent='Float Switch Alarm';pulsesPerRevField.style.display='none';}else if(type===2){const monitorType=card.querySelector('.monitor-type').value;digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='block';switchModeField.style.display='none';analogVoltageField.style.display='none';const loopTypeSelect=card.querySelector('.current-loop-type');if(monitorType==='tank'){currentLoopTypeField.style.display='flex';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor(Bottom-Mounted)</option><option value="ultrasonic">Ultrasonic Sensor(Top-Mounted)</option>';sensorMountHeightField.style.display='flex';sensorRangeField.style.display='flex';}else if(monitorType==='gas'){currentLoopTypeField.style.display='none';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor</option>';loopTypeSelect.value='pressure';sensorMountHeightField.style.display='none';sensorRangeField.style.display='flex';}else{currentLoopTypeField.style.display='flex';loopTypeSelect.innerHTML='<option value="pressure">Pressure Sensor</option>';loopTypeSelect.value='pressure';sensorMountHeightField.style.display='none';sensorRangeField.style.display='flex';}alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='none';updateCurrentLoopFields(id);}else if(type===3){digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='none';switchModeField.style.display='none';currentLoopTypeField.style.display='none';sensorMountHeightField.style.display='none';sensorRangeField.style.display='none';analogVoltageField.style.display='none';alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='flex';}else{const monitorType=card.querySelector('.monitor-type').value;digitalInfoBox.style.display='none';currentLoopInfoBox.style.display='none';switchModeField.style.display='none';currentLoopTypeField.style.display='none';analogVoltageField.style.display='flex';sensorRangeField.style.display='flex';if(monitorType==='tank'){sensorMountHeightField.style.display='flex';}else{sensorMountHeightField.style.display='none';}alarmThresholdsGrid.style.display='grid';digitalAlarmGrid.style.display='none';alarmSectionTitle.textContent='Alarm Thresholds';pulsesPerRevField.style.display='none';}updateSensorGuidance(id);};
 window.updateCurrentLoopFields=function(id){const card=document.getElementById(`sensor-${id}`);const currentLoopType=card.querySelector('.current-loop-type').value;const currentLoopInfoBox=card.querySelector('.current-loop-sensor-info');const pressureInfo=currentLoopInfoBox.querySelector('.pressure-sensor-info');const ultrasonicInfo=currentLoopInfoBox.querySelector('.ultrasonic-sensor-info');const mountHeightLabel=card.querySelector('.mount-height-label');const mountHeightTooltip=card.querySelector('.mount-height-tooltip');const sensorRangeLabel=card.querySelector('.sensor-range-label');const sensorRangeTooltip=card.querySelector('.sensor-range-tooltip');const sensorRangeUnit=card.querySelector('.sensor-range-unit');const sensorRangeMax=card.querySelector('.sensor-range-max');if(currentLoopType==='ultrasonic'){pressureInfo.style.display='none';ultrasonicInfo.style.display='block';mountHeightLabel.textContent='Sensor Mount Height(in)';mountHeightTooltip.setAttribute('data-tooltip','Distance from the ultrasonic sensor to the sensor bottom when empty.');sensorRangeLabel.textContent='Sensor Range';sensorRangeTooltip.setAttribute('data-tooltip','Native distance range of the ultrasonic sensor (e.g., 0-10m).');sensorRangeUnit.value='m';sensorRangeMax.value='10';}else{const monitorType=card.querySelector('.monitor-type').value;pressureInfo.style.display='block';ultrasonicInfo.style.display='none';if(monitorType==='gas'){sensorRangeTooltip.setAttribute('data-tooltip','Native pressure range of the sensor that maps to 4-20mA output.');}else{mountHeightLabel.textContent='Sensor Mount Height(in)';mountHeightTooltip.setAttribute('data-tooltip','Height of the pressure sensor above the sensor bottom (usually 0-2 inches).');sensorRangeTooltip.setAttribute('data-tooltip','Native pressure range of the sensor (e.g., 0-5 PSI).');}sensorRangeLabel.textContent='Sensor Range';sensorRangeUnit.value='PSI';sensorRangeMax.value='5';}};
 document.getElementById('addSensorBtn').addEventListener('click',addSensor);
 /* INPUTS */
@@ -1608,7 +1610,7 @@ R"HTML(function typeBadge(t){const colors={sms:'#dbeafe;color:#1e40af',email:'#f
 R"HTML(document.getElementById('exportBtn').addEventListener('click',()=>{let csv='Date/Time,Site,Client ID,Type,Status,Detail\n';const tf=typeFilter.value;const sf=statusFilter.value;const search=searchInput.value.toLowerCase().trim();let filtered=allEntries;if(tf!=='all')filtered=filtered.filter(e=>e.type===tf);if(sf!=='all')filtered=filtered.filter(e=>e.status===sf);if(search)filtered=filtered.filter(e=>(e.site||'').toLowerCase().includes(search)||(e.client||'').toLowerCase().includes(search));filtered.forEach(e=>{const dt=e.timestamp?new Date(e.timestamp*1000).toISOString():'';csv+=`"${dt}","${e.site||''}","${e.client||''}","${e.type||''}","${e.status||''}","${(e.detail||'').replace(/"/g,'""')}"\n`;});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='transmission_log.csv';a.click();URL.revokeObjectURL(url);showToast('CSV exported');});document.getElementById('cancelAllBtn').addEventListener('click',cancelAllPendingConfigs);)HTML"
 R"HTML(async function cancelPendingConfig(clientUid){if(!confirm('Cancel pending config dispatch for '+clientUid+'? This will stop auto-retries and purge unsent notes from the Notecard outbox.'))return;try{const res=await fetch('/api/config/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client:clientUid})});const text=await res.text();if(res.ok){showToast(text||'Config dispatch cancelled');}else{showToast(text||'Cancel failed',true);}await loadLog();}catch(err){showToast('Error: '+err.message,true);}}async function cancelAllPendingConfigs(){if(!confirm('Cancel ALL pending config dispatches? This will stop all auto-retries.'))return;try{const res=await fetch('/api/config/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const text=await res.text();if(res.ok){showToast(text||'All pending configs cancelled');}else{showToast(text||'Cancel failed',true);}await loadLog();}catch(err){showToast('Error: '+err.message,true);}}loadLog();setInterval(loadLog,15000);})();</script></body></html>)HTML";
 
-static const char LOGIN_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TankAlarm Login</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><div id="loading-overlay"><div class="spinner"></div></div><script>setTimeout(function(){var o=document.getElementById('loading-overlay');if(o)o.style.display='none'},5000)</script><main><h1 class="login-title"><span class="brand">TankAlarm</span> Login</h1><p>Enter your PIN to access the dashboard.</p><form id="loginForm" class="login-form"><input type="password" id="pin" class="pin-input" placeholder="Enter PIN" required autocomplete="current-password" pattern="\d{4}" title="4-digit PIN"><button type="submit" class="login-button">Login</button><div id="error" class="error">Invalid PIN</div></form></main><script>window.addEventListener('load',()=>{const ov=document.getElementById('loading-overlay');if(ov){ov.style.display='none';ov.classList.add('hidden');}const params=new URLSearchParams(window.location.search);if(params.get('reason')==='expired'){const e=document.getElementById('error');e.textContent='Session expired \u2014 another user logged in';e.style.display='block';}});document.getElementById("loginForm").addEventListener("submit",async(e)=>{e.preventDefault();const pin=document.getElementById("pin").value;try{const res=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin})});if(res.ok){const data=await res.json();localStorage.setItem("tankalarm_token","1");if(data.session)localStorage.setItem("tankalarm_session",data.session);const params=new URLSearchParams(window.location.search);window.location.href=params.get("redirect")||"/";}else{document.getElementById("error").textContent="Invalid PIN";document.getElementById("error").style.display="block";}}catch(err){document.getElementById("error").textContent="Connection failed: "+err.message;document.getElementById("error").style.display="block";}});</script></body></html>)HTML";
+static const char LOGIN_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TankAlarm Login</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><div id="loading-overlay"><div class="spinner"></div></div><script>setTimeout(function(){var o=document.getElementById('loading-overlay');if(o)o.style.display='none'},5000)</script><main><h1 class="login-title"><span class="brand">TankAlarm</span> Login</h1><p>Enter your PIN to access the dashboard.</p><form id="loginForm" class="login-form"><input type="password" id="pin" class="pin-input" placeholder="Enter PIN" required autocomplete="current-password" pattern="\d{4}" title="4-digit PIN"><button type="submit" class="login-button">Login</button><div id="error" class="error">Invalid PIN</div></form></main><script>function sanitizeRedirect(value){if(!value||value.charAt(0)!=='/')return'/';if(value.startsWith('//'))return'/';if(value.toLowerCase().startsWith('/login'))return'/';return value;}window.addEventListener('load',()=>{localStorage.removeItem('tankalarm_session');const ov=document.getElementById('loading-overlay');if(ov){ov.style.display='none';ov.classList.add('hidden');}const params=new URLSearchParams(window.location.search);if(params.get('reason')==='expired'){const e=document.getElementById('error');e.textContent='Session expired \u2014 another user logged in';e.style.display='block';}});document.getElementById("loginForm").addEventListener("submit",async(e)=>{e.preventDefault();const pin=document.getElementById("pin").value;try{const res=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin})});if(res.ok){const data=await res.json();localStorage.setItem("tankalarm_token","1");localStorage.setItem("tankalarm_session",data.session||"cookie");const params=new URLSearchParams(window.location.search);window.location.href=sanitizeRedirect(params.get("redirect"));}else{document.getElementById("error").textContent="Invalid PIN";document.getElementById("error").style.display="block";}}catch(err){document.getElementById("error").textContent="Connection failed: "+err.message;document.getElementById("error").style.display="block";}});</script></body></html>)HTML";
 
 static const char CONTACTS_MANAGER_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Contacts Manager - Tank Alarm Server</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Contacts</h2><div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;"><div class="filter-section"><div class="filter-group"><label>Filter by View</label><select id="viewFilter"><option value="all">All Contacts</option><option value="site">By Site</option><option value="alarm">By Alarm</option></select></div><div class="filter-group" id="siteFilterGroup" style="display: none;"><label>Select Site</label><select id="siteSelect"><option value="">All Sites</option></select></div><div class="filter-group" id="alarmFilterGroup" style="display: none;"><label>Select Alarm</label><select id="alarmSelect"><option value="">All Alarms</option></select></div></div><)HTML" R"HTML(button class="btn btn-primary" onclick="openAddContactModal()">+ Add Contact</button></div><div id="contactsList" class="contact-list"><div class="empty-state">No contacts configured. Click "+ Add Contact" to get started.</div></div></div><div class="card"><h2>Daily Report Recipients</h2><p style="color: var(--muted); margin-bottom: 16px;">Contacts who receive the daily tank level summary email.</p><div class="daily-report-section"><div id="dailyReportList" class="daily-report-list"><div class="empty-state">No daily report recipients configured.</div></div><button class="btn btn-secondary" onclick="openAddDailyReportModal()">+ Add Recipient</button></div></div></main><div id="contactModal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2 id="modalTitle">Add Contact</h2><button class="modal-close" onclick="closeContactModal()">&times;</button></div><form id="contactForm"><div class="form-grid"><div class="form-field"><label>Name *</label><input type="text" id="contactName" required></div><div class="form-field"><label>Phone Number</label><input type="tel" id="contactPhone" placeholder="+15551234567"></div><div class="form-field"><label>Email Address</label><input type="email" id="contactEmail" placeholder="contact@example.com"></div></div><h3>Alarm Associations</h3><p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 12px;">Select which alarms should trigger notifications to this contact.</p><div id="alarmAssociations" class="form-grid"></div><div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;"><button type="button" class="btn btn-secondary" onclick="closeContactModal()">Cancel</button><button type="submit" class="btn btn-primary">Save Contact</button></div></form></div></div><div id="dailyReportModal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2>Add Daily Report Recipient</h2><button class="modal-close" onclick="closeDailyReportModal()">&times;</button></div><for)HTML" R"HTML(m id="dailyReportForm"><div class="form-grid"><div class="form-field"><label>Select Contact</label><select id="dailyReportContactSelect" required><option value="">Choose a contact...</option></select></div></div><div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;"><button type="button" class="btn btn-secondary" onclick="closeDailyReportModal()">Cancel</button><button type="submit" class="btn btn-primary">Add Recipient</button></div></form></div></div><div id="toast"></div><script>(async ()=>{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);/* PAUSE LOGIC */const pause_els={btn:document.getElementById('pauseBtn'),toast:document.getElementById('toast')};
 const pause_state={paused:false};if(pause_els.btn)pause_els.btn.addEventListener('click',togglePauseFlow);if(pause_els.btn)pause_els.btn.addEventListener('mouseenter',()=>{if(pause_state.paused)pause_els.btn.textContent='Resume';});if(pause_els.btn)pause_els.btn.addEventListener('mouseleave',()=>{renderPauseBtn();});await fetch('/api/clients?summary=1').then(r=>r.json()).then(d=>{if(d&&d.srv){pause_state.paused=!!d.srv.ps;renderPauseBtn();}}).catch(e=>console.error('Failed to load pause state',e));
@@ -1882,7 +1884,7 @@ static float convertMaToLevelWithTemp(const char *clientUid, uint8_t sensorIndex
 static float convertVoltageToLevel(const char *clientUid, uint8_t sensorIndex, float voltage);
 static ClientMetadata *findClientMetadata(const char *clientUid);
 static ClientMetadata *findOrCreateClientMetadata(const char *clientUid);
-static bool checkSmsRateLimit(SensorRecord *rec);
+static bool checkSmsRateLimit(SensorRecord *rec, bool bypassMinimumInterval = false);
 static void publishViewerSummary();
 // Persistence: sensor registry and client metadata
 static void saveSensorRegistry();
@@ -3069,6 +3071,115 @@ static void createDefaultConfig(ServerConfig &cfg) {
   strlcpy(cfg.ftpPath, FTP_PATH_DEFAULT, sizeof(cfg.ftpPath));
 }
 
+static void buildFtpCredentialKey(const char *productUid, const char *configPin, char *out, size_t outSize) {
+  if (!out || outSize == 0) {
+    return;
+  }
+
+  const char *uidPart = (productUid && productUid[0] != '\0') ? productUid : "tankalarm";
+  const char *pinPart = (configPin && isValidPin(configPin)) ? configPin : DEFAULT_ADMIN_PIN;
+  snprintf(out, outSize, "%s|%s|ftp", uidPart, pinPart);
+}
+
+static char ftpCredentialHexDigit(uint8_t value) {
+  value &= 0x0F;
+  return (value < 10) ? (char)('0' + value) : (char)('A' + (value - 10));
+}
+
+static int ftpCredentialHexValue(char value) {
+  if (value >= '0' && value <= '9') {
+    return value - '0';
+  }
+  if (value >= 'a' && value <= 'f') {
+    return 10 + (value - 'a');
+  }
+  if (value >= 'A' && value <= 'F') {
+    return 10 + (value - 'A');
+  }
+  return -1;
+}
+
+static bool encodeFtpCredential(const char *plainText, const char *productUid, const char *configPin, char *encoded, size_t encodedSize) {
+  if (!encoded || encodedSize == 0) {
+    return false;
+  }
+
+  encoded[0] = '\0';
+  if (!plainText || plainText[0] == '\0') {
+    return true;
+  }
+
+  static const char kPrefix[] = "TA1:";
+  char payload[40];
+  int payloadLen = snprintf(payload, sizeof(payload), "%s%s", kPrefix, plainText);
+  if (payloadLen <= 0 || (size_t)payloadLen >= sizeof(payload)) {
+    return false;
+  }
+
+  char key[96];
+  buildFtpCredentialKey(productUid, configPin, key, sizeof(key));
+  size_t keyLen = strlen(key);
+  if (keyLen == 0 || encodedSize < ((size_t)payloadLen * 2U) + 1U) {
+    return false;
+  }
+
+  for (size_t i = 0; i < (size_t)payloadLen; ++i) {
+    uint8_t obfuscated = ((uint8_t)payload[i]) ^ ((uint8_t)key[i % keyLen]);
+    encoded[(i * 2U)] = ftpCredentialHexDigit((uint8_t)(obfuscated >> 4));
+    encoded[(i * 2U) + 1U] = ftpCredentialHexDigit(obfuscated);
+  }
+  encoded[(size_t)payloadLen * 2U] = '\0';
+  return true;
+}
+
+static bool decodeFtpCredential(const char *encoded, const char *productUid, const char *configPin, char *plainText, size_t plainTextSize) {
+  if (!plainText || plainTextSize == 0) {
+    return false;
+  }
+
+  plainText[0] = '\0';
+  if (!encoded || encoded[0] == '\0') {
+    return true;
+  }
+
+  size_t encodedLen = strlen(encoded);
+  if ((encodedLen & 1U) != 0U) {
+    return false;
+  }
+
+  static const char kPrefix[] = "TA1:";
+  char payload[40];
+  size_t payloadLen = encodedLen / 2U;
+  if (payloadLen <= strlen(kPrefix) || payloadLen >= sizeof(payload)) {
+    return false;
+  }
+
+  char key[96];
+  buildFtpCredentialKey(productUid, configPin, key, sizeof(key));
+  size_t keyLen = strlen(key);
+  if (keyLen == 0) {
+    return false;
+  }
+
+  for (size_t i = 0; i < payloadLen; ++i) {
+    int high = ftpCredentialHexValue(encoded[i * 2U]);
+    int low = ftpCredentialHexValue(encoded[(i * 2U) + 1U]);
+    if (high < 0 || low < 0) {
+      return false;
+    }
+    uint8_t obfuscated = (uint8_t)((high << 4) | low);
+    payload[i] = (char)(obfuscated ^ ((uint8_t)key[i % keyLen]));
+  }
+  payload[payloadLen] = '\0';
+
+  if (strncmp(payload, kPrefix, strlen(kPrefix)) != 0) {
+    return false;
+  }
+
+  strlcpy(plainText, payload + strlen(kPrefix), plainTextSize);
+  return true;
+}
+
 static bool loadConfig(ServerConfig &cfg) {
 #ifdef FILESYSTEM_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
@@ -3170,6 +3281,7 @@ static bool loadConfig(ServerConfig &cfg) {
   cfg.checkViewerVersionAlerts = doc["checkViewerVersionAlerts"].is<bool>() ? doc["checkViewerVersionAlerts"].as<bool>() : true;
 
   JsonObject ftpObj = doc["ftp"].as<JsonObject>();
+  bool migrateLegacyFtpSecrets = false;
   cfg.ftpEnabled = ftpObj ? (ftpObj["enabled"].is<bool>() ? ftpObj["enabled"].as<bool>() : false) : (doc["ftpEnabled"].is<bool>() ? doc["ftpEnabled"].as<bool>() : false);
   cfg.ftpPassive = ftpObj ? (ftpObj["passive"].is<bool>() ? ftpObj["passive"].as<bool>() : true) : true;
   cfg.ftpBackupOnChange = ftpObj ? (ftpObj["backupOnChange"].is<bool>() ? ftpObj["backupOnChange"].as<bool>() : false) : (doc["ftpBackupOnChange"].is<bool>() ? doc["ftpBackupOnChange"].as<bool>() : false);
@@ -3178,11 +3290,17 @@ static bool loadConfig(ServerConfig &cfg) {
   if (ftpObj && ftpObj["host"]) {
     strlcpy(cfg.ftpHost, ftpObj["host"], sizeof(cfg.ftpHost));
   }
-  if (ftpObj && ftpObj["user"]) {
-    strlcpy(cfg.ftpUser, ftpObj["user"], sizeof(cfg.ftpUser));
+  const char *ftpUserObf = ftpObj ? ftpObj["userObf"].as<const char *>() : nullptr;
+  if (ftpUserObf && ftpUserObf[0] != '\0') {
+    if (!decodeFtpCredential(ftpUserObf, cfg.productUid, cfg.configPin, cfg.ftpUser, sizeof(cfg.ftpUser))) {
+      Serial.println(F("Failed to decode stored FTP username"));
+    }
   }
-  if (ftpObj && ftpObj["pass"]) {
-    strlcpy(cfg.ftpPass, ftpObj["pass"], sizeof(cfg.ftpPass));
+  const char *ftpPassObf = ftpObj ? ftpObj["passObf"].as<const char *>() : nullptr;
+  if (ftpPassObf && ftpPassObf[0] != '\0') {
+    if (!decodeFtpCredential(ftpPassObf, cfg.productUid, cfg.configPin, cfg.ftpPass, sizeof(cfg.ftpPass))) {
+      Serial.println(F("Failed to decode stored FTP password"));
+    }
   }
   if (ftpObj && ftpObj["path"]) {
     strlcpy(cfg.ftpPath, ftpObj["path"], sizeof(cfg.ftpPath));
@@ -3190,14 +3308,33 @@ static bool loadConfig(ServerConfig &cfg) {
   if ((!ftpObj || !ftpObj["host"]) && doc["ftpHost"].as<const char *>()) {
     strlcpy(cfg.ftpHost, doc["ftpHost"], sizeof(cfg.ftpHost));
   }
-  if ((!ftpObj || !ftpObj["user"]) && doc["ftpUser"].as<const char *>()) {
-    strlcpy(cfg.ftpUser, doc["ftpUser"], sizeof(cfg.ftpUser));
+  const char *legacyFtpUser = nullptr;
+  if (ftpObj && ftpObj["user"]) {
+    legacyFtpUser = ftpObj["user"].as<const char *>();
   }
-  if ((!ftpObj || !ftpObj["pass"]) && doc["ftpPass"].as<const char *>()) {
+  if ((!cfg.ftpUser[0]) && legacyFtpUser && legacyFtpUser[0] != '\0') {
+    strlcpy(cfg.ftpUser, legacyFtpUser, sizeof(cfg.ftpUser));
+    migrateLegacyFtpSecrets = true;
+  } else if ((!cfg.ftpUser[0]) && ((!ftpObj || !ftpObj["user"]) && doc["ftpUser"].as<const char *>())) {
+    strlcpy(cfg.ftpUser, doc["ftpUser"], sizeof(cfg.ftpUser));
+    migrateLegacyFtpSecrets = true;
+  }
+  const char *legacyFtpPass = nullptr;
+  if (ftpObj && ftpObj["pass"]) {
+    legacyFtpPass = ftpObj["pass"].as<const char *>();
+  }
+  if ((!cfg.ftpPass[0]) && legacyFtpPass && legacyFtpPass[0] != '\0') {
+    strlcpy(cfg.ftpPass, legacyFtpPass, sizeof(cfg.ftpPass));
+    migrateLegacyFtpSecrets = true;
+  } else if ((!cfg.ftpPass[0]) && ((!ftpObj || !ftpObj["pass"]) && doc["ftpPass"].as<const char *>())) {
     strlcpy(cfg.ftpPass, doc["ftpPass"], sizeof(cfg.ftpPass));
+    migrateLegacyFtpSecrets = true;
   }
   if ((!ftpObj || !ftpObj["path"]) && doc["ftpPath"].as<const char *>()) {
     strlcpy(cfg.ftpPath, doc["ftpPath"], sizeof(cfg.ftpPath));
+  }
+  if (migrateLegacyFtpSecrets) {
+    gConfigDirty = true;
   }
 
   if (doc["staticIp"]) {
@@ -3237,6 +3374,14 @@ static bool saveConfig(const ServerConfig &cfg) {
     if (!mbedFS) return false;
   #endif
   
+  char ftpUserObf[80];
+  char ftpPassObf[80];
+  if (!encodeFtpCredential(cfg.ftpUser, cfg.productUid, cfg.configPin, ftpUserObf, sizeof(ftpUserObf)) ||
+      !encodeFtpCredential(cfg.ftpPass, cfg.productUid, cfg.configPin, ftpPassObf, sizeof(ftpPassObf))) {
+    Serial.println(F("Failed to obfuscate FTP credentials for storage"));
+    return false;
+  }
+
   JsonDocument doc;
   doc["serverName"] = cfg.serverName;
   doc["serverFleet"] = cfg.serverFleet;
@@ -3266,8 +3411,12 @@ static bool saveConfig(const ServerConfig &cfg) {
   ftp["restoreOnBoot"] = cfg.ftpRestoreOnBoot;
   ftp["port"] = cfg.ftpPort;
   ftp["host"] = cfg.ftpHost;
-  ftp["user"] = cfg.ftpUser;
-  ftp["pass"] = cfg.ftpPass;
+  if (ftpUserObf[0] != '\0') {
+    ftp["userObf"] = ftpUserObf;
+  }
+  if (ftpPassObf[0] != '\0') {
+    ftp["passObf"] = ftpPassObf;
+  }
   ftp["path"] = cfg.ftpPath;
 
   JsonArray ip = doc["staticIp"].to<JsonArray>();
@@ -3629,11 +3778,16 @@ static bool ftpEnterPassive(FtpSession &session, IPAddress &dataHost, uint16_t &
 
   int parts[6] = {0};
   int idx = 0;
-  size_t len = strlen(msg);
-  for (size_t i = 0; i < len && idx < 6; ++i) {
-    if (isdigit(msg[i])) {
-      parts[idx] = parts[idx] * 10 + (msg[i] - '0');
-    } else if (msg[i] == ',' || msg[i] == ')') {
+  const char *pasvStart = strchr(msg, '(');
+  if (!pasvStart) {
+    snprintf(error, errorSize, "PASV parse error");
+    return false;
+  }
+  pasvStart++;
+  for (const char *cursor = pasvStart; *cursor != '\0' && idx < 6; ++cursor) {
+    if (isdigit(*cursor)) {
+      parts[idx] = parts[idx] * 10 + (*cursor - '0');
+    } else if (*cursor == ',' || *cursor == ')') {
       idx++;
     }
   }
@@ -6120,7 +6274,6 @@ static void serveFile(EthernetClient &client, const char* htmlContent) {
 }
 
 static void handleSessionCheck(EthernetClient &client, const char *sessionHdr) {
-  // Validate session from X-Session header (not query string)
   bool valid = sessionTokenMatches(sessionHdr);
   if (valid) {
     respondJson(client, String(F("{\"valid\":true}")));
@@ -6129,10 +6282,31 @@ static void handleSessionCheck(EthernetClient &client, const char *sessionHdr) {
   }
 }
 
+static void emitSessionCookie(EthernetClient &client, const char *sessionValue) {
+  client.print(F("Set-Cookie: tankalarm_session="));
+  if (sessionValue && sessionValue[0] != '\0') {
+    client.print(sessionValue);
+  }
+  client.print(F("; Path=/; HttpOnly; SameSite=Strict"));
+  if (!sessionValue || sessionValue[0] == '\0') {
+    client.print(F("; Max-Age=0"));
+  }
+  client.println();
+}
+
 static void handleLogoutPost(EthernetClient &client) {
   // Invalidate the current server-side session
   memset(gSessionToken, 0, sizeof(gSessionToken));
-  respondJson(client, String(F("{\"success\":true}")));
+  static const char kLogoutBody[] = "{\"success\":true}";
+  client.println(F("HTTP/1.1 200 OK"));
+  client.println(F("Content-Type: application/json"));
+  emitSessionCookie(client, nullptr);
+  client.println(F("Connection: close"));
+  client.println(F("Cache-Control: no-store"));
+  client.print(F("Content-Length: "));
+  client.println(strlen(kLogoutBody));
+  client.println();
+  client.print(kLogoutBody);
 }
 
 static void handleLoginPost(EthernetClient &client, const String &body) {
@@ -6174,13 +6348,16 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
     resetAuthFailures();
     // Generate a new session token, invalidating any previous session
     generateSessionToken();
+    static const char kLoginBody[] = "{\"success\":true,\"session\":\"cookie\"}";
     client.println(F("HTTP/1.1 200 OK"));
     client.println(F("Content-Type: application/json"));
+    emitSessionCookie(client, gSessionToken);
     client.println(F("Connection: close"));
+    client.println(F("Cache-Control: no-store"));
+    client.print(F("Content-Length: "));
+    client.println(strlen(kLoginBody));
     client.println();
-    client.print(F("{\"success\":true,\"session\":\""));
-    client.print(gSessionToken);
-    client.println(F("\"}"));
+    client.print(kLoginBody);
   } else {
     // Failed login - record failure (non-blocking)
     recordAuthFailure();
@@ -6220,7 +6397,7 @@ static void handleWebRequests() {
   }
 
   // Session validation middleware: all /api/ routes except login and session-check
-  // must carry a valid X-Session header matching the active server-side token.
+  // must carry a valid session via X-Session or the HttpOnly cookie.
   if (path.startsWith("/api/") &&
       path != "/api/login" &&
       path != "/api/session/check") {
@@ -6477,6 +6654,44 @@ static void handleWebRequests() {
   client.stop();
 }
 
+static bool extractCookieValue(const char *cookieHeader, const char *cookieName, char *out, size_t outSize) {
+  if (!cookieHeader || !cookieName || !out || outSize == 0) {
+    return false;
+  }
+
+  out[0] = '\0';
+  size_t nameLen = strlen(cookieName);
+  const char *cursor = cookieHeader;
+  while (*cursor != '\0') {
+    while (*cursor == ' ' || *cursor == ';') {
+      cursor++;
+    }
+    if (strncmp(cursor, cookieName, nameLen) == 0 && cursor[nameLen] == '=') {
+      cursor += nameLen + 1;
+      size_t valueLen = 0;
+      while (cursor[valueLen] != '\0' && cursor[valueLen] != ';') {
+        valueLen++;
+      }
+      while (valueLen > 0 && cursor[valueLen - 1] == ' ') {
+        valueLen--;
+      }
+      if (valueLen >= outSize) {
+        valueLen = outSize - 1;
+      }
+      memcpy(out, cursor, valueLen);
+      out[valueLen] = '\0';
+      return valueLen > 0;
+    }
+    const char *next = strchr(cursor, ';');
+    if (!next) {
+      break;
+    }
+    cursor = next + 1;
+  }
+
+  return false;
+}
+
 static bool readHttpRequest(EthernetClient &client, String &method, String &path, String &body, size_t &contentLength, bool &bodyTooLarge, char *sessionHdr, size_t sessionHdrSize) {
   method = "";
   path = "";
@@ -6492,6 +6707,7 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
   bool firstLine = true;
   int headerCount = 0;
   static const int MAX_HEADERS = 64;  // Prevent excessive header processing
+  char sessionCookie[17] = "";
 
   unsigned long start = millis();
   while (client.connected() && millis() - start < 5000UL) {
@@ -6548,6 +6764,8 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
             }
           } else if (strcasecmp(key, "X-Session") == 0) {
             strlcpy(sessionHdr, val, sessionHdrSize);
+          } else if (strcasecmp(key, "Cookie") == 0) {
+            extractCookieValue(val, "tankalarm_session", sessionCookie, sizeof(sessionCookie));
           }
         }
       }
@@ -6559,6 +6777,10 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
         return false;  // Header line too long
       }
     }
+  }
+
+  if (sessionCookie[0] != '\0') {
+    strlcpy(sessionHdr, sessionCookie, sessionHdrSize);
   }
 
   // If the body is already too large, don't read it into RAM.
@@ -7283,66 +7505,66 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
     return;
   }
 
-  if (doc["server"]) {
+  if (doc.containsKey("server") && doc["server"].is<JsonObject>()) {
     JsonObject serverObj = doc["server"].as<JsonObject>();
-    if (serverObj["smsPrimary"]) {
+    if (serverObj.containsKey("smsPrimary")) {
       strlcpy(gConfig.smsPrimary, serverObj["smsPrimary"], sizeof(gConfig.smsPrimary));
     }
-    if (serverObj["smsSecondary"]) {
+    if (serverObj.containsKey("smsSecondary")) {
       strlcpy(gConfig.smsSecondary, serverObj["smsSecondary"], sizeof(gConfig.smsSecondary));
     }
-    if (serverObj["dailyEmail"]) {
+    if (serverObj.containsKey("dailyEmail")) {
       strlcpy(gConfig.dailyEmail, serverObj["dailyEmail"], sizeof(gConfig.dailyEmail));
     }
-    if (serverObj["dailyHour"]) {
+    if (serverObj.containsKey("dailyHour")) {
       gConfig.dailyHour = serverObj["dailyHour"].as<uint8_t>();
     }
-    if (serverObj["dailyMinute"]) {
+    if (serverObj.containsKey("dailyMinute")) {
       gConfig.dailyMinute = serverObj["dailyMinute"].as<uint8_t>();
     }
-    if (serverObj["webRefreshSeconds"]) {
+    if (serverObj.containsKey("webRefreshSeconds")) {
       gConfig.webRefreshSeconds = serverObj["webRefreshSeconds"].as<uint16_t>();
     }
-    if (serverObj["smsOnHigh"]) {
+    if (serverObj.containsKey("smsOnHigh")) {
       gConfig.smsOnHigh = serverObj["smsOnHigh"].as<bool>();
     }
-    if (serverObj["smsOnLow"]) {
+    if (serverObj.containsKey("smsOnLow")) {
       gConfig.smsOnLow = serverObj["smsOnLow"].as<bool>();
     }
-    if (serverObj["smsOnClear"]) {
+    if (serverObj.containsKey("smsOnClear")) {
       gConfig.smsOnClear = serverObj["smsOnClear"].as<bool>();
     }
 
-    if (serverObj["ftp"]) {
+    if (serverObj.containsKey("ftp") && serverObj["ftp"].is<JsonObject>()) {
       JsonObject ftpObj = serverObj["ftp"].as<JsonObject>();
-      if (ftpObj["enabled"]) {
+      if (ftpObj.containsKey("enabled")) {
         gConfig.ftpEnabled = ftpObj["enabled"].as<bool>();
       }
-      if (ftpObj["passive"]) {
+      if (ftpObj.containsKey("passive")) {
         gConfig.ftpPassive = ftpObj["passive"].as<bool>();
       }
-      if (ftpObj["backupOnChange"]) {
+      if (ftpObj.containsKey("backupOnChange")) {
         gConfig.ftpBackupOnChange = ftpObj["backupOnChange"].as<bool>();
       }
-      if (ftpObj["restoreOnBoot"]) {
+      if (ftpObj.containsKey("restoreOnBoot")) {
         gConfig.ftpRestoreOnBoot = ftpObj["restoreOnBoot"].as<bool>();
       }
-      if (ftpObj["port"]) {
+      if (ftpObj.containsKey("port")) {
         gConfig.ftpPort = ftpObj["port"].as<uint16_t>();
       }
-      if (ftpObj["host"]) {
+      if (ftpObj.containsKey("host")) {
         strlcpy(gConfig.ftpHost, ftpObj["host"], sizeof(gConfig.ftpHost));
       }
-      if (ftpObj["user"]) {
+      if (ftpObj.containsKey("user")) {
         strlcpy(gConfig.ftpUser, ftpObj["user"], sizeof(gConfig.ftpUser));
       }
-      if (ftpObj["pass"]) {
+      if (ftpObj.containsKey("pass")) {
         const char *passVal = ftpObj["pass"].as<const char *>();
         if (passVal && strlen(passVal) > 0) {
           strlcpy(gConfig.ftpPass, passVal, sizeof(gConfig.ftpPass));
         }
       }
-      if (ftpObj["path"]) {
+      if (ftpObj.containsKey("path")) {
         strlcpy(gConfig.ftpPath, ftpObj["path"], sizeof(gConfig.ftpPath));
       }
     }
@@ -8239,6 +8461,31 @@ static void pollNotecard() {
   processNotefile(CONFIG_ACK_INBOX_FILE, handleConfigAck);
 }
 
+struct NotefileParseFailureTracker {
+  char fileName[32];
+  uint8_t failures;
+};
+
+static uint8_t *notefileParseFailureCounter(const char *fileName) {
+  static NotefileParseFailureTracker trackers[12] = {};
+  if (!fileName || fileName[0] == '\0') {
+    return nullptr;
+  }
+  for (size_t i = 0; i < (sizeof(trackers) / sizeof(trackers[0])); ++i) {
+    if (trackers[i].fileName[0] != '\0' && strcmp(trackers[i].fileName, fileName) == 0) {
+      return &trackers[i].failures;
+    }
+  }
+  for (size_t i = 0; i < (sizeof(trackers) / sizeof(trackers[0])); ++i) {
+    if (trackers[i].fileName[0] == '\0') {
+      strlcpy(trackers[i].fileName, fileName, sizeof(trackers[i].fileName));
+      trackers[i].failures = 0;
+      return &trackers[i].failures;
+    }
+  }
+  return nullptr;
+}
+
 static void processNotefile(const char *fileName, void (*handler)(JsonDocument &, double)) {
   uint8_t processed = 0;
   while (processed < MAX_NOTES_PER_FILE_PER_POLL) {
@@ -8280,25 +8527,53 @@ static void processNotefile(const char *fileName, void (*handler)(JsonDocument &
 
     char *json = JConvertToJSONString(body);
     double epoch = JGetNumber(rsp, "time");
+    bool processedOk = false;
     if (json) {
-      size_t jsonLen = strlen(json);
       JsonDocument doc;
       DeserializationError err = deserializeJson(doc, json);
       NoteFree(json);
       if (!err) {
         handler(doc, epoch);
+        processedOk = true;
+      } else {
+        Serial.print(F("Skipping malformed note in "));
+        Serial.print(fileName);
+        Serial.print(F(": "));
+        Serial.println(err.f_str());
       }
     }
 
     notecard.deleteResponse(rsp);
 
-    // Consume the note now that it has been processed
-    J *delReq = notecard.newRequest("note.get");
-    if (delReq) {
-      JAddStringToObject(delReq, "file", fileName);
-      JAddBoolToObject(delReq, "delete", true);
-      J *delRsp = notecard.requestAndResponse(delReq);
-      if (delRsp) notecard.deleteResponse(delRsp);
+    uint8_t *failureCounter = notefileParseFailureCounter(fileName);
+    if (processedOk) {
+      if (failureCounter) {
+        *failureCounter = 0;
+      }
+      J *delReq = notecard.newRequest("note.get");
+      if (delReq) {
+        JAddStringToObject(delReq, "file", fileName);
+        JAddBoolToObject(delReq, "delete", true);
+        J *delRsp = notecard.requestAndResponse(delReq);
+        if (delRsp) notecard.deleteResponse(delRsp);
+      }
+    } else {
+      if (failureCounter) {
+        (*failureCounter)++;
+        if (*failureCounter >= 3) {
+          Serial.print(F("Deleting poison note from "));
+          Serial.println(fileName);
+          J *delReq = notecard.newRequest("note.get");
+          if (delReq) {
+            JAddStringToObject(delReq, "file", fileName);
+            JAddBoolToObject(delReq, "delete", true);
+            J *delRsp = notecard.requestAndResponse(delReq);
+            if (delRsp) notecard.deleteResponse(delRsp);
+          }
+          *failureCounter = 0;
+        }
+      }
+      break;
     }
 
     processed++;
@@ -8651,32 +8926,31 @@ static void handleAlarm(JsonDocument &doc, double epoch) {
   gSensorRegistryDirty = true;
 
   // Check rate limit before sending SMS
-  bool smsEnabled = false;  // Default off -- only send SMS when client explicitly requests (se=true)
+  bool clientWantsSms = false;
   if (doc["se"]) {
-    smsEnabled = doc["se"].as<bool>();
+    clientWantsSms = doc["se"].as<bool>();
   } else if (doc["smsEnabled"]) {
-    smsEnabled = doc["smsEnabled"].as<bool>();
+    clientWantsSms = doc["smsEnabled"].as<bool>();
   }
   // For sensor-level alarms (high/low/clear/digital), SMS is controlled by server policy
   bool smsAllowedByServer = false;
   if (strcmp(type, "high") == 0) {
-    smsEnabled = true;  // Sensor alarms always eligible
     smsAllowedByServer = gConfig.smsOnHigh;
   } else if (strcmp(type, "low") == 0) {
-    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnLow;
   } else if (strcmp(type, "clear") == 0) {
-    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnClear;
   } else if (isDigitalAlarm) {
-    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnHigh;
   } else if (isRelayTimeout) {
-    smsEnabled = true;
     smsAllowedByServer = gConfig.smsOnClear;  // Relay timeout uses clear SMS policy
+  } else if (isRecovery) {
+    smsAllowedByServer = gConfig.smsOnClear;
   }
 
-  if (!isDiagnostic && smsEnabled && smsAllowedByServer && checkSmsRateLimit(rec)) {
+  bool bypassMinimumInterval = (strcmp(type, "clear") == 0) || isRecovery;
+  bool suppressSmsForDiagnostic = isDiagnostic && !isRecovery;
+  if (!suppressSmsForDiagnostic && clientWantsSms && smsAllowedByServer && checkSmsRateLimit(rec, bypassMinimumInterval)) {
     // BugFix v1.6.2 (M-16): Pre-truncate site name to leave room for alarm details.
     // Long site names can consume the entire 160-char SMS budget.
     char shortSite[24];
@@ -9274,7 +9548,7 @@ static SensorRecord *upsertSensorRecord(const char *clientUid, uint8_t sensorInd
   return &rec;
 }
 
-static bool checkSmsRateLimit(SensorRecord *rec) {
+static bool checkSmsRateLimit(SensorRecord *rec, bool bypassMinimumInterval) {
   if (!rec) {
     return false;
   }
@@ -9285,7 +9559,7 @@ static bool checkSmsRateLimit(SensorRecord *rec) {
   }
 
   // Check minimum interval since last SMS for this sensor
-  if (now - rec->lastSmsAlertEpoch < MIN_SMS_ALERT_INTERVAL_SECONDS) {
+  if (!bypassMinimumInterval && now - rec->lastSmsAlertEpoch < MIN_SMS_ALERT_INTERVAL_SECONDS) {
     Serial.print(F("SMS rate limit: Too soon since last alert for "));
     Serial.print(rec->site);
     Serial.print(F(" #"));

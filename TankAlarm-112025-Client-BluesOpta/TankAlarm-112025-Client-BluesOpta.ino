@@ -678,6 +678,10 @@ static bool gConfigDirty = false;
 // BugFix v1.6.2 (I-11): Deferred ACK state — ACK is sent only after persistence succeeds.
 static bool gPendingConfigAck = false;
 static char gPendingConfigAckVersion[16] = {0};
+static bool gPendingConfigAckSuccess = true;
+static char gPendingConfigAckMessage[48] = "Config applied and persisted";
+static unsigned long gPendingConfigAckRetryAt = 0;
+static unsigned long gPendingConfigAckRetryDelayMs = 5000UL;
 static bool gHardwareSummaryPrinted = false;
 
 // Network failure handling
@@ -834,6 +838,7 @@ static void pollForConfigUpdates();
 static void applyConfigUpdate(const JsonDocument &doc);
 static bool sendConfigAck(bool success, const char *message, const char *configVersion);
 static void persistConfigIfDirty();
+static void retryPendingConfigAckIfDue();
 static void sampleMonitors();
 static float readDigitalSensor(const MonitorConfig &cfg, uint8_t idx);
 static float readAnalogSensor(const MonitorConfig &cfg, uint8_t idx);
@@ -1776,6 +1781,7 @@ void loop() {
   }
 
   persistConfigIfDirty();
+  retryPendingConfigAckIfDue();
 
   // Periodic health telemetry (when enabled, skip in CRITICAL to save power)
 #ifdef TANKALARM_HEALTH_TELEMETRY_ENABLED
@@ -2321,7 +2327,10 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
   }
   if (t["highAlarm"].is<float>()) mon.highAlarmThreshold = t["highAlarm"].as<float>();
   if (t["lowAlarm"].is<float>()) mon.lowAlarmThreshold = t["lowAlarm"].as<float>();
-  if (t["hysteresis"].is<float>()) mon.hysteresisValue = t["hysteresis"].as<float>();
+  if (t["hysteresis"].is<float>()) {
+    float hysteresis = t["hysteresis"].as<float>();
+    mon.hysteresisValue = (hysteresis >= 0.0f) ? hysteresis : 0.0f;
+  }
 
   // ---- Notification flags ----
   if (t["daily"].is<bool>()) mon.enableDailyReport = t["daily"].as<bool>();
@@ -3587,6 +3596,10 @@ static void pollForConfigUpdates() {
           // will send the ACK after saveConfigToFlash() completes.
           strlcpy(gPendingConfigAckVersion, cv, sizeof(gPendingConfigAckVersion));
           gPendingConfigAck = true;
+          gPendingConfigAckSuccess = true;
+          strlcpy(gPendingConfigAckMessage, "Config applied and persisted", sizeof(gPendingConfigAckMessage));
+          gPendingConfigAckRetryAt = 0;
+          gPendingConfigAckRetryDelayMs = 5000UL;
           gConfigDirty = true;
           // Delete the inbound note now — the config is in memory and will be
           // persisted shortly. If persistence fails, a failure ACK is sent.
@@ -3697,6 +3710,47 @@ static void reinitializeHardware() {
 static void resetTelemetryBaselines() {
   for (uint8_t i = 0; i < MAX_MONITORS; ++i) {
     gMonitorState[i].lastReportedInches = -9999.0f;
+  }
+}
+
+static void clearPendingConfigAckState() {
+  gPendingConfigAck = false;
+  gPendingConfigAckVersion[0] = '\0';
+  gPendingConfigAckSuccess = true;
+  strlcpy(gPendingConfigAckMessage, "Config applied and persisted", sizeof(gPendingConfigAckMessage));
+  gPendingConfigAckRetryAt = 0;
+  gPendingConfigAckRetryDelayMs = 5000UL;
+}
+
+static bool isPendingConfigAckRetryDue() {
+  if (gPendingConfigAckRetryAt == 0) {
+    return true;
+  }
+  return (long)(millis() - gPendingConfigAckRetryAt) >= 0;
+}
+
+static void schedulePendingConfigAckRetry() {
+  unsigned long delayMs = gPendingConfigAckRetryDelayMs;
+  if (delayMs < 5000UL) {
+    delayMs = 5000UL;
+  }
+  gPendingConfigAckRetryAt = millis() + delayMs;
+  if (gPendingConfigAckRetryDelayMs < 60000UL) {
+    gPendingConfigAckRetryDelayMs *= 2;
+    if (gPendingConfigAckRetryDelayMs > 60000UL) {
+      gPendingConfigAckRetryDelayMs = 60000UL;
+    }
+  }
+}
+
+static void attemptPendingConfigAckSend() {
+  if (!gPendingConfigAck || !isPendingConfigAckRetryDue()) {
+    return;
+  }
+  if (sendConfigAck(gPendingConfigAckSuccess, gPendingConfigAckMessage, gPendingConfigAckVersion)) {
+    clearPendingConfigAckState();
+  } else {
+    schedulePendingConfigAckRetry();
   }
 }
 
@@ -4026,18 +4080,25 @@ static void persistConfigIfDirty() {
     gConfigDirty = false;
     // BugFix v1.6.2 (I-11): Now that config is safely on flash, send the deferred ACK.
     if (gPendingConfigAck) {
-      sendConfigAck(true, "Config applied and persisted", gPendingConfigAckVersion);
-      gPendingConfigAck = false;
-      gPendingConfigAckVersion[0] = '\0';
+      gPendingConfigAckSuccess = true;
+      strlcpy(gPendingConfigAckMessage, "Config applied and persisted", sizeof(gPendingConfigAckMessage));
+      attemptPendingConfigAckSend();
     }
   } else {
     // Persistence failed — notify server so it can flag the issue.
     if (gPendingConfigAck) {
-      sendConfigAck(false, "Flash persistence failed", gPendingConfigAckVersion);
-      gPendingConfigAck = false;
-      gPendingConfigAckVersion[0] = '\0';
+      gPendingConfigAckSuccess = false;
+      strlcpy(gPendingConfigAckMessage, "Flash persistence failed", sizeof(gPendingConfigAckMessage));
+      attemptPendingConfigAckSend();
     }
   }
+}
+
+static void retryPendingConfigAckIfDue() {
+  if (!gPendingConfigAck || gConfigDirty) {
+    return;
+  }
+  attemptPendingConfigAckSend();
 }
 
 /**
@@ -4490,6 +4551,37 @@ static void sampleMonitors() {
   }
 }
 
+static bool restorePersistentRelayAfterBoot(uint8_t idx, bool highAlarmActive, bool lowAlarmActive, unsigned long sampleNow) {
+  if (idx >= gConfig.monitorCount) {
+    return false;
+  }
+
+  const MonitorConfig &cfg = gConfig.monitors[idx];
+  MonitorRuntime &state = gMonitorState[idx];
+  if (cfg.relayTargetClient[0] == '\0' || cfg.relayMask == 0) {
+    return false;
+  }
+  if (cfg.relayMode != RELAY_MODE_UNTIL_CLEAR && cfg.relayMode != RELAY_MODE_MANUAL_RESET) {
+    return false;
+  }
+  if (!highAlarmActive && !lowAlarmActive) {
+    return false;
+  }
+
+  state.highAlarmLatched = highAlarmActive;
+  state.lowAlarmLatched = !highAlarmActive && lowAlarmActive;
+  state.highAlarmDebounceCount = 0;
+  state.lowAlarmDebounceCount = 0;
+  state.highClearDebounceCount = 0;
+  state.lowClearDebounceCount = 0;
+  activateLocalAlarm(idx, true);
+  triggerRemoteRelays(cfg.relayTargetClient, cfg.relayMask, true);
+  activateRelayForMonitor(idx, cfg.relayMask, RELAY_SRC_ALARM, sampleNow);
+  Serial.print(F("Persistent relay restored after reboot for monitor "));
+  Serial.println(cfg.name);
+  return true;
+}
+
 static void evaluateAlarms(uint8_t idx) {
   const MonitorConfig &cfg = gConfig.monitors[idx];
   MonitorRuntime &state = gMonitorState[idx];
@@ -4503,6 +4595,10 @@ static void evaluateAlarms(uint8_t idx) {
   if (state.sensorFailed) {
     return;
   }
+
+  unsigned long sampleNow = millis();
+  bool firstAlarmSample = (state.lastSampleMillis == 0);
+  state.lastSampleMillis = sampleNow;
 
   // Handle digital sensors (float switches) differently
   if (cfg.sensorInterface == SENSOR_DIGITAL) {
@@ -4539,6 +4635,10 @@ static void evaluateAlarms(uint8_t idx) {
         shouldAlarm = isActivated;
         triggerOnActivated = true;
       }
+    }
+
+    if (firstAlarmSample && shouldAlarm && restorePersistentRelayAfterBoot(idx, true, false, sampleNow)) {
+      return;
     }
     
     // Handle alarm state with debouncing
@@ -4577,6 +4677,10 @@ static void evaluateAlarms(uint8_t idx) {
   bool highCondition = state.currentInches >= highTrigger;
   bool lowCondition = state.currentInches <= lowTrigger;
   bool clearCondition = (state.currentInches < highClear) && (state.currentInches > lowClear);
+
+  if (firstAlarmSample && restorePersistentRelayAfterBoot(idx, highCondition, !highCondition && lowCondition, sampleNow)) {
+    return;
+  }
 
   // Handle high alarm with debouncing
   if (highCondition && !state.highAlarmLatched) {
@@ -6059,9 +6163,12 @@ static void updatePowerState() {
       PowerState oldState = gPowerState;
       gPowerState = proposed;
       gPowerStateDebounce = 0;
+      bool powerChangeSent = false;
       
       // Handle relay safety on entering CRITICAL
       if (gPowerState == POWER_STATE_CRITICAL_HIBERNATE) {
+        sendPowerStateChange(oldState, gPowerState, voltage);
+        powerChangeSent = true;
         // De-energize all relays to eliminate coil current draw (~100mA each)
         for (uint8_t i = 0; i < MAX_RELAYS; i++) {
           setRelayState(i, false);
@@ -6090,7 +6197,9 @@ static void updatePowerState() {
       }
       
       // Notify server of the state change (entry or recovery)
-      sendPowerStateChange(oldState, gPowerState, voltage);
+      if (!powerChangeSent) {
+        sendPowerStateChange(oldState, gPowerState, voltage);
+      }
       unsigned long transitionNow = millis();
       gPowerStateChangeMillis = transitionNow;
       gPreviousPowerState = oldState;

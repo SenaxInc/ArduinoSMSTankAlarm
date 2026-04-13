@@ -1,7 +1,7 @@
 # TankAlarm Master TODO List
 
 > **Current Version:** 1.6.2 (April 9, 2026)  
-> **Last Updated:** April 9, 2026 (v1.6.2 implementation — 14 fixes across Client, Server, Viewer)  
+> **Last Updated:** April 13, 2026 (validated April 13 fixes implemented in code; `I-20` reduced to deferred Explicit-FTPS follow-up)  
 > **Purpose:** Comprehensive tracker for all unimplemented changes identified in code reviews and logic reviews. Update after every new review or commit.
 
 ---
@@ -76,6 +76,11 @@ These items represent data loss, safety, or security risks.
 - **Source:** H4_ATOMIC_WRITE_REFACTOR_RECOMMENDATION.md, CODE_REVIEW_FIX_IMPLEMENTATION_02202026.md
 - **Fixed:** June 9, 2026 — archive manifest write now atomic.
 
+### ~~C-7: UNTIL_CLEAR Relay Not Re-Latched After Reboot **(C)** — SAFETY~~ ✅ FIXED
+- [x] The first valid post-boot alarm sample now restores `UNTIL_CLEAR` and `MANUAL_RESET` relay outputs immediately, without waiting through the debounce window. This closes the extended post-reboot relay outage path.
+- **Source:** CODE_REVIEW_04132026_COMPREHENSIVE.md (CR-H5), LOGIC_REVIEW_04132026.md (LR-5)
+- **Fixed:** April 13, 2026 — Client `evaluateAlarms()` now restores persistent relays on the first qualifying sample.
+
 ---
 
 ## High-Priority Issues
@@ -124,6 +129,52 @@ These items represent data loss, safety, or security risks.
 - [x] Added `sLastSystemSmsSentEpoch` tracker to system alarm branch in `handleAlarm()`. Enforces `MIN_SMS_ALERT_INTERVAL_SECONDS` before sending system SMS.
 - **Source:** CODE_REVIEW_04092026_COMPREHENSIVE.md (CR-H3), LOGIC_REVIEW_04092026.md (LR-4)
 - **Fixed:** April 9, 2026 — v1.6.2
+
+### ~~I-15: Server Settings POST Silently Ignores `false` / `0` Values **(S)** — CONFIG INTEGRITY~~ ✅ FIXED
+- [x] `handleConfigPost()` now uses explicit field-presence checks for mutable numeric and boolean settings, so `false`, `0`, and midnight/top-of-hour values persist correctly instead of being treated as absent.
+- **Source:** CODE_REVIEW_04132026_COPILOT.md (CR-M1), LOGIC_REVIEW_04132026_COPILOT.md (LR-M1)
+- **Fixed:** April 13, 2026 — Server config POST path now honors explicit `false` / `0` payloads.
+
+### ~~I-16: Sensor Alarm SMS Client-Intent Gate Regressed **(S)(C)** — NOTIFICATION POLICY~~ ✅ FIXED
+- [x] Sensor alarm SMS now requires both the client-side intent flag and the server-side policy flag. The Server no longer force-enables SMS for sensor alarm categories.
+- **Source:** CODE_REVIEW_04132026_COPILOT.md (CR-H2), LOGIC_REVIEW_04132026_COPILOT.md (LR-H1)
+- **Fixed:** April 13, 2026 — Server `handleAlarm()` restored the dual-gate policy correctly.
+
+### ~~I-17: Server Consumes Inbound Notes Even on Parse Failure **(S)** — DATA LOSS~~ ✅ FIXED
+- [x] `processNotefile()` now peeks notes first, deletes only after successful parse/processing, and drops repeated poison notes after a bounded retry count instead of losing good data on first parse failure.
+- **Source:** CODE_REVIEW_04132026_COPILOT.md (CR-H1), LOGIC_REVIEW_04132026_COPILOT.md (LR-C1)
+- **Fixed:** April 13, 2026 — Server inbound note handling now uses delete-after-success semantics with poison-note cleanup.
+
+### ~~I-18: Negative Hysteresis Value Not Validated **(C)** — INPUT VALIDATION~~ ✅ FIXED
+- [x] Inbound monitor configs now clamp negative hysteresis to `0.0f`, preventing inverted clear thresholds and stuck alarm states from malformed payloads.
+- **Source:** CODE_REVIEW_04132026_COMPREHENSIVE.md (CR-H1)
+- **Fixed:** April 13, 2026 — Client config ingestion now floors hysteresis at zero.
+
+### ~~I-19: FTP PASV Parser Corrupted by Status Line Digits **(S)** — CONNECTIVITY~~ ✅ FIXED
+- [x] `ftpEnterPassive()` now starts parsing after the `(` in the FTP `227` response, so the passive IP and data port are assembled from the actual PASV tuple instead of the status code digits.
+- **Source:** CODE_REVIEW_04132026_COMPREHENSIVE.md (CR-H2), LOGIC_REVIEW_04132026.md (LR-17)
+- **Fixed:** April 13, 2026 — Server PASV parsing corrected.
+
+### ~~I-20: FTP Credentials Stored and Transmitted in Plaintext **(S)** — SECURITY~~ ⚠ PARTIALLY FIXED / DEFERRED
+- [D] FTP credentials are now obfuscated before being written to `server_config.json`, and legacy plaintext config files are auto-migrated on the next save. FTP control-channel transport is still plaintext on the wire because the current Ethernet/FTP stack does not yet implement FTPS.
+- [D] The current secure-transport plan is **Explicit TLS FTPS only** for the Server backup/archive path. Implicit TLS is not part of the current implementation plan.
+- **Source:** CODE_REVIEW_04132026_COMPREHENSIVE.md (CR-H4)
+- **Fixed/Deferred:** April 13, 2026 — at-rest plaintext removed; secure transport upgrade deferred to a future Explicit-FTPS implementation.
+
+### ~~I-21: CRITICAL_HIBERNATE De-Energizes Relays Without Warning **(C)** — SAFETY~~ ✅ FIXED
+- [x] The Client now publishes the power-state transition before de-energizing relays on entry to `CRITICAL_HIBERNATE`, so the Server receives an immediate critical-power event before pump/relay shutdown.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-10)
+- **Fixed:** April 13, 2026 — `updatePowerState()` now sends the transition note before relay cutoff.
+
+### ~~I-22: Sensor Registry Growth Not Bounded by Active Sensors **(S)** — PERFORMANCE~~
+- [X] Current registry growth is already bounded by `MAX_SENSOR_RECORDS`, stale/orphan pruning, and stalest-record eviction. The intermittent-client scenario is operationally undesirable, but it is not a separate open defect worth tracking in the current implementation.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-13)
+- **Validated:** April 13, 2026 - dropped after live-code audit.
+
+### ~~I-23: Session Token Stored in localStorage — XSS-Accessible **(S)** — SECURITY~~ ✅ FIXED
+- [x] The Server now sets the real session token in an `HttpOnly` cookie and request parsing prefers the cookie-backed session. The browser only retains a non-secret placeholder value for compatibility with existing page scripts.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-20)
+- **Fixed:** April 13, 2026 — login/logout and request auth flow moved to cookie-backed sessions.
 
 ### ~~I-6: Config Retry State Inconsistency **(S)** — STATE MACHINE~~ ✅ FIXED
 - [x] Manual retry now keeps `pendingDispatch=true` and resets `dispatchAttempts=1` on successful Notecard send. ACK from client clears the pending flag (consistent with auto-retry behavior).
@@ -270,6 +321,56 @@ These items represent data loss, safety, or security risks.
 - **Source:** CODE_REVIEW_RECOMMENDATIONS_02262026.md, CODE_REVIEW_04022026_COMPREHENSIVE.md (MED-13)
 - **Verified:** March 24, 2026. Deferred April 2, 2026.
 
+### ~~M-18: Login Redirect Parameter Not Sanitized **(S)** — SECURITY~~ ✅ FIXED
+- [x] The login page now sanitizes `redirect` targets and accepts only safe in-app relative paths. Absolute URLs, protocol-relative targets, and non-app schemes are rejected.
+- **Source:** CODE_REVIEW_04132026_COPILOT.md (CR-H3), LOGIC_REVIEW_04132026_COPILOT.md (LR-H2)
+- **Fixed:** April 13, 2026 — login redirect flow hardened.
+
+### ~~M-19: Narrow Hysteresis Causes Alarm Oscillation and SMS Flood **(C)(S)** — OPERATIONS~~ ✅ DOCUMENTED
+- [x] The Config Generator UI now adds analog-sensor guidance recommending at least 1.0 inch hysteresis and noting that generated configs default to 2.0 inches.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-1)
+- **Fixed:** April 13, 2026 — Config Generator now documents safe hysteresis guidance for analog sensors.
+
+### ~~M-20: Clear/Recovery SMS Rate-Limited May Delay Operator Notice **(S)** — NOTIFICATION~~ ✅ FIXED
+- [x] Clear and recovery SMS now bypass the minimum-interval suppression path while leaving normal alarm rate limiting intact, so operators receive the recovery notification promptly.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-3)
+- **Fixed:** April 13, 2026 — Server SMS rate limiting now exempts clear/recovery notices.
+
+### ~~M-21: Relay Momentary Timeout Imprecision During Blocking I/O **(C)** — PRECISION~~ ✅ DOCUMENTED
+- [x] The Config Generator UI now explains that momentary relays turn off on the next main-loop pass after expiry and advises adding a safety margin when tight pulse width matters.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-7)
+- **Fixed:** April 13, 2026 — Config Generator now documents momentary timing precision limits.
+
+### ~~M-22: Config Dispatch Timeout Missing **(S)** — STATE MANAGEMENT~~
+- [X] The Server already auto-cancels pending config dispatch after `MAX_CONFIG_DISPATCH_RETRIES` (currently 5). This is not an indefinite pending state in the current code.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-8)
+- **Validated:** April 13, 2026 - dropped after live-code audit.
+
+### ~~M-23: Daily Summary Deduplication Uses Exact Epoch **(S)** — DATA INTEGRITY~~
+- [X] The claimed exact-epoch duplicate path was not verified in the current daily report flow. The live code groups report parts within a 30-minute batch window, and the warm-tier daily rollup already deduplicates by date.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-14)
+- **Validated:** April 13, 2026 - dropped after live-code audit.
+
+### ~~M-24: Viewer Poison Note Counter Resets Across Reboots **(V)** — RELIABILITY~~ ✅ FIXED
+- [x] The Viewer now deletes malformed summary notes on the first parse/OOM failure instead of relying on an in-RAM failure counter that resets after reboot.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-16)
+- **Fixed:** April 13, 2026 — Viewer summary fetch now drops poison notes immediately.
+
+### ~~M-25: Config ACK Not Retried on Notecard Failure **(C)** — RELIABILITY~~ ✅ FIXED
+- [x] Pending config ACK state is now retained until a successful send, and failed ACK transmissions retry from later loops with bounded backoff instead of being dropped permanently.
+- **Source:** CODE_REVIEW_04132026_COMPREHENSIVE.md (CR-M1)
+- **Fixed:** April 13, 2026 — Client config ACK flow now retries transient Notecard failures.
+
+### ~~M-26: Viewer Responses Omit `Connection: close` **(V)** — HTTP COMPLIANCE~~ ✅ FIXED
+- [x] Core Viewer responses now emit `Connection: close`, matching the existing deterministic socket-close behavior and preventing compliant clients from waiting on persistent HTTP/1.1 connections.
+- **Source:** CODE_REVIEW_04132026_COMPREHENSIVE.md (CR-M6)
+- **Fixed:** April 13, 2026 — Viewer response helpers updated.
+
+### ~~M-27: Server Settings API Returns FTP Password **(S)** — SECURITY~~
+- [X] The live `/api/server-settings` response already returns only `ftp.pset` to indicate whether a password is configured. The plaintext `ftpPass` path observed during audit is the config-file save path, which remains separately tracked as `I-20` (at-rest plaintext credentials).
+- **Source:** CODE_REVIEW_04132026_COMPREHENSIVE.md (CR-M7)
+- **Validated:** April 13, 2026 — dropped after re-checking the actual settings API payload.
+
 ---
 
 ## Minor / Cosmetic Issues
@@ -321,6 +422,16 @@ These items represent data loss, safety, or security risks.
 ### m-2: Momentary Relay Duration Precedence Unclear **(C)**
 - [ ] Multiple relays in mask with different durations: both deactivate at the minimum. Documented but unintuitive behavior.
 - **Source:** LOGICREVIEW-20260324
+
+### m-13: Config Changes Coalesce Without Audit Trail **(S)** — FORENSICS
+- [ ] Rapid config changes between `persistConfig()` calls are coalesced — no log of which individual settings were changed. If a misconfiguration causes a missed alarm, forensic analysis cannot determine which change was responsible.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-9)
+- **Fix:** Log each setting change (old → new value) to Serial output.
+
+### m-14: Viewer Summary Fetch Misaligned After Large Time Correction **(V)** — TIMING
+- [ ] After a large NTP or Notecard time correction (e.g., +24 hours), `gNextSummaryFetchEpoch` is not recalculated. May trigger an immediate out-of-schedule fetch.
+- **Source:** LOGIC_REVIEW_04132026.md (LR-15)
+- **Fix:** After each time sync, validate that `gNextSummaryFetchEpoch` is still in the future; if not, reschedule.
 
 ### ~~Dead `#ifndef` Redefinitions **(S)(C)**~~ ✅ FIXED
 - [x] All deprecated local redefinitions have been removed. Server and Client now reference Common.h definitions directly.
@@ -540,6 +651,11 @@ This TODO was compiled from the following documents, sorted by date:
 
 | Date | Document | Type |
 |------|----------|------|
+| 2026-04-13 | FTPS planning note/checklist update | Narrowed the future secure-transport plan to Explicit TLS FTPS only; left Implicit TLS out of the current implementation scope |
+| 2026-04-13 | Validated April 13 implementation pass | Implemented C-7, I-15 thru I-19, I-21, I-23, M-18 thru M-21, M-24 thru M-26, and FTP credential obfuscation at rest; revalidated M-27 as already fixed in API output; deferred secure FTP transport follow-up |
+| 2026-04-13 | Live-code validation audit of April 13 review set | Accuracy check against current code. Dropped I-22, M-22, M-23 as unsupported; softened M-24 wording; added M-25 thru M-27 |
+| 2026-04-13 | CODE_REVIEW_04132026_COMPREHENSIVE.md, LOGIC_REVIEW_04132026.md | Comprehensive code + logic review (Claude Opus 4.6). New: C-7, I-18 thru I-23, M-19 thru M-24, m-13, m-14 |
+| 2026-04-13 | CODE_REVIEW_04132026_COPILOT.md, LOGIC_REVIEW_04132026_COPILOT.md | Targeted code + logic review update. New: I-15, I-16, I-17, M-18 |
 | 2026-04-09 | CODE_REVIEW_04092026_COMPREHENSIVE.md, LOGIC_REVIEW_04092026.md | Full codebase code + logic review (Claude Opus 4.6). New: I-12 thru I-14, M-12 thru M-17, m-11, m-12 |
 | 2026-04-09 | CODE_REVIEW_04092026_COPILOT.md, LOGIC_REVIEW_04092026_COPILOT.md | Code + logic review update (new findings I-11, M-11; verified m-10 fixed) |
 | 2026-04-08 | FUTURE_WORK_04082026.md §12-13 | v1.6.0 implementation reviews (GPT-5.3-Codex, Gemini 3.1 Pro, GPT-5.4) + v1.6.1 fixes |

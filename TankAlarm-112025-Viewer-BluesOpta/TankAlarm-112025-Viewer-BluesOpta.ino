@@ -720,6 +720,7 @@ static bool readHttpRequest(EthernetClient &client, String &method, String &path
 static void respondJson(EthernetClient &client, const String &body) {
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: application/json"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(body.length());
   client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
@@ -754,6 +755,7 @@ static void respondStatus(EthernetClient &client, int status, const char *messag
     default: client.println(F("Error")); break;
   }
   client.println(F("Content-Type: text/plain"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(len);
   client.println();
@@ -764,6 +766,7 @@ static void sendDashboard(EthernetClient &client) {
   size_t htmlLen = strlen_P(VIEWER_DASHBOARD_HTML);
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: text/html; charset=utf-8"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(htmlLen);
   client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
@@ -842,6 +845,7 @@ static void sendSensorJson(EthernetClient &client) {
   size_t jsonLen = measureJson(doc);
   client.println(F("HTTP/1.1 200 OK"));
   client.println(F("Content-Type: application/json"));
+  client.println(F("Connection: close"));
   client.print(F("Content-Length: "));
   client.println(jsonLen);
   client.println(F("Cache-Control: no-cache, no-store, must-revalidate"));
@@ -924,9 +928,7 @@ static void fetchViewerSummary() {
     notecard.deleteResponse(rsp);
 
     // Only consume the note after successful processing
-    static uint8_t summaryParseFailCount = 0;
     if (processedOk) {
-      summaryParseFailCount = 0;
       J *delReq = notecard.newRequest("note.get");
       if (delReq) {
         JAddStringToObject(delReq, "file", VIEWER_SUMMARY_FILE);
@@ -935,18 +937,13 @@ static void fetchViewerSummary() {
         if (delRsp) notecard.deleteResponse(delRsp);
       }
     } else {
-      // Parse/OOM failure — delete poison note after 3 consecutive failures
-      summaryParseFailCount++;
-      if (summaryParseFailCount >= 3) {
-        Serial.println(F("Poison note detected — deleting after 3 consecutive failures"));
-        J *delReq = notecard.newRequest("note.get");
-        if (delReq) {
-          JAddStringToObject(delReq, "file", VIEWER_SUMMARY_FILE);
-          JAddBoolToObject(delReq, "delete", true);
-          J *delRsp = notecard.requestAndResponse(delReq);
-          if (delRsp) notecard.deleteResponse(delRsp);
-        }
-        summaryParseFailCount = 0;
+      Serial.println(F("Deleting malformed summary note"));
+      J *delReq = notecard.newRequest("note.get");
+      if (delReq) {
+        JAddStringToObject(delReq, "file", VIEWER_SUMMARY_FILE);
+        JAddBoolToObject(delReq, "delete", true);
+        J *delRsp = notecard.requestAndResponse(delReq);
+        if (delRsp) notecard.deleteResponse(delRsp);
       }
       break;
     }
