@@ -1,158 +1,286 @@
-# Future Repository Review - Arduino Opta FTPS
+# Arduino Opta FTPS Repository Creation Plan
 
-**Date:** April 13, 2026  
-**Scope:** Planning note for a future standalone FTPS repository derived from TankAlarm FTPS work  
-**Status:** Design and extraction guidance only; do not publish a standalone repo until the TankAlarm FTPS path is proven on-device
+**Date:** April 14, 2026  
+**Scope:** Extraction, bootstrap, and release plan for a standalone general-purpose Explicit FTPS client library for Arduino Opta  
+**Status:** Updated after the April 14 implementation-plan, checklist, and spike-plan reviews  
+**Current recommendation:** Create the repository now as a planning and extraction target. Keep the first working transport implementation and any public release gated on the Opta Phase 0 spike.
 
 ---
 
 ## Executive Summary
 
-A separate FTPS repository may be worth creating later, but only if the work is extracted as a small, reusable FTPS transport/client layer rather than as copied TankAlarm application code.
+Creating a new repository now makes sense, but it should be treated as an **Opta-first FTPS library project**, not as a direct dump of TankAlarm code.
 
-The GitHub landscape appears to have:
+The repository goal should be:
 
-- many Arduino FTP repositories
-- several Arduino TLS building blocks
-- no obvious, well-known, generic Explicit FTPS client library aimed at Arduino Opta / Mbed Ethernet
+1. provide a reusable Explicit FTPS client layer for **Arduino Opta** devices
+2. keep the public API focused on FTPS transport and transfer behavior, not TankAlarm workflow logic
+3. validate the first implementation against the PR4100 as the initial reference server
+4. remain general enough to support other standards-compliant FTPS servers later
 
-That means there may be a real gap worth filling. It does **not** mean the project should publish immediately.
+The main correction to the earlier repo note is this:
 
-The correct sequence is:
+- it is reasonable to create the repo now
+- it is **not** reasonable to publish a release or claim working FTPS support until the Opta transport spike succeeds
 
-1. prove Explicit FTPS against the PR4100 inside TankAlarm
-2. refactor the FTPS logic behind a clean internal boundary
-3. extract only the generic FTPS pieces into a new repository
-4. publish only after the code no longer depends on TankAlarm settings UI, config schema, archive rules, or Notecard behavior
+That means the immediate next step is a repository with:
+
+- planning docs
+- tracked TODOs
+- proposed API and file structure
+- example skeletons
+- CI and metadata scaffolding
+
+The first actual backend implementation still depends on the blocked item below.
 
 ---
 
-## Key Findings
+## Current Status
 
-### 1. Do not publish the first working TankAlarm FTPS code as a library
+### Decisions already locked
 
-The first implementation will still be shaped by TankAlarm-specific concerns:
+- [x] Arduino Opta is the primary target for v1.
+- [x] The library should be **Explicit FTPS** only for v1.
+- [x] Passive mode only for v1.
+- [x] Binary transfer support only for v1.
+- [x] The preferred backend remains the Mbed secure-socket path:
+  - `Ethernet.getNetwork()`
+  - `NetworkInterface`
+  - `TCPSocket`
+  - `TLSSocketWrapper`
+- [x] Two trust modes are locked for v1:
+  - SHA-256 fingerprint pinning
+  - imported PEM certificate trust
+- [x] The library should fail closed when FTPS is selected.
+- [x] PR4100 remains the initial validation target, but the repo should be positioned for general Arduino Opta FTPS use.
 
-- embedded settings UI
-- `ServerConfig` schema
-- filesystem persistence details
-- backup and archive naming rules
-- product-specific error logging and watchdog behavior
+### Verified technical facts
 
-If those concerns leak into a public repo, the result will be harder to maintain and less useful to other users.
+- [x] Installed Opta core research confirmed exposure of `NetworkInterface`, `TCPSocket`, `TLSSocket`, and `TLSSocketWrapper` in `mbed_opta 4.5.0`.
+- [x] The current spike-plan samples were corrected to use `TLSSocketWrapper::TRANSPORT_KEEP`.
+- [x] The implementation docs now treat data-channel TLS session reuse/resumption as a **server-dependent interop risk**, not an unconditional assumption.
+- [x] The repo and implementation docs are now aligned on trust-mode enum ordinals:
+  - `0 = Fingerprint`
+  - `1 = ImportedCert`
 
-### 2. The future repo should be transport-oriented, not product-oriented
+### Current blockers and open items
 
-The reusable part is the FTPS control/data-channel layer, not the TankAlarm backup workflow.
+| Item | Priority | Status | What must happen |
+|------|----------|--------|------------------|
+| Opta transport spike (`TLSSocketWrapper`) | Blocking | Open | Run the real Opta-to-PR4100 `AUTH TLS` / `PBSZ 0` / `PROT P` / `PASV` / `STOR` or `RETR` spike. |
+| Data-channel TLS session reuse | High | Open | Verify whether the target server requires reuse/resumption and whether the chosen backend can satisfy it. |
+| Transport diagnostics hooks | High | Open | Add peer-cert fingerprint and TLS-error exposure to the transport boundary before locking the public API. |
+| `ftpReadResponse()` migration model | High | Open | Document and implement the move from `EthernetClient &` helpers to `IFtpsTransport &` helpers. |
+| Data-channel lifetime migration | High | Open | Move local per-function data sockets into transport-owned state. |
+| TLS timeout budget | Medium | Open | Split or raise timeouts for TLS control/data handshakes based on spike timings. |
+| Public support statement | Medium | Open | Document clearly that PR4100 is the first tested server, not the only intended server. |
 
-The public code should solve:
+---
 
-- Explicit TLS control-channel upgrade via `AUTH TLS`
+## Repository Posture
+
+### What can be done now
+
+The new repository can be created immediately if it starts as one of these:
+
+- a private working repository
+- a public repository clearly marked as experimental and unreleased
+- a public repository that contains planning docs and scaffolding only
+
+### What should not happen yet
+
+Do **not** do any of the following until the transport spike passes and the extracted code is stable:
+
+- publish a release tag
+- publish to Arduino Library Manager
+- claim broad FTPS compatibility
+- claim that Explicit FTPS is already proven on Opta
+- copy TankAlarm application code into the public API surface
+
+### Recommended positioning statement
+
+The repo README should describe the project like this:
+
+> An Arduino Opta Explicit FTPS client library, focused on Mbed-based Ethernet/TLS transport, initially validated against a WD My Cloud PR4100 and intended to support other standards-compliant FTPS servers over time.
+
+That statement is narrow enough to be honest and broad enough to support general Opta use.
+
+---
+
+## v1 Scope
+
+### In scope for v1
+
+- Explicit FTPS only (`AUTH TLS`)
+- passive mode only
 - `PBSZ 0`
 - `PROT P`
-- passive-mode protected data sockets
-- upload/download primitives
-- certificate trust configuration
-
-The public code should **not** include:
-
-- web UI pages
-- JSON settings handlers
-- filesystem path policy
-- backup scheduling
-- archive business logic
-- NAS-specific application flows beyond examples
-
-### 3. The best technical base for a future repo is still the Mbed secure-socket path
-
-Based on the installed Opta core research, the strongest future-repo foundation is:
-
-- `Ethernet.getNetwork()`
-- `NetworkInterface`
-- `TCPSocket`
-- `TLSSocketWrapper`
-
-This remains the preferred direction because Explicit FTPS needs a STARTTLS-style control-channel upgrade after `AUTH TLS`, and `TLSSocketWrapper` is the cleanest match for that behavior.
-
-### 4. The future repo should start with a narrow promise
-
-The first public release should be intentionally small:
-
-- Arduino Opta / Mbed first
-- Explicit TLS only
-- passive mode only
-- binary transfers only
-- certificate validation required unless the caller explicitly opts out for bring-up
-- upload/download only
-
-It should **not** promise generic support for every Arduino board on day one.
-
----
-
-## GitHub Landscape Snapshot
-
-Current GitHub results suggest the following:
-
-- There are many Arduino FTP projects and FTP examples.
-- There are reusable TLS libraries such as `SSLClient` and `ArduinoBearSSL`.
-- Search results for `Arduino FTPS` and `FTPS client Arduino` are noisy and largely dominated by plain FTP, ESP32-specific projects, servers, or modem-specific code.
-- There does not appear to be a clear, mature, Opta-oriented, generic Explicit FTPS client repository that makes this work redundant.
-
-That is a reasonable argument for a future public repo **after** the TankAlarm implementation stabilizes.
-
----
-
-## Recommended Future Repository Scope
-
-If a new repo is created, the v1 scope should be:
-
-- Explicit FTPS only
-- passive mode only
 - `USER`, `PASS`, `TYPE I`, `PASV`, `STOR`, `RETR`, `QUIT`
-- `AUTH TLS`, `PBSZ 0`, `PROT P`
-- fingerprint pinning
-- imported PEM certificate trust
-- Mbed Opta transport backend
-- examples for PR4100-style NAS usage
+- upload and download primitives
+- SHA-256 fingerprint pinning
+- imported PEM trust certificate support
+- error categories suitable for field diagnostics
+- Arduino Opta examples using Ethernet
+- server compatibility notes based on actual testing
 
-Out of scope for v1:
+### Out of scope for v1
 
 - Implicit FTPS
 - active mode
-- full directory listing/parsing API
-- recursive sync features
-- generic web UI
-- configuration persistence
-- backup/restore product workflows
+- full directory browsing API
+- recursive sync
+- file delete/rename/mkdir helpers
+- web UI
+- persistent settings storage
+- TankAlarm backup/restore policy
+- Notecard integration
+- generic support claims for every Arduino board
+
+### Positioning note
+
+The library is for **general Arduino Opta FTPS use**, but the first shipping scope should still be intentionally small. That is the only realistic way to make the repo maintainable.
 
 ---
 
-## Specific Code Recommendations
+## Product Boundary
 
-## 1. Create an internal extraction boundary inside TankAlarm first
+### What belongs in the library
 
-Before any new repo exists, split the FTPS code inside TankAlarm into library-shaped units.
+- FTP control-channel handling
+- Explicit TLS upgrade logic
+- protected passive data-channel handling
+- trust configuration
+- reply parsing helpers
+- upload/download primitives
+- transport abstraction
+- stable FTPS error categories
 
-Recommended internal file split:
+### What must stay out of the library
 
-```text
-TankAlarm-112025-Server-BluesOpta/
-  FtpsTypes.h
-  FtpsErrors.h
-  FtpsTransport.h
-  FtpsTransport_MbedSecureSocket.cpp
-  FtpsClient.h
-  FtpsClient.cpp
-  FtpsTrust.h
+- TankAlarm `ServerConfig`
+- TankAlarm HTML/JS settings UI
+- filesystem persistence rules
+- archive file naming conventions
+- TankAlarm logging globals
+- TankAlarm watchdog orchestration
+- Notecard or product-specific workflows
+- PR4100-only application behavior
+
+### Key rule
+
+If a piece of code cannot be explained without mentioning TankAlarm business logic, it should stay out of the new repo.
+
+---
+
+## Recommended Architecture Baseline
+
+### Preferred backend
+
+The preferred first backend remains:
+
+- `MbedSecureSocketFtpsTransport`
+
+Built on:
+
+- `NetworkInterface *net = Ethernet.getNetwork();`
+- `TCPSocket` for the underlying control and data TCP sockets
+- `TLSSocketWrapper` for the control upgrade and protected data channel
+
+### Why this is still the best first path
+
+- Explicit FTPS needs a STARTTLS-like upgrade after `AUTH TLS`.
+- `TLSSocketWrapper` is the strongest currently identified fit for wrapping an already-open socket.
+- The Opta core exposes the relevant Mbed socket classes.
+- This path avoids taking on a third-party TLS dependency before it is justified.
+
+### Fallback policy
+
+Fallbacks should be described carefully:
+
+1. Lower-level custom Mbed TLS socket wrapping is the most realistic direct fallback for Explicit FTPS if `TLSSocketWrapper` cannot do what is needed.
+2. `TLSSocket` is a separate research path, not an automatic protocol-equivalent fallback.
+3. `SSLClient` is a separate research path, not an automatic protocol-equivalent fallback.
+4. Allowing Implicit FTPS would be a scope change, not a technical fallback for the same protocol path.
+
+---
+
+## Public API Baseline
+
+The public API should be intentionally small.
+
+### Recommended config types
+
+```cpp
+enum class FtpsTrustMode : uint8_t {
+  Fingerprint = 0,
+  ImportedCert = 1,
+};
+
+struct FtpsServerConfig {
+  const char *host = nullptr;
+  uint16_t port = 21;
+  const char *user = nullptr;
+  const char *password = nullptr;
+  const char *tlsServerName = nullptr;
+  FtpsTrustMode trustMode = FtpsTrustMode::Fingerprint;
+  const char *fingerprint = nullptr;
+  const char *rootCaPem = nullptr;
+  bool validateServerCert = true;
+  bool passiveMode = true;
+};
 ```
 
-This should happen before extraction so the project learns where the real boundaries are while the code is still close to the product that uses it.
+### Recommended error surface
 
-## 2. Keep the transport abstraction from the current FTPS design note
+```cpp
+enum class FtpsError : uint8_t {
+  None = 0,
+  NoNetwork,
+  ControlConnectFailed,
+  BannerReadFailed,
+  AuthTlsRejected,
+  ControlTlsHandshakeFailed,
+  CertValidationFailed,
+  PbszRejected,
+  ProtPRejected,
+  LoginRejected,
+  PasvParseFailed,
+  DataConnectFailed,
+  DataTlsHandshakeFailed,
+  SessionReuseRequired,
+  TransferFailed,
+  FinalReplyFailed,
+  QuitFailed,
+  NotSupported,
+};
+```
 
-The existing research already points to the correct shape: keep the protocol logic separated from the socket implementation.
+### Recommended client surface
 
-Recommended public transport interface:
+```cpp
+class FtpsClient {
+public:
+  bool begin(NetworkInterface *network, char *error, size_t errorSize);
+  bool connect(const FtpsServerConfig &config, char *error, size_t errorSize);
+  bool uploadBuffer(const char *remotePath,
+                    const uint8_t *data,
+                    size_t len,
+                    char *error,
+                    size_t errorSize);
+  bool downloadBuffer(const char *remotePath,
+                      uint8_t *buffer,
+                      size_t capacity,
+                      size_t &bytesRead,
+                      char *error,
+                      size_t errorSize);
+  bool quit(char *error, size_t errorSize);
+  void close();
+};
+```
+
+### Recommended transport boundary
+
+The transport boundary should include the diagnostics methods that were called out as missing in the latest reviews.
 
 ```cpp
 class IFtpsTransport {
@@ -182,180 +310,139 @@ public:
   virtual bool dataConnected() const = 0;
   virtual void closeData() = 0;
   virtual void closeAll() = 0;
+
+  virtual bool getPeerCertFingerprint(char *out, size_t outLen) {
+    return false;
+  }
+
+  virtual int getLastTlsError() const {
+    return 0;
+  }
 };
 ```
 
-Why this matters:
+### API rules that should be written down now
 
-- it keeps `AUTH TLS` upgrade logic out of product code
-- it allows the library to stay Opta/Mbed-first without baking that decision into every FTPS helper
-- it leaves room for future alternate backends if the project later broadens beyond Opta
-
-## 3. Prefer a Mbed-native backend for the standalone repo
-
-Recommended primary backend:
-
-- `MbedSecureSocketFtpsTransport`
-
-Recommended implementation base:
-
-- `NetworkInterface *net = Ethernet.getNetwork();`
-- `TCPSocket` for initial control/data TCP sockets
-- `TLSSocketWrapper` for control-channel upgrade and protected data-channel wrapping
-
-Reasons:
-
-- best fit for Explicit FTPS `AUTH TLS` upgrade semantics
-- already verified as available in the installed Opta core
-- avoids making a future repo depend on a higher-level Arduino TLS wrapper before that dependency is justified
-- keeps the public repo aligned with the actual research and device constraints already proven locally
-
-Recommended fallback positions:
-
-1. `TLSSocket` only for limited TLS-from-connect experimentation
-2. `SSLClient` only as a fallback prototype path
-3. custom TLS wrapper only as a last resort
-
-## 4. Keep TankAlarm config persistence out of the future library
-
-The current TankAlarm FTPS plan includes fields such as:
-
-- `ftpSecurityMode`
-- `ftpTlsTrustMode`
-- `ftpValidateServerCert`
-- `ftpTlsServerName`
-- `ftpTlsCertPath`
-- `ftpTlsFingerprint`
-
-Those are valid **product integration** fields. They should not become the public library API.
-
-Instead, the library should accept runtime FTPS settings in memory, for example:
-
-```cpp
-enum class FtpsTrustMode : uint8_t {
-  Fingerprint = 1,
-  ImportedCert = 2,
-};
-
-struct FtpsServerConfig {
-  const char *host = nullptr;
-  uint16_t port = 21;
-  const char *user = nullptr;
-  const char *password = nullptr;
-  const char *tlsServerName = nullptr;
-  FtpsTrustMode trustMode = FtpsTrustMode::Fingerprint;
-  const char *fingerprint = nullptr;
-  const char *rootCaPem = nullptr;
-  bool validateServerCert = true;
-  bool passiveMode = true;
-};
-```
-
-TankAlarm can keep `ftpTlsCertPath` and filesystem loading in its own integration layer. The library should only care about the already-loaded trust material.
-
-## 5. Keep the protocol surface intentionally small
-
-The future repo should not start as a full FTP toolkit.
-
-Recommended v1 public methods:
-
-```cpp
-class FtpsClient {
-public:
-  bool begin(NetworkInterface *network, char *error, size_t errorSize);
-  bool connect(const FtpsServerConfig &config, char *error, size_t errorSize);
-  bool uploadBuffer(const char *remotePath,
-                    const uint8_t *data,
-                    size_t len,
-                    char *error,
-                    size_t errorSize);
-  bool downloadBuffer(const char *remotePath,
-                      uint8_t *buffer,
-                      size_t capacity,
-                      size_t &bytesRead,
-                      char *error,
-                      size_t errorSize);
-  bool quit(char *error, size_t errorSize);
-  void close();
-};
-```
-
-If streaming becomes necessary, add callback-based upload/download later. Do not complicate the first API with directory trees, wildcard sync, or active-mode support.
-
-## 6. Preserve the known-good PASV parsing fix during extraction
-
-The April 13 TankAlarm fix for passive-mode parsing should be treated as part of the reusable FTPS core, not as a product quirk.
-
-Specific recommendation:
-
-- keep the PASV parser logic that begins parsing after the `(` in the `227` response
-- make that parser a standalone helper with unit-testable input/output behavior
-
-This avoids reintroducing the already-fixed status-line digit corruption bug.
-
-## 7. Design the public error model for field debugging
-
-A future public repo should expose stable error categories, not only freeform strings.
-
-Recommended error enum:
-
-```cpp
-enum class FtpsError : uint8_t {
-  None = 0,
-  NoNetwork,
-  ControlConnectFailed,
-  BannerReadFailed,
-  AuthTlsRejected,
-  TlsHandshakeFailed,
-  CertValidationFailed,
-  PbszRejected,
-  ProtPRejected,
-  LoginRejected,
-  PasvParseFailed,
-  DataConnectFailed,
-  TransferFailed,
-  FinalReplyFailed,
-  QuitFailed,
-};
-```
-
-Keep the human-readable error buffer too, but make the enum part of the public API so product integrations can react predictably.
-
-## 8. Fail closed in the library when FTPS is selected
-
-The library should not silently downgrade from FTPS to plain FTP.
-
-Recommended behavior:
-
-- if FTPS is selected and `AUTH TLS` fails, return an error
-- if certificate validation is enabled and trust material is missing, return an error
-- if `PBSZ 0` or `PROT P` fails, return an error
-- do not continue with plaintext credentials after a TLS failure
+- Fail closed. Never silently fall back to plain FTP.
+- `USER` handling must accept the real-world control flow already reflected in the corrected implementation note:
+  - `331` means send `PASS`
+  - `230` means already logged in
+  - `232` is valid if security data exchange authorizes the user
+- Timeouts for TLS handshake should be separate from ordinary plain-FTP read timeouts.
+- Public structs should describe in-memory config only. They should not expose TankAlarm file paths or JSON storage concerns.
 
 ---
 
-## Extraction Map From Current TankAlarm Code
+## Extraction Work Required Inside TankAlarm First
 
-The current server sketch already identifies the functions that should become library code later.
+This is the most important TODO list in the document. The new repo should not receive direct copies of the current sketch logic until the boundary is cleaned up.
 
-Recommended mapping:
+### Phase A - Prove the transport path
 
-- `FtpSession` -> `FtpsSession`
-- `ftpSendCommand()` -> `FtpsClient::sendCommand()`
-- `ftpConnectAndLogin()` -> `FtpsClient::connect()`
-- `ftpEnterPassive()` -> `FtpsClient::enterPassive()`
-- `ftpStoreBuffer()` -> `FtpsClient::uploadBuffer()`
-- `ftpRetrieveBuffer()` -> `FtpsClient::downloadBuffer()`
-- `ftpQuit()` -> `FtpsClient::quit()`
+- [ ] Run the Phase 0 `TLSSocketWrapper` spike on real Opta hardware.
+- [ ] Confirm `AUTH TLS` control upgrade works after a plain TCP connect.
+- [ ] Confirm `PBSZ 0` and `PROT P` work on the target server.
+- [ ] Confirm at least one protected `STOR` and one protected `RETR` succeed.
+- [ ] Record control-handshake and data-handshake timing.
+- [ ] Record whether the server requires data-channel TLS session reuse/resumption.
+- [ ] Record whether the server requires SNI or special certificate handling.
+- [ ] Decide whether Option C remains viable after real hardware testing.
 
-Code that should remain in TankAlarm:
+### Phase B - Refactor the live FTP helper layer into library-shaped code
 
-- `performFtpBackupDetailed()` orchestration
-- `performFtpRestoreDetailed()` orchestration
-- client manifest backup/restore policy
-- monthly archive policy
-- browser download endpoint integration
-- settings UI and settings JSON
+- [ ] Split FTPS code into internal files before extraction:
+  - `FtpsTypes.h`
+  - `FtpsErrors.h`
+  - `FtpsTrust.h`
+  - `FtpsTransport.h`
+  - `FtpsTransport_MbedSecureSocket.cpp`
+  - `FtpsClient.h`
+  - `FtpsClient.cpp`
+- [ ] Keep TankAlarm integration code outside those files.
+- [ ] Preserve the known-good PASV parser that starts parsing after `(` in the `227` response.
+- [ ] Move FTP reply parsing into reusable helper functions.
+- [ ] Move FTPS command orchestration into a reusable client layer.
+
+### Phase C - Resolve the migration gaps identified in review
+
+- [ ] Replace `ftpReadResponse(EthernetClient &, ...)` with a transport-based helper such as `ftpReadResponse(IFtpsTransport &, ...)`.
+- [ ] Replace `ftpSendCommand()` internals so they operate on `transport.ctrlWrite()` and `transport.ctrlRead()`.
+- [ ] Move function-local data socket creation out of `ftpStoreBuffer()` / `ftpRetrieveBuffer()` and into the transport object.
+- [ ] Ensure `transport.closeData()` is the only data-channel cleanup path used by the generic FTPS layer.
+- [ ] Add transport diagnostics methods:
+  - `getPeerCertFingerprint()`
+  - `getLastTlsError()`
+- [ ] Introduce a TLS handshake timeout separate from the plain control timeout.
+- [ ] Document the failure-path cleanup contract for `closeAll()`.
+
+### Phase D - Remove TankAlarm-specific coupling before copy-out
+
+- [ ] Remove direct dependency on `gServerConfig` from extracted code.
+- [ ] Remove direct dependency on embedded HTML/JS.
+- [ ] Remove dependency on TankAlarm-specific filesystem path rules.
+- [ ] Remove dependency on TankAlarm archive naming rules.
+- [ ] Remove dependency on TankAlarm logging globals.
+- [ ] Remove dependency on TankAlarm watchdog orchestration.
+- [ ] Replace product-specific error text with reusable error categories plus human-readable details.
+
+---
+
+## New Repository Bootstrap Checklist
+
+This is what should be created in the new repo immediately, even before the backend implementation is declared done.
+
+### Metadata and repo hygiene
+
+- [ ] Choose the repo name.
+- [ ] Decide private vs public initial visibility.
+- [ ] Select the license.
+- [ ] Add `README.md`.
+- [ ] Add `LICENSE`.
+- [ ] Add `library.properties`.
+- [ ] Add `.gitignore` appropriate for Arduino and VS Code.
+- [ ] Add `CHANGELOG.md`.
+- [ ] Add `CONTRIBUTING.md`.
+- [ ] Add `.github/ISSUE_TEMPLATE/`.
+- [ ] Add `.github/pull_request_template.md` if the repo will take PRs.
+
+### Source tree
+
+- [ ] Create `src/FtpsClient.h`.
+- [ ] Create `src/FtpsClient.cpp`.
+- [ ] Create `src/FtpsTypes.h`.
+- [ ] Create `src/FtpsErrors.h`.
+- [ ] Create `src/FtpsTrust.h`.
+- [ ] Create `src/transport/IFtpsTransport.h`.
+- [ ] Create `src/transport/MbedSecureSocketFtpsTransport.h`.
+- [ ] Create `src/transport/MbedSecureSocketFtpsTransport.cpp`.
+- [ ] Decide whether reply-parser helpers live in `src/internal/` or stay in `FtpsClient.cpp` for v1.
+
+### Examples
+
+- [ ] Add `examples/OptaExplicitFtpsUpload/`.
+- [ ] Add `examples/OptaExplicitFtpsDownload/`.
+- [ ] Add `examples/OptaFingerprintValidation/`.
+- [ ] Add `examples/OptaImportedCertValidation/`.
+- [ ] Add one PR4100-oriented example or walkthrough.
+- [ ] Keep example names generic enough that the repo does not look PR4100-only.
+
+### Docs
+
+- [ ] Add `docs/protocol-flow.md`.
+- [ ] Add `docs/trust-model.md`.
+- [ ] Add `docs/supported-targets.md`.
+- [ ] Add `docs/limitations.md`.
+- [ ] Add `docs/server-compatibility.md`.
+- [ ] Add `docs/debugging.md`.
+- [ ] Add `docs/release-checklist.md`.
+- [ ] Add `extras/test-notes/` for hardware run logs.
+
+### CI and automation
+
+- [ ] Add a workflow that compiles all examples for the Opta board target.
+- [ ] Pin or document the minimum supported `arduino:mbed_opta` version.
+- [ ] Fail CI if examples stop compiling.
+- [ ] Add a manual checklist for hardware validation runs.
 
 ---
 
@@ -366,6 +453,8 @@ ArduinoOptaFTPS/
   README.md
   LICENSE
   library.properties
+  CHANGELOG.md
+  CONTRIBUTING.md
   src/
     FtpsClient.h
     FtpsClient.cpp
@@ -377,111 +466,213 @@ ArduinoOptaFTPS/
       MbedSecureSocketFtpsTransport.h
       MbedSecureSocketFtpsTransport.cpp
   examples/
-    OptaExplicitFtpsPr4100Upload/
-    OptaExplicitFtpsPr4100Download/
+    OptaExplicitFtpsUpload/
+    OptaExplicitFtpsDownload/
     OptaFingerprintValidation/
     OptaImportedCertValidation/
+    OptaPr4100Reference/
   docs/
     protocol-flow.md
     trust-model.md
     supported-targets.md
     limitations.md
+    server-compatibility.md
+    debugging.md
+    release-checklist.md
   extras/
     test-notes/
   .github/
     workflows/
+    ISSUE_TEMPLATE/
 ```
 
 ---
 
-## Staged Plan For Creating The Repo Later
+## Documentation Backlog For The New Repo
 
-## Phase 0 - Prove the path inside TankAlarm
+These items should exist before a first public release.
 
-Do not extract anything until the following are true in the product code:
+### README minimum content
 
-- Explicit FTPS backup succeeds against the PR4100
-- Explicit FTPS restore succeeds against the PR4100
-- protected passive data channel works for both `STOR` and `RETR`
-- fingerprint validation works
-- imported PEM trust works
-- watchdog and timeout behavior are acceptable across repeated transfers
+- [ ] What the library does.
+- [ ] What the library does **not** do.
+- [ ] Supported board statement.
+- [ ] Supported FTPS mode statement.
+- [ ] Initial test-server statement.
+- [ ] Quick-start example.
+- [ ] Trust setup summary.
+- [ ] Known limitations.
+- [ ] Experimental-status note until release gates pass.
 
-## Phase 1 - Split the product code into reusable internal modules
+### `supported-targets.md`
 
-Refactor the server sketch so the FTPS pieces no longer depend on:
+- [ ] State that Arduino Opta is the only supported v1 board.
+- [ ] State the minimum tested board/core version.
+- [ ] State that PR4100 is the first validated server.
+- [ ] State that other FTPS servers may work if they follow Explicit FTPS passive-mode behavior, but they are not all tested yet.
 
-- `gServerConfig`
-- embedded HTML/JS
-- filesystem path policy
-- archive-specific filenames
-- product-wide logging globals
+### `limitations.md`
 
-## Phase 2 - Extract a minimal standalone library
+- [ ] Explicit FTPS only.
+- [ ] Passive mode only.
+- [ ] Memory and timeout considerations.
+- [ ] Possible incompatibility with servers that enforce unsupported session reuse behavior.
+- [ ] No directory sync or advanced file management in v1.
 
-Only after Phase 1 is complete:
+### `debugging.md`
 
-- copy the transport, protocol, trust, and error modules into a new repo
-- add one upload example and one download example
-- add PR4100-oriented documentation
-- keep the public scope explicitly narrow
-
-## Phase 3 - Publish after release gates pass
-
-Publish only when:
-
-- there are no TankAlarm includes or globals left in the extracted code
-- examples compile cleanly in the intended Arduino environment
-- the public README matches the actual tested scope
-- the API no longer looks temporary or product-shaped
+- [ ] Common FTP reply failures.
+- [ ] Certificate validation failure guidance.
+- [ ] TLS handshake timeout guidance.
+- [ ] Data-channel TLS failure guidance.
+- [ ] Session reuse troubleshooting guidance.
+- [ ] Guidance for collecting serial logs from Opta examples.
 
 ---
 
-## Release Gates For A Public Repository
+## Test And Validation Backlog
 
-Require all of the following before public release:
+### Compile validation
 
-- on-device PR4100 validation for upload and download
-- stable `AUTH TLS` control upgrade
-- stable `PROT P` passive data channel behavior
-- stable trust handling for both fingerprint and imported cert workflows
-- no silent fallback to plaintext FTP
-- documented memory/timeout limitations
-- at least one example that is not TankAlarm-specific
+- [ ] Compile every example with `arduino:mbed_opta`.
+- [ ] Confirm include paths for `mbed.h`, `TCPSocket`, and `TLSSocketWrapper` are stable.
+- [ ] Confirm no hidden TankAlarm dependencies remain.
+
+### Hardware validation
+
+- [ ] Validate upload against PR4100.
+- [ ] Validate download against PR4100.
+- [ ] Validate fingerprint mode.
+- [ ] Validate imported PEM mode.
+- [ ] Validate reconnect after previous transfer.
+- [ ] Validate repeated transfers in a loop.
+- [ ] Validate behavior after temporary network interruption.
+
+### Negative tests
+
+- [ ] Wrong fingerprint rejected.
+- [ ] Missing PEM trust rejected when imported-cert mode is selected.
+- [ ] Wrong password rejected cleanly.
+- [ ] `AUTH TLS` rejection surfaced cleanly.
+- [ ] `PROT P` rejection surfaced cleanly.
+- [ ] PASV parse failure surfaced cleanly.
+- [ ] Data-channel TLS handshake failure surfaced cleanly.
+- [ ] Final transfer reply timeout surfaced cleanly.
+
+### Stability checks
+
+- [ ] Record handshake timings.
+- [ ] Record rough memory behavior.
+- [ ] Confirm no silent downgrade to plaintext FTP.
+- [ ] Confirm cleanup works after partial failure.
+- [ ] Confirm repeated connect/transfer/quit cycles do not leak state.
+
+---
+
+## Release Gates
+
+Require all of the following before the first public release:
+
+- [ ] Real Opta hardware spike passed.
+- [ ] Control-channel TLS upgrade proven after `AUTH TLS`.
+- [ ] Protected passive data channel proven.
+- [ ] `STOR` and `RETR` both validated.
+- [ ] Fingerprint trust flow validated.
+- [ ] Imported PEM trust flow validated.
+- [ ] TLS timeout budget documented.
+- [ ] Session reuse/resumption behavior documented for the tested server.
+- [ ] No TankAlarm-specific globals or schema remain in the extracted code.
+- [ ] Examples compile cleanly.
+- [ ] README and limitations match the actually tested scope.
+- [ ] Error model is stable enough for field debugging.
+
+If any of those are missing, the repo can still exist, but it should remain clearly experimental.
 
 ---
 
 ## Naming Recommendation
 
-If the first public version is truly Opta-specific, `ArduinoOptaFTPS` is a reasonable name.
+The best current working name is still:
 
-If the code later broadens to more Mbed-based Arduino boards, a better long-term name would be closer to:
+- `ArduinoOptaFTPS`
 
-- `ArduinoMbedFtpsClient`
-- `ArduinoExplicitFtpsClient`
+Why this is still the best fit:
 
-Avoid using a very broad name such as `ArduinoFTPS` unless the library genuinely supports multiple boards and transports.
+- it is honest about the board target
+- it avoids over-claiming support for all Arduino boards
+- it is easy to understand in search results
+
+Avoid these until the scope is actually broader:
+
+- `ArduinoFTPS`
+- `GenericArduinoFtps`
+- any name that implies broad multi-board support that is not yet tested
+
+If the project later broadens beyond Opta to more Mbed-based Arduino boards, the name can be revisited.
 
 ---
 
-## Main Risks For A Standalone Repo
+## Suggested Milestones
 
-1. Publishing too early and freezing a product-shaped API.
-2. Over-promising generic Arduino support when the code is really Opta/Mbed-specific.
-3. Underestimating the support burden created by NAS quirks and certificate troubleshooting.
-4. Letting TankAlarm config/UI assumptions leak into the public library surface.
-5. Taking on an unnecessary third-party TLS dependency when the Mbed-native path is already the strongest candidate.
+### Milestone 0 - Repo bootstrap
+
+- [ ] Create the repository.
+- [ ] Add the docs, layout, metadata, and tracked TODOs.
+- [ ] Add placeholder source files if helpful, but do not over-promise functionality.
+
+### Milestone 1 - Transport proof
+
+- [ ] Run and record the Opta Phase 0 spike.
+- [ ] Decide whether `TLSSocketWrapper` remains the shipping backend.
+- [ ] Decide whether session reuse is a blocker.
+
+### Milestone 2 - Internal extraction
+
+- [ ] Refactor TankAlarm FTPS work into library-shaped internal files.
+- [ ] Resolve transport diagnostics and helper migration gaps.
+- [ ] Keep product integration separate.
+
+### Milestone 3 - MVP library implementation
+
+- [ ] Implement `FtpsClient` and the Mbed transport backend.
+- [ ] Add upload and download examples.
+- [ ] Add trust-mode examples.
+
+### Milestone 4 - Validation and docs
+
+- [ ] Run hardware validation.
+- [ ] Finalize limitations and debugging docs.
+- [ ] Finalize supported-targets and compatibility statements.
+
+### Milestone 5 - First release candidate
+
+- [ ] Confirm release gates are all met.
+- [ ] Tag a release candidate only after the tested scope is fully documented.
+
+---
+
+## Main Risks
+
+1. Creating a repo that still reflects TankAlarm application design instead of a reusable FTPS client boundary.
+2. Treating PR4100 validation as proof of universal FTPS compatibility.
+3. Underestimating data-channel TLS session reuse/resumption behavior on real servers.
+4. Publishing before the Opta backend is proven on hardware.
+5. Locking a public API before transport diagnostics and helper migration gaps are resolved.
 
 ---
 
 ## Bottom-Line Recommendation
 
-Yes, a future FTPS repository could make sense, because the current ecosystem seems to have a real gap between plain Arduino FTP libraries and generic TLS building blocks.
+Yes, create the new repository now.
 
-The correct target is **not** "publish the TankAlarm FTPS code." The correct target is:
+But create it as an **Opta-first Explicit FTPS library project with a documented backlog**, not as a finished library and not as a raw export of TankAlarm code.
 
-- prove the Explicit FTPS transport in TankAlarm first
-- extract a small Mbed-native FTPS client layer second
-- publish only when the code is clearly reusable and no longer depends on TankAlarm application behavior
+The practical sequence should be:
 
-If that sequence is followed, the future repo has a good chance of being useful to other Arduino Opta users instead of becoming another one-off product dump.
+1. create the repo and add the structure, docs, and TODO checklists
+2. run the Opta Phase 0 spike and record the result
+3. refactor the FTPS logic inside TankAlarm into clean internal modules
+4. extract only the generic FTPS pieces into the new repo
+5. release only after hardware validation, trust validation, and documentation gates are complete
+
+That gives the project the best chance of ending up with a genuinely reusable Arduino Opta FTPS library instead of a product-specific one-off.

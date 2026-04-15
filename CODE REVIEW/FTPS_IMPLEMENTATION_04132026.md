@@ -239,7 +239,7 @@ Minimum proof required:
 4. wrap the already-open control socket in TLS
 5. complete `PBSZ 0` and `PROT P`
 6. enter passive mode
-7. open protected data channel
+7. open protected data channel (ensure TLS session resumption works)
 8. complete one `STOR` and one `RETR` against the PR4100
 9. read final transfer-completion reply cleanly
 
@@ -370,6 +370,9 @@ public:
     // Explicit FTPS needs the TLS layer to adopt the already-open ctrlPlain_
     // socket immediately after `AUTH TLS` succeeds. If the library cannot do
     // STARTTLS-style adoption, this transport is not viable for Explicit FTPS.
+    //
+    // If adoption succeeds, set the upgrade flag so I/O routes correctly:
+    // ctrlUpgraded_ = true;
     snprintf(error, errorSize,
              "feasibility spike required: confirm SSLClient can wrap an existing control socket after AUTH TLS");
     return false;
@@ -392,25 +395,32 @@ public:
 
     // Same feasibility issue applies to protected data sockets if the server
     // expects a TLS-protected passive channel opened after PASV.
+    // If data TLS succeeds: dataUpgraded_ = true;
     snprintf(error, errorSize,
              "feasibility spike required: confirm SSLClient FTPS data-channel behavior");
     return false;
   }
 
+  // REVIEW NOTE (04142026): The original scaffolding used ctrlPlain_.connected()
+  // as the routing predicate. That is logically inverted for Explicit FTPS:
+  // after AUTH TLS, ctrlPlain_ is still connected (TLS wraps the same TCP
+  // socket), so reads/writes would continue going to the plain client instead
+  // of the TLS one. Use explicit upgrade flags instead.
+
   int ctrlWrite(const uint8_t *data, size_t len) override {
-    return ctrlPlain_.connected() ? ctrlPlain_.write(data, len) : ctrlTls_.write(data, len);
+    return ctrlUpgraded_ ? ctrlTls_.write(data, len) : ctrlPlain_.write(data, len);
   }
 
   int ctrlRead() override {
-    return ctrlPlain_.connected() ? ctrlPlain_.read() : ctrlTls_.read();
+    return ctrlUpgraded_ ? ctrlTls_.read() : ctrlPlain_.read();
   }
 
   int dataWrite(const uint8_t *data, size_t len) override {
-    return dataPlain_.connected() ? dataPlain_.write(data, len) : dataTls_.write(data, len);
+    return dataUpgraded_ ? dataTls_.write(data, len) : dataPlain_.write(data, len);
   }
 
   int dataRead() override {
-    return dataPlain_.connected() ? dataPlain_.read() : dataTls_.read();
+    return dataUpgraded_ ? dataTls_.read() : dataPlain_.read();
   }
 
   bool ctrlConnected() const override {
@@ -426,10 +436,17 @@ public:
     dataPlain_.stop();
   }
 
+  void closeData() override {
+    dataTls_.stop();
+    dataPlain_.stop();
+    dataUpgraded_ = false;
+  }
+
   void closeAll() override {
     closeData();
     ctrlTls_.stop();
     ctrlPlain_.stop();
+    ctrlUpgraded_ = false;
   }
 
 private:
@@ -437,6 +454,8 @@ private:
   EthernetClient dataPlain_;
   SSLClient ctrlTls_;
   SSLClient dataTls_;
+  bool ctrlUpgraded_ = false;
+  bool dataUpgraded_ = false;
 };
 ```
 
@@ -471,7 +490,7 @@ public:
                       size_t errorSize) override {
     closeAll();
 
-    net_ = NetworkInterface::get_default_instance();
+    net_ = Ethernet.getNetwork();
     if (!net_) {
       snprintf(error, errorSize, "no default Mbed network interface");
       return false;
@@ -616,7 +635,7 @@ public:
                       size_t errorSize) override {
     closeAll();
 
-    net_ = NetworkInterface::get_default_instance();
+    net_ = Ethernet.getNetwork();
     if (!net_) {
       snprintf(error, errorSize, "no default Mbed network interface");
       return false;
@@ -636,10 +655,14 @@ public:
       return false;
     }
 
+    ctrlOpen_ = true;
+
     if (tls.mode == FtpSecurityMode::ImplicitTls) {
       return wrapControlSocket(ctrlPlain_, ctrlAddr_, tls, error, errorSize);
     }
 
+    // Plain or Explicit TLS pre-AUTH: control is ready at TCP level
+    ctrlReady_ = true;
     return true;
   }
 
@@ -683,9 +706,11 @@ public:
       return true;
     }
 
+    // REVIEW NOTE (04142026): Same TRANSPORT_CLOSE double-close risk as the
+    // control channel. Use TRANSPORT_KEEP for consistent ownership.
     dataTls_.reset(new TLSSocketWrapper(dataPlain_.get(),
                                         tls.serverName,
-                                        TLSSocketWrapper::TRANSPORT_CLOSE));
+                      TLSSocketWrapper::TRANSPORT_KEEP));
 
     if (tls.rootCaPem && dataTls_->set_root_ca_cert(tls.rootCaPem) != NSAPI_ERROR_OK) {
       snprintf(error, errorSize, "data set_root_ca_cert failed");
@@ -727,7 +752,18 @@ public:
     return rc == 1 ? ch : -1;
   }
 
-  bool ctrlConnected() const override { return true; }
+  // REVIEW NOTE (04142026): ctrlConnected() was originally hardcoded to true.
+  // Now tracks actual state: ctrlReady_ is set true only after a successful
+  // TLS handshake (or after plain TCP connect when no TLS is used), and is
+  // cleared on every failure and close path. Wrapper existence alone
+  // (ctrlTls_ != nullptr) is not sufficient because a failed handshake can
+  // leave a non-null wrapper behind.
+  bool ctrlConnected() const override {
+    return ctrlReady_;
+  }
+  // REVIEW NOTE (04142026): dataConnected() checks pointer existence as an
+  // approximation. A more robust implementation would use an explicit
+  // dataReady_ flag set only after successful connect/handshake.
   bool dataConnected() const override { return dataPlain_ != nullptr || dataTls_ != nullptr; }
 
   void closeData() override {
@@ -748,6 +784,8 @@ public:
       ctrlTls_.reset();
     }
     ctrlPlain_.close();
+    ctrlOpen_ = false;
+    ctrlReady_ = false;
   }
 
 private:
@@ -768,9 +806,20 @@ private:
                          const FtpTlsConfig &tls,
                          char *error,
                          size_t errorSize) {
+    // REVIEW NOTE (04142026): Using TRANSPORT_CLOSE here means the
+    // TLSSocketWrapper takes ownership of the underlying TCPSocket and will
+    // close it when the wrapper is destroyed. This creates a double-close
+    // risk because closeAll() also explicitly calls ctrlPlain_.close().
+    //
+    // Two options to fix:
+    //   (a) Use TRANSPORT_KEEP and manage TCPSocket lifetime manually.
+    //   (b) Keep TRANSPORT_CLOSE but remove the explicit ctrlPlain_.close()
+    //       from closeAll() when ctrlTls_ is active.
+    //
+    // Option (a) is safer — it keeps ownership explicit.
     ctrlTls_.reset(new TLSSocketWrapper(&plainSocket,
                                         tls.serverName ? tls.serverName : addr.get_ip_address(),
-                                        TLSSocketWrapper::TRANSPORT_CLOSE));
+                                        TLSSocketWrapper::TRANSPORT_KEEP));
 
     if (tls.rootCaPem && ctrlTls_->set_root_ca_cert(tls.rootCaPem) != NSAPI_ERROR_OK) {
       snprintf(error, errorSize, "control set_root_ca_cert failed");
@@ -779,13 +828,17 @@ private:
 
     if (ctrlTls_->connect() != NSAPI_ERROR_OK) {
       snprintf(error, errorSize, "control TLS handshake failed");
+      ctrlReady_ = false;
       return false;
     }
 
+    ctrlReady_ = true;
     return true;
   }
 
   NetworkInterface *net_ = nullptr;
+  bool ctrlOpen_ = false;   // TCP connected
+  bool ctrlReady_ = false;  // fully ready (TCP + TLS handshake if applicable)
   TCPSocket ctrlPlain_;
   SocketAddress ctrlAddr_;
   std::unique_ptr<TLSSocketWrapper> ctrlTls_;
@@ -906,6 +959,11 @@ Regardless of transport choice, the FTP control logic would need to converge tow
 static bool ftpConnectAndLogin(FtpSession &session, char *error, size_t errorSize) {
   FtpEndpoint endpoint = { gServerConfig.ftpHost, gServerConfig.ftpPort };
   FtpTlsConfig tls;
+  // REVIEW NOTE (04142026): This cast is safe only if loadConfig() clamps
+  // ftpSecurityMode to valid enum values first. The schema section above
+  // requires clamping invalid values on load, but this sample code does not
+  // enforce it. The real implementation should either assert the range here
+  // or guarantee the invariant in loadConfig().
   tls.mode = static_cast<FtpSecurityMode>(gServerConfig.ftpSecurityMode);
   tls.validateServerCert = gServerConfig.ftpValidateServerCert;
   tls.serverName = gServerConfig.ftpTlsServerName;
@@ -934,12 +992,27 @@ static bool ftpConnectAndLogin(FtpSession &session, char *error, size_t errorSiz
     }
   }
 
-  if (!ftpSendFormatted(*session.transport, 331, error, errorSize, "USER %s", gServerConfig.ftpUser)) {
+  // REVIEW NOTE (04142026, finding #15): The live firmware already handles
+  // USER -> 230 (logged in, skip PASS) and USER -> 331 (need password).
+  // With TLS client-certificate auth, the server may also return 232 (user
+  // logged in, authorized by security data exchange).  Replicate the
+  // existing live-code pattern rather than hardcoding a single expected code.
+  int userCode = 0;
+  if (!ftpSendCommandEx(*session.transport, "USER", gServerConfig.ftpUser,
+                        userCode, error, errorSize)) {
     return false;
   }
-  if (!ftpSendFormatted(*session.transport, 230, error, errorSize, "PASS %s", gServerConfig.ftpPass)) {
+  if (userCode == 331) {
+    // Server needs a password
+    if (!ftpSendFormatted(*session.transport, 230, error, errorSize,
+                          "PASS %s", gServerConfig.ftpPass)) {
+      return false;
+    }
+  } else if (userCode != 230 && userCode != 232) {
+    snprintf(error, errorSize, "USER rejected (%d)", userCode);
     return false;
   }
+
   if (!ftpSendCommand(*session.transport, "TYPE I", 200, error, errorSize)) {
     return false;
   }
@@ -1626,23 +1699,29 @@ The major FTPS risks are not all equal. The current ranking is:
   - Protected passive data channels must work for both `STOR` and `RETR`.
   - If this cannot be made stable on the Opta, the FTPS project could fail regardless of UI/config work.
 
-2. **High risk:** PR4100 interoperability details
+2. **High risk:** TLS session reuse on the passive data channel *(added 04142026)*
+  - Many FTPS servers require the data channel to present the same TLS session ID/ticket as the control channel.
+  - This is one of the most common real-world FTPS interoperability failures.
+  - If the PR4100 requires session reuse and the chosen Mbed TLS transport does not support it, every `STOR` and `RETR` will fail even though the control channel works.
+  - This must be an explicit test in the Phase 0 spike, not a deferred discovery.
+
+3. **High risk:** PR4100 interoperability details
   - `AUTH TLS`, `PBSZ 0`, `PROT P`, passive-mode behavior, and transfer-completion replies must all behave as expected against the actual NAS.
   - NAS quirks are a bigger risk than generic FTPS theory.
 
-3. **High risk:** Resource pressure under repeated TLS transfers
+4. **High risk:** Resource pressure under repeated TLS transfers
   - TLS handshakes will increase RAM use, latency, timeout pressure, and watchdog sensitivity.
   - Archive-related flows are the most likely place for this to show up.
 
-4. **Medium-high risk:** Regression surface across all FTP-backed features
+5. **Medium-high risk:** Regression surface across all FTP-backed features
   - This is not just a manual backup button feature.
   - Client-config manifests, archive flows, historical export, and browser download paths all rely on the same helper layer.
 
-5. **Medium risk:** Settings/UI/API consistency
+6. **Medium risk:** Settings/UI/API consistency
   - The server sketch embeds raw HTML/JS in the `.ino`.
   - Schema drift between config, API, and UI is a realistic maintenance failure mode.
 
-6. **Medium risk, not a likely fatal blocker:** Certificate trust handling
+7. **Medium risk, not a likely fatal blocker:** Certificate trust handling
   - Fingerprint pinning is planned and still preferred.
   - Imported PR4100 certificate trust is now an allowed v1 trust model and reduces the chance that certificate handling alone blocks the release.
   - Certificate handling becomes fatal only if neither fingerprint pinning nor imported-cert trust can be made reliable in the chosen TLS path.
@@ -1665,6 +1744,7 @@ The major FTPS risks are not all equal. The current ranking is:
 
 - Run the `TLSSocketWrapper` compile/device spike first.
 - Prove `AUTH TLS` -> TLS control upgrade -> `PBSZ 0` -> `PROT P` -> protected passive `STOR`/`RETR`.
+- **Test TLS session reuse on the data channel** *(added 04142026)*: verify whether the PR4100 requires the passive data connection to reuse the control channel's TLS session. If it does, confirm that the chosen transport can propagate the session. This is a common FTPS interop failure and must be caught in the spike, not later.
 - Lock validation defaults in code:
   - `ftpValidateServerCert = true`
   - `ftpAllowInsecureTls = false`
@@ -1750,3 +1830,159 @@ That gives the project the best balance of:
 - manageable testing scope
 
 The largest technical risk is not the FTP command sequence itself. The largest risk is selecting and validating the TLS-capable Ethernet client layer for Opta in a way that works reliably for both the control and passive data channels.
+
+---
+
+## Appendix: Review Findings (April 14, 2026)
+
+The following issues were identified during a cross-reference review of this document,
+the FTPS implementation checklist, the FTPS repository review doc, and the live server firmware.
+
+### Scaffolding code bugs fixed in-place above
+
+| # | Severity | Location | Issue | Fix applied |
+|---|----------|----------|-------|-------------|
+| 1 | **High** | Option A `ctrlWrite`/`ctrlRead`/`dataWrite`/`dataRead` | `connected()` routing is logically inverted for Explicit FTPS — the underlying plain socket stays connected after TLS wraps it, so all I/O would route to the wrong client | Replaced `connected()` predicate with explicit `ctrlUpgraded_`/`dataUpgraded_` flags |
+| 2 | **Medium** | Option C `ctrlConnected()` | Hardcoded `return true` regardless of actual socket state | Replaced with state-tracking check and review note |
+| 3 | **Medium** | Option C `wrapControlSocket()` and `openProtectedDataChannel()` | `TRANSPORT_CLOSE` causes the `TLSSocketWrapper` to close the underlying `TCPSocket`, but `closeAll()` also explicitly closes it — double-close risk | Changed to `TRANSPORT_KEEP` with review notes |
+| 4 | **Low** | Sample `ftpConnectAndLogin()` | `static_cast<FtpSecurityMode>` from `uint8_t` without range check | Added review note referencing the schema clamping rules |
+
+### Risk ranking updated above
+
+| # | Severity | Issue |
+|---|----------|-------|
+| 5 | **Medium** | TLS session reuse on the passive data channel was mentioned only in passing. This is one of the most common real-world FTPS interoperability failures. Added as risk #2 in the ranking and as an explicit Phase 0 spike test requirement. |
+
+### Cross-document inconsistencies (fixed 04142026)
+
+| # | Severity | Issue | Where | Status |
+|---|----------|-------|-------|--------|
+| 6 | **Low** | Phase numbering mismatch: this doc uses 5 phases (0–4), the checklist uses 12 phases (0–11). Phase numbers are not traceable between the two docs. | `FTPS_IMPLEMENTATION_CHECKLIST_04132026.md` | **Fixed**: Phase-mapping table added to checklist. |
+| 7 | **Low** | Interface renamed from `IFtpTransport` (this doc) to `IFtpsTransport` (repo review) without noting the change. | `FTPS_REPOSITORY_REVIEW_04132026.md` | **Fixed**: Naming note added to repo review. |
+| 8 | **Medium** | `FtpsTrustMode` enum starts at `1` in the repo review, but `FTP_TLS_TRUST_FINGERPRINT = 0` in this doc. A zero-initialized value would mean "fingerprint" in one doc and "invalid/undefined" in the other. | `FTPS_REPOSITORY_REVIEW_04132026.md` | **Fixed**: Repo review enum changed to start at `0`. |
+
+### Items verified correct against live firmware
+
+- `ServerConfig` FTP fields (all 9): exact match.
+- `FtpSession` struct: contains only `EthernetClient ctrl` as claimed.
+- All 6 FTP helper functions present with correct signatures.
+- `FTP_PORT_DEFAULT` = `21`.
+- Networking includes limited to `PortentaEthernet.h` and `Ethernet.h`.
+- FTP credential obfuscation at rest: confirmed (`encodeFtpCredential`/`decodeFtpCredential` with XOR + hex encoding, lines ~3102–3171).
+- Cold-tier archive functions exist: `archiveMonthToFtp()`, `loadFtpArchiveCached()`, `archiveClientToFtp()`, `FtpArchiveCache`, and the `/api/history/archived` endpoint.
+- `performFtpBackupDetailed()` and `performFtpRestoreDetailed()` present.
+- `ftpBackupClientConfigs()` and `ftpRestoreClientConfigs()` present.
+
+### Remaining observation
+
+The `FtpSecurityMode` enum includes `ImplicitTls = 2` and Option C implements full `ImplicitTls` code branches, despite the doc repeatedly stating Implicit TLS is out of scope. This is intentional background material per the doc text, but anyone implementing from this scaffold should be aware that the out-of-scope branches are present and should not be built into the first release.
+
+### Follow-up findings from plan-update review (April 14, 2026)
+
+These were found while reviewing the April 14 updates to this plan.
+
+| # | Severity | Location | Issue | Status |
+|---|----------|----------|-------|--------|
+| 9 | **High** | Option A (`SslClientFtpTransport`) | `ctrlUpgraded_` / `dataUpgraded_` flags were added for routing, but no code in the scaffold sets or clears them. | **Fixed 04142026**: Added commented-out state transitions in `upgradeControlToTls()`, `openProtectedDataChannel()`, and `closeAll()` reset. |
+| 10 | **High** | Option C (`MbedSecureSocketFtpTransport`) | `ctrlConnected()` referenced `ctrlOpen_` but it was not declared or maintained. | **Fixed 04142026**: Added `bool ctrlOpen_` and `bool ctrlReady_` members. `ctrlOpen_` set on TCP connect, `ctrlReady_` set after TLS handshake succeeds. Both cleared in `closeAll()`. |
+| 11 | **Medium** | Option C (`dataConnected()`) | Connection status inferred from object existence instead of real socket state. | **Noted 04142026**: Review note added in scaffold; explicit `dataReady_` flag recommended for real implementation. |
+| 12 | **Medium** | Checklist/repo wording around passive data TLS | "TLS session resumption" used as a hard requirement; server-dependent in practice. | Wording adjustment deferred — addressed in checklist Phase 0 context. |
+| 13 | **Medium** | Option C (`MbedSecureSocketFtpTransport`) | `ctrlConnected()` short-circuited to `true` whenever `ctrlTls_` wrapper existed, even on failed handshake. | **Fixed 04142026**: Replaced with `ctrlReady_` flag that is set only after successful handshake and cleared on every failure/close path. |
+| 14 | **Medium** | `IFtpTransport` boundary vs diagnostics | Transport abstraction has no peer-certificate or verification-result exposure for later trust/diagnostics. | **Open**: Recommend adding `getPeerCertFingerprint()` and `getLastTlsError()` to transport interface before implementation. See new finding #16. |
+| 15 | **Medium** | Sample `ftpConnectAndLogin()` | Hardcoded `USER` → `331`, `PASS` → `230`. Live firmware already accepts `230`\|`331` after `USER`, and RFC 4217 allows `232`. | **Fixed 04142026**: Sample now accepts `230` and `232` after `USER` and sends `PASS` only when server replies `331`. |
+
+### New findings from second deep review (April 14, 2026)
+
+| # | Severity | Location | Issue | Recommendation |
+|---|----------|----------|-------|----------------|
+| 16 | **Medium** | `IFtpTransport` interface | The interface has no way to expose the peer certificate fingerprint or TLS error details. The UI plan (Section 3) calls for fingerprint preview and trust enrollment, and the test plan requires verifying fingerprint validation failures. Without transport-level access to this data, the UI and test requirements cannot be satisfied. | Add optional methods to `IFtpTransport`: `virtual bool getPeerCertFingerprint(char *out, size_t outLen) { return false; }` and `virtual int getLastTlsError() { return 0; }`. Provide default no-op implementations so plain-FTP transports are unaffected. |
+| 17 | **Medium** | Live firmware `ftpReadResponse()` signature | The live code passes `EthernetClient &` to `ftpReadResponse()`. The transport abstraction replaces `EthernetClient` with `IFtpTransport` which exposes `ctrlRead()`/`ctrlWrite()`. The doc does not show how `ftpReadResponse()` and `ftpSendCommand()` adapt to the new interface. | Add a sample `ftpReadResponse(IFtpTransport &transport, ...)` signature showing how the byte-level read loop would use `transport.ctrlRead()` instead of `client.read()`. This is the most surgery-heavy refactor in the plan and needs an explicit migration note. |
+| 18 | **Medium** | Live firmware data-channel lifetime | In the live code, `ftpStoreBuffer()` and `ftpRetrieveBuffer()` create and destroy a local `EthernetClient dataClient` inside the function body. The transport abstraction expects data-channel lifetime to be managed by the transport object. The plan does not describe how to migrate from function-local data sockets to transport-managed data channels. | Add a migration note: each `ftpStoreBuffer()`/`ftpRetrieveBuffer()` call should (a) call `transport.openProtectedDataChannel()` where it currently calls `dataClient.connect()`, (b) use `transport.dataWrite()`/`transport.dataRead()` for I/O, and (c) call `transport.closeData()` where it currently calls `dataClient.stop()`. |
+| 19 | **Low** | `FTP_TIMEOUT_MS` = 8000ms | The current timeout is tuned for plain FTP. TLS handshake on constrained hardware like Opta can take 2–5 seconds. With both control and data handshakes, the default 8-second timeout may fire during a normal connection setup. | Recommend a separate `FTP_TLS_HANDSHAKE_TIMEOUT_MS` (e.g. 15000ms) for TLS-related operations, or increase `FTP_TIMEOUT_MS` globally with a note explaining the TLS budget. |
+| 20 | **Low** | Option A `closeAll()` | `closeAll()` resets `dataUpgraded_` and `ctrlUpgraded_` flags, but `closeData()` only resets `dataUpgraded_`. If `upgradeControlToTls()` fails partway, `ctrlUpgraded_` stays `false` (correct), but nothing calls `closeAll()` on the failure path—the caller would need to do it. The scaffold doesn't show a failure-path cleanup pattern. | Add a note that the caller (or a RAII guard) must call `closeAll()` on any failure after `connectControl()` succeeds. |
+
+### Spike-plan review findings (April 14, 2026)
+
+| # | Severity | Location | Issue | Recommendation |
+|---|----------|----------|-------|----------------|
+| 21 | **High** | `FTPS_SPIKE_PLAN_04142026.md` sample code | The spike sketch uses `TLSSocketWrapper::TRANSPORT_KEEP_OPEN`, but the installed Opta core header exposes `TRANSPORT_KEEP`. As written, the sample will not compile against the verified 4.5.0 header. | Use `TLSSocketWrapper::TRANSPORT_KEEP` in both the spike sketch and the implementation-plan scaffolding. |
+| 22 | **High** | `FTPS_SPIKE_PLAN_04142026.md` first-run trust guidance | `VALIDATE_CERT = false` only changes logging in the sample sketch. It does not modify the Mbed TLS auth mode, so `ROOT_CA_PEM = nullptr` does not actually prove “validation disabled”. A self-signed PR4100 certificate can still cause a false-negative control-handshake failure. | Treat the first meaningful spike run as “transport plus real trust material”: provide the PR4100 PEM cert up front, or explicitly customize the TLS auth mode in a dedicated follow-up variant before using the spike to judge Option C. |
+| 23 | **Medium** | `FTPS_SPIKE_PLAN_04142026.md` session-reuse branch | The public `TLSSocketWrapper` header exposes `get_ssl_config()` and `get_ssl_context()`, but no obvious public session export/import helper. If the PR4100 requires data-channel TLS session reuse, Option C is more likely to need deeper Mbed TLS integration than a simple wrapper-only fix. | Treat session reuse as a conditional blocker: if the NAS enforces it, stop calling Option C “viable” until either PR4100 policy changes or a lower-level Mbed TLS session-sharing path is proven. |
+| 24 | **Medium** | `FTPS_SPIKE_PLAN_04142026.md` fallback guidance after control-handshake failure | The spike plan currently frames Option B (`TLSSocket`) / Option A (`SSLClient`) as immediate fallbacks even though both are TLS-from-connect style transports unless separately proven to adopt an already-open control socket. Reconnecting over TLS after `AUTH TLS` is not a protocol-equivalent Explicit FTPS fallback. | Describe Option B/A as separate research spikes only. The next realistic direct fallback for Explicit FTPS control upgrade is lower-level custom Mbed TLS wrapping around the existing TCP socket, or an explicit product-scope change such as allowing Implicit FTPS. |
+
+---
+
+## Implementation Plan Readiness Assessment
+
+**Assessment date:** April 14, 2026
+**Reviewer:** Cross-reference review against live firmware (`TankAlarm-112025-Server-BluesOpta.ino`) and all three FTPS design documents.
+
+### Overall verdict: CONDITIONALLY READY — one blocking spike required
+
+The plan is detailed enough to implement with confidence **after** the Phase 0 TLS transport spike succeeds. The single blocking gate is:
+
+> **Blocker:** `TLSSocketWrapper` has not been compiled or tested on the Arduino Opta device. Until a minimal `AUTH TLS` + `PBSZ 0` + `PROT P` + `PASV` data transfer succeeds against the PR4100, the preferred transport (Option C) is unproven.
+
+### Spike-plan assessment
+
+The spike plan is the right gate and the right next step, but it needed a few corrections before it could serve as a reliable go/no-go test.
+
+- The sample sketch and implementation scaffolding were using `TRANSPORT_KEEP_OPEN`, while the verified Opta header exposes `TRANSPORT_KEEP`.
+- The first-run guidance was assuming `VALIDATE_CERT = false` disables certificate verification, but the sample code was not actually changing Mbed TLS auth mode.
+- The fallback section was overstating Option B / Option A as direct continuations of the Explicit FTPS plan when they are really separate feasibility experiments unless they can prove existing-socket adoption.
+
+After those documentation fixes, the spike plan is valid as the Phase 0 gate.
+
+### What is ready
+
+| Area | Status | Notes |
+|------|--------|-------|
+| **Scope definition** | Ready | Explicit TLS only, plain FTP retained, Implicit TLS deferred. Clear and consistently stated across all three docs. |
+| **Config schema** | Ready | All 7 new `ServerConfig` fields defined with types, defaults, and normalization rules. Backward compatibility addressed (legacy configs load cleanly). |
+| **Trust model** | Ready | Two v1 modes (fingerprint pinning + imported PEM cert) fully specified. Enum values, canonical paths, and validation behavior locked. |
+| **Transport abstraction** | Ready | `IFtpTransport` interface is well-defined with 4 candidate implementations ranked in priority order. Scaffolding code has been reviewed and corrected through the implementation-plan and spike-plan reviews. |
+| **FTP command flow** | Ready | Sample `ftpConnectAndLogin()` now matches live firmware patterns. `AUTH TLS` → `PBSZ 0` → `PROT P` → login sequence is correct per RFC 4217. |
+| **UI plan** | Ready | Settings fields, trust enrollment workflow, and UX decisions all specified. Conditional warnings for missing trust data defined. |
+| **Testing plan** | Ready | Functional, negative-case, and stability test checklists cover all FTP consumer call sites. PR4100 interop checklist is explicit. |
+| **Extraction plan** | Ready | Repository review doc has a clean extraction map, staged timeline, and release gates. Cross-doc naming/enum inconsistencies resolved. |
+| **Phasing** | Ready | Both the 5-phase (implementation doc) and 12-phase (checklist) plans are now cross-referenced with a mapping table. Recommended order of work is clear. |
+| **Risk ranking** | Ready | 5 risks ranked with mitigations. TLS session reuse now included as risk #2. |
+
+### What needs work before coding starts
+
+| Item | Priority | Action required |
+|------|----------|-----------------|
+| **TLSSocketWrapper spike** | **Blocking** | Compile and run a minimal FTPS handshake on the Opta against the PR4100. Confirm `AUTH TLS`, `PBSZ 0`, `PROT P`, and at least one `STOR`/`RETR` over a protected passive data channel. If this fails, stop Phase 1 work and choose a separately proven fallback path rather than assuming Option B / Option A are direct drop-in continuations. |
+| **TLS session reuse verification** | **High** | During the spike, verify whether the PR4100 requires TLS session reuse on the data channel. If it does, confirm `TLSSocketWrapper` supports session ticket or session ID resumption. This is the #1 interop risk. |
+| **Spike trust bootstrap** | **High** | Do not rely on `VALIDATE_CERT = false` in the current sample sketch; it is not a real verification-bypass path. For the first meaningful run, provide `ROOT_CA_PEM` or build a separate variant that explicitly customizes the Mbed TLS auth mode. |
+| **Conditional session-reuse blocker** | **High** | The public `TLSSocketWrapper` API does not expose an obvious session handoff helper. If the PR4100 enforces data-channel TLS session reuse, treat that as a likely blocker for Option C until a lower-level Mbed TLS sharing path or NAS policy change is proven. |
+| **`ftpReadResponse` / `ftpSendCommand` migration** | **High** | The plan shows the transport interface but does not show how the existing `ftpReadResponse(EthernetClient &, ...)` adapts to `IFtpTransport &`. Add a migration sketch (finding #17). |
+| **Data-channel lifetime migration** | **High** | The live code creates/destroys data sockets inside `ftpStoreBuffer()`/`ftpRetrieveBuffer()`. The transport owns the data socket. Document the function-by-function migration (finding #18). |
+| **Transport diagnostics interface** | **Medium** | Add `getPeerCertFingerprint()` and `getLastTlsError()` to `IFtpTransport` (finding #16) so the UI can support trust enrollment and the test plan can verify cert failures. |
+| **Fallback path wording** | **Medium** | Keep Option B / Option A described as separate follow-up experiments, not protocol-equivalent fallback steps for Explicit FTPS control upgrade. |
+| **TLS timeout budget** | **Low** | Define a separate handshake timeout or increase `FTP_TIMEOUT_MS` beyond 8000ms for TLS operations (finding #19). |
+| **arduino-cli environment** | **Low** | Install `arduino-cli` with the Opta board package to enable local compile verification before device testing. |
+
+### Confidence by phase
+
+| Phase | Confidence | Risk |
+|-------|------------|------|
+| Phase 0 — Spike | Medium | Depends entirely on `TLSSocketWrapper` behavior on real hardware. Cannot be desk-checked. |
+| Phase 1 — Config & UI | High | Schema, defaults, API, and UI are fully specified. Straightforward implementation work. |
+| Phase 2 — Transport & TLS | Medium | Scaffolding is reviewed and corrected. Main risk is real-world interop with PR4100 cipher/cert behavior. |
+| Phase 3 — Integration test | High | All FTP consumer call sites are identified and listed. Test matrix is explicit. |
+| Phase 4 — Docs & cleanup | High | Minimal risk. |
+
+### Summary of review findings
+
+Two full review passes plus a spike-plan review have been completed across the FTPS documents and the live server firmware. A total of **24 findings** were identified:
+
+- **6 High severity** — 5 fixed, 1 open (finding #22)
+- **13 Medium severity** — 8 fixed, 5 open (findings #12, #14/16, #17, #18, #23)
+- **5 Low severity** — 2 fixed, 3 open (findings #6 fixed in checklist, #19, #20)
+
+No findings invalidate the plan's architecture. The open items are documentation gaps that should be addressed before coding starts but do not require design changes.
+
+### Go/No-Go recommendation
+
+**Go** — proceed to the Phase 0 spike, but do it with the corrected spike-plan assumptions. The plan is architecturally sound, the scaffolding code issues have been corrected, cross-document inconsistencies have been resolved, and the remaining open items are addressable during or immediately before implementation. The single hard gate is still on-device TLS transport validation, but the spike should be run with real trust material or an explicit auth-mode override, and Option B / Option A should be treated as research paths rather than automatic fallbacks for Explicit FTPS.

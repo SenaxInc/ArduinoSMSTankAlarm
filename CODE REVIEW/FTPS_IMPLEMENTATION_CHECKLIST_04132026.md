@@ -10,6 +10,18 @@
 
 This checklist converts the FTPS design note into an ordered implementation plan that can be executed later. It is intentionally action-oriented and split into small verification points so the work can be resumed without re-discovering the scope.
 
+> **Phase-numbering note (04142026):** This checklist uses 12 granular phases
+> (0–11) while the main implementation plan (`FTPS_IMPLEMENTATION_04132026.md`)
+> uses 5 broader phases.  The mapping is:
+>
+> | Checklist phase | Implementation-plan section |
+> |---|---|
+> | 0 (Pre-decisions) | Phase 0 — spike / decisions |
+> | 1–3 (Config, API, UI) | Phase 1 — config & UI |
+> | 4–6 (Transport, Handshake, Data) | Phase 2 — transport & TLS |
+> | 7–10 (Helpers, Backup, Client, Archive) | Phase 3 — integration test |
+> | 11 (Docs/Cleanup) | Phase 4 — docs & cleanup |
+
 **Current decision baseline:**
 
 - Target **Explicit TLS FTPS** only for the current plan.
@@ -30,6 +42,7 @@ This checklist converts the FTPS design note into an ordered implementation plan
 - [ ] Verify that the chosen TLS client supports both:
   - control-channel TLS
   - passive data-channel TLS
+  - passive data-channel TLS session reuse/resumption behavior required by the target server
 - [x] Current plan: keep Plain FTP available during transition, but implement FTPS support only for Explicit TLS.
 - [x] Current v1 trust-model plan:
   - fingerprint pinning
