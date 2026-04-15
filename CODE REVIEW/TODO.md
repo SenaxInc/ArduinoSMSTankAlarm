@@ -1,7 +1,7 @@
 # TankAlarm Master TODO List
 
 > **Current Version:** 1.6.2 (April 9, 2026)  
-> **Last Updated:** April 13, 2026 (validated April 13 fixes implemented in code; `I-20` reduced to deferred Explicit-FTPS follow-up)  
+> **Last Updated:** April 15, 2026 (added FTPS integration tasks F-1 through F-13 under Future Work; cross-referenced I-20)  
 > **Purpose:** Comprehensive tracker for all unimplemented changes identified in code reviews and logic reviews. Update after every new review or commit.
 
 ---
@@ -158,8 +158,9 @@ These items represent data loss, safety, or security risks.
 ### ~~I-20: FTP Credentials Stored and Transmitted in Plaintext **(S)** — SECURITY~~ ⚠ PARTIALLY FIXED / DEFERRED
 - [D] FTP credentials are now obfuscated before being written to `server_config.json`, and legacy plaintext config files are auto-migrated on the next save. FTP control-channel transport is still plaintext on the wire because the current Ethernet/FTP stack does not yet implement FTPS.
 - [D] The current secure-transport plan is **Explicit TLS FTPS only** for the Server backup/archive path. Implicit TLS is not part of the current implementation plan.
-- **Source:** CODE_REVIEW_04132026_COMPREHENSIVE.md (CR-H4)
-- **Fixed/Deferred:** April 13, 2026 — at-rest plaintext removed; secure transport upgrade deferred to a future Explicit-FTPS implementation.
+- [D] The wire-transport fix is tracked as **F-1 through F-13** under [FTPS Integration](#ftps-integration--migrate-server-ftp-to-explicit-ftps-resolves-i-20) in Future Work. The ArduinoOPTA-FTPS library now provides all required primitives (`connect`, `store`, `retrieve`, `mkd`, `size`, `quit`).
+- **Source:** CODE_REVIEW_04132026_COMPREHENSIVE.md (CR-H4), FTPS_LIBRARY_INTEGRATION_STUDY_04152026.md
+- **Fixed/Deferred:** April 13, 2026 — at-rest plaintext removed; secure transport upgrade tracked as F-1–F-13.
 
 ### ~~I-21: CRITICAL_HIBERNATE De-Energizes Relays Without Warning **(C)** — SAFETY~~ ✅ FIXED
 - [x] The Client now publishes the power-state transition before de-energizing relays on entry to `CRITICAL_HIBERNATE`, so the Server receives an immediate critical-power event before pump/relay shutdown.
@@ -497,6 +498,33 @@ Items from the COMMON_HEADER_AUDIT_02192026.md that need cleanup.
 - [D] **3.3.6 — Integration Test Suite** — DEFERRED to v2.0 (16–40 hrs estimated)
 - [D] **Notecard Optimization Templates** — DEFERRED (schemas still evolving)
 
+### FTPS Integration — Migrate Server FTP to Explicit FTPS (resolves I-20)
+
+> **Library:** [dorkmo/ArduinoOPTA-FTPS](https://github.com/dorkmo/ArduinoOPTA-FTPS) (CC0-1.0, commit `902a7ed`)  
+> **Study:** FTPS_LIBRARY_INTEGRATION_STUDY_04152026.md  
+> **Prerequisite:** Library must be validated on real Opta hardware against at least one reference server before server-side integration begins.
+
+#### Phase 1 — Config Schema & Persistence **(S)**
+- [ ] **F-1: Add FTPS fields to `ServerConfig`** — `ftpsTrustMode` (fingerprint / imported-cert), `ftpsFingerprint[65]`, `ftpsTlsServerName[128]`, `ftpsRootCaPem[4097]`, `ftpsEnabled` (bool, opt-in gate to avoid breaking existing plain-FTP users).
+- [ ] **F-2: Extend `server_config.json` schema** — Serialize/deserialize the new FTPS fields. Maintain backward compat: missing fields default to plain FTP (FTPS off).
+- [ ] **F-3: Extend Notecard config sync** — Add shortened keys for FTPS fields in the Notecard serialization paths so config can be pushed/pulled remotely.
+
+#### Phase 2 — Transport Replacement **(S)**
+- [ ] **F-4: Add ArduinoOPTA-FTPS library dependency** — Add to `lib_deps` or local library checkout alongside existing dependencies.
+- [ ] **F-5: Replace FTP helpers with `FtpsClient`** — Replace `ftpConnectAndLogin()`, `ftpStoreBuffer()`, `ftpRetrieveBuffer()`, `ftpQuit()`, `ftpEnterPassive()` with `FtpsClient::begin()` / `connect()` / `store()` / `retrieve()` / `quit()`. Use `mkd()` to create remote paths and `size()` for download preflight.
+- [ ] **F-6: Remove redundant FTP helper code** — `ftpReadResponse()`, `ftpSendCommand()`, `ftpEnterPassive()`, `parsePasv()` can be removed once `FtpsClient` is the sole transport. Keep `FtpSession` struct or replace with `FtpsClient` instance.
+- [ ] **F-7: Feed watchdog between `FtpsClient` calls** — The server backup loop iterates 9 files. Feed watchdog between each `store()` / `retrieve()` call. Individual transfers (max 24KB, 15s library timeout) should complete within a single watchdog window.
+
+#### Phase 3 — Web UI & REST API **(S)**
+- [ ] **F-8: Add FTPS settings to Web UI** — Add trust mode selector (Fingerprint / Imported Cert), fingerprint input, TLS server name input, PEM textarea, and FTPS enable toggle to the existing FTP settings form.
+- [ ] **F-9: Update REST API endpoints** — Add FTPS fields to `GET /api/server-settings` response and `POST` handler. Respect existing `pset`-style password masking; do not expose fingerprint or PEM in full over the API unless saving.
+- [ ] **F-10: Credential/cert obfuscation at rest** — Extend existing FTP credential obfuscation to cover the fingerprint and PEM fields in `server_config.json`.
+
+#### Phase 4 — Validation & Cutover **(S)**
+- [ ] **F-11: Dual-mode transition support** — Keep plain FTP as the default. FTPS activates only when `ftpsEnabled == true` and trust config is present. Allows field upgrade without breaking existing deployments.
+- [ ] **F-12: Test against reference servers** — Validate against WD My Cloud PR4100, vsftpd, and FileZilla Server. Confirm backup (9 files), restore, client config manifests, and monthly archive flows all work over FTPS.
+- [ ] **F-13: Error reporting integration** — Map `FtpsError` enum to existing FTP status UI (web dashboard, serial diagnostics). The library's `char* error` buffer provides human-readable messages at every call site.
+
 ### Other Future Enhancements
 
 - [ ] **Pump Off Control Implementation** — Review and implement pump-off control options per PUMP_OFF_CONTROL_OPTIONS_03202026.md.
@@ -651,6 +679,7 @@ This TODO was compiled from the following documents, sorted by date:
 
 | Date | Document | Type |
 |------|----------|------|
+| 2026-04-15 | FTPS_LIBRARY_INTEGRATION_STUDY_04152026.md | ArduinoOPTA-FTPS library integration feasibility study; server-side FTPS migration tasks F-1 through F-13 |
 | 2026-04-13 | FTPS planning note/checklist update | Narrowed the future secure-transport plan to Explicit TLS FTPS only; left Implicit TLS out of the current implementation scope |
 | 2026-04-13 | Validated April 13 implementation pass | Implemented C-7, I-15 thru I-19, I-21, I-23, M-18 thru M-21, M-24 thru M-26, and FTP credential obfuscation at rest; revalidated M-27 as already fixed in API output; deferred secure FTP transport follow-up |
 | 2026-04-13 | Live-code validation audit of April 13 review set | Accuracy check against current code. Dropped I-22, M-22, M-23 as unsupported; softened M-24 wording; added M-25 thru M-27 |
