@@ -1240,13 +1240,9 @@ static void loadConfigFromFilesystem() {
     return;
   }
 
-  char buf[2048];
-  size_t len = fread(buf, 1, sizeof(buf) - 1, f);
-  fclose(f);
-  buf[len] = '\0';
-
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, buf, len);
+  DeserializationError err = deserializeJson(doc, f);
+  fclose(f);
   if (err) {
     addLog("Failed to parse server_config.json", "warn");
     return;
@@ -1264,19 +1260,74 @@ static void loadConfigFromFilesystem() {
   if (doc["useStaticIp"].is<bool>()) {
     gUseStaticIp = doc["useStaticIp"].as<bool>();
   }
+  if (doc["staticIp"]) {
+    JsonArrayConst ip = doc["staticIp"].as<JsonArrayConst>();
+    if (ip.size() == 4) {
+      gStaticIp = IPAddress(ip[0], ip[1], ip[2], ip[3]);
+    }
+  }
+  if (doc["gateway"]) {
+    JsonArrayConst gateway = doc["gateway"].as<JsonArrayConst>();
+    if (gateway.size() == 4) {
+      gStaticGateway = IPAddress(gateway[0], gateway[1], gateway[2], gateway[3]);
+    }
+  }
+  if (doc["subnet"]) {
+    JsonArrayConst subnet = doc["subnet"].as<JsonArrayConst>();
+    if (subnet.size() == 4) {
+      gStaticSubnet = IPAddress(subnet[0], subnet[1], subnet[2], subnet[3]);
+    }
+  }
+  if (doc["dns"]) {
+    JsonArrayConst dns = doc["dns"].as<JsonArrayConst>();
+    if (dns.size() == 4) {
+      gStaticDns = IPAddress(dns[0], dns[1], dns[2], dns[3]);
+    }
+  }
 
-  // Read FTP settings as defaults for FTPS test (if present)
-  if (doc["ftpHost"].is<const char *>() && strlen(doc["ftpHost"].as<const char *>()) > 0) {
-    strlcpy(gFtpsHost, doc["ftpHost"].as<const char *>(), sizeof(gFtpsHost));
+  // Read FTP settings as defaults for FTPS test when legacy plaintext fields exist.
+  JsonObjectConst ftp = doc["ftp"].as<JsonObjectConst>();
+  const char *ftpHost = nullptr;
+  if (!ftp.isNull()) {
+    ftpHost = ftp["host"].as<const char *>();
   }
-  if (doc["ftpPort"].is<uint16_t>()) {
-    gFtpsPort = doc["ftpPort"].as<uint16_t>();
+  if ((ftpHost == nullptr || ftpHost[0] == '\0') && doc["ftpHost"].is<const char *>()) {
+    ftpHost = doc["ftpHost"].as<const char *>();
   }
-  if (doc["ftpUser"].is<const char *>() && strlen(doc["ftpUser"].as<const char *>()) > 0) {
-    strlcpy(gFtpsUser, doc["ftpUser"].as<const char *>(), sizeof(gFtpsUser));
+  if (ftpHost != nullptr && ftpHost[0] != '\0') {
+    strlcpy(gFtpsHost, ftpHost, sizeof(gFtpsHost));
   }
-  if (doc["ftpPass"].is<const char *>() && strlen(doc["ftpPass"].as<const char *>()) > 0) {
-    strlcpy(gFtpsPass, doc["ftpPass"].as<const char *>(), sizeof(gFtpsPass));
+
+  uint16_t ftpPort = 0;
+  if (!ftp.isNull() && (ftp["port"].is<uint16_t>() || ftp["port"].is<int>())) {
+    ftpPort = ftp["port"].as<uint16_t>();
+  } else if (doc["ftpPort"].is<uint16_t>() || doc["ftpPort"].is<int>()) {
+    ftpPort = doc["ftpPort"].as<uint16_t>();
+  }
+  if (ftpPort != 0) {
+    gFtpsPort = ftpPort;
+  }
+
+  const char *ftpUser = nullptr;
+  if (!ftp.isNull()) {
+    ftpUser = ftp["user"].as<const char *>();
+  }
+  if ((ftpUser == nullptr || ftpUser[0] == '\0') && doc["ftpUser"].is<const char *>()) {
+    ftpUser = doc["ftpUser"].as<const char *>();
+  }
+  if (ftpUser != nullptr && ftpUser[0] != '\0') {
+    strlcpy(gFtpsUser, ftpUser, sizeof(gFtpsUser));
+  }
+
+  const char *ftpPass = nullptr;
+  if (!ftp.isNull()) {
+    ftpPass = ftp["pass"].as<const char *>();
+  }
+  if ((ftpPass == nullptr || ftpPass[0] == '\0') && doc["ftpPass"].is<const char *>()) {
+    ftpPass = doc["ftpPass"].as<const char *>();
+  }
+  if (ftpPass != nullptr && ftpPass[0] != '\0') {
+    strlcpy(gFtpsPass, ftpPass, sizeof(gFtpsPass));
   }
 
   addLog("Loaded config from server_config.json");
