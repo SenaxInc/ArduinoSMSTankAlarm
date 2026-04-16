@@ -1,7 +1,7 @@
 # TankAlarm Master TODO List
 
 > **Current Version:** 1.6.2 (April 9, 2026)  
-> **Last Updated:** April 15, 2026 (added FTPS integration tasks F-1 through F-13 under Future Work; cross-referenced I-20)  
+> **Last Updated:** April 16, 2026 (added FTPS deployment/validation execution checklist for local Pyftpdlib and PR1400 NAS)  
 > **Purpose:** Comprehensive tracker for all unimplemented changes identified in code reviews and logic reviews. Update after every new review or commit.
 
 ---
@@ -500,7 +500,7 @@ Items from the COMMON_HEADER_AUDIT_02192026.md that need cleanup.
 
 ### FTPS Integration — Migrate Server FTP to Explicit FTPS (resolves I-20)
 
-> **Library:** [dorkmo/ArduinoOPTA-FTPS](https://github.com/dorkmo/ArduinoOPTA-FTPS) (CC0-1.0, commit `902a7ed`)  
+> **Library:** [dorkmo/ArduinoOPTA-FTPS](https://github.com/dorkmo/ArduinoOPTA-FTPS) (CC0-1.0, release v0.1.0)  
 > **Study:** FTPS_LIBRARY_INTEGRATION_STUDY_04152026.md  
 > **Prerequisite:** Library must be validated on real Opta hardware against at least one reference server before server-side integration begins.
 
@@ -524,6 +524,21 @@ Items from the COMMON_HEADER_AUDIT_02192026.md that need cleanup.
 - [ ] **F-11: Dual-mode transition support** — Keep plain FTP as the default. FTPS activates only when `ftpsEnabled == true` and trust config is present. Allows field upgrade without breaking existing deployments.
 - [ ] **F-12: Test against reference servers** — Validate against WD My Cloud PR4100, vsftpd, and FileZilla Server. Confirm backup (9 files), restore, client config manifests, and monthly archive flows all work over FTPS.
 - [ ] **F-13: Error reporting integration** — Map `FtpsError` enum to existing FTP status UI (web dashboard, serial diagnostics). The library's `char* error` buffer provides human-readable messages at every call site.
+
+#### Phase 5 — Execution Checklist (install + live validation) **(S)**
+- [ ] **F-14: Deploy latest Server firmware to Opta** — Install the updated `TankAlarm-112025-Server-BluesOpta.ino` build on the operational server hardware and confirm clean boot, Ethernet link, Notecard online status, and web settings page access.
+- [ ] **F-15: Validate against local Pyftpdlib FTPS test server**
+  - [ ] Configure Server FTPS settings for local host, explicit TLS, fingerprint trust mode, and test path.
+  - [ ] Run **Backup Now** and verify remote directory creation (base path, server UID folder, `clients/`, `history/` as needed).
+  - [ ] Verify expected files transfer: baseline backup files, `clients_manifest.txt`, per-client config JSON files, and monthly archive JSON when triggered.
+  - [ ] Run **Restore Now** and confirm restore path works without truncation/errors.
+  - [ ] Capture serial/web diagnostics for pass/fail evidence.
+- [ ] **F-16: Validate against operational PR1400 NAS FTPS server**
+  - [ ] Manually configure NAS FTPS service, account permissions, and target path for TankAlarm.
+  - [ ] Enter NAS FTPS settings in Server UI (host, port, user, FTPS enabled, trust settings).
+  - [ ] Execute backup and restore validation on NAS, confirming folder creation and file presence match Pyftpdlib results.
+  - [ ] Confirm history/archive data writes correctly on NAS and remains readable for restore/inspection.
+  - [ ] Record final go-live status and any NAS-specific deviations.
 
 ### Other Future Enhancements
 
