@@ -40,7 +40,7 @@
 // ============================================================================
 // Build Info
 // ============================================================================
-#define FTPS_TEST_VERSION "1.0.0"
+#define FTPS_TEST_VERSION "0.0.2"
 #define FTPS_TEST_SKETCH_NAME "FTPS_Server_Test"
 
 // ============================================================================
@@ -95,6 +95,7 @@ static bool gUseStaticIp = false;
 static unsigned long gLastDfuCheckMillis = 0;
 static bool gDfuUpdateAvailable = false;
 static char gDfuVersion[32] = {0};
+static uint32_t gDfuFirmwareLength = 0;
 static char gDfuMode[16] = "idle";
 static bool gDfuInProgress = false;
 static char gDfuError[128] = {0};
@@ -130,6 +131,14 @@ static void addLog(const char *message, const char *level = "info") {
   Serial.print(level ? level : "INFO");
   Serial.print("] ");
   Serial.println(message);
+}
+
+static void dfuKickWatchdog() {
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbed::Watchdog::get_instance().kick();
+  #endif
+#endif
 }
 
 // ============================================================================
@@ -267,25 +276,9 @@ static void initializeNotecard() {
            gServerUid[0] != '\0' ? gServerUid : "(not available)");
   addLog(uidMsg);
 
-  // Enable DFU so Notecard will accept firmware from Notehub
-  req = notecard.newRequest("card.dfu");
-  if (req) {
-    JAddStringToObject(req, "name", "stm32");
-    JAddBoolToObject(req, "on", true);
-    J *rsp = notecard.requestAndResponse(req);
-    if (rsp) {
-      const char *dfuErr = JGetString(rsp, "err");
-      if (dfuErr && dfuErr[0] != '\0') {
-        addLog("card.dfu enable failed", "warn");
-      } else {
-        addLog("DFU enabled — firmware updates from Notehub accepted");
-      }
-      notecard.deleteResponse(rsp);
-    }
-  }
-
-  // Also enable IAP DFU for chunk-based firmware reading
+  // Enable IAP DFU for chunk-based firmware reading from Notehub.
   tankalarm_enableIapDfu(notecard);
+  addLog("IAP DFU enabled - firmware downloads from Notehub accepted");
 }
 
 // ============================================================================
@@ -303,6 +296,11 @@ static void checkForFirmwareUpdate() {
   const char *mode = JGetString(rsp, "mode");
   const char *version = JGetString(rsp, "version");
   const char *err = JGetString(rsp, "err");
+  J *body = JGetObject(rsp, "body");
+  uint32_t firmwareLength = 0;
+  if (body) {
+    firmwareLength = (uint32_t)JGetNumber(body, "length");
+  }
 
   if (mode && mode[0] != '\0') {
     strlcpy(gDfuMode, mode, sizeof(gDfuMode));
@@ -317,10 +315,19 @@ static void checkForFirmwareUpdate() {
   }
 
   gDfuUpdateAvailable = (strcmp(gDfuMode, "ready") == 0);
+  gDfuFirmwareLength = gDfuUpdateAvailable ? firmwareLength : 0;
+
+  if (!gDfuUpdateAvailable) {
+    gDfuVersion[0] = '\0';
+  }
 
   if (gDfuUpdateAvailable) {
-    char msg[80];
-    snprintf(msg, sizeof(msg), "Firmware update available: v%s", gDfuVersion);
+    char msg[96];
+    snprintf(msg,
+             sizeof(msg),
+             "Firmware update available: v%s (%lu bytes)",
+             gDfuVersion,
+             (unsigned long)gDfuFirmwareLength);
     addLog(msg, "info");
   }
 
@@ -836,6 +843,7 @@ static void handleApiStatus(EthernetClient &client) {
   doc["dfuMode"] = gDfuMode;
   doc["dfuUpdateAvailable"] = gDfuUpdateAvailable;
   doc["dfuVersion"] = gDfuVersion;
+  doc["dfuFirmwareLength"] = gDfuFirmwareLength;
   doc["dfuError"] = gDfuError;
   doc["dfuInProgress"] = gDfuInProgress;
 
@@ -931,27 +939,30 @@ static void handleApiDfuEnable(EthernetClient &client) {
     return;
   }
 
-  addLog("DFU install triggered via web UI — device will reboot", "warn");
+  if (gDfuFirmwareLength == 0) {
+    respondJson(client, "{\"success\":false,\"error\":\"Firmware length unavailable\"}");
+    return;
+  }
+
+  addLog("IAP DFU install triggered via web UI - device will reboot", "warn");
   respondJson(client, "{\"success\":true,\"message\":\"DFU enabled - device will update and restart\"}");
   client.stop();
   delay(100);
 
-  // Enable DFU mode and begin update
+  // Begin IAP update. Success reboots the device from inside the helper.
   gDfuInProgress = true;
 
-  J *req = notecard.newRequest("card.dfu");
-  if (req) {
-    JAddStringToObject(req, "name", "stm32");
-    JAddBoolToObject(req, "on", true);
-    notecard.deleteResponse(notecard.requestAndResponse(req));
-  }
-
-  // Perform IAP update (this reboots on success)
-  tankalarm_performIapUpdate(notecard, 0, gDfuVersion, nullptr);
+  bool success = tankalarm_performIapUpdate(
+      notecard,
+      gDfuFirmwareLength,
+      "continuous",
+      dfuKickWatchdog);
 
   // If we get here, IAP failed
   gDfuInProgress = false;
-  addLog("IAP update failed — device did not reboot", "error");
+  if (!success) {
+    addLog("IAP update failed - device did not reboot", "error");
+  }
 }
 
 // DFU status API (compatible with server's /api/dfu/status for tooling)
@@ -963,6 +974,7 @@ static void handleApiDfuStatus(EthernetClient &client) {
   doc["buildTime"] = __TIME__;
   doc["updateAvailable"] = gDfuUpdateAvailable;
   doc["availableVersion"] = gDfuVersion;
+  doc["availableLength"] = gDfuFirmwareLength;
   doc["dfuMode"] = gDfuMode;
   doc["dfuInProgress"] = gDfuInProgress;
   doc["dfuError"] = gDfuError;
