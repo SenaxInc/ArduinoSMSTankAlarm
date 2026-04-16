@@ -6,6 +6,7 @@ on:
     paths:
       - 'TankAlarm-112025-Client-BluesOpta/**'
       - 'TankAlarm-112025-Server-BluesOpta/**'
+      - 'TankAlarm-112025-FTPS_Server_Test/**'
       - 'TankAlarm-112025-Common/**'
       - '.github/workflows/build-firmware-112025.yml'
 
@@ -22,6 +23,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Checkout ArduinoOPTA-FTPS library
+        uses: actions/checkout@v4
+        with:
+          repository: dorkmo/ArduinoOPTA-FTPS
+          path: arduino-opta-ftps
 
       - name: Setup Arduino CLI
         uses: arduino/setup-arduino-cli@v1
@@ -78,6 +85,18 @@ jobs:
             --library TankAlarm-112025-Common \
             --output-dir firmware/112025/server \
             TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino
+
+      - name: Build FTPS test firmware (.bin)
+        run: |
+          LIB_ROOT="$RUNNER_TEMP/arduino-libraries"
+          mkdir -p "$LIB_ROOT/ArduinoOPTA-FTPS" "$LIB_ROOT/TankAlarm-112025-Common" firmware/112025/ftps-test
+          cp -r arduino-opta-ftps/src arduino-opta-ftps/library.properties "$LIB_ROOT/ArduinoOPTA-FTPS/"
+          cp -r TankAlarm-112025-Common/src TankAlarm-112025-Common/library.properties "$LIB_ROOT/TankAlarm-112025-Common/"
+
+          arduino-cli compile --fqbn arduino:mbed_opta:opta \
+            --libraries "$LIB_ROOT" \
+            --output-dir firmware/112025/ftps-test \
+            TankAlarm-112025-FTPS_Server_Test/TankAlarm-112025-FTPS_Server_Test.ino
 
       - name: Commit firmware binaries
         if: github.event_name == 'push'

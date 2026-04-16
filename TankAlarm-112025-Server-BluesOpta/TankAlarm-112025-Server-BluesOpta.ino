@@ -46,6 +46,15 @@
 #include <sys/types.h>
 #include <vector>
 
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+  #include "netsocket/NetworkInterface.h"
+  #include "netsocket/SocketAddress.h"
+  #include "netsocket/TCPSocket.h"
+  #include "netsocket/TLSSocketWrapper.h"
+  #include "mbedtls/ssl.h"
+  #include "mbedtls/sha256.h"
+#endif
+
 // POSIX file I/O types (for platforms that support it)
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
   #include <fcntl.h>
@@ -973,11 +982,31 @@ static char gGitHubReleaseUrl[128] = {0};
 static bool gGitHubAssetAvailable = false;
 static char gGitHubAssetUrl[256] = {0};
 static uint32_t gGitHubAssetSize = 0;
+static char gGitHubAssetSha256[65] = {0};
 static unsigned long gLastGitHubCheckMs = 0;
 static bool gGitHubBootCheckDone = false;
+struct GitHubFirmwareTargetState {
+  uint8_t target;
+  bool checked;
+  bool updateAvailable;
+  bool assetAvailable;
+  char latestVersion[32];
+  char releaseUrl[128];
+  char assetUrl[256];
+  uint32_t assetSize;
+  char assetSha256[65];
+  char error[96];
+};
+
 #define GITHUB_CHECK_INTERVAL_MS 86400000UL  // Re-check every 24 hours
 #define GITHUB_REPO_OWNER "SenaxInc"
 #define GITHUB_REPO_NAME  "ArduinoSMSTankAlarm"
+#define GITHUB_DIRECT_DOWNLOAD_CHUNK_SIZE 1024U
+#define GITHUB_DIRECT_MAX_REDIRECTS 4
+#define GITHUB_DIRECT_HTTP_TIMEOUT_MS 15000
+#define GITHUB_DIRECT_HEADER_LINE_MAX 2048
+#define FIRMWARE_TARGET_SERVER 0
+#define FIRMWARE_TARGET_FTPS_TEST 1
 #define DFU_SOURCE_NOTEHUB 0
 #define DFU_SOURCE_GITHUB_DIRECT 1
 #define UPDATE_POLICY_DISABLED     0   // No update checking
@@ -985,6 +1014,19 @@ static bool gGitHubBootCheckDone = false;
 #define UPDATE_POLICY_ALERT_GITHUB 2   // Check GitHub releases, alert on dashboard if available
 #define UPDATE_POLICY_AUTO_GITHUB  3   // Check GitHub releases, automatically install if found
 #define UPDATE_POLICY_AUTO_DFU     4   // Check Notehub DFU, automatically install if found
+
+static GitHubFirmwareTargetState gSelectedFirmwareTargetState = {
+  FIRMWARE_TARGET_SERVER,
+  false,
+  false,
+  false,
+  {0},
+  {0},
+  {0},
+  0,
+  {0},
+  {0}
+};
 
 static void dfuKickWatchdog() {
 #ifdef TANKALARM_WATCHDOG_AVAILABLE
@@ -1468,6 +1510,154 @@ R"HTML(async funct)HTML" R"HTML(ion saveSettingsImpl(){if(!els.productUid.value.
 R"HTML(const endpoint=kind==='restore'?'/api/ftp-restore':'/api/ftp-backup';try{const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text=await res.text();throw new Error(text||`${kind} failed`);}const data=await res.json();if(data&&data.message){showToast(data.message,false);}else{showToast(kind==='restore'?'FTP restore completed':'FTP backup completed');}}catch(err){showToast(err.message||`FTP ${kind} failed`,true);}}if(els.ftpBackupNow)els.ftpBackupNow.addEventListener('click',()=>performFtpAction('backup'));if(els.ftpRestoreNow)els.ftpRestoreNow.addEventListener('click',()=>performFtpAction('restore'));const ncEls={dot:getEl('notecardStatusDot'),label:getEl('notecardStatusLabel'),conn:getEl('ncConnStatus'),product:getEl('ncProductUid'),uid:getEl('ncServerUid'),mode:getEl('ncSyncMode'),refreshBtn:getEl('ncRefreshBtn')};async function loadNotecardStatus(){if(ncEls.label)ncEls.label.textContent='Checking...';if(ncEls.dot)ncEls.dot.style.background='#888';try{const res=await fetch('/api/notecard/status');if(!res.ok)throw new Error('Failed');const d=await res.json();const ok=d.connected;if(ncEls.dot)ncEls.dot.style.background=ok?'#10b981':'#ef4444';if(ncEls.label)ncEls.label.textContent=ok?'Connected':'Disconnected';if(ncEls.conn)ncEls.conn.textContent=ok?'I2C OK — Notecard responding':'I2C FAILED — no response from Notecard';if(ncEls.conn)ncEls.conn.style.color=ok?'#10b981':'#ef4444';if(ncEls.product)ncEls.product.textContent=d.productUid||'Not configured';if(ncEls.uid)ncEls.uid.textContent=d.serverUid||'Unknown';if(ncEls.mode)ncEls.mode.textContent=d.syncMode||'Unknown';if(!ok&&ncEls.product){ncEls.product.style.color='var(--muted)';}}catch(err){if(ncEls.dot)ncEls.dot.style.background='#f59e0b';if(ncEls.label)ncEls.label.textContent='Error: '+err.message;if(ncEls.conn)ncEls.conn.textContent='Could not reach server';}}if(ncEls.refreshBtn)ncEls.refreshBtn.addEventListener('click',loadNotecardStatus);const dfuEls={checkBtn:getEl('dfuCheckBtn'),enableBtn:getEl('dfuEnableBtn'),statusText:getEl('dfuStatusText'),fwVersion:getEl('fwVersionDisplay'),fwBuild:getEl('fwBuildDisplay'),voltage:getEl('serverVoltageDisplay'),serverTime:getEl('serverTimeDisplay'),fwLastUpdated:getEl('fwLastUpdatedDisplay')};function updateDfuUI(data){if(dfuEls.fwVersion)dfuEls.fwVersion.textContent='v'+data.currentVersion;if(dfuEls.fwBuild)dfuEls.fwBuild.textContent=data.buildDate||'Unknown';if(dfuEls.fwLastUpdated){if(data.buildDate){var updatedStr=data.buildDate;if(data.buildTime)updatedStr+=' '+data.buildTime;dfuEls.fwLastUpdated.textContent=updatedStr;}else{dfuEls.fwLastUpdated.textContent='Unknown';}}if(dfuEls.voltage){var vParts=[];if(data.inputVoltage>0.5){vParts.push('Vin: '+data.inputVoltage.toFixed(2)+'V');}if(data.notecardVoltage>0){vParts.push('NC: '+data.notecardVoltage.toFixed(2)+'V');}dfuEls.voltage.textContent=vParts.length>0?vParts.join(' | '):'Not available';}if(dfuEls.serverTime){if(data.serverTime>0){const d=new Date(data.serverTime*1000);dfuEls.serverTime.textContent=d.toLocaleString();}else{dfuEls.serverTime.textContent='Not synced';}}var mode=data.dfuMode||'idle';if(data.dfuInProgress){if(dfuEls.statusText)dfuEls.statusText.textContent='Firmware update in progress... ('+mode+')';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=true;}else if(mode==='downloading'){if(dfuEls.statusText)dfuEls.statusText.textContent='Downloading firmware from Notehub...';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}else if(mode==='ready'||data.updateAvailable){var verText=data.availableVersion||'';if(dfuEls.statusText)dfuEls.statusText.textContent=mode==='ready'?'Update ready to install: v'+verText:'Update available: v'+verText;if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=false;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}else if(mode==='error'){var errDetail=data.dfuError?' ('+data.dfuError+')':'';if(dfuEls.statusText)dfuEls.statusText.textContent='DFU error'+errDetail+' - try checking again';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}else{if(dfuEls.statusText)dfuEls.statusText.textContent='Firmware is up to date (v'+data.currentVersion+')';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}}async function loadDfuStatus(){try{const res=await fetch('/api/dfu/status');if(!res.ok)throw new Error('Failed to fetch DFU status');const data=await res.json();updateDfuUI(data);}catch(err){if(dfuEls.statusText)dfuEls.statusText.textContent='Error: '+err.message;if(dfuEls.fwVersion)dfuEls.fwVersion.textContent='Unknown';if(dfuEls.fwBuild)dfuEls.fwBuild.textContent='Unknown';if(dfuEls.fwLastUpdated)dfuEls.fwLastUpdated.textContent='Unknown';if(dfuEls.voltage)dfuEls.voltage.textContent='Not available';if(dfuEls.serverTime)dfuEls.serverTime.textContent='Not synced';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}}if(dfuEls.checkBtn)dfuEls.checkBtn.addEventListener('click',async()=>{dfuEls.checkBtn.disabled=true;if(dfuEls.statusText)dfuEls.statusText.textContent='Querying Notecard for updates...';try{const res=await fetch('/api/dfu/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});if(!res.ok)throw new Error('Check failed');const data=await res.json();updateDfuUI(data);showToast(data.updateAvailable?'Update found: v'+data.availableVersion:'No updates available');}catch(err){if(dfuEls.statusText)dfuEls.statusText.textContent='Error checking: '+err.message;showToast('Failed to check for updates',true);}finally{if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}});if(dfuEls.enableBtn)dfuEls.enableBtn.addEventListener('click',async()=>{if(!confirm('Install firmware update using selected source? (May fall back to Notehub if configured)'))return;try{dfuEls.enableBtn.disabled=true;if(dfuEls.statusText)dfuEls.statusText.textContent='Starting firmware install...';const res=await fetch('/api/dfu/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});if(!res.ok){const text=await res.text();throw new Error(text||'Failed to enable DFU');}const data=await res.json();showToast(data.message||'Firmware install started');if(dfuEls.statusText)dfuEls.statusText.textContent=data.message||'Firmware install started';setTimeout(loadDfuStatus,5000);}catch(err){showToast(err.message,true);if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=false;if(dfuEls.statusText)dfuEls.statusText.textContent='Error: '+err.message;}});await loadDfuStatus();await loadNotecardStatus();await loadSettings();}catch(e){console.error(e);const t=document.getElementById('toast');if(t){t.innerText='Script Error! '+e.message;t.style.background='red';t.classList.add('show');}}});</script></body></html>)HTML";
 
 static const char EMAIL_FORMAT_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Email Formatting - Tank Alarm</title><link rel="stylesheet" href="/style.css"><style>.format-section{border:1px solid var(--border);padding:var(--space-3);margin-bottom:var(--space-3);background:#fafafa}.format-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-2)}.format-title{font-weight:600;font-size:1rem}.preview-box{border:1px solid var(--border);background:#fff;padding:var(--space-3);font-family:ui-monospace,Consolas,monospace;font-size:0.85rem;white-space:pre-wrap;max-height:400px;overflow:auto}.field-list{display:flex;flex-direction:column;gap:var(--space-2)}.field-item{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2);border:1px solid var(--border);background:#fff}.field-item label{flex:1;display:flex;align-items:center;gap:8px}.field-item input[type="checkbox"]{width:auto}.drag-handle{cursor:grab;color:var(--muted);padding:0 8px}.drag-handle:active{cursor:grabbing}</style></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Daily Email Format</h2><p style="color:var(--muted);margin-bottom:16px;">Customize the content and layout of daily sensor summary emails. Changes are saved automatically.</p><form id="formatForm"><div class="format-section"><div class="format-header"><span class="format-title">Email Header</span></div><div class="form-grid"><label class="field"><span>Email Subject</span><input type="text" id="emailSubject" value="Daily Tank Summary - {date}" placeholder="Daily Tank Summary - {date}"></label><label class="field"><span>Company/Organization Name</span><input type="text" id="companyName" value="" placeholder="Your Company Name (optional)"></label></div><div class="toggle-group" style="margin-top:12px"><label class="toggle"><span>Include Date in Header</span><input type="checkbox" id="includeDate" checked></label><label class="toggle"><span>Include Time Generated</span><input type="checkbox" id="includeTime"></label><label class="toggle"><span>Include Server Name</span><input type="checkbox" id="includeServerName" checked></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Site Information</span></div><div class="toggle-group"><label class="toggle"><span>Group Sensors by Site</span><input type="checkbox" id="groupBySite" checked></label><label class="toggle"><span>Show Site Summary (total change)</span><input type="checkbox" id="showSiteSummary" checked></label><label class="toggle"><span>Show Site Total Capacity</span><input type="checkbox" id="showSiteCapacity"></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Tank Details</span></div><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px">Select which fields to include for each sensor:</p><div class="toggle-group"><label class="toggle"><span>Tank Number</span><input type="checkbox" id="fieldSensorIndex" checked></label><label class="toggle"><span>Tank Name</span><input type="checkbox" id="fieldSensorName" checked></label><label class="toggle"><span>Contents (Diesel, Water, etc.)</span><input type="checkbox" id="fieldContents" checked></label><label class="toggle"><span>Current Level (inches)</span><input type="checkbox" id="fieldLevelInches" checked></label><label class="toggle"><span>Current Level (percentage)</span><input type="checkbox" id="fieldLevelPercent"></label><label class="toggle"><span>Level Change (24h)</span><input type="checkbox" id="fieldLevelChange" checked></label><label class="toggle"><span>Delivery Indicator</span><input type="checkbox" id="fieldDeliveryIndicator" checked></label><label class="toggle"><span>Last Reading Time</span><input type="checkbox" id="fieldLastReading"></label><label class="toggle"><span>Sensor Raw Value (mA)</span><input type="checkbox" id="fieldSensorMa"></label><label class="toggle"><span>High/Low Alarm Status</span><input type="checkbox" id="fieldAlarmStatus" checked></label><label class="toggle"><span>Tank Capacity (max height)</span><input type="checkbox" id="fieldCapacity"></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Summary Section</span></div><div class="toggle-group"><label class="toggle"><span>Include Fleet Summary</span><input type="checkbox" id="includeFleetSummary" checked></label><label class="toggle"><span>Total Sensors Monitored</span><input type="checkbox" id="summaryTotalSensors" checked></label><label class="toggle"><span>Sensors with Active Alarms</span><input type="checkbox" id="summaryActiveAlarms" checked></label><label class="toggle"><span>Total Deliveries (24h)</span><input type="checkbox" id="summaryDeliveries" checked></label><label class="toggle"><span>Stale Readings Warning</span><input type="checkbox" id="summaryStaleWarning" checked></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Formatting Options</span></div><div class="form-grid"><label class="field"><span>Number Format</span><select id="numberFormat"><option value="decimal">Decimal (12.5)</option><option value="fraction">Fraction (12 1/2)</option></select></label><label class="field"><span>Date Format</span><select id="dateFormat"><option value="us">US (MM/DD/YYYY)</option><option value="iso">ISO (YYYY-MM-DD)</option><option value="eu">EU (DD/MM/YYYY)</option></select></label><label class="field"><span>Change Indicator Style</span><select id="changeStyle"><option value="arrow">Arrows (&#x2191; &#x2193;)</option><option value="plusminus">Plus/Minus (+5.2 / -3.1)</option><option value="text">Text (increased/decreased)</option></select></label></div><div class="toggle-group" style="margin-top:12px"><label class="toggle"><span>Use Color Coding (HTML emails)</span><input type="checkbox" id="useColors" checked></label><label class="toggle"><span>Include Horizontal Dividers</span><input type="checkbox" id="useDividers" checked></label></div></div><div class="actions"><button type="submit">Save Format</button><button type="button" class="secondary" id="previewBtn">Preview Email</button><button type="button" class="secondary" id="resetBtn">Reset to Defaults</button><a class="pill secondary" href="/server-settings">Back to Settings</a></div></form></div><div class="card" id="previewCard" style="display:none"><h2>Email Preview</h2><div id="previewContent" class="preview-box"></div></div></main><div id="toast"></div><script>document.addEventListener('DOMContentLoaded',()=>{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);const toast=document.getElementById('toast');const previewCard=document.getElementById('previewCard');const previewContent=document.getElementById('previewContent');function showToast(msg,isError){toast.textContent=msg;toast.style.background=isError?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}const fields=['emailSubject','companyName','includeDate','includeTime','includeServerName','groupBySite','showSiteSummary','showSiteCapacity','fieldSensorIndex','fieldSensorName','fieldContents','fieldLevelInches','fieldLevelPercent','fieldLevelChange','fieldDeliveryIndicator','fieldLastReading','fieldSensorMa','fieldAlarmStatus','fieldCapacity','includeFleetSummary','summaryTotalSensors','summaryActiveAlarms','summaryDeliveries','summaryStaleWarning','numberFormat','dateFormat','changeStyle','useColors','useDividers'];function getFormData(){const data={};fields.forEach(f=>{const el=document.getElementById(f);if(el.type==='checkbox')data[f]=el.checked;else data[f]=el.value;});return data;}function setFormData(data){fields.forEach(f=>{const el=document.getElementById(f);if(!el)return;if(el.type==='checkbox')el.checked=!!data[f];else if(data[f]!==undefined)el.value=data[f];});}async function loadFormat(){try{const res=await fetch('/api/email-format');if(!res.ok)throw new Error('Failed to load');const data=await res.json();setFormData(data);}catch(err){console.log('Using defaults');}}async function saveFormat(e){if(e)e.preventDefault();const data=getFormData();try{const res=await fetch('/api/email-format',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!res.ok)throw new Error('Failed to save');showToast('Format saved successfully');}catch(err){showToast(err.message,true);}}function generatePreview(){const d=getFormData();const dateStr=d.dateFormat==='iso'?new Date().toISOString().split('T')[0]:d.dateFormat==='eu'?new Date().toLocaleDateString('en-GB'):new Date().toLocaleDateString('en-US');let subject=d.emailSubject.replace('{date}',dateStr);let preview='Subject: '+subject+'\n\n';if(d.companyName)preview+=d.companyName+'\n';if(d.includeServerName)preview+='Server: TankAlarm-Server-01\n';if(d.includeDate)preview+='Date: '+dateStr+'\n';if(d.includeTime)preview+='Generated: '+new Date().toLocaleTimeString()+'\n';preview+='\n'+'-'.repeat(50)+'\n\n';const sites=[{name:'Site Alpha',sensors:[{num:1,name:'Main Tank',contents:'Diesel',level:85.5,change:12.3,alarm:false,capacity:120},{num:2,name:'Reserve',contents:'Diesel',level:45.2,change:-8.1,alarm:true,alarmType:'low',capacity:100}]},{name:'Site Beta',sensors:[{num:1,name:'Water Tank',contents:'Water',level:92.0,change:0,alarm:false,capacity:150}]}];if(d.groupBySite){sites.forEach(site=>{preview+='=== '+site.name+' ===\n';if(d.showSiteSummary){const totalChange=site.sensors.reduce((s,t)=>s+t.change,0);const arrow=d.changeStyle==='arrow'?(totalChange>0?'\u2191':'\u2193'):d.changeStyle==='plusminus'?(totalChange>0?'+':''):' ';preview+='Site Total Change: '+arrow+(d.numberFormat==='fraction'?Math.round(Math.abs(totalChange)):Math.abs(totalChange).toFixed(1))+' in\n';}if(d.showSiteCapacity){const totalCap=site.sensors.reduce((s,t)=>s+t.capacity,0);preview+='Total Capacity: '+totalCap+' in\n';}preview+='\n';site.sensors.forEach(t=>{let line='';if(d.fieldSensorIndex)line+='Tank #'+t.num+' ';if(d.fieldSensorName)line+=t.name+' ';if(d.fieldContents)line+='['+t.contents+'] ';preview+=line.trim()+'\n';let details='  ';if(d.fieldLevelInches)details+='Level: '+(d.numberFormat==='fraction'?Math.round(t.level):t.level.toFixed(1))+' in  ';if(d.fieldLevelPercent)details+=Math.round(t.level/t.capacity*100)+'%  ';if(d.fieldLevelChange&&t.change!==0){const arrow=d.changeStyle==='arrow'?(t.change>0?'\u2191':'\u2193'):d.changeStyle==='plusminus'?(t.change>0?'+':''): '';details+=arrow+Math.abs(t.change).toFixed(1)+' in  ';}if(d.fieldDeliveryIndicator&&t.change>5)details+='&#x1F4E6; DELIVERY  ';if(d.fieldAlarmStatus&&t.alarm)details+='&#x26A0;&#xFE0F; '+t.alarmType.toUpperCase()+' ALARM  ';if(d.fieldCapacity)details+='(Cap: '+t.capacity+' in)  ';preview+=details.trim()+'\n';if(d.fieldLastReading)preview+='  Last: '+new Date().toLocaleString()+'\n';if(d.fieldSensorMa)preview+='  Sensor: 12.45 mA\n';preview+='\n';});if(d.useDividers)preview+='-'.repeat(50)+'\n\n';});}if(d.includeFleetSummary){preview+='=== FLEET SUMMARY ===\n';if(d.summaryTotalSensors)preview+='Total Sensors: 3\n';if(d.summaryActiveAlarms)preview+='Active Alarms: 1\n';if(d.summaryDeliveries)preview+='Deliveries (24h): 1\n';if(d.summaryStaleWarning)preview+='Stale Readings: 0\n';}previewContent.textContent=preview;previewCard.style.display='block';previewCard.scrollIntoView({behavior:'smooth'});}document.getElementById('formatForm').addEventListener('submit',saveFormat);document.getElementById('previewBtn').addEventListener('click',generatePreview);document.getElementById('resetBtn').addEventListener('click',()=>{const defaults={emailSubject:'Daily Tank Summary - {date}',companyName:'',includeDate:true,includeTime:false,includeServerName:true,groupBySite:true,showSiteSummary:true,showSiteCapacity:false,fieldSensorIndex:true,fieldSensorName:true,fieldContents:true,fieldLevelInches:true,fieldLevelPercent:false,fieldLevelChange:true,fieldDeliveryIndicator:true,fieldLastReading:false,fieldSensorMa:false,fieldAlarmStatus:true,fieldCapacity:false,includeFleetSummary:true,summaryTotalSensors:true,summaryActiveAlarms:true,summaryDeliveries:true,summaryStaleWarning:true,numberFormat:'decimal',dateFormat:'us',changeStyle:'arrow',useColors:true,useDividers:true};setFormData(defaults);showToast('Reset to defaults');});loadFormat();});</script></body></html>)HTML";
+
+static const char SERVER_SETTINGS_DFU_TARGET_INJECTION[] PROGMEM = R"HTML(
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const statusCard = document.getElementById('dfuStatus');
+  const statusText = document.getElementById('dfuStatusText');
+  const originalCheckButton = document.getElementById('dfuCheckBtn');
+  const originalInstallButton = document.getElementById('dfuEnableBtn');
+  if (!statusCard || !statusText || !originalCheckButton || !originalInstallButton) {
+    return;
+  }
+
+  let targetSelect = document.getElementById('dfuTargetSelect');
+  if (!targetSelect) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'form-grid';
+    wrapper.style.marginBottom = '12px';
+    wrapper.innerHTML = '<label class="field" style="max-width:320px;"><span>Firmware Target</span><select id="dfuTargetSelect"><option value="server">TankAlarm Server</option><option value="ftps-test">FTPS Test</option></select></label>';
+    statusCard.insertAdjacentElement('afterend', wrapper);
+    targetSelect = wrapper.querySelector('#dfuTargetSelect');
+  }
+
+  const originalActions = originalInstallButton.parentElement;
+  if (originalInstallButton) {
+    originalInstallButton.textContent = 'Install Selected Firmware';
+  }
+  if (originalActions && originalActions.nextElementSibling && originalActions.nextElementSibling.tagName === 'P') {
+    originalActions.nextElementSibling.textContent = 'Manual install now targets the selected firmware image. Server installs still fall back to Notehub DFU when a ready GitHub asset is not available.';
+  }
+
+  function showToast(message, isError) {
+    const toast = document.getElementById('toast');
+    if (!toast) {
+      return;
+    }
+    toast.textContent = message;
+    toast.style.background = isError ? '#dc2626' : '#0284c7';
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2500);
+  }
+
+  function getTargetId() {
+    return targetSelect ? targetSelect.value : 'server';
+  }
+
+  function getTargetLabel() {
+    if (!targetSelect) {
+      return 'Selected firmware';
+    }
+    return targetSelect.options[targetSelect.selectedIndex].textContent || 'Selected firmware';
+  }
+
+  function replaceButton(button) {
+    const clone = button.cloneNode(true);
+    button.parentNode.replaceChild(clone, button);
+    return clone;
+  }
+
+  let checkButton = replaceButton(originalCheckButton);
+  let installButton = replaceButton(originalInstallButton);
+
+  function updateTargetUi(data) {
+    if (targetSelect && data.selectedTarget) {
+      targetSelect.value = data.selectedTarget;
+    }
+    statusText.textContent = data.selectedTargetStatusText || ('Select ' + getTargetLabel() + ', then click Check for Update');
+    installButton.disabled = !data.selectedTargetInstallEnabled;
+    checkButton.disabled = !!data.dfuInProgress;
+  }
+
+  async function refreshTargetStatus() {
+    const response = await fetch('/api/dfu/status');
+    if (!response.ok) {
+      throw new Error('Failed to fetch DFU status');
+    }
+    const data = await response.json();
+    updateTargetUi(data);
+    return data;
+  }
+
+  if (targetSelect) {
+    targetSelect.addEventListener('change', () => {
+      statusText.textContent = 'Select ' + getTargetLabel() + ', then click Check for Update';
+      installButton.disabled = true;
+    });
+  }
+
+  checkButton.addEventListener('click', async () => {
+    checkButton.disabled = true;
+    statusText.textContent = 'Checking ' + getTargetLabel() + '...';
+    try {
+      const response = await fetch('/api/dfu/check', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({target: getTargetId()})
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || 'Check failed');
+      }
+      const data = await response.json();
+      updateTargetUi(data);
+      showToast(data.selectedTargetInstallEnabled ? getTargetLabel() + ' is ready to install' : (data.selectedTargetStatusText || ('No installable update for ' + getTargetLabel())));
+    } catch (error) {
+      statusText.textContent = 'Error checking: ' + error.message;
+      showToast('Failed to check for updates', true);
+    } finally {
+      checkButton.disabled = false;
+    }
+  });
+
+  installButton.addEventListener('click', async () => {
+    if (!confirm('Install ' + getTargetLabel() + ' now? The device will reboot when flashing starts.')) {
+      return;
+    }
+
+    try {
+      installButton.disabled = true;
+      statusText.textContent = 'Starting ' + getTargetLabel() + ' install...';
+      const response = await fetch('/api/dfu/enable', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({target: getTargetId()})
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || 'Failed to start firmware install');
+      }
+      const data = await response.json();
+      statusText.textContent = data.message || 'Firmware install started';
+      showToast(data.message || 'Firmware install started');
+      setTimeout(() => {
+        refreshTargetStatus().catch(() => {});
+      }, 5000);
+    } catch (error) {
+      installButton.disabled = false;
+      statusText.textContent = 'Error: ' + error.message;
+      showToast(error.message, true);
+    }
+  });
+
+  refreshTargetStatus().catch((error) => {
+    statusText.textContent = 'Error: ' + error.message;
+    showToast('Failed to load updater status', true);
+  });
+});
+</script>
+)HTML";
 
 static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Client Configuration</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill" href="/config-generator">Client Config</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Client Configuration</h2>
 <div class="actions" style="margin-bottom:20px;justify-content:space-between;flex-wrap:wrap;gap:10px;">
@@ -2552,6 +2742,1165 @@ static void safeSleep(unsigned long ms) {
  */
 static uint32_t freeRam() { return tankalarm_freeRam(); }
 
+static bool isNotehubDfuReady() {
+  return gDfuUpdateAvailable && gDfuFirmwareLength > 0;
+}
+
+static bool isGitHubDirectUpdateReady() {
+  return gGitHubUpdateAvailable && gGitHubAssetAvailable &&
+         gGitHubAssetUrl[0] != '\0' && gGitHubAssetSize > 0 &&
+         gGitHubAssetSha256[0] != '\0';
+}
+
+static bool isGitHubDirectTargetReady(const GitHubFirmwareTargetState &state) {
+  return state.assetAvailable && state.assetUrl[0] != '\0' &&
+         state.assetSize > 0 && state.assetSha256[0] != '\0';
+}
+
+static const char *firmwareTargetId(uint8_t target) {
+  return (target == FIRMWARE_TARGET_FTPS_TEST) ? "ftps-test" : "server";
+}
+
+static const char *firmwareTargetLabel(uint8_t target) {
+  return (target == FIRMWARE_TARGET_FTPS_TEST) ? "FTPS Test" : "TankAlarm Server";
+}
+
+static const char *firmwareTargetAssetNamingConvention(uint8_t target) {
+  return (target == FIRMWARE_TARGET_FTPS_TEST)
+             ? "TankAlarm-FTPS-Test-vX.Y.Z.bin"
+             : "TankAlarm-Server-vX.Y.Z.bin";
+}
+
+static bool parseFirmwareTargetValue(const char *value, uint8_t &target) {
+  target = FIRMWARE_TARGET_SERVER;
+  if (value == nullptr || value[0] == '\0') {
+    return true;
+  }
+  if (strcmp(value, "server") == 0 || strcmp(value, "main") == 0 ||
+      strcmp(value, "main-server") == 0) {
+    target = FIRMWARE_TARGET_SERVER;
+    return true;
+  }
+  if (strcmp(value, "ftps") == 0 || strcmp(value, "ftps-test") == 0 ||
+      strcmp(value, "ftps_test") == 0) {
+    target = FIRMWARE_TARGET_FTPS_TEST;
+    return true;
+  }
+  return false;
+}
+
+static void clearGitHubFirmwareTargetState(GitHubFirmwareTargetState &state, uint8_t target) {
+  memset(&state, 0, sizeof(state));
+  state.target = target;
+}
+
+static void setGitHubFirmwareTargetError(GitHubFirmwareTargetState &state, const char *message) {
+  if (message == nullptr) {
+    state.error[0] = '\0';
+    return;
+  }
+  strlcpy(state.error, message, sizeof(state.error));
+}
+
+static bool buildExpectedFirmwareAssetName(uint8_t target,
+                                           const char *version,
+                                           char *out,
+                                           size_t outSize) {
+  if (version == nullptr || version[0] == '\0' || out == nullptr || outSize == 0) {
+    return false;
+  }
+
+  int written = 0;
+  if (target == FIRMWARE_TARGET_FTPS_TEST) {
+    written = snprintf(out, outSize, "TankAlarm-FTPS-Test-v%s.bin", version);
+  } else {
+    written = snprintf(out, outSize, "TankAlarm-Server-v%s.bin", version);
+  }
+
+  return written > 0 && (size_t)written < outSize;
+}
+
+static void loadServerGitHubTargetState(GitHubFirmwareTargetState &state) {
+  clearGitHubFirmwareTargetState(state, FIRMWARE_TARGET_SERVER);
+  state.checked = (gLastGitHubCheckMs != 0UL);
+  state.updateAvailable = gGitHubUpdateAvailable;
+  state.assetAvailable = gGitHubAssetAvailable;
+  strlcpy(state.latestVersion, gGitHubLatestVersion, sizeof(state.latestVersion));
+  strlcpy(state.releaseUrl, gGitHubReleaseUrl, sizeof(state.releaseUrl));
+  strlcpy(state.assetUrl, gGitHubAssetUrl, sizeof(state.assetUrl));
+  state.assetSize = gGitHubAssetSize;
+  strlcpy(state.assetSha256, gGitHubAssetSha256, sizeof(state.assetSha256));
+}
+
+static void copyGitHubFirmwareTargetStateToGlobals(const GitHubFirmwareTargetState &state) {
+  gGitHubUpdateAvailable = state.updateAvailable;
+  gGitHubAssetAvailable = state.assetAvailable;
+  strlcpy(gGitHubLatestVersion, state.latestVersion, sizeof(gGitHubLatestVersion));
+  strlcpy(gGitHubReleaseUrl, state.releaseUrl, sizeof(gGitHubReleaseUrl));
+  strlcpy(gGitHubAssetUrl, state.assetUrl, sizeof(gGitHubAssetUrl));
+  gGitHubAssetSize = state.assetSize;
+  strlcpy(gGitHubAssetSha256, state.assetSha256, sizeof(gGitHubAssetSha256));
+}
+
+static int compareFirmwareVersions(const char *left, const char *right) {
+  if (left == nullptr || left[0] == '\0') {
+    return (right == nullptr || right[0] == '\0') ? 0 : -1;
+  }
+  if (right == nullptr || right[0] == '\0') {
+    return 1;
+  }
+
+  while (left[0] != '\0' || right[0] != '\0') {
+    unsigned long leftValue = 0;
+    unsigned long rightValue = 0;
+
+    while (left[0] != '\0' && left[0] != '.') {
+      if (isdigit((unsigned char)left[0])) {
+        leftValue = (leftValue * 10UL) + (unsigned long)(left[0] - '0');
+      }
+      ++left;
+    }
+
+    while (right[0] != '\0' && right[0] != '.') {
+      if (isdigit((unsigned char)right[0])) {
+        rightValue = (rightValue * 10UL) + (unsigned long)(right[0] - '0');
+      }
+      ++right;
+    }
+
+    if (leftValue < rightValue) {
+      return -1;
+    }
+    if (leftValue > rightValue) {
+      return 1;
+    }
+
+    if (left[0] == '.') {
+      ++left;
+    }
+    if (right[0] == '.') {
+      ++right;
+    }
+  }
+
+  return 0;
+}
+
+static bool normalizeSha256Hex(const char *input, char *out, size_t outSize) {
+  if (input == nullptr || out == nullptr || outSize < 65) {
+    return false;
+  }
+
+  size_t count = 0;
+  for (const char *cursor = input; *cursor != '\0'; ++cursor) {
+    char ch = *cursor;
+    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+      continue;
+    }
+    if (ch >= 'a' && ch <= 'f') {
+      ch = (char)(ch - 'a' + 'A');
+    }
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'F'))) {
+      return false;
+    }
+    if (count >= 64) {
+      return false;
+    }
+    out[count++] = ch;
+  }
+
+  if (count != 64) {
+    return false;
+  }
+
+  out[count] = '\0';
+  return true;
+}
+
+static bool parseGitHubAssetDigest(const char *input, char *out, size_t outSize) {
+  if (input == nullptr || input[0] == '\0') {
+    return false;
+  }
+
+  const char *hex = input;
+  if (strncmp(input, "sha256:", 7) == 0 || strncmp(input, "SHA256:", 7) == 0) {
+    hex = input + 7;
+  }
+
+  return normalizeSha256Hex(hex, out, outSize);
+}
+
+#if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+static bool writeUpperHexDigest(const unsigned char *digest,
+                                size_t digestLen,
+                                char *out,
+                                size_t outLen) {
+  if (digest == nullptr || out == nullptr || outLen < (digestLen * 2U) + 1U) {
+    return false;
+  }
+
+  for (size_t index = 0; index < digestLen; ++index) {
+    snprintf(out + (index * 2U), outLen - (index * 2U), "%02X", digest[index]);
+  }
+
+  out[digestLen * 2U] = '\0';
+  return true;
+}
+
+static bool sha256Start(mbedtls_sha256_context &context) {
+#if defined(MBEDTLS_VERSION_NUMBER) && (MBEDTLS_VERSION_NUMBER >= 0x02070000)
+  return mbedtls_sha256_starts_ret(&context, 0) == 0;
+#else
+  mbedtls_sha256_starts(&context, 0);
+  return true;
+#endif
+}
+
+static bool sha256Update(mbedtls_sha256_context &context, const uint8_t *data, size_t len) {
+#if defined(MBEDTLS_VERSION_NUMBER) && (MBEDTLS_VERSION_NUMBER >= 0x02070000)
+  return mbedtls_sha256_update_ret(&context, data, len) == 0;
+#else
+  mbedtls_sha256_update(&context, data, len);
+  return true;
+#endif
+}
+
+static bool sha256Finish(mbedtls_sha256_context &context, unsigned char *digest) {
+#if defined(MBEDTLS_VERSION_NUMBER) && (MBEDTLS_VERSION_NUMBER >= 0x02070000)
+  return mbedtls_sha256_finish_ret(&context, digest) == 0;
+#else
+  mbedtls_sha256_finish(&context, digest);
+  return true;
+#endif
+}
+
+static bool headerStartsWithIgnoreCase(const char *line, const char *prefix) {
+  if (line == nullptr || prefix == nullptr) {
+    return false;
+  }
+
+  while (*prefix != '\0') {
+    if (*line == '\0') {
+      return false;
+    }
+
+    char left = *line;
+    char right = *prefix;
+    if (left >= 'A' && left <= 'Z') {
+      left = (char)(left - 'A' + 'a');
+    }
+    if (right >= 'A' && right <= 'Z') {
+      right = (char)(right - 'A' + 'a');
+    }
+    if (left != right) {
+      return false;
+    }
+
+    ++line;
+    ++prefix;
+  }
+
+  return true;
+}
+
+static bool containsIgnoreCase(const char *text, const char *needle) {
+  if (text == nullptr || needle == nullptr || needle[0] == '\0') {
+    return false;
+  }
+
+  const size_t needleLen = strlen(needle);
+  for (const char *cursor = text; *cursor != '\0'; ++cursor) {
+    size_t matched = 0;
+    while (matched < needleLen && cursor[matched] != '\0') {
+      char left = cursor[matched];
+      char right = needle[matched];
+      if (left >= 'A' && left <= 'Z') {
+        left = (char)(left - 'A' + 'a');
+      }
+      if (right >= 'A' && right <= 'Z') {
+        right = (char)(right - 'A' + 'a');
+      }
+      if (left != right) {
+        break;
+      }
+      ++matched;
+    }
+
+    if (matched == needleLen) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static bool parseHttpsUrl(const String &url,
+                          String &host,
+                          uint16_t &port,
+                          String &path,
+                          String &errorMessage) {
+  host = "";
+  path = "/";
+  port = 443;
+  errorMessage = "";
+
+  if (!url.startsWith("https://")) {
+    errorMessage = "Only HTTPS GitHub asset URLs are supported";
+    return false;
+  }
+
+  int hostStart = 8;
+  int pathStart = url.indexOf('/', hostStart);
+  String authority = (pathStart >= 0) ? url.substring(hostStart, pathStart)
+                                      : url.substring(hostStart);
+  path = (pathStart >= 0) ? url.substring(pathStart) : "/";
+
+  if (authority.length() == 0) {
+    errorMessage = "GitHub asset URL is missing a host";
+    return false;
+  }
+
+  int colon = authority.lastIndexOf(':');
+  if (colon >= 0) {
+    long parsedPort = authority.substring(colon + 1).toInt();
+    if (parsedPort <= 0 || parsedPort > 65535) {
+      errorMessage = "GitHub asset URL port is invalid";
+      return false;
+    }
+    host = authority.substring(0, colon);
+    port = (uint16_t)parsedPort;
+  } else {
+    host = authority;
+  }
+
+  if (host.length() == 0) {
+    errorMessage = "GitHub asset URL is missing a host";
+    return false;
+  }
+
+  return true;
+}
+
+static bool sendTlsRequest(TLSSocketWrapper &socket,
+                           const char *data,
+                           size_t len,
+                           String &errorMessage) {
+  size_t sent = 0;
+  while (sent < len) {
+    int result = socket.send(data + sent, len - sent);
+    if (result <= 0) {
+      errorMessage = "HTTPS request send failed";
+      return false;
+    }
+    sent += (size_t)result;
+  }
+  return true;
+}
+
+static bool readHttpLine(TLSSocketWrapper &socket,
+                         char *line,
+                         size_t lineSize,
+                         String &errorMessage) {
+  if (line == nullptr || lineSize < 2) {
+    errorMessage = "HTTP header buffer is invalid";
+    return false;
+  }
+
+  size_t length = 0;
+  while (length + 1 < lineSize) {
+    char ch = 0;
+    int result = socket.recv(&ch, 1);
+    if (result != 1) {
+      errorMessage = "HTTPS header read failed";
+      return false;
+    }
+    if (ch == '\r') {
+      continue;
+    }
+    if (ch == '\n') {
+      line[length] = '\0';
+      return true;
+    }
+    line[length++] = ch;
+  }
+
+  line[lineSize - 1] = '\0';
+  errorMessage = "HTTP header line exceeds buffer";
+  return false;
+}
+
+static bool readHttpResponseHeaders(TLSSocketWrapper &socket,
+                                    int &statusCode,
+                                    String &location,
+                                    uint32_t &contentLength,
+                                    bool &hasContentLength,
+                                    bool &chunked,
+                                    String &errorMessage) {
+  char line[GITHUB_DIRECT_HEADER_LINE_MAX] = {0};
+  if (!readHttpLine(socket, line, sizeof(line), errorMessage)) {
+    return false;
+  }
+
+  statusCode = 0;
+  if (sscanf(line, "HTTP/%*d.%*d %d", &statusCode) != 1) {
+    errorMessage = "Invalid HTTP status line from GitHub";
+    return false;
+  }
+
+  location = "";
+  contentLength = 0;
+  hasContentLength = false;
+  chunked = false;
+
+  while (true) {
+    if (!readHttpLine(socket, line, sizeof(line), errorMessage)) {
+      return false;
+    }
+    if (line[0] == '\0') {
+      return true;
+    }
+
+    if (headerStartsWithIgnoreCase(line, "Location:")) {
+      const char *value = line + 9;
+      while (*value == ' ' || *value == '\t') {
+        ++value;
+      }
+      location = value;
+    } else if (headerStartsWithIgnoreCase(line, "Content-Length:")) {
+      const char *value = line + 15;
+      while (*value == ' ' || *value == '\t') {
+        ++value;
+      }
+      contentLength = (uint32_t)strtoul(value, nullptr, 10);
+      hasContentLength = true;
+    } else if (headerStartsWithIgnoreCase(line, "Transfer-Encoding:")) {
+      const char *value = line + 18;
+      while (*value == ' ' || *value == '\t') {
+        ++value;
+      }
+      chunked = containsIgnoreCase(value, "chunked");
+    }
+  }
+}
+
+static bool checkGitHubReleaseForTarget(uint8_t target,
+                                        const char *currentVersion,
+                                        uint8_t currentTarget,
+                                        GitHubFirmwareTargetState &state,
+                                        bool logResults) {
+  clearGitHubFirmwareTargetState(state, target);
+
+  J *req = notecard.newRequest("web.get");
+  if (!req) {
+    setGitHubFirmwareTargetError(state, "Failed to create GitHub release request");
+    return false;
+  }
+
+  char url[128];
+  snprintf(url,
+           sizeof(url),
+           "https://api.github.com/repos/%s/%s/releases/latest",
+           GITHUB_REPO_OWNER,
+           GITHUB_REPO_NAME);
+  JAddStringToObject(req, "url", url);
+
+  J *hdrs = JAddObjectToObject(req, "headers");
+  if (hdrs) {
+    char ua[48];
+    snprintf(ua, sizeof(ua), "TankAlarm-Server/%s", FIRMWARE_VERSION);
+    JAddStringToObject(hdrs, "User-Agent", ua);
+    JAddStringToObject(hdrs, "Accept", "application/vnd.github.v3+json");
+  }
+
+  J *rsp = notecard.requestAndResponse(req);
+  if (!rsp) {
+    setGitHubFirmwareTargetError(state, "GitHub release check returned no response");
+    return false;
+  }
+
+  if (notecard.responseError(rsp)) {
+    setGitHubFirmwareTargetError(state, JGetString(rsp, "err"));
+    notecard.deleteResponse(rsp);
+    return false;
+  }
+
+  int httpResult = JGetInt(rsp, "result");
+  if (httpResult != 200) {
+    char message[72];
+    snprintf(message, sizeof(message), "GitHub Releases API returned HTTP %d", httpResult);
+    setGitHubFirmwareTargetError(state, message);
+    notecard.deleteResponse(rsp);
+    return false;
+  }
+
+  const char *body = JGetString(rsp, "body");
+  if (body == nullptr || body[0] == '\0') {
+    setGitHubFirmwareTargetError(state, "GitHub release response body was empty");
+    notecard.deleteResponse(rsp);
+    return false;
+  }
+
+  StaticJsonDocument<512> filter;
+  filter["tag_name"] = true;
+  filter["html_url"] = true;
+  for (uint8_t i = 0; i < 8; ++i) {
+    filter["assets"][i]["name"] = true;
+    filter["assets"][i]["browser_download_url"] = true;
+    filter["assets"][i]["size"] = true;
+    filter["assets"][i]["digest"] = true;
+  }
+
+  StaticJsonDocument<2560> doc;
+  DeserializationError error = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+  notecard.deleteResponse(rsp);
+
+  if (error != DeserializationError::Ok) {
+    char message[96];
+    snprintf(message, sizeof(message), "GitHub release JSON parse failed: %s", error.c_str());
+    setGitHubFirmwareTargetError(state, message);
+    return false;
+  }
+
+  const char *tagName = doc["tag_name"];
+  const char *htmlUrl = doc["html_url"];
+  if (tagName == nullptr || tagName[0] == '\0') {
+    setGitHubFirmwareTargetError(state, "GitHub release metadata did not include a tag");
+    return false;
+  }
+
+  state.checked = true;
+  const char *ghVersion = (tagName[0] == 'v' || tagName[0] == 'V') ? tagName + 1 : tagName;
+  strlcpy(state.latestVersion, ghVersion, sizeof(state.latestVersion));
+  if (htmlUrl != nullptr) {
+    strlcpy(state.releaseUrl, htmlUrl, sizeof(state.releaseUrl));
+  }
+
+  char expectedAssetName[96];
+  if (!buildExpectedFirmwareAssetName(target, ghVersion, expectedAssetName, sizeof(expectedAssetName))) {
+    setGitHubFirmwareTargetError(state, "Failed to build expected firmware asset name");
+    return false;
+  }
+
+  JsonArray assets = doc["assets"].as<JsonArray>();
+  if (!assets.isNull()) {
+    for (JsonObject asset : assets) {
+      const char *assetName = asset["name"] | "";
+      if (strcmp(assetName, expectedAssetName) != 0) {
+        continue;
+      }
+
+      const char *assetUrl = asset["browser_download_url"] | "";
+      if (assetUrl[0] != '\0') {
+        state.assetAvailable = true;
+        strlcpy(state.assetUrl, assetUrl, sizeof(state.assetUrl));
+        state.assetSize = asset["size"] | 0;
+        const char *assetDigest = asset["digest"] | "";
+        if (!parseGitHubAssetDigest(assetDigest, state.assetSha256, sizeof(state.assetSha256))) {
+          state.assetSha256[0] = '\0';
+        }
+      }
+      break;
+    }
+  }
+
+  const int versionComparison = compareFirmwareVersions(ghVersion, currentVersion);
+  const bool targetMatchesCurrent = (target == currentTarget);
+  state.updateAvailable = state.assetAvailable &&
+                          (versionComparison > 0 ||
+                           (versionComparison == 0 && !targetMatchesCurrent));
+
+  if (logResults) {
+    Serial.print(F("GitHub latest for "));
+    Serial.print(firmwareTargetLabel(target));
+    Serial.print(F(": "));
+    Serial.print(ghVersion);
+    Serial.print(F("  current package: "));
+    Serial.println(currentVersion);
+
+    if (state.updateAvailable) {
+      addServerSerialLog("Selected firmware target is ready from GitHub", "info", "dfu");
+    } else if (!state.assetAvailable) {
+      addServerSerialLog("Latest GitHub release does not include the selected firmware asset", "warn", "dfu");
+    }
+  }
+
+  return true;
+}
+
+static void buildSelectedFirmwareTargetStatus(const GitHubFirmwareTargetState &state,
+                                              uint8_t currentTarget,
+                                              const char *currentVersion,
+                                              bool allowNotehubFallback,
+                                              char *out,
+                                              size_t outSize,
+                                              bool &installEnabled) {
+  const char *label = firmwareTargetLabel(state.target);
+  const bool directReady = isGitHubDirectTargetReady(state);
+  const bool directInstallAllowed = directReady && state.updateAvailable;
+  installEnabled = directInstallAllowed || allowNotehubFallback;
+
+  if (out == nullptr || outSize == 0) {
+    return;
+  }
+
+  if (gDfuInProgress) {
+    snprintf(out, outSize, "Firmware update in progress... (%s)", gDfuMode);
+    return;
+  }
+
+  if (state.error[0] != '\0') {
+    if (allowNotehubFallback) {
+      snprintf(out,
+               outSize,
+               "%s GitHub check failed; Notehub DFU is still ready for the main server firmware",
+               label);
+    } else {
+      strlcpy(out, state.error, outSize);
+    }
+    return;
+  }
+
+  if (!state.checked) {
+    if (allowNotehubFallback) {
+      snprintf(out, outSize, "%s is ready to install from Notehub DFU", label);
+    } else {
+      snprintf(out, outSize, "Select %s, then click Check for Update", label);
+    }
+    return;
+  }
+
+  if (directInstallAllowed) {
+    snprintf(out,
+             outSize,
+             "%s v%s is ready to install from GitHub",
+             label,
+             state.latestVersion[0] != '\0' ? state.latestVersion : currentVersion);
+    return;
+  }
+
+  if (directReady && state.target == currentTarget) {
+    snprintf(out, outSize, "%s is already current (v%s)", label, currentVersion);
+    return;
+  }
+
+  if (directReady && state.target != currentTarget) {
+    snprintf(out,
+             outSize,
+             "Latest %s package (v%s) is older than the running firmware package",
+             label,
+             state.latestVersion[0] != '\0' ? state.latestVersion : currentVersion);
+    return;
+  }
+
+  if (state.assetAvailable) {
+    snprintf(out,
+             outSize,
+             "%s asset was found on GitHub, but its digest metadata is incomplete",
+             label);
+    return;
+  }
+
+  if (allowNotehubFallback) {
+    snprintf(out,
+             outSize,
+             "No GitHub asset found for %s; Notehub DFU is still ready for the main server firmware",
+             label);
+    return;
+  }
+
+  if (state.latestVersion[0] != '\0') {
+    snprintf(out,
+             outSize,
+             "Latest GitHub release v%s does not include a %s asset",
+             state.latestVersion,
+             label);
+    return;
+  }
+
+  snprintf(out, outSize, "No published %s release asset is ready to install", label);
+}
+
+static bool attemptGitHubDirectInstallForTarget(const GitHubFirmwareTargetState &state,
+                                                String &statusMessage) {
+  const bool previousUpdateAvailable = gGitHubUpdateAvailable;
+  const bool previousAssetAvailable = gGitHubAssetAvailable;
+  const uint32_t previousAssetSize = gGitHubAssetSize;
+  char previousLatestVersion[sizeof(gGitHubLatestVersion)] = {0};
+  char previousReleaseUrl[sizeof(gGitHubReleaseUrl)] = {0};
+  char previousAssetUrl[sizeof(gGitHubAssetUrl)] = {0};
+  char previousAssetSha256[sizeof(gGitHubAssetSha256)] = {0};
+  strlcpy(previousLatestVersion, gGitHubLatestVersion, sizeof(previousLatestVersion));
+  strlcpy(previousReleaseUrl, gGitHubReleaseUrl, sizeof(previousReleaseUrl));
+  strlcpy(previousAssetUrl, gGitHubAssetUrl, sizeof(previousAssetUrl));
+  strlcpy(previousAssetSha256, gGitHubAssetSha256, sizeof(previousAssetSha256));
+
+  copyGitHubFirmwareTargetStateToGlobals(state);
+  const bool success = attemptGitHubDirectInstall(statusMessage);
+
+  if (!success) {
+    gGitHubUpdateAvailable = previousUpdateAvailable;
+    gGitHubAssetAvailable = previousAssetAvailable;
+    gGitHubAssetSize = previousAssetSize;
+    strlcpy(gGitHubLatestVersion, previousLatestVersion, sizeof(gGitHubLatestVersion));
+    strlcpy(gGitHubReleaseUrl, previousReleaseUrl, sizeof(gGitHubReleaseUrl));
+    strlcpy(gGitHubAssetUrl, previousAssetUrl, sizeof(gGitHubAssetUrl));
+    strlcpy(gGitHubAssetSha256, previousAssetSha256, sizeof(gGitHubAssetSha256));
+  }
+
+  return success;
+}
+
+static bool failGitHubDirectInstall(String &statusMessage, const String &message) {
+  statusMessage = message;
+  gDfuInProgress = false;
+  strlcpy(gDfuMode, "error", sizeof(gDfuMode));
+  strlcpy(gDfuError, statusMessage.c_str(), sizeof(gDfuError));
+  Serial.print(F("GitHub Direct: "));
+  Serial.println(statusMessage);
+  addServerSerialLog(statusMessage.c_str(), "error", "dfu");
+  return false;
+}
+
+static bool attemptGitHubDirectInstall(String &statusMessage) {
+  if (!gGitHubAssetAvailable || gGitHubAssetUrl[0] == '\0') {
+    return failGitHubDirectInstall(statusMessage,
+                                   "GitHub release found but matching Server .bin asset is missing");
+  }
+  if (gGitHubAssetSize == 0 || gGitHubAssetSha256[0] == '\0') {
+    return failGitHubDirectInstall(statusMessage,
+                                   "GitHub asset metadata is incomplete for direct install");
+  }
+
+  NetworkInterface *network = Ethernet.getNetwork();
+  if (network == nullptr) {
+    return failGitHubDirectInstall(statusMessage,
+                                   "Ethernet NetworkInterface is unavailable for GitHub Direct install");
+  }
+
+  gDfuInProgress = true;
+  strlcpy(gDfuMode, "github", sizeof(gDfuMode));
+  gDfuError[0] = '\0';
+
+  Serial.println(F("GitHub Direct: starting direct HTTPS firmware install"));
+  Serial.print(F("GitHub Direct: asset URL: "));
+  Serial.println(gGitHubAssetUrl);
+  Serial.print(F("GitHub Direct: expected size: "));
+  Serial.println(gGitHubAssetSize);
+  Serial.print(F("GitHub Direct: expected SHA-256: "));
+  Serial.println(gGitHubAssetSha256);
+  addServerSerialLog("GitHub Direct install started", "info", "dfu");
+
+  String currentUrl = gGitHubAssetUrl;
+  TLSSocketWrapper *activeTls = nullptr;
+  TCPSocket *activeTcp = nullptr;
+  uint32_t contentLength = 0;
+  bool contentLengthKnown = false;
+
+  for (int redirectCount = 0; redirectCount <= GITHUB_DIRECT_MAX_REDIRECTS; ++redirectCount) {
+    String host;
+    String path;
+    String parseError;
+    uint16_t port = 443;
+    if (!parseHttpsUrl(currentUrl, host, port, path, parseError)) {
+      return failGitHubDirectInstall(statusMessage,
+                                     String("GitHub asset URL parse failed: ") + parseError);
+    }
+
+    SocketAddress address;
+    if (network->gethostbyname(host.c_str(), &address) != NSAPI_ERROR_OK) {
+      return failGitHubDirectInstall(statusMessage,
+                                     String("DNS lookup failed for ") + host);
+    }
+    address.set_port(port);
+
+    TCPSocket tcp;
+    if (tcp.open(network) != NSAPI_ERROR_OK) {
+      return failGitHubDirectInstall(statusMessage, "Failed to open TCP socket for GitHub download");
+    }
+    tcp.set_timeout(GITHUB_DIRECT_HTTP_TIMEOUT_MS);
+    if (tcp.connect(address) != NSAPI_ERROR_OK) {
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     String("TCP connect failed for ") + host);
+    }
+
+    TLSSocketWrapper tls(&tcp, host.c_str(), TLSSocketWrapper::TRANSPORT_KEEP);
+    mbedtls_ssl_config *sslConfig = tls.get_ssl_config();
+    if (sslConfig == nullptr) {
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "TLS configuration was unavailable for GitHub download");
+    }
+    mbedtls_ssl_conf_authmode(sslConfig, MBEDTLS_SSL_VERIFY_NONE);
+    tls.set_timeout(GITHUB_DIRECT_HTTP_TIMEOUT_MS);
+    if (tls.connect() != NSAPI_ERROR_OK) {
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     String("TLS handshake failed for ") + host);
+    }
+
+    char userAgent[48];
+    snprintf(userAgent, sizeof(userAgent), "TankAlarm-Server/%s", FIRMWARE_VERSION);
+
+    if (!sendTlsRequest(tls, "GET ", 4, statusMessage) ||
+        !sendTlsRequest(tls, path.c_str(), path.length(), statusMessage) ||
+        !sendTlsRequest(tls, " HTTP/1.1\r\nHost: ", 17, statusMessage) ||
+        !sendTlsRequest(tls, host.c_str(), host.length(), statusMessage) ||
+        !sendTlsRequest(tls,
+                        "\r\nUser-Agent: ",
+                        14,
+                        statusMessage) ||
+        !sendTlsRequest(tls, userAgent, strlen(userAgent), statusMessage) ||
+        !sendTlsRequest(tls,
+                        "\r\nAccept: application/octet-stream\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n",
+                        84,
+                        statusMessage)) {
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage, statusMessage);
+    }
+
+    int statusCode = 0;
+    String location;
+    bool chunked = false;
+    if (!readHttpResponseHeaders(tls,
+                                 statusCode,
+                                 location,
+                                 contentLength,
+                                 contentLengthKnown,
+                                 chunked,
+                                 statusMessage)) {
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage, statusMessage);
+    }
+
+    if (statusCode == 301 || statusCode == 302 || statusCode == 303 ||
+        statusCode == 307 || statusCode == 308) {
+      tls.close();
+      tcp.close();
+      if (location.length() == 0) {
+        return failGitHubDirectInstall(statusMessage,
+                                       "GitHub redirect response did not include a Location header");
+      }
+      currentUrl = location.startsWith("/") ? (String("https://") + host + location)
+                                             : location;
+      continue;
+    }
+
+    if (statusCode != 200) {
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     String("GitHub asset download returned HTTP ") + String(statusCode));
+    }
+    if (chunked) {
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "GitHub asset download used chunked transfer encoding; direct install requires Content-Length");
+    }
+    if (!contentLengthKnown) {
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "GitHub asset download did not include Content-Length");
+    }
+    if (contentLength != gGitHubAssetSize) {
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     String("GitHub asset size mismatch: expected ") +
+                                             String(gGitHubAssetSize) + String(", got ") +
+                                             String(contentLength));
+    }
+
+    activeTls = &tls;
+    activeTcp = &tcp;
+
+    mbed::FlashIAP flash;
+    int flashResult = flash.init();
+    if (flashResult != 0) {
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     String("FlashIAP init failed: ") + String(flashResult));
+    }
+
+    uint32_t flashStart = flash.get_flash_start();
+    uint32_t flashSize = flash.get_flash_size();
+    uint32_t pageSize = flash.get_page_size();
+    uint32_t appStart = flashStart + 0x40000UL;
+
+    if (gGitHubAssetSize > (flashStart + flashSize - appStart)) {
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "GitHub firmware image is too large for application flash region");
+    }
+
+    uint32_t eraseSize = 0;
+    uint32_t eraseAddress = appStart;
+    while (eraseSize < gGitHubAssetSize) {
+      uint32_t sectorSize = flash.get_sector_size(eraseAddress + eraseSize);
+      eraseSize += sectorSize;
+    }
+
+    Serial.print(F("GitHub Direct: erasing "));
+    Serial.print(eraseSize / 1024UL);
+    Serial.println(F("KB of application flash"));
+    dfuKickWatchdog();
+    flashResult = flash.erase(appStart, eraseSize);
+    if (flashResult != 0) {
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     String("Flash erase failed: ") + String(flashResult));
+    }
+
+    const uint8_t eraseValue = flash.get_erase_value();
+    uint32_t bufferSize = ((GITHUB_DIRECT_DOWNLOAD_CHUNK_SIZE + pageSize - 1U) / pageSize) * pageSize;
+    uint8_t *programBuffer = (uint8_t *)malloc(bufferSize);
+    if (programBuffer == nullptr) {
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "Failed to allocate GitHub Direct download buffer");
+    }
+    memset(programBuffer, eraseValue, bufferSize);
+
+    mbedtls_sha256_context downloadSha;
+    mbedtls_sha256_init(&downloadSha);
+    if (!sha256Start(downloadSha)) {
+      free(programBuffer);
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "Failed to initialize SHA-256 for GitHub download");
+    }
+
+    uint32_t downloaded = 0;
+    uint32_t flashed = 0;
+    uint32_t buffered = 0;
+    uint32_t lastProgressPct = 0;
+    while (downloaded < gGitHubAssetSize) {
+      dfuKickWatchdog();
+      size_t receiveSize = bufferSize - buffered;
+      uint32_t remaining = gGitHubAssetSize - downloaded;
+      if (receiveSize > remaining) {
+        receiveSize = remaining;
+      }
+
+      int receiveResult = tls.recv(programBuffer + buffered, receiveSize);
+      if (receiveResult <= 0) {
+        mbedtls_sha256_free(&downloadSha);
+        free(programBuffer);
+        flash.deinit();
+        tls.close();
+        tcp.close();
+        return failGitHubDirectInstall(statusMessage,
+                                       "GitHub asset body read failed during firmware download");
+      }
+
+      if (!sha256Update(downloadSha, programBuffer + buffered, (size_t)receiveResult)) {
+        mbedtls_sha256_free(&downloadSha);
+        free(programBuffer);
+        flash.deinit();
+        tls.close();
+        tcp.close();
+        return failGitHubDirectInstall(statusMessage,
+                                       "Failed to update SHA-256 digest during GitHub download");
+      }
+
+      buffered += (uint32_t)receiveResult;
+      downloaded += (uint32_t)receiveResult;
+
+      if (buffered == bufferSize || downloaded == gGitHubAssetSize) {
+        uint32_t programSize = ((buffered + pageSize - 1U) / pageSize) * pageSize;
+        if (programSize > buffered) {
+          memset(programBuffer + buffered, eraseValue, programSize - buffered);
+        }
+
+        flashResult = flash.program(programBuffer, appStart + flashed, programSize);
+        if (flashResult != 0) {
+          mbedtls_sha256_free(&downloadSha);
+          free(programBuffer);
+          flash.deinit();
+          tls.close();
+          tcp.close();
+          return failGitHubDirectInstall(statusMessage,
+                                         String("Flash program failed: ") + String(flashResult));
+        }
+
+        flashed += buffered;
+        buffered = 0;
+        memset(programBuffer, eraseValue, bufferSize);
+      }
+
+      uint32_t pct = (downloaded * 100UL) / gGitHubAssetSize;
+      if (pct >= lastProgressPct + 10UL) {
+        lastProgressPct = pct;
+        Serial.print(F("GitHub Direct: "));
+        Serial.print(pct);
+        Serial.print(F("% ("));
+        Serial.print(downloaded);
+        Serial.print(F("/"));
+        Serial.print(gGitHubAssetSize);
+        Serial.println(F(")"));
+      }
+    }
+
+    unsigned char downloadDigest[32] = {0};
+    if (!sha256Finish(downloadSha, downloadDigest)) {
+      mbedtls_sha256_free(&downloadSha);
+      free(programBuffer);
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "Failed to finalize GitHub download SHA-256 digest");
+    }
+    mbedtls_sha256_free(&downloadSha);
+
+    char actualSha256[65] = {0};
+    if (!writeUpperHexDigest(downloadDigest, sizeof(downloadDigest), actualSha256, sizeof(actualSha256))) {
+      free(programBuffer);
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "Failed to format GitHub download SHA-256 digest");
+    }
+    if (strcmp(actualSha256, gGitHubAssetSha256) != 0) {
+      free(programBuffer);
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     String("GitHub asset SHA-256 mismatch: expected ") +
+                                             String(gGitHubAssetSha256) + String(", got ") +
+                                             String(actualSha256));
+    }
+
+    Serial.println(F("GitHub Direct: verifying flashed SHA-256..."));
+    mbedtls_sha256_context flashSha;
+    mbedtls_sha256_init(&flashSha);
+    if (!sha256Start(flashSha)) {
+      free(programBuffer);
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "Failed to initialize SHA-256 for flash verification");
+    }
+
+    const uint8_t *flashPointer = (const uint8_t *)appStart;
+    uint32_t verifyOffset = 0;
+    while (verifyOffset < gGitHubAssetSize) {
+      dfuKickWatchdog();
+      uint32_t verifyChunk = gGitHubAssetSize - verifyOffset;
+      if (verifyChunk > GITHUB_DIRECT_DOWNLOAD_CHUNK_SIZE) {
+        verifyChunk = GITHUB_DIRECT_DOWNLOAD_CHUNK_SIZE;
+      }
+      if (!sha256Update(flashSha, flashPointer + verifyOffset, verifyChunk)) {
+        mbedtls_sha256_free(&flashSha);
+        free(programBuffer);
+        flash.deinit();
+        tls.close();
+        tcp.close();
+        return failGitHubDirectInstall(statusMessage,
+                                       "Failed to update flash verification SHA-256 digest");
+      }
+      verifyOffset += verifyChunk;
+    }
+
+    unsigned char flashDigest[32] = {0};
+    if (!sha256Finish(flashSha, flashDigest)) {
+      mbedtls_sha256_free(&flashSha);
+      free(programBuffer);
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "Failed to finalize flash verification SHA-256 digest");
+    }
+    mbedtls_sha256_free(&flashSha);
+
+    char flashSha256[65] = {0};
+    if (!writeUpperHexDigest(flashDigest, sizeof(flashDigest), flashSha256, sizeof(flashSha256))) {
+      free(programBuffer);
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     "Failed to format flash verification SHA-256 digest");
+    }
+    if (strcmp(flashSha256, gGitHubAssetSha256) != 0) {
+      free(programBuffer);
+      flash.deinit();
+      tls.close();
+      tcp.close();
+      return failGitHubDirectInstall(statusMessage,
+                                     String("Flash SHA-256 mismatch after programming: expected ") +
+                                             String(gGitHubAssetSha256) + String(", got ") +
+                                             String(flashSha256));
+    }
+
+    free(programBuffer);
+    flash.deinit();
+    tls.close();
+    tcp.close();
+
+    Serial.println(F("========================================"));
+    Serial.println(F("GitHub Direct: UPDATE COMPLETE - REBOOTING"));
+    Serial.println(F("========================================"));
+    addServerSerialLog("GitHub Direct update complete; rebooting", "info", "dfu");
+    Serial.flush();
+    safeSleep(500);
+    NVIC_SystemReset();
+    return true;
+  }
+
+  return failGitHubDirectInstall(statusMessage,
+                                 "GitHub asset redirect chain exceeded the supported limit");
+}
+#else
+static bool attemptGitHubDirectInstall(String &statusMessage) {
+  statusMessage = "GitHub Direct install requires an Opta/Mbed build";
+  return false;
+}
+#endif
+
+static void attemptAutoGitHubInstall() {
+  if (!gGitHubUpdateAvailable) {
+    return;
+  }
+
+  if (isGitHubDirectUpdateReady()) {
+    String autoStatus;
+    if (!attemptGitHubDirectInstall(autoStatus) && isNotehubDfuReady()) {
+      Serial.println(F("GitHub Direct install failed; falling back to Notehub DFU"));
+      enableDfuMode();
+    }
+    return;
+  }
+
+  if (isNotehubDfuReady()) {
+    Serial.println(F("GitHub Direct metadata not ready; falling back to Notehub DFU"));
+    addServerSerialLog("GitHub Direct metadata incomplete; using Notehub DFU", "warn", "dfu");
+    enableDfuMode();
+  } else {
+    Serial.println(F("GitHub update available but no installable asset is ready yet"));
+    addServerSerialLog("GitHub update available but installable asset is not ready", "warn", "dfu");
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial && millis() < 2000) {
@@ -2888,16 +4237,14 @@ void loop() {
       gLastGitHubCheckMs = now;
       checkGitHubForUpdate();
       if (gConfig.updatePolicy == UPDATE_POLICY_AUTO_GITHUB && gGitHubUpdateAvailable) {
-        String autoStatus;
-        attemptGitHubDirectInstall(autoStatus);
+        attemptAutoGitHubInstall();
       }
     } else if (gGitHubBootCheckDone && gNotecardAvailable &&
                (now - gLastGitHubCheckMs) >= GITHUB_CHECK_INTERVAL_MS) {
       gLastGitHubCheckMs = now;
       checkGitHubForUpdate();
       if (gConfig.updatePolicy == UPDATE_POLICY_AUTO_GITHUB && gGitHubUpdateAvailable) {
-        String autoStatus;
-        attemptGitHubDirectInstall(autoStatus);
+        attemptAutoGitHubInstall();
       }
     }
   }
@@ -5869,124 +7216,24 @@ static void checkServerVoltage() {
 static void checkGitHubForUpdate() {
   Serial.println(F("Checking GitHub for firmware updates..."));
 
-  J *req = notecard.newRequest("web.get");
-  if (!req) return;
-
-  // Build URL: https://api.github.com/repos/SenaxInc/ArduinoSMSTankAlarm/releases/latest
-  char url[128];
-  snprintf(url, sizeof(url),
-           "https://api.github.com/repos/%s/%s/releases/latest",
-           GITHUB_REPO_OWNER, GITHUB_REPO_NAME);
-  JAddStringToObject(req, "url", url);
-
-  // Add required User-Agent and Accept headers
-  J *hdrs = JAddObjectToObject(req, "headers");
-  if (hdrs) {
-    char ua[48];
-    snprintf(ua, sizeof(ua), "TankAlarm-Server/%s", FIRMWARE_VERSION);
-    JAddStringToObject(hdrs, "User-Agent", ua);
-    JAddStringToObject(hdrs, "Accept", "application/vnd.github.v3+json");
-  }
-
-  J *rsp = notecard.requestAndResponse(req);
-  if (!rsp) {
-    Serial.println(F("GitHub check: no response from Notecard"));
+  GitHubFirmwareTargetState state;
+  if (!checkGitHubReleaseForTarget(FIRMWARE_TARGET_SERVER,
+                                   FIRMWARE_VERSION,
+                                   FIRMWARE_TARGET_SERVER,
+                                   state,
+                                   true)) {
+    Serial.print(F("GitHub check failed: "));
+    Serial.println(state.error[0] != '\0' ? state.error : "unknown error");
     return;
   }
 
-  if (notecard.responseError(rsp)) {
-    Serial.print(F("GitHub check Notecard error: "));
-    Serial.println(JGetString(rsp, "err"));
-    notecard.deleteResponse(rsp);
-    return;
-  }
-
-  int httpResult = JGetInt(rsp, "result");
-  if (httpResult != 200) {
-    Serial.print(F("GitHub API HTTP "));
-    Serial.println(httpResult);
-    notecard.deleteResponse(rsp);
-    return;
-  }
-
-  const char *body = JGetString(rsp, "body");
-  if (!body || body[0] == '\0') {
-    Serial.println(F("GitHub check: empty response body"));
-    notecard.deleteResponse(rsp);
-    return;
-  }
-
-  // Filter to only the fields we need — avoids allocating memory for the full release blob
-  StaticJsonDocument<384> filter;
-  filter["tag_name"] = true;
-  filter["html_url"] = true;
-  for (uint8_t i = 0; i < 8; ++i) {
-    filter["assets"][i]["name"] = true;
-    filter["assets"][i]["browser_download_url"] = true;
-    filter["assets"][i]["size"] = true;
-  }
-  StaticJsonDocument<2048> doc;
-  DeserializationError err = deserializeJson(doc, body, DeserializationOption::Filter(filter));
-  notecard.deleteResponse(rsp);
-
-  if (err != DeserializationError::Ok) {
-    Serial.print(F("GitHub JSON parse: "));
-    Serial.println(err.c_str());
-    return;
-  }
-
-  const char *tagName = doc["tag_name"];
-  const char *htmlUrl = doc["html_url"];
-  if (!tagName || tagName[0] == '\0') {
-    Serial.println(F("GitHub check: no tag_name in response"));
-    return;
-  }
-
-  // Strip leading 'v' or 'V' (e.g. "v1.6.3" -> "1.6.3")
-  const char *ghVersion = (tagName[0] == 'v' || tagName[0] == 'V') ? tagName + 1 : tagName;
-
-  // Resolve release binary URL by naming convention:
-  // TankAlarm-Server-vX.Y.Z.bin
-  gGitHubAssetAvailable = false;
-  gGitHubAssetUrl[0] = '\0';
-  gGitHubAssetSize = 0;
-  char expectedAssetName[96];
-  snprintf(expectedAssetName, sizeof(expectedAssetName), "TankAlarm-Server-v%s.bin", ghVersion);
-  JsonArray assets = doc["assets"].as<JsonArray>();
-  if (!assets.isNull()) {
-    for (JsonObject asset : assets) {
-      const char *assetName = asset["name"] | "";
-      if (strcmp(assetName, expectedAssetName) == 0) {
-        const char *assetUrl = asset["browser_download_url"] | "";
-        if (assetUrl[0] != '\0') {
-          strlcpy(gGitHubAssetUrl, assetUrl, sizeof(gGitHubAssetUrl));
-          gGitHubAssetSize = asset["size"] | 0;
-          gGitHubAssetAvailable = true;
-        }
-        break;
-      }
+  copyGitHubFirmwareTargetStateToGlobals(state);
+  if (!state.updateAvailable) {
+    if (compareFirmwareVersions(state.latestVersion, FIRMWARE_VERSION) < 0) {
+      Serial.println(F("GitHub release is older than the running firmware"));
+    } else {
+      Serial.println(F("Firmware is current with GitHub"));
     }
-  }
-
-  Serial.print(F("GitHub latest: "));
-  Serial.print(ghVersion);
-  Serial.print(F("  current: "));
-  Serial.println(F(FIRMWARE_VERSION));
-
-  if (strcmp(ghVersion, FIRMWARE_VERSION) != 0) {
-    gGitHubUpdateAvailable = true;
-    strlcpy(gGitHubLatestVersion, ghVersion, sizeof(gGitHubLatestVersion));
-    if (htmlUrl) strlcpy(gGitHubReleaseUrl, htmlUrl, sizeof(gGitHubReleaseUrl));
-    Serial.println(F("GitHub firmware update available!"));
-    addServerSerialLog("GitHub firmware update available", "info", "dfu");
-  } else {
-    gGitHubUpdateAvailable = false;
-    gGitHubLatestVersion[0] = '\0';
-    gGitHubReleaseUrl[0] = '\0';
-    gGitHubAssetAvailable = false;
-    gGitHubAssetUrl[0] = '\0';
-    gGitHubAssetSize = 0;
-    Serial.println(F("Firmware is current with GitHub"));
   }
 }
 
@@ -6234,6 +7481,32 @@ static void serveFile(EthernetClient &client, const char* htmlContent) {
   respondHtml(client, body);
 }
 
+static void serveServerSettingsPage(EthernetClient &client) {
+  const size_t htmlLen = strlen_P(SERVER_SETTINGS_HTML);
+  const size_t injectionLen = strlen_P(SERVER_SETTINGS_DFU_TARGET_INJECTION);
+  String body;
+  body.reserve(htmlLen + injectionLen + 64);
+
+  for (size_t i = 0; i < htmlLen; ++i) {
+    body += (char)pgm_read_byte_near(SERVER_SETTINGS_HTML + i);
+  }
+
+  String injection;
+  injection.reserve(injectionLen + 1);
+  for (size_t i = 0; i < injectionLen; ++i) {
+    injection += (char)pgm_read_byte_near(SERVER_SETTINGS_DFU_TARGET_INJECTION + i);
+  }
+
+  const int insertAt = body.lastIndexOf(F("</body>"));
+  if (insertAt >= 0) {
+    body.insert(insertAt, injection);
+  } else {
+    body += injection;
+  }
+
+  respondHtml(client, body);
+}
+
 static void handleSessionCheck(EthernetClient &client, const char *sessionHdr) {
   bool valid = sessionTokenMatches(sessionHdr);
   if (valid) {
@@ -6388,7 +7661,7 @@ static void handleWebRequests() {
   } else if (method == "GET" && path == "/contacts") {
     serveFile(client, CONTACTS_MANAGER_HTML);
   } else if (method == "GET" && path == "/server-settings") {
-    serveFile(client, SERVER_SETTINGS_HTML);
+    serveServerSettingsPage(client);
   } else if (method == "GET" && path == "/email-format") {
     serveFile(client, EMAIL_FORMAT_HTML);
   } else if (method == "GET" && path == "/historical") {
@@ -13911,7 +15184,9 @@ static void handleGitHubUpdateStatusGet(EthernetClient &client) {
   doc["assetAvailable"] = gGitHubAssetAvailable;
   doc["assetUrl"] = gGitHubAssetUrl;
   doc["assetSize"] = gGitHubAssetSize;
-  doc["assetNamingConvention"] = "TankAlarm-Server-vX.Y.Z.bin";
+  doc["assetSha256"] = gGitHubAssetSha256;
+  doc["directInstallReady"] = isGitHubDirectUpdateReady();
+  doc["assetNamingConvention"] = "TankAlarm-Server-vX.Y.Z.bin / TankAlarm-FTPS-Test-vX.Y.Z.bin";
   // Count clients whose firmware lags behind the latest GitHub release.
   // Only meaningful once we have a confirmed latest version from GitHub.
   uint8_t outdatedCount = 0;
@@ -13936,6 +15211,24 @@ static void handleGitHubUpdateStatusGet(EthernetClient &client) {
 
 static void handleDfuStatusGet(EthernetClient &client) {
   JsonDocument doc;
+  GitHubFirmwareTargetState selectedState = gSelectedFirmwareTargetState;
+  if (selectedState.target == FIRMWARE_TARGET_SERVER &&
+      !selectedState.checked && selectedState.error[0] == '\0') {
+    loadServerGitHubTargetState(selectedState);
+  }
+
+  const bool allowNotehubFallback =
+      (selectedState.target == FIRMWARE_TARGET_SERVER) && isNotehubDfuReady();
+  char selectedTargetStatusText[160] = {0};
+  bool selectedTargetInstallEnabled = false;
+  buildSelectedFirmwareTargetStatus(selectedState,
+                                    FIRMWARE_TARGET_SERVER,
+                                    FIRMWARE_VERSION,
+                                    allowNotehubFallback,
+                                    selectedTargetStatusText,
+                                    sizeof(selectedTargetStatusText),
+                                    selectedTargetInstallEnabled);
+
   doc["currentVersion"] = FIRMWARE_VERSION;
   doc["buildDate"] = FIRMWARE_BUILD_DATE;
   doc["buildTime"] = FIRMWARE_BUILD_TIME;
@@ -13947,6 +15240,19 @@ static void handleDfuStatusGet(EthernetClient &client) {
   doc["dfuError"] = gDfuError;
   doc["updatePolicy"] = gConfig.updatePolicy;
   doc["githubAssetAvailable"] = gGitHubAssetAvailable;
+  doc["githubDirectReady"] = isGitHubDirectUpdateReady();
+  doc["selectedTarget"] = firmwareTargetId(selectedState.target);
+  doc["selectedTargetLabel"] = firmwareTargetLabel(selectedState.target);
+  doc["selectedTargetChecked"] = selectedState.checked;
+  doc["selectedTargetUpdateAvailable"] = selectedState.updateAvailable;
+  doc["selectedTargetAssetAvailable"] = selectedState.assetAvailable;
+  doc["selectedTargetAvailableVersion"] = selectedState.latestVersion;
+  doc["selectedTargetAssetNaming"] = firmwareTargetAssetNamingConvention(selectedState.target);
+  doc["selectedTargetDirectReady"] = isGitHubDirectTargetReady(selectedState);
+  doc["selectedTargetCanFallbackToNotehub"] = allowNotehubFallback;
+  doc["selectedTargetStatusText"] = selectedTargetStatusText;
+  doc["selectedTargetInstallEnabled"] = selectedTargetInstallEnabled;
+  doc["selectedTargetError"] = selectedState.error;
   float bestVoltage = (gInputVoltage > 0.5f) ? gInputVoltage : gNotecardVoltage;
   doc["voltage"] = bestVoltage;
   doc["notecardVoltage"] = gNotecardVoltage;
@@ -14056,72 +15362,74 @@ static void handleDfuCheckPost(EthernetClient &client, const String &body) {
     return;
   }
 
-  // Trigger an immediate firmware update check against the Notecard
-  Serial.println(F("Manual DFU check triggered via web UI"));
-  
-  // If Notecard is in error state, clear the failed IAP DFU and re-enable
-  // the user firmware download path before checking again.
-  if (strcmp(gDfuMode, "error") == 0) {
-    Serial.println(F("DFU in error state - clearing and resetting..."));
-    
-    // Step 1: Stop/clear the failed DFU operation
-    J *stopReq = notecard.newRequest("dfu.status");
-    if (stopReq) {
-      JAddBoolToObject(stopReq, "stop", true);
-      JAddStringToObject(stopReq, "name", "user");
-      J *stopRsp = notecard.requestAndResponse(stopReq);
-      if (stopRsp) {
-        const char *stopErr = JGetString(stopRsp, "err");
-        if (stopErr && stopErr[0] != '\0') {
-          Serial.print(F("dfu.status stop error: "));
-          Serial.println(stopErr);
-        } else {
-          Serial.println(F("DFU error state cleared via dfu.status stop"));
-        }
-        notecard.deleteResponse(stopRsp);
-      }
-    }
-    safeSleep(1000);
-
-    // Step 2: Re-enable IAP DFU downloads on the Notecard.
-    tankalarm_enableIapDfu(notecard);
-    safeSleep(500);
-    
-    // Step 3: Force sync so Notecard pulls fresh firmware info from Notehub
-    J *syncReq = notecard.newRequest("hub.sync");
-    if (syncReq) {
-      J *syncRsp = notecard.requestAndResponse(syncReq);
-      if (syncRsp) {
-        Serial.println(F("hub.sync triggered for fresh firmware catalog"));
-        notecard.deleteResponse(syncRsp);
-      }
-    }
-    safeSleep(2000);
-    
-    // Reset local state
-    strlcpy(gDfuMode, "idle", sizeof(gDfuMode));
-    gDfuError[0] = '\0';
-    gDfuUpdateAvailable = false;
-    gDfuVersion[0] = '\0';
-    gDfuFirmwareLength = 0;
+  uint8_t target = FIRMWARE_TARGET_SERVER;
+  if (!parseFirmwareTargetValue(doc["target"] | "server", target)) {
+    respondStatus(client, 400, "Invalid firmware target");
+    return;
   }
-  
-  checkForFirmwareUpdate();
+  gSelectedFirmwareTargetState.target = target;
+
+  Serial.print(F("Manual firmware check triggered for target: "));
+  Serial.println(firmwareTargetLabel(target));
+
+  if (target == FIRMWARE_TARGET_SERVER) {
+    if (strcmp(gDfuMode, "error") == 0) {
+      Serial.println(F("DFU in error state - clearing and resetting..."));
+
+      J *stopReq = notecard.newRequest("dfu.status");
+      if (stopReq) {
+        JAddBoolToObject(stopReq, "stop", true);
+        JAddStringToObject(stopReq, "name", "user");
+        J *stopRsp = notecard.requestAndResponse(stopReq);
+        if (stopRsp) {
+          const char *stopErr = JGetString(stopRsp, "err");
+          if (stopErr && stopErr[0] != '\0') {
+            Serial.print(F("dfu.status stop error: "));
+            Serial.println(stopErr);
+          } else {
+            Serial.println(F("DFU error state cleared via dfu.status stop"));
+          }
+          notecard.deleteResponse(stopRsp);
+        }
+      }
+      safeSleep(1000);
+
+      tankalarm_enableIapDfu(notecard);
+      safeSleep(500);
+
+      J *syncReq = notecard.newRequest("hub.sync");
+      if (syncReq) {
+        J *syncRsp = notecard.requestAndResponse(syncReq);
+        if (syncRsp) {
+          Serial.println(F("hub.sync triggered for fresh firmware catalog"));
+          notecard.deleteResponse(syncRsp);
+        }
+      }
+      safeSleep(2000);
+
+      strlcpy(gDfuMode, "idle", sizeof(gDfuMode));
+      gDfuError[0] = '\0';
+      gDfuUpdateAvailable = false;
+      gDfuVersion[0] = '\0';
+      gDfuFirmwareLength = 0;
+    }
+
+    checkForFirmwareUpdate();
+  }
+
+  if (!checkGitHubReleaseForTarget(target,
+                                   FIRMWARE_VERSION,
+                                   FIRMWARE_TARGET_SERVER,
+                                   gSelectedFirmwareTargetState,
+                                   true)) {
+    Serial.print(F("Selected firmware GitHub check failed: "));
+    Serial.println(gSelectedFirmwareTargetState.error[0] != '\0'
+                       ? gSelectedFirmwareTargetState.error
+                       : "unknown error");
+  }
+
   // Return the updated status
   handleDfuStatusGet(client);
-}
-
-static bool attemptGitHubDirectInstall(String &statusMessage) {
-  // Placeholder for direct Ethernet HTTPS install path.
-  // GitHub asset metadata is parsed and exposed, but direct install currently
-  // falls back to Notehub DFU on this build.
-  if (!gGitHubAssetAvailable || gGitHubAssetUrl[0] == '\0') {
-    statusMessage = "GitHub release found but matching Server .bin asset is missing";
-    return false;
-  }
-
-  statusMessage = "GitHub Direct install path unavailable on current build; using Notehub fallback";
-  return false;
 }
 
 static void handleDfuEnablePost(EthernetClient &client, const String &body) {
@@ -14139,30 +15447,92 @@ static void handleDfuEnablePost(EthernetClient &client, const String &body) {
     return;
   }
 
-  if (!gDfuUpdateAvailable || gDfuFirmwareLength == 0) {
-    respondStatus(client, 409, "No ready Notehub firmware update available");
+  uint8_t target = FIRMWARE_TARGET_SERVER;
+  if (!parseFirmwareTargetValue(doc["target"] | firmwareTargetId(gSelectedFirmwareTargetState.target), target)) {
+    respondStatus(client, 400, "Invalid firmware target");
     return;
   }
 
-  String responseStr;
-  if (gConfig.updatePolicy == UPDATE_POLICY_ALERT_GITHUB ||
-      gConfig.updatePolicy == UPDATE_POLICY_AUTO_GITHUB) {
-    String directStatus;
-    bool directOk = attemptGitHubDirectInstall(directStatus);
-    if (directOk) {
-      responseStr = "{\"success\":true,\"message\":\"GitHub Direct install started\"}";
-      respondJson(client, responseStr);
-      return;
+  if (gSelectedFirmwareTargetState.target != target ||
+      (!gSelectedFirmwareTargetState.checked && gSelectedFirmwareTargetState.error[0] == '\0')) {
+    if (!checkGitHubReleaseForTarget(target,
+                                     FIRMWARE_VERSION,
+                                     FIRMWARE_TARGET_SERVER,
+                                     gSelectedFirmwareTargetState,
+                                     true)) {
+      gSelectedFirmwareTargetState.target = target;
     }
+  }
 
-    Serial.print(F("GitHub Direct install failed: "));
-    Serial.println(directStatus);
-    Serial.println(F("Falling back to Notehub DFU install..."));
-    responseStr = "{\"success\":true,\"message\":\"GitHub Direct unavailable, fell back to Notehub DFU\"}";
+  const bool allowNotehubFallback =
+      (target == FIRMWARE_TARGET_SERVER) && isNotehubDfuReady();
+  const bool directInstallAllowed =
+      isGitHubDirectTargetReady(gSelectedFirmwareTargetState) &&
+      gSelectedFirmwareTargetState.updateAvailable;
+
+  String responseStr;
+  if (directInstallAllowed) {
+    responseStr = String("{\"success\":true,\"message\":\"") +
+                  firmwareTargetLabel(target) +
+                  " install starting from GitHub\"}";
+    respondJson(client, responseStr);
+    client.stop();
+    safeSleep(100);
+
+    String directStatus;
+    if (!attemptGitHubDirectInstallForTarget(gSelectedFirmwareTargetState, directStatus) &&
+        allowNotehubFallback) {
+      Serial.println(F("Selected GitHub install failed; falling back to Notehub DFU"));
+      enableDfuMode();
+    }
+    return;
+  }
+
+  if (allowNotehubFallback) {
+    responseStr = "{\"success\":true,\"message\":\"TankAlarm Server install starting from Notehub DFU\"}";
     respondJson(client, responseStr);
     client.stop();
     safeSleep(100);
     enableDfuMode();
+    return;
+  }
+
+  if (gSelectedFirmwareTargetState.error[0] != '\0') {
+    respondStatus(client, 409, gSelectedFirmwareTargetState.error);
+    return;
+  }
+
+  if (target == FIRMWARE_TARGET_FTPS_TEST) {
+    respondStatus(client, 409, "No installable FTPS Test firmware asset is ready on GitHub");
+    return;
+  }
+
+  if (gConfig.updatePolicy == UPDATE_POLICY_ALERT_GITHUB ||
+      gConfig.updatePolicy == UPDATE_POLICY_AUTO_GITHUB) {
+    if (!isGitHubDirectUpdateReady()) {
+      checkGitHubForUpdate();
+    }
+
+    if (isGitHubDirectUpdateReady()) {
+      responseStr = "{\"success\":true,\"message\":\"GitHub Direct install starting\"}";
+      respondJson(client, responseStr);
+      client.stop();
+      safeSleep(100);
+
+      String directStatus;
+      if (!attemptGitHubDirectInstall(directStatus) && isNotehubDfuReady()) {
+        Serial.println(F("GitHub Direct install failed; falling back to Notehub DFU"));
+        enableDfuMode();
+      }
+      return;
+    }
+
+    respondStatus(client, 409, "No ready GitHub or Notehub firmware update available");
+    return;
+  }
+
+  if (!isNotehubDfuReady()) {
+    respondStatus(client, 409, "No ready Notehub firmware update available");
     return;
   }
 
