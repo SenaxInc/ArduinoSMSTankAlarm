@@ -1,0 +1,85 @@
+name: Release TankAlarm Server Firmware
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-server:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read firmware version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep '^#define FIRMWARE_VERSION ' TankAlarm-112025-Common/src/TankAlarm_Common.h | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate tag matches firmware version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$TAG_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "Tag version $TAG_VERSION does not match firmware version ${{ steps.version.outputs.version }}"
+            exit 1
+          fi
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v1
+
+      - name: Install Arduino Mbed OS Opta Boards core
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:mbed_opta
+
+      - name: Install required libraries for 112025
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "Ethernet"
+          arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "Blues Wireless Notecard"
+          arduino-cli lib install "ArduinoRS485"
+          arduino-cli lib install "ArduinoModbus"
+
+      - name: Generate server config header from secret
+        run: |
+          cat > TankAlarm-112025-Server-BluesOpta/ServerConfig.h << EOF
+          #ifndef SERVER_CONFIG_H
+          #define SERVER_CONFIG_H
+          #define DEFAULT_SERVER_PRODUCT_UID "${PRODUCT_UID}"
+          #endif // SERVER_CONFIG_H
+          EOF
+        env:
+          PRODUCT_UID: ${{ secrets.BLUES_PRODUCT_UID }}
+
+      - name: Build server firmware
+        shell: bash
+        run: |
+          mkdir -p build/server
+          arduino-cli compile --fqbn arduino:mbed_opta:opta \
+            --library TankAlarm-112025-Common \
+            --output-dir build/server \
+            TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino
+
+          BIN_SOURCE=$(find build/server -maxdepth 1 -name '*.bin' ! -name '*.with_bootloader.bin' ! -name '*.bootloader.bin' | head -n1)
+          test -n "$BIN_SOURCE"
+          cp "$BIN_SOURCE" "TankAlarm-Server-v${{ steps.version.outputs.version }}.bin"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: TankAlarm Beta v${{ steps.version.outputs.version }}
+          files: TankAlarm-Server-v${{ steps.version.outputs.version }}.bin
+          generate_release_notes: true
