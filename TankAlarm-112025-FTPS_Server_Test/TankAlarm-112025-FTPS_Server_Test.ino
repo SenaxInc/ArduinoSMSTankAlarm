@@ -95,7 +95,7 @@ static IPAddress gStaticIp(192, 168, 7, 117);
 static IPAddress gStaticGateway(192, 168, 7, 1);
 static IPAddress gStaticSubnet(255, 255, 255, 0);
 static IPAddress gStaticDns(8, 8, 8, 8);
-static bool gUseStaticIp = false;
+static bool gUseStaticIp = true;
 
 // ============================================================================
 // DFU State
@@ -1219,11 +1219,388 @@ static bool attemptGitHubDirectInstall(String &statusMessage) {
 // ============================================================================
 // FTPS Test State
 // ============================================================================
+enum FtpsTestStep : uint8_t {
+  FTPS_TEST_STEP_NONE = 0,
+  FTPS_TEST_STEP_BEGIN,
+  FTPS_TEST_STEP_CONNECT,
+  FTPS_TEST_STEP_MKD_PARENT,
+  FTPS_TEST_STEP_MKD_NESTED,
+  FTPS_TEST_STEP_STORE,
+  FTPS_TEST_STEP_SIZE,
+  FTPS_TEST_STEP_RETRIEVE,
+  FTPS_TEST_STEP_QUIT,
+};
+
 static int gTestsPassed = 0;
 static int gTestsFailed = 0;
 static bool gTestRunning = false;
 static bool gTestComplete = false;
 static char gTestSummary[256] = "No test run yet";
+static uint8_t gTestStopAfterStep = FTPS_TEST_STEP_QUIT;
+static uint8_t gLastAttemptedFtpsStep = FTPS_TEST_STEP_NONE;
+static uint8_t gLastCompletedFtpsStep = FTPS_TEST_STEP_NONE;
+static int gLastFtpsErrorCode = 0;
+static char gLastFtpsError[192] = {0};
+static char gLastFtpsInternalPhase[48] = "idle";
+static bool gLastTestRunInterrupted = false;
+
+static const char *FTPS_TEST_STATE_FILE = "/fs/ftps_test_state.txt";
+
+static const char *ftpsTestStepValueId(uint8_t step) {
+  switch (step) {
+    case FTPS_TEST_STEP_BEGIN: return "begin";
+    case FTPS_TEST_STEP_CONNECT: return "connect";
+    case FTPS_TEST_STEP_MKD_PARENT: return "mkd-parent";
+    case FTPS_TEST_STEP_MKD_NESTED: return "mkd-nested";
+    case FTPS_TEST_STEP_STORE: return "store";
+    case FTPS_TEST_STEP_SIZE: return "size";
+    case FTPS_TEST_STEP_RETRIEVE: return "retrieve";
+    case FTPS_TEST_STEP_QUIT: return "quit";
+    case FTPS_TEST_STEP_NONE:
+    default:
+      return "none";
+  }
+}
+
+static const char *ftpsTestStepDisplayLabel(uint8_t step) {
+  switch (step) {
+    case FTPS_TEST_STEP_BEGIN: return "begin()";
+    case FTPS_TEST_STEP_CONNECT: return "connect()";
+    case FTPS_TEST_STEP_MKD_PARENT: return "mkd() parent";
+    case FTPS_TEST_STEP_MKD_NESTED: return "mkd() nested";
+    case FTPS_TEST_STEP_STORE: return "store()";
+    case FTPS_TEST_STEP_SIZE: return "size()";
+    case FTPS_TEST_STEP_RETRIEVE: return "retrieve()";
+    case FTPS_TEST_STEP_QUIT: return "quit()";
+    case FTPS_TEST_STEP_NONE:
+    default:
+      return "Not started";
+  }
+}
+
+static bool parseFtpsTestStepValue(const char *value, uint8_t &step) {
+  step = FTPS_TEST_STEP_QUIT;
+  if (value == nullptr || value[0] == '\0' || strcmp(value, "full") == 0 ||
+      strcmp(value, "quit") == 0) {
+    return true;
+  }
+  if (strcmp(value, "begin") == 0) {
+    step = FTPS_TEST_STEP_BEGIN;
+    return true;
+  }
+  if (strcmp(value, "connect") == 0) {
+    step = FTPS_TEST_STEP_CONNECT;
+    return true;
+  }
+  if (strcmp(value, "mkd-parent") == 0) {
+    step = FTPS_TEST_STEP_MKD_PARENT;
+    return true;
+  }
+  if (strcmp(value, "mkd-nested") == 0) {
+    step = FTPS_TEST_STEP_MKD_NESTED;
+    return true;
+  }
+  if (strcmp(value, "store") == 0) {
+    step = FTPS_TEST_STEP_STORE;
+    return true;
+  }
+  if (strcmp(value, "size") == 0) {
+    step = FTPS_TEST_STEP_SIZE;
+    return true;
+  }
+  if (strcmp(value, "retrieve") == 0) {
+    step = FTPS_TEST_STEP_RETRIEVE;
+    return true;
+  }
+  return false;
+}
+
+static void sanitizeFtpsTestStateValue(const char *input, char *out, size_t outSize) {
+  if (out == nullptr || outSize == 0) {
+    return;
+  }
+
+  if (input == nullptr) {
+    out[0] = '\0';
+    return;
+  }
+
+  size_t writeIndex = 0;
+  for (const char *cursor = input; *cursor != '\0' && writeIndex + 1 < outSize; ++cursor) {
+    char ch = *cursor;
+    if (ch == '\r' || ch == '\n') {
+      ch = ' ';
+    }
+    out[writeIndex++] = ch;
+  }
+  out[writeIndex] = '\0';
+}
+
+static void saveFtpsTestState(bool runActive) {
+#ifdef TANKALARM_POSIX_FILE_IO_AVAILABLE
+  FILE *f = fopen(FTPS_TEST_STATE_FILE, "w");
+  if (!f) {
+    return;
+  }
+
+  char sanitizedSummary[sizeof(gTestSummary)] = {0};
+  char sanitizedError[sizeof(gLastFtpsError)] = {0};
+  char sanitizedInternalPhase[sizeof(gLastFtpsInternalPhase)] = {0};
+  sanitizeFtpsTestStateValue(gTestSummary, sanitizedSummary, sizeof(sanitizedSummary));
+  sanitizeFtpsTestStateValue(gLastFtpsError, sanitizedError, sizeof(sanitizedError));
+  sanitizeFtpsTestStateValue(gLastFtpsInternalPhase,
+                             sanitizedInternalPhase,
+                             sizeof(sanitizedInternalPhase));
+
+  fprintf(f, "runActive=%d\n", runActive ? 1 : 0);
+  fprintf(f, "stopAfter=%s\n", ftpsTestStepValueId(gTestStopAfterStep));
+  fprintf(f, "attempted=%s\n", ftpsTestStepValueId(gLastAttemptedFtpsStep));
+  fprintf(f, "completed=%s\n", ftpsTestStepValueId(gLastCompletedFtpsStep));
+  fprintf(f, "testsPassed=%d\n", gTestsPassed);
+  fprintf(f, "testsFailed=%d\n", gTestsFailed);
+  fprintf(f, "errorCode=%d\n", gLastFtpsErrorCode);
+  fprintf(f, "internalPhase=%s\n", sanitizedInternalPhase);
+  fprintf(f, "error=%s\n", sanitizedError);
+  fprintf(f, "summary=%s\n", sanitizedSummary);
+  fclose(f);
+#else
+  (void)runActive;
+#endif
+}
+
+static void loadFtpsTestState() {
+#ifdef TANKALARM_POSIX_FILE_IO_AVAILABLE
+  FILE *f = fopen(FTPS_TEST_STATE_FILE, "r");
+  if (!f) {
+    return;
+  }
+
+  bool runActive = false;
+  char line[384] = {0};
+  while (fgets(line, sizeof(line), f)) {
+    size_t len = strlen(line);
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+      line[--len] = '\0';
+    }
+
+    if (strncmp(line, "runActive=", 10) == 0) {
+      runActive = atoi(line + 10) != 0;
+    } else if (strncmp(line, "stopAfter=", 10) == 0) {
+      uint8_t parsed = FTPS_TEST_STEP_QUIT;
+      if (parseFtpsTestStepValue(line + 10, parsed)) {
+        gTestStopAfterStep = parsed;
+      }
+    } else if (strncmp(line, "attempted=", 10) == 0) {
+      uint8_t parsed = FTPS_TEST_STEP_NONE;
+      if (parseFtpsTestStepValue(line + 10, parsed)) {
+        gLastAttemptedFtpsStep = parsed;
+      }
+    } else if (strncmp(line, "completed=", 10) == 0) {
+      uint8_t parsed = FTPS_TEST_STEP_NONE;
+      if (parseFtpsTestStepValue(line + 10, parsed)) {
+        gLastCompletedFtpsStep = parsed;
+      }
+    } else if (strncmp(line, "testsPassed=", 12) == 0) {
+      gTestsPassed = atoi(line + 12);
+    } else if (strncmp(line, "testsFailed=", 12) == 0) {
+      gTestsFailed = atoi(line + 12);
+    } else if (strncmp(line, "errorCode=", 10) == 0) {
+      gLastFtpsErrorCode = atoi(line + 10);
+    } else if (strncmp(line, "internalPhase=", 14) == 0) {
+      strlcpy(gLastFtpsInternalPhase, line + 14, sizeof(gLastFtpsInternalPhase));
+    } else if (strncmp(line, "error=", 6) == 0) {
+      strlcpy(gLastFtpsError, line + 6, sizeof(gLastFtpsError));
+    } else if (strncmp(line, "summary=", 8) == 0) {
+      strlcpy(gTestSummary, line + 8, sizeof(gTestSummary));
+    }
+  }
+  fclose(f);
+
+  if (runActive) {
+    gTestRunning = false;
+    gTestComplete = true;
+    gLastTestRunInterrupted = true;
+    if (gTestsFailed == 0) {
+      gTestsFailed = 1;
+    }
+    if (gLastFtpsErrorCode == 0) {
+      gLastFtpsErrorCode = -1;
+    }
+    if (gLastFtpsError[0] == '\0') {
+      strlcpy(gLastFtpsError,
+              "Device reset or test aborted before completion",
+              sizeof(gLastFtpsError));
+    }
+    if (gLastFtpsInternalPhase[0] != '\0' && strcmp(gLastFtpsInternalPhase, "idle") != 0) {
+      snprintf(gTestSummary,
+               sizeof(gTestSummary),
+               "Interrupted after %s while attempting %s at %s",
+               ftpsTestStepDisplayLabel(gLastCompletedFtpsStep),
+               ftpsTestStepDisplayLabel(gLastAttemptedFtpsStep),
+               gLastFtpsInternalPhase);
+    } else {
+      snprintf(gTestSummary,
+               sizeof(gTestSummary),
+               "Interrupted after %s while attempting %s",
+               ftpsTestStepDisplayLabel(gLastCompletedFtpsStep),
+               ftpsTestStepDisplayLabel(gLastAttemptedFtpsStep));
+    }
+    saveFtpsTestState(false);
+    addLog(gTestSummary, "warn");
+  }
+#endif
+}
+
+static void updateFtpsInternalPhase(const char *phase) {
+  char sanitizedPhase[sizeof(gLastFtpsInternalPhase)] = {0};
+  sanitizeFtpsTestStateValue(phase, sanitizedPhase, sizeof(sanitizedPhase));
+  if (sanitizedPhase[0] == '\0') {
+    strlcpy(sanitizedPhase, "idle", sizeof(sanitizedPhase));
+  }
+  if (strcmp(gLastFtpsInternalPhase, sanitizedPhase) == 0) {
+    return;
+  }
+  strlcpy(gLastFtpsInternalPhase, sanitizedPhase, sizeof(gLastFtpsInternalPhase));
+  saveFtpsTestState(gTestRunning);
+}
+
+static void ftpsTracePhaseCallback(const char *phase) {
+  Serial.print(F("[FTPS] "));
+  Serial.println(phase);
+  Serial.flush();
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbed::Watchdog::get_instance().kick();
+  #endif
+#endif
+  updateFtpsInternalPhase(phase);
+}
+
+static void startFtpsTestRun() {
+  gTestsPassed = 0;
+  gTestsFailed = 0;
+  gTestRunning = true;
+  gTestComplete = false;
+  gLastAttemptedFtpsStep = FTPS_TEST_STEP_NONE;
+  gLastCompletedFtpsStep = FTPS_TEST_STEP_NONE;
+  gLastFtpsErrorCode = 0;
+  gLastFtpsError[0] = '\0';
+  strlcpy(gLastFtpsInternalPhase, "idle", sizeof(gLastFtpsInternalPhase));
+  gLastTestRunInterrupted = false;
+  snprintf(gTestSummary,
+           sizeof(gTestSummary),
+           "Running FTPS test (stop after %s)",
+           ftpsTestStepDisplayLabel(gTestStopAfterStep));
+  saveFtpsTestState(true);
+}
+
+static void recordFtpsTestAttempt(uint8_t step, const char *message) {
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbed::Watchdog::get_instance().kick();
+  #endif
+#endif
+  gLastAttemptedFtpsStep = step;
+  if (message != nullptr) {
+    addLog(message);
+  }
+  saveFtpsTestState(true);
+}
+
+static void recordFtpsTestSuccess(uint8_t step, const char *message) {
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbed::Watchdog::get_instance().kick();
+  #endif
+#endif
+  gLastCompletedFtpsStep = step;
+  gTestsPassed++;
+  if (message != nullptr) {
+    addLog(message, "pass");
+  }
+  saveFtpsTestState(true);
+}
+
+static void recordFtpsTestNoteFailure(const char *message) {
+  gTestsFailed++;
+  addLog(message, "fail");
+  saveFtpsTestState(true);
+}
+
+static void recordFtpsTestFailure(uint8_t step,
+                                  int errorCode,
+                                  const char *detail,
+                                  const char *message) {
+  gLastAttemptedFtpsStep = step;
+  gLastFtpsErrorCode = errorCode;
+  strlcpy(gLastFtpsError, detail != nullptr ? detail : "", sizeof(gLastFtpsError));
+  gTestsFailed++;
+  gTestRunning = false;
+  gTestComplete = true;
+
+  if (message != nullptr) {
+    addLog(message, "fail");
+  }
+
+  if (detail != nullptr && detail[0] != '\0' &&
+      gLastFtpsInternalPhase[0] != '\0' && strcmp(gLastFtpsInternalPhase, "idle") != 0) {
+    snprintf(gTestSummary,
+             sizeof(gTestSummary),
+             "%s failed at %s: %s",
+             ftpsTestStepDisplayLabel(step),
+             gLastFtpsInternalPhase,
+             detail);
+  } else if (detail != nullptr && detail[0] != '\0') {
+    snprintf(gTestSummary,
+             sizeof(gTestSummary),
+             "%s failed: %s",
+             ftpsTestStepDisplayLabel(step),
+             detail);
+  } else {
+    snprintf(gTestSummary,
+             sizeof(gTestSummary),
+             "%s failed with error %d",
+             ftpsTestStepDisplayLabel(step),
+             errorCode);
+  }
+
+  saveFtpsTestState(false);
+}
+
+static bool shouldStopAfterFtpsStep(uint8_t step) {
+  if (gTestStopAfterStep != step) {
+    return false;
+  }
+
+  gTestRunning = false;
+  gTestComplete = true;
+  gLastFtpsErrorCode = 0;
+  gLastFtpsError[0] = '\0';
+  snprintf(gTestSummary,
+           sizeof(gTestSummary),
+           "Stopped after %s by request",
+           ftpsTestStepDisplayLabel(step));
+  addLog(gTestSummary, "warn");
+  saveFtpsTestState(false);
+  return true;
+}
+
+static void finalizeFtpsTestRun() {
+  if (gTestComplete) {
+    return;
+  }
+
+  gTestRunning = false;
+  gTestComplete = true;
+  snprintf(gTestSummary, sizeof(gTestSummary), "%d passed, %d failed",
+           gTestsPassed, gTestsFailed);
+
+  char msg[160];
+  snprintf(msg, sizeof(msg), "=== TEST COMPLETE: %s ===",
+           gTestsFailed == 0 ? "ALL PASSED" : "FAILURES DETECTED");
+  addLog(msg, gTestsFailed == 0 ? "pass" : "fail");
+  saveFtpsTestState(false);
+}
 
 // ============================================================================
 // Config loading from LittleFS (read-only — we don't modify the server config)
@@ -1240,9 +1617,41 @@ static void loadConfigFromFilesystem() {
     return;
   }
 
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, f);
+  if (fseek(f, 0, SEEK_END) != 0) {
+    fclose(f);
+    addLog("Failed to seek server_config.json", "warn");
+    return;
+  }
+
+  long configSize = ftell(f);
+  if (configSize <= 0 || configSize > 8192) {
+    fclose(f);
+    addLog("server_config.json size is invalid", "warn");
+    return;
+  }
+
+  rewind(f);
+
+  char *configJson = (char *)malloc((size_t)configSize + 1U);
+  if (!configJson) {
+    fclose(f);
+    addLog("Failed to allocate server config buffer", "warn");
+    return;
+  }
+
+  size_t bytesRead = fread(configJson, 1, (size_t)configSize, f);
   fclose(f);
+  configJson[bytesRead] = '\0';
+
+  if (bytesRead != (size_t)configSize) {
+    free(configJson);
+    addLog("Failed to read server_config.json", "warn");
+    return;
+  }
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, configJson);
+  free(configJson);
   if (err) {
     addLog("Failed to parse server_config.json", "warn");
     return;
@@ -1478,10 +1887,15 @@ static void initializeEthernet() {
 
   int status;
   if (gUseStaticIp) {
+    Serial.print(F("Ethernet: static IP "));
+    Serial.println(gStaticIp);
     status = Ethernet.begin(gMacAddress, gStaticIp, gStaticDns, gStaticGateway, gStaticSubnet);
   } else {
+    Serial.println(F("Ethernet: DHCP..."));
     status = Ethernet.begin(gMacAddress);
   }
+  Serial.print(F("Ethernet.begin returned: "));
+  Serial.println(status);
 
   if (status == 0) {
     addLog(gUseStaticIp ? "Static IP configuration failed" : "DHCP failed", "error");
@@ -1515,10 +1929,7 @@ static const char kUploadPayload[] =
     "}\r\n";
 
 static void runFtpsTest() {
-  gTestRunning = true;
-  gTestComplete = false;
-  gTestsPassed = 0;
-  gTestsFailed = 0;
+  startFtpsTestRun();
 
   addLog("=== FTPS TEST STARTING ===", "info");
 
@@ -1529,19 +1940,24 @@ static void runFtpsTest() {
   addLog(msg);
 
   FtpsClient ftps;
+  ftps.setTraceCallback(ftpsTracePhaseCallback);
   char error[192] = {};
 
   // begin()
-  addLog("FtpsClient.begin()...");
+  recordFtpsTestAttempt(FTPS_TEST_STEP_BEGIN, "FtpsClient.begin()...");
   if (!ftps.begin(Ethernet.getNetwork(), error, sizeof(error))) {
     snprintf(msg, sizeof(msg), "begin() FAILED (err=%d): %s",
              static_cast<int>(ftps.lastError()), error);
-    addLog(msg, "fail");
-    gTestsFailed++;
+    recordFtpsTestFailure(FTPS_TEST_STEP_BEGIN,
+                          static_cast<int>(ftps.lastError()),
+                          error,
+                          msg);
     goto done;
   }
-  addLog("begin() OK", "pass");
-  gTestsPassed++;
+  recordFtpsTestSuccess(FTPS_TEST_STEP_BEGIN, "begin() OK");
+  if (shouldStopAfterFtpsStep(FTPS_TEST_STEP_BEGIN)) {
+    goto done;
+  }
 
   // connect()
   {
@@ -1556,91 +1972,106 @@ static void runFtpsTest() {
     config.rootCaPem = nullptr;
     config.validateServerCert = true;
 
-    addLog("FtpsClient.connect()...");
+    recordFtpsTestAttempt(FTPS_TEST_STEP_CONNECT, "FtpsClient.connect()...");
     if (!ftps.connect(config, error, sizeof(error))) {
-      snprintf(msg, sizeof(msg), "connect() FAILED (err=%d): %s",
-               static_cast<int>(ftps.lastError()), error);
-      addLog(msg, "fail");
-      gTestsFailed++;
+      snprintf(msg, sizeof(msg), "connect() FAILED at %s (err=%d): %s",
+               ftps.lastPhase(), static_cast<int>(ftps.lastError()), error);
+      recordFtpsTestFailure(FTPS_TEST_STEP_CONNECT,
+                            static_cast<int>(ftps.lastError()),
+                            error,
+                            msg);
       goto done;
     }
-    addLog("connect() OK", "pass");
-    gTestsPassed++;
+    recordFtpsTestSuccess(FTPS_TEST_STEP_CONNECT, "connect() OK");
+    if (shouldStopAfterFtpsStep(FTPS_TEST_STEP_CONNECT)) {
+      goto done;
+    }
   }
 
   // mkd() parent
-  addLog("mkd() parent directory...");
+  recordFtpsTestAttempt(FTPS_TEST_STEP_MKD_PARENT, "mkd() parent directory...");
   if (!ftps.mkd(REMOTE_PARENT_DIR, error, sizeof(error))) {
     snprintf(msg, sizeof(msg), "mkd() parent FAILED (err=%d): %s",
              static_cast<int>(ftps.lastError()), error);
-    addLog(msg, "fail");
-    gTestsFailed++;
-    ftps.quit();
+    recordFtpsTestFailure(FTPS_TEST_STEP_MKD_PARENT,
+                          static_cast<int>(ftps.lastError()),
+                          error,
+                          msg);
     goto done;
   }
   snprintf(msg, sizeof(msg), "mkd() parent OK: %s", REMOTE_PARENT_DIR);
-  addLog(msg, "pass");
-  gTestsPassed++;
+  recordFtpsTestSuccess(FTPS_TEST_STEP_MKD_PARENT, msg);
+  if (shouldStopAfterFtpsStep(FTPS_TEST_STEP_MKD_PARENT)) {
+    goto done;
+  }
 
   // mkd() nested
-  addLog("mkd() nested directory...");
+  recordFtpsTestAttempt(FTPS_TEST_STEP_MKD_NESTED, "mkd() nested directory...");
   if (!ftps.mkd(REMOTE_NESTED_DIR, error, sizeof(error))) {
     snprintf(msg, sizeof(msg), "mkd() nested FAILED (err=%d): %s",
              static_cast<int>(ftps.lastError()), error);
-    addLog(msg, "fail");
-    gTestsFailed++;
-    ftps.quit();
+    recordFtpsTestFailure(FTPS_TEST_STEP_MKD_NESTED,
+                          static_cast<int>(ftps.lastError()),
+                          error,
+                          msg);
     goto done;
   }
   snprintf(msg, sizeof(msg), "mkd() nested OK: %s", REMOTE_NESTED_DIR);
-  addLog(msg, "pass");
-  gTestsPassed++;
+  recordFtpsTestSuccess(FTPS_TEST_STEP_MKD_NESTED, msg);
+  if (shouldStopAfterFtpsStep(FTPS_TEST_STEP_MKD_NESTED)) {
+    goto done;
+  }
 
   // store()
   {
     size_t payloadLen = strlen(kUploadPayload);
     snprintf(msg, sizeof(msg), "store() uploading %u bytes...", (unsigned)payloadLen);
-    addLog(msg);
+    recordFtpsTestAttempt(FTPS_TEST_STEP_STORE, msg);
     if (!ftps.store(REMOTE_TEST_FILE,
                     reinterpret_cast<const uint8_t *>(kUploadPayload),
                     payloadLen, error, sizeof(error))) {
-      snprintf(msg, sizeof(msg), "store() FAILED (err=%d): %s",
-               static_cast<int>(ftps.lastError()), error);
-      addLog(msg, "fail");
-      gTestsFailed++;
-      ftps.quit();
+      snprintf(msg, sizeof(msg), "store() FAILED at %s (err=%d): %s",
+           ftps.lastPhase(), static_cast<int>(ftps.lastError()), error);
+      recordFtpsTestFailure(FTPS_TEST_STEP_STORE,
+                            static_cast<int>(ftps.lastError()),
+                            error,
+                            msg);
       goto done;
     }
     snprintf(msg, sizeof(msg), "store() OK: %s (%u bytes)", REMOTE_TEST_FILE, (unsigned)payloadLen);
-    addLog(msg, "pass");
-    gTestsPassed++;
+    recordFtpsTestSuccess(FTPS_TEST_STEP_STORE, msg);
+    if (shouldStopAfterFtpsStep(FTPS_TEST_STEP_STORE)) {
+      goto done;
+    }
   }
 
   // size()
   {
     size_t remoteBytes = 0;
-    addLog("size() querying remote file...");
+    recordFtpsTestAttempt(FTPS_TEST_STEP_SIZE, "size() querying remote file...");
     if (!ftps.size(REMOTE_TEST_FILE, remoteBytes, error, sizeof(error))) {
       snprintf(msg, sizeof(msg), "size() FAILED (err=%d): %s",
                static_cast<int>(ftps.lastError()), error);
-      addLog(msg, "fail");
-      gTestsFailed++;
-      ftps.quit();
+      recordFtpsTestFailure(FTPS_TEST_STEP_SIZE,
+                            static_cast<int>(ftps.lastError()),
+                            error,
+                            msg);
       goto done;
     }
     snprintf(msg, sizeof(msg), "size() OK: %u bytes", (unsigned)remoteBytes);
-    addLog(msg, "pass");
-    gTestsPassed++;
+    recordFtpsTestSuccess(FTPS_TEST_STEP_SIZE, msg);
 
     size_t expectedLen = strlen(kUploadPayload);
     if (remoteBytes == expectedLen) {
-      addLog("Size matches upload payload", "pass");
-      gTestsPassed++;
+      recordFtpsTestSuccess(FTPS_TEST_STEP_SIZE, "Size matches upload payload");
     } else {
       snprintf(msg, sizeof(msg), "Size mismatch: expected %u, got %u",
                (unsigned)expectedLen, (unsigned)remoteBytes);
-      addLog(msg, "fail");
-      gTestsFailed++;
+      recordFtpsTestNoteFailure(msg);
+    }
+
+    if (shouldStopAfterFtpsStep(FTPS_TEST_STEP_SIZE)) {
+      goto done;
     }
   }
 
@@ -1648,51 +2079,44 @@ static void runFtpsTest() {
   {
     uint8_t dlBuffer[1024] = {};
     size_t bytesRead = 0;
-    addLog("retrieve() downloading...");
+    recordFtpsTestAttempt(FTPS_TEST_STEP_RETRIEVE, "retrieve() downloading...");
     if (!ftps.retrieve(REMOTE_TEST_FILE, dlBuffer, sizeof(dlBuffer),
                        bytesRead, error, sizeof(error))) {
       snprintf(msg, sizeof(msg), "retrieve() FAILED (err=%d): %s",
                static_cast<int>(ftps.lastError()), error);
-      addLog(msg, "fail");
-      gTestsFailed++;
-      ftps.quit();
+      recordFtpsTestFailure(FTPS_TEST_STEP_RETRIEVE,
+                            static_cast<int>(ftps.lastError()),
+                            error,
+                            msg);
       goto done;
     }
     snprintf(msg, sizeof(msg), "retrieve() OK: %u bytes", (unsigned)bytesRead);
-    addLog(msg, "pass");
-    gTestsPassed++;
+    recordFtpsTestSuccess(FTPS_TEST_STEP_RETRIEVE, msg);
 
     size_t expectedLen = strlen(kUploadPayload);
     if (bytesRead == expectedLen &&
         memcmp(dlBuffer, kUploadPayload, expectedLen) == 0) {
-      addLog("Content verification: matches upload", "pass");
-      gTestsPassed++;
+      recordFtpsTestSuccess(FTPS_TEST_STEP_RETRIEVE, "Content verification: matches upload");
     } else {
-      addLog("Content verification: MISMATCH", "fail");
-      gTestsFailed++;
+      recordFtpsTestNoteFailure("Content verification: MISMATCH");
+    }
+
+    if (shouldStopAfterFtpsStep(FTPS_TEST_STEP_RETRIEVE)) {
+      goto done;
     }
   }
 
   // quit()
-  addLog("FtpsClient.quit()...");
+  recordFtpsTestAttempt(FTPS_TEST_STEP_QUIT, "FtpsClient.quit()...");
   ftps.quit();
   if (ftps.lastError() == FtpsError::QuitFailed) {
     addLog("quit() warned: no 221 reply", "warn");
   } else {
-    addLog("quit() OK", "pass");
-    gTestsPassed++;
+    recordFtpsTestSuccess(FTPS_TEST_STEP_QUIT, "quit() OK");
   }
 
 done:
-  gTestRunning = false;
-  gTestComplete = true;
-
-  snprintf(gTestSummary, sizeof(gTestSummary), "%d passed, %d failed",
-           gTestsPassed, gTestsFailed);
-
-  snprintf(msg, sizeof(msg), "=== TEST COMPLETE: %s ===",
-           gTestsFailed == 0 ? "ALL PASSED" : "FAILURES DETECTED");
-  addLog(msg, gTestsFailed == 0 ? "pass" : "fail");
+  finalizeFtpsTestRun();
 }
 
 // ============================================================================
@@ -1824,6 +2248,7 @@ Configure the target FTPS server (PC running ftps_server.py). Changes are saved 
 <div class="row"><label>Fingerprint:</label><input id="fingerprint" value=")HTML"));
   client.print(gFtpsFingerprint);
   client.print(F(R"HTML(" style="font-family:monospace;font-size:0.75em"></div>
+<div class="row"><label>Stop After:</label><select id="testStopAfterStep"><option value="begin">begin()</option><option value="connect">connect()</option><option value="mkd-parent">mkd() parent</option><option value="mkd-nested">mkd() nested</option><option value="store">store()</option><option value="size">size()</option><option value="retrieve">retrieve()</option><option value="quit" selected>Full test (quit)</option></select></div>
 <div style="margin-top:8px;display:flex;gap:8px">
   <button onclick="updateConfig()">Save Config</button>
   <button onclick="runTest()" id="runTestBtn">Run FTPS Test</button>
@@ -1836,6 +2261,13 @@ Configure the target FTPS server (PC running ftps_server.py). Changes are saved 
 <div id="testSummary" class="summary idle">)HTML"));
   client.print(gTestSummary);
   client.print(F(R"HTML(</div>
+<div class="info-grid">
+  <span class="label">Stop After:</span><span class="value" id="testStopAfterLabel">Full test (quit)</span>
+  <span class="label">Last Attempted:</span><span class="value" id="testLastAttempted">Not started</span>
+  <span class="label">Last Completed:</span><span class="value" id="testLastCompleted">Not started</span>
+  <span class="label">Library Phase:</span><span class="value" id="testLastInternal">idle</span>
+  <span class="label">Last Error:</span><span class="value" id="testLastError">None</span>
+</div>
 </div>
 
 <!-- Serial Log -->
@@ -1882,16 +2314,25 @@ async function refreshStatus(){
     document.getElementById('dfuInstallBtn').disabled=!d.selectedTargetInstallEnabled;
   }
   if(d.testComplete!==undefined){
+    const stopAfter=document.getElementById('testStopAfterStep');
+    if(stopAfter&&d.testStopAfterStep)stopAfter.value=d.testStopAfterStep;
     const sum=document.getElementById('testSummary');
     sum.textContent=d.testSummary;
-    sum.className='summary '+(d.testsFailed===0&&d.testComplete?'pass':d.testsFailed>0?'fail':'idle');
+    document.getElementById('testStopAfterLabel').textContent=d.testStopAfterStepLabel||'Full test (quit)';
+    document.getElementById('testLastAttempted').textContent=d.lastAttemptedStepLabel||'Not started';
+    document.getElementById('testLastCompleted').textContent=d.lastCompletedStepLabel||'Not started';
+    document.getElementById('testLastInternal').textContent=d.lastInternalPhase||'idle';
+    document.getElementById('testLastError').textContent=d.lastErrorMessage||'None';
+    sum.className='summary '+((d.testLastRunInterrupted||d.testsFailed>0)?'fail':(d.testComplete?'pass':'idle'));
   }
 }
 async function runTest(){
+  const stopAfter=document.getElementById('testStopAfterStep');
   document.getElementById('runTestBtn').disabled=true;
   document.getElementById('testSummary').textContent='Running...';
   document.getElementById('testSummary').className='summary idle';
-  await api('/api/test/run',{method:'POST'});
+  document.getElementById('testLastError').textContent='None';
+  await api('/api/test/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stopAfterStep:stopAfter?stopAfter.value:'quit'})});
   setTimeout(()=>{refreshLog();refreshStatus();document.getElementById('runTestBtn').disabled=false;},2000);
 }
 async function updateConfig(){
@@ -2018,13 +2459,23 @@ static void handleApiStatus(EthernetClient &client) {
   doc["testsPassed"] = gTestsPassed;
   doc["testsFailed"] = gTestsFailed;
   doc["testSummary"] = gTestSummary;
+  doc["testStopAfterStep"] = ftpsTestStepValueId(gTestStopAfterStep);
+  doc["testStopAfterStepLabel"] = ftpsTestStepDisplayLabel(gTestStopAfterStep);
+  doc["lastAttemptedStep"] = ftpsTestStepValueId(gLastAttemptedFtpsStep);
+  doc["lastAttemptedStepLabel"] = ftpsTestStepDisplayLabel(gLastAttemptedFtpsStep);
+  doc["lastCompletedStep"] = ftpsTestStepValueId(gLastCompletedFtpsStep);
+  doc["lastCompletedStepLabel"] = ftpsTestStepDisplayLabel(gLastCompletedFtpsStep);
+  doc["lastInternalPhase"] = gLastFtpsInternalPhase;
+  doc["lastErrorCode"] = gLastFtpsErrorCode;
+  doc["lastErrorMessage"] = gLastFtpsError;
+  doc["testLastRunInterrupted"] = gLastTestRunInterrupted;
 
   // FTPS config
   doc["ftpsHost"] = gFtpsHost;
   doc["ftpsPort"] = gFtpsPort;
   doc["ftpsUser"] = gFtpsUser;
 
-  char buf[1536];
+  char buf[2048];
   serializeJson(doc, buf, sizeof(buf));
   respondJson(client, buf);
 }
@@ -2079,11 +2530,29 @@ static void handleApiConfigPost(EthernetClient &client, const String &body) {
   respondJson(client, "{\"success\":true}");
 }
 
-static void handleApiTestRun(EthernetClient &client) {
+static void handleApiTestRun(EthernetClient &client, const String &body) {
   if (gTestRunning) {
     respondJson(client, "{\"success\":false,\"error\":\"Test already running\"}");
     return;
   }
+
+  if (body.length() > 0) {
+    JsonDocument doc;
+    if (deserializeJson(doc, body)) {
+      respondJson(client, "{\"success\":false,\"error\":\"Invalid JSON\"}");
+      return;
+    }
+
+    uint8_t stopAfterStep = FTPS_TEST_STEP_QUIT;
+    if (!parseFtpsTestStepValue(doc["stopAfterStep"] | "quit", stopAfterStep)) {
+      respondJson(client, "{\"success\":false,\"error\":\"Invalid FTPS stopAfterStep\"}");
+      return;
+    }
+    gTestStopAfterStep = stopAfterStep;
+  } else {
+    gTestStopAfterStep = FTPS_TEST_STEP_QUIT;
+  }
+
   respondJson(client, "{\"success\":true,\"message\":\"Test started\"}");
   client.stop();
   runFtpsTest();
@@ -2228,7 +2697,7 @@ static void handleWebRequests() {
   } else if (method == "POST" && path == "/api/config") {
     handleApiConfigPost(client, body);
   } else if (method == "POST" && path == "/api/test/run") {
-    handleApiTestRun(client);
+    handleApiTestRun(client, body);
   } else if (method == "POST" && path == "/api/dfu/check") {
     handleApiDfuCheck(client, body);
   } else if (method == "POST" && path == "/api/dfu/enable") {
@@ -2274,6 +2743,7 @@ void setup() {
   }
 #endif
 
+  loadFtpsTestState();
   loadConfigFromFilesystem();
 
   Wire.begin();
