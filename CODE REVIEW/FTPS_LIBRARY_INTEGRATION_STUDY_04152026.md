@@ -1,7 +1,7 @@
 # FTPS Library Integration Study — ArduinoOPTA-FTPS × TankAlarm Server
 
-**Date:** April 15, 2026  
-**Scope:** Research and feasibility assessment only — no code changes  
+**Date:** April 15, 2026 (updated April 16, 2026)  
+**Scope:** Research and feasibility assessment — **implementation started April 16**  
 **Subject:** Evaluating integration of `dorkmo/ArduinoOPTA-FTPS` library into `TankAlarm-112025-Server-BluesOpta.ino`  
 **Related Documents:**
 - `FTPS_IMPLEMENTATION_04132026.md` — Original FTPS design note
@@ -18,6 +18,29 @@ The `ArduinoOPTA-FTPS` library (https://github.com/dorkmo/ArduinoOPTA-FTPS) is a
 **Compatibility verdict:** The two repositories are **highly compatible in intent and architecture**, but integration requires concrete work in both the library and the server. The library handles the hard TLS transport problem that the TankAlarm FTPS plan identified as the blocking risk. However, the library is experimental and unvalidated on real hardware, and the TankAlarm server's FTP surface is broader than the library's current API (backup/restore of 9+ files, client config manifests, monthly history archives, FTP archive retrieval).
 
 **Recommendation:** Adopt the library as the FTPS transport layer. Plan server-side refactoring to bridge the gap between the library's buffer-based API and the server's multi-file workflow. Track a short list of library enhancements that would reduce integration friction.
+
+---
+
+## Status Update — April 16, 2026
+
+Since this study was written, the following progress has been made:
+
+| Item | Original Status | Current Status |
+|------|----------------|----------------|
+| Library hardware validation | Unvalidated | **Complete** — all 10 test steps pass on Opta against WD My Cloud PR4100 |
+| Library version | Pre-release | **v0.1.0** (commit `73e63b9`, pushed to `main`) |
+| `MKD` (mkdir) support | Gap — Section 3.2 | **Resolved** — `mkd()` added to library |
+| `SIZE` support | Gap — Section 5.2 | **Resolved** — `size()` added to library |
+| Watchdog callback hook | Gap — Section 5.2 | **Resolved** — `setTraceCallback()` provides phase-change hooks; server can kick watchdog in the callback |
+| Phase 0 (library validation) | Blocking prerequisite | **Complete** |
+| Phase 1 (compile verification) | Not started | **Complete** — server compiles with library present (junction-based) |
+| Examples | 5 examples | **7 examples** — added `PyftpdlibLiveTest`, `WDMyCloudLiveTest` |
+| Maturity score | 3/10 | **7/10** — hardware-validated, 7 examples, stable API |
+| Feature completeness score | 7/10 | **9/10** — `mkd()` and `size()` close the two highest-priority gaps |
+
+**Remaining gaps from Section 3.2:** Directory listing (`NLST`/`MLSD`) — still not available, but the server's manifest-based workaround is adequate. All other gaps are resolved.
+
+**Updated recommendation:** Proceed directly to Phase 2 (Config Schema + Transport Bridge). The library's v0.1.0 API is stable and validated. Server-side integration is the remaining work.
 
 ---
 

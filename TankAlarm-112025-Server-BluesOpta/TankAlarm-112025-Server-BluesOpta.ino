@@ -38,6 +38,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <time.h>
+#include <FtpsClient.h>
+#include <FtpsTypes.h>
 
 // POSIX-compliant standard library headers
 #include <stdio.h>
@@ -352,6 +354,11 @@ struct ServerConfig {
   char ftpUser[32];
   char ftpPass[32];
   char ftpPath[64];
+  // FTPS (Explicit TLS) settings — requires ArduinoOPTA-FTPS library
+  bool ftpsEnabled;                // true = use FTPS (TLS), false = plain FTP
+  uint8_t ftpsTrustMode;           // 0 = Fingerprint, 1 = Imported PEM cert
+  char ftpsFingerprint[65];        // SHA-256 hex fingerprint (64 chars + null)
+  char ftpsTlsServerName[128];     // TLS SNI hostname for cert validation
 };
 
 struct SensorRecord {
@@ -723,8 +730,12 @@ static bool ftpEnterPassive(FtpSession &session, IPAddress &dataHost, uint16_t &
 static bool ftpStoreBuffer(FtpSession &session, const char *remoteFile, const uint8_t *data, size_t len, char *error, size_t errorSize);
 static bool ftpRetrieveBuffer(FtpSession &session, const char *remoteFile, char *out, size_t outMax, size_t &outLen, char *error, size_t errorSize);
 static void ftpQuit(FtpSession &session);
-static bool ftpBackupClientConfigs(FtpSession &session, char *error, size_t errorSize, uint8_t &uploadedFiles);
-static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t errorSize, uint8_t &restoredFiles);
+static bool ftpsConnectAndLogin(char *error, size_t errorSize);
+static bool ftpsStoreBuffer(const char *remoteFile, const uint8_t *data, size_t len, char *error, size_t errorSize);
+static bool ftpsRetrieveBuffer(const char *remoteFile, char *out, size_t outMax, size_t &outLen, char *error, size_t errorSize);
+static void ftpsQuit();
+static bool ftpBackupClientConfigs(FtpSession &session, bool useFtps, char *error, size_t errorSize, uint8_t &uploadedFiles);
+static bool ftpRestoreClientConfigs(FtpSession &session, bool useFtps, char *error, size_t errorSize, uint8_t &restoredFiles);
 static FtpResult performFtpBackupDetailed();
 static FtpResult performFtpRestoreDetailed();
 
@@ -950,6 +961,7 @@ static uint8_t gClientConfigCount = 0;
 
 static Notecard notecard;
 static EthernetServer gWebServer(ETHERNET_PORT);
+static FtpsClient gFtpsClient;
 static char gServerUid[48] = {0};
 
 static double gLastSyncedEpoch = 0.0;
@@ -1486,8 +1498,8 @@ tbody tr:nth-child(even){background:#fafafa}
 }
 )HTML";
 
-static const char SERVER_SETTINGS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Server Settings - Tank Alarm</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Server Configuration</h2><form id="settingsForm"><h3>Blues Notehub</h3><div class="form-grid"><label class="field"><span>Product UID <span style="color:var(--danger);">*</span></span><input id="productUidInput" type="text" placeholder="com.company.product:project" required></label></div><p style="color:var(--muted);font-size:0.85rem;margin:-8px 0 16px;">Required. The Product UID from your Blues Notehub project (e.g. com.company.product:project). Changing this requires a device restart to fully apply.</p><h3>Server SMS Alert Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive SMS alerts for server events (e.g., power restoration after outage).</p><div id="smsRecipientsList" class="recipient-list"><div class="empty-state">No SMS recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><button type="button" class="secondary" id="addSmsRecipientBtn">+ Add SMS Recipient</button></div><div class="toggle-group" style="margin-top:-12px;"><label class="toggle"><span>Server down (power loss &gt; 24h)<span class="tooltip-icon" tabindex="0" data-tooltip="Sends an SMS if the server was offline for at least 24 hours before reboot.">?</span></span><input type="checkbox" id="serverDownSmsToggle" checked></label></div><h3>Daily Email Report Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive the daily tank level summary email.</p><div class="form-grid"><label class="field"><span>Daily Email Time (HH:MM, UTC)</span><input id="dailyEmailTimeInput" type="time" value="05:00"></label></div><div id="dailyRecipientsList" class="recipient-list"><div class="empty-state">No daily report recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><div id="dailyRecipientControls" style="display:flex;gap:8px;align-items:center;"><select id="dailyRecipientDropdown" style="min-width:250px;"><option value="">Choose a contact...</option></select><button type="button" id="addSelectedDailyRecipient" class="secondary">Add</button></div><a class="pill secondary" href="/contacts" id="addNewContactLink" style="display:none;">+ Add New Contact</a><a class="pill secondary" href="/email-format" style="margin-left:8px;">Email Formatting</a></div><h3>Security</h3><div class="actions" style="margin-bottom: 24px;"><button type="button" class="secondary" id="changePinBtn">Change Admin PIN</button><span id="pinBadge" class="pin-chip hidden">PIN SET</span><span id="pinStatus" style="margin-left:12px;font-size:0.9rem;color:var(--muted)"></span></div><h3>FTP Backup & Restore</h3><div class="form-grid"><label class="field"><span>FTP Host</span><input id="ftpHost" type="text" placeholder="192.168.1.50"></label><label class="field"><span>FTP Port</span><input id="ftpPort" type="number" min="1" max="65535" value="21"></label><label class="field"><span>FTP User</span><input id="ftpUser" type="text" placeholder="user"></label><label class="field"><span>FTP Password <small style="color:var(--muted);font-weight:400;">(leave blank to keep)</small></span><input id="ftpPass" type="password" autocomplete="off"></label><label class="field"><span>FTP Path</span><input id="ftpPath" type="text" placeholder="/tankalarm/server"></label></div><div class="toggle-group"><label class="toggle"><span>Enable FTP</span><input type="checkbox" id="ftpEnabled"></label><label class="toggle"><span>Passive Mode</span><input type="checkbox" id="ftpPassive" chec)HTML" R"HTML(ked></label><label class="toggle"><span>Auto-backup on save</span><input type="checkbox" id="ftpBackupOnChange"></label><label class="toggle"><span>Restore on boot</span><input type="checkbox" id="ftpRestoreOnBoot"></label></div><div class="actions"><button type="button" id="ftpBackupNow">Backup Now</button><button type="button" class="secondary" id="ftpRestoreNow">Restore Now</button></div><h3>Viewer Device</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Enable periodic viewer summary publishing via Notecard. Only enable this if you have a Viewer Opta device set up and connected.</p><div class="toggle-group"><label class="toggle"><span>Enable Viewer Summary<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, the server publishes sensor summary data to a Viewer Opta device every 6 hours via Notecard.">?</span></span><input type="checkbox" id="viewerEnabled"></label></div><h3>Update Policy</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Choose how the server handles firmware updates. Alert modes notify you on the dashboard when an update is available. Automatic modes apply updates without user intervention.</p><div class="form-grid"><label class="field" style="min-width:260px;"><span>Update Policy</span><select id="updatePolicy"><option value="0">Disabled</option><option value="1">Alert for DFU update available</option><option value="2">Alert for GitHub update available</option><option value="3">Update from GitHub automatically</option><option value="4">Update from DFU automatically</option></select></label></div><div class="toggle-group" style="margin-top:12px;"><label class="toggle"><span>Alert when connected clients report outdated firmware<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, a banner appears on the dashboard if any connected client is running a firmware version older than the latest GitHub release.">?</span></span><input type="checkbox" id="checkClientVersionAlerts" checked></label><label class="toggle"><span>Alert when viewer reports outdated firmware<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, a banner appears on the dashboard if the connected Viewer device reports a firmware version older than the latest GitHub release.">?</span></span><input type="checkbox" id="checkViewerVersionAlerts" checked></label></div><div class="actions"><button type="submit">Save Settings</button></div></form></div><div class="card"><h2>Tools & System Info</h2><h3>System Status</h3><div class="form-grid"><div class="field"><span>Firmware Version</span><div id="fwVersionDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Build Date</span><div id="fwBuildDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Firmware Last Updated</span><div id="fwLastUpdatedDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Notecard Supply (V+ rail)</span><div id="serverVoltageDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Server Time</span><div id="serverTimeDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div></div><h3>Notecard Status</h3><div id="notecardStatusPanel" style="padding:16px;background:var(--chip);border:1px solid var(--card-border);border-radius:var(--radius);margin-bottom:16px;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span id="notecardStatusDot" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#888;"></span><strong id="notecardStatusLabel">Checking...</strong></div><div class="form-grid" style="margin:0;"><div class="field"><span>Connection</span><div id="ncConnStatus" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Product UID</span><div id="ncProductUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Server UID</span><div id="ncServerUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Sync Mode</span><div id="ncSyncMode" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div></div><div class="actions" style="margin-top:12px;"><button type="button" class="secondary" id="ncRefreshBtn">Refresh Notecard Status</button></div></div><h3>Firmware Update (DFU)</h3><div id="dfuStatus" style="padding:12px;background:var(--chip);border:1px solid var(--card-border);margin-bottom:12px"><span id="dfuStatusText">Checking for updates...</span></div><div class="actions"><button type="button" id="dfuCheckBtn" class="secondary">Check for Update</button><button type="button" id="dfuEnableBtn" disabled>Install Update</button></div><p style="color:var(--muted);font-size:0.85rem;margin-top:8px">Manual install uses the policy source. GitHub Alert/Auto policies try GitHub Direct first and fall back to Notehub DFU. All other policies use Notehub DFU.</p><h3>Quick Access</h3><div class="actions"><button type="button" class="secondary" id="pauseBodyBtn">Pause Server</button><a class="pill" href="/serial-monitor">Open Serial Monitor</a><a class="pill" href="/transmission-log">Transmission Log</a><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/SERVER_INSTALLATION_GUIDE.md" target="_blank" title="View Server Installation Guide">Help</a></div></div></main><div id="toast"></div><div id="contactSelectModal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2 id="contactSelectTitle">Add Recipient</h2><button class="modal-close" onclick="closeContactSelectModal()">&times;</button></div><form id="contactSelectForm"><div class="form-grid"><div class="form-field"><label>Select Contact</label><select id="contactSelectDropdown" required><option value="">Choose a contact...</option></select></div></div><div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;"><button type="button" class="btn btn-secondary" onclick="closeContactSelectModal()">Cancel</button><button type="submit" class="btn btn-primary">Add</button></div></form></div></div><div id="pinModal" class="modal hidden"><div class="modal-card"><div class="modal-badge" id="pinSessionBadge">Session</div><h2 id="pinModalTitle">Set Admin PIN</h2><p id="pinModalDescription">Enter a 4-digit PIN to unlock configuration changes.</p><form id="pinForm"><label class="field hidden" id="pinCurrentGroup"><span>Current PIN</span><input type="password" id="pinCurrentInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><label class="field" id="pinPrimaryGroup"><span id="pinPrimaryLabel">PIN</span><input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits" aria-describedby="pinHint" title="Enter exactly four digits (0-9)"><small class="pin-hint" id="pinHint">Use exactly 4 digits (0-9). The PIN is kept locally in this browser for 90 days.</small></label><label class="field hidden" id="pinConfirmGroup"><span>Confirm PIN</span><input type="password" id="pinConfirmInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><div class="actions"><button type="submit" id="pinSubmit">Save PIN</button><button type="button" class="secondary" id="pinCancel">Cancel</button></div></form></div></div><script>document.addEventListener('DOMContentLoaded', async () => {try{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);const state={pin:null,pinConfigured:false,pendingAction:null,contacts:[],smsAlertRecipients:[],dailyReportRecipients:[],contactSelectMode:null};
-const getEl=(id)=>document.getElementById(id);const els={pauseBtn:getEl('pauseBtn'),pauseBodyBtn:getEl('pauseBodyBtn'),toast:getEl('toast'),form:getEl('settingsForm'),productUid:getEl('productUidInput'),serverDownSmsToggle:getEl('serverDownSmsToggle'),dailyEmailTime:getEl('dailyEmailTimeInput'),ftpEnabled:getEl('ftpEnabled'),ftpPassive:getEl('ftpPassive'),ftpBackupOnChange:getEl('ftpBackupOnChange'),ftpRestoreOnBoot:getEl('ftpRestoreOnBoot'),ftpHost:getEl('ftpHost'),ftpPort:getEl('ftpPort'),ftpUser:getEl('ftpUser'),ftpPass:getEl('ftpPass'),ftpPath:getEl('ftpPath'),ftpBackupNow:getEl('ftpBackupNow'),ftpRestoreNow:getEl('ftpRestoreNow'),changePinBtn:getEl('changePinBtn'),pinStatus:getEl('pinStatus'),pinBadge:getEl('pinBadge'),smsRecipientsList:getEl('smsRecipientsList'),dailyRecipientsList:getEl('dailyRecipientsList'),addSmsRecipientBtn:getEl('addSmsRecipientBtn'),dailyRecipientDropdown:getEl('dailyRecipientDropdown'),addSelectedDailyRecipient:getEl('addSelectedDailyRecipient'),contactSelectModal:getEl('contactSelectModal'),contactSelectTitle:getEl('contactSelectTitle'),contactSelectDropdown:getEl('contactSelectDropdown'),contactSelectForm:getEl('contactSelectForm'),viewerEnabled:getEl('viewerEnabled'),updatePolicy:getEl('updatePolicy'),checkClientVersionAlerts:getEl('checkClientVersionAlerts'),checkViewerVersionAlerts:getEl('checkViewerVersionAlerts')};if(els.pauseBtn)els.pauseBtn.addEventListener('click',togglePause);if(els.pauseBodyBtn)els.pauseBodyBtn.addEventListener('click',togglePause);const pinEls={modal:getEl('pinModal'),title:getEl('pinModalTitle'),desc:getEl('pinModalDescription'),form:getEl('pinForm'),currentGroup:getEl('pinCurrentGroup'),currentInput:getEl('pinCurrentInput'),primaryGroup:getEl('pinPrimaryGroup'),primaryLabel:getEl('pinPrimaryLabel'),input:getEl('pinInput'),confirmGroup:getEl('pinConfirmGroup'),confirmInput:getEl('pinConfirmInput'),submit:getEl('pinSubmit'),cancel:getEl('pinCancel'),badge:getEl('pinSessionBadge')};)HTML"
+static const char SERVER_SETTINGS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Server Settings - Tank Alarm</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Server Configuration</h2><form id="settingsForm"><h3>Blues Notehub</h3><div class="form-grid"><label class="field"><span>Product UID <span style="color:var(--danger);">*</span></span><input id="productUidInput" type="text" placeholder="com.company.product:project" required></label></div><p style="color:var(--muted);font-size:0.85rem;margin:-8px 0 16px;">Required. The Product UID from your Blues Notehub project (e.g. com.company.product:project). Changing this requires a device restart to fully apply.</p><h3>Server SMS Alert Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive SMS alerts for server events (e.g., power restoration after outage).</p><div id="smsRecipientsList" class="recipient-list"><div class="empty-state">No SMS recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><button type="button" class="secondary" id="addSmsRecipientBtn">+ Add SMS Recipient</button></div><div class="toggle-group" style="margin-top:-12px;"><label class="toggle"><span>Server down (power loss &gt; 24h)<span class="tooltip-icon" tabindex="0" data-tooltip="Sends an SMS if the server was offline for at least 24 hours before reboot.">?</span></span><input type="checkbox" id="serverDownSmsToggle" checked></label></div><h3>Daily Email Report Recipients</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Contacts who receive the daily tank level summary email.</p><div class="form-grid"><label class="field"><span>Daily Email Time (HH:MM, UTC)</span><input id="dailyEmailTimeInput" type="time" value="05:00"></label></div><div id="dailyRecipientsList" class="recipient-list"><div class="empty-state">No daily report recipients configured.</div></div><div class="actions" style="margin-bottom:16px;"><div id="dailyRecipientControls" style="display:flex;gap:8px;align-items:center;"><select id="dailyRecipientDropdown" style="min-width:250px;"><option value="">Choose a contact...</option></select><button type="button" id="addSelectedDailyRecipient" class="secondary">Add</button></div><a class="pill secondary" href="/contacts" id="addNewContactLink" style="display:none;">+ Add New Contact</a><a class="pill secondary" href="/email-format" style="margin-left:8px;">Email Formatting</a></div><h3>Security</h3><div class="actions" style="margin-bottom: 24px;"><button type="button" class="secondary" id="changePinBtn">Change Admin PIN</button><span id="pinBadge" class="pin-chip hidden">PIN SET</span><span id="pinStatus" style="margin-left:12px;font-size:0.9rem;color:var(--muted)"></span></div><h3>FTP Backup & Restore</h3><div class="form-grid"><label class="field"><span>FTP Host</span><input id="ftpHost" type="text" placeholder="192.168.1.50"></label><label class="field"><span>FTP Port</span><input id="ftpPort" type="number" min="1" max="65535" value="21"></label><label class="field"><span>FTP User</span><input id="ftpUser" type="text" placeholder="user"></label><label class="field"><span>FTP Password <small style="color:var(--muted);font-weight:400;">(leave blank to keep)</small></span><input id="ftpPass" type="password" autocomplete="off"></label><label class="field"><span>FTP Path</span><input id="ftpPath" type="text" placeholder="/tankalarm/server"></label><label class="field"><span>TLS Server Name (SNI)</span><input id="ftpsTlsServerName" type="text" placeholder="ftp.example.com"></label><label class="field"><span>SHA-256 Fingerprint</span><input id="ftpsFingerprint" type="text" placeholder="64 hex chars" maxlength="64"></label><label class="field"><span>FTPS Trust Mode</span><select id="ftpsTrustMode"><option value="0">Fingerprint</option><option value="1">Imported Certificate</option></select></label></div><div class="toggle-group"><label class="toggle"><span>Enable FTP</span><input type="checkbox" id="ftpEnabled"></label><label class="toggle"><span>Passive Mode</span><input type="checkbox" id="ftpPassive" checked></label><label class="toggle"><span>Enable FTPS (Explicit TLS)</span><input type="checkbox" id="ftpsEnabled"></label><label class="toggle"><span>Auto-backup on save</span><input type="checkbox" id="ftpBackupOnChange"></label><label class="toggle"><span>Restore on boot</span><input type="checkbox" id="ftpRestoreOnBoot"></label></div><p style="color:var(--muted);font-size:0.85rem;margin-top:8px;">Fingerprint trust mode is currently supported. Imported certificate mode is reserved for a follow-up update.</p><div class="actions"><button type="button" id="ftpBackupNow">Backup Now</button><button type="button" class="secondary" id="ftpRestoreNow">Restore Now</button></div><h3>Viewer Device</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Enable periodic viewer summary publishing via Notecard. Only enable this if you have a Viewer Opta device set up and connected.</p><div class="toggle-group"><label class="toggle"><span>Enable Viewer Summary<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, the server publishes sensor summary data to a Viewer Opta device every 6 hours via Notecard.">?</span></span><input type="checkbox" id="viewerEnabled"></label></div><h3>Update Policy</h3><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px;">Choose how the server handles firmware updates. Alert modes notify you on the dashboard when an update is available. Automatic modes apply updates without user intervention.</p><div class="form-grid"><label class="field" style="min-width:260px;"><span>Update Policy</span><select id="updatePolicy"><option value="0">Disabled</option><option value="1">Alert for DFU update available</option><option value="2">Alert for GitHub update available</option><option value="3">Update from GitHub automatically</option><option value="4">Update from DFU automatically</option></select></label></div><div class="toggle-group" style="margin-top:12px;"><label class="toggle"><span>Alert when connected clients report outdated firmware<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, a banner appears on the dashboard if any connected client is running a firmware version older than the latest GitHub release.">?</span></span><input type="checkbox" id="checkClientVersionAlerts" checked></label><label class="toggle"><span>Alert when viewer reports outdated firmware<span class="tooltip-icon" tabindex="0" data-tooltip="When enabled, a banner appears on the dashboard if the connected Viewer device reports a firmware version older than the latest GitHub release.">?</span></span><input type="checkbox" id="checkViewerVersionAlerts" checked></label></div><div class="actions"><button type="submit">Save Settings</button></div></form></div><div class="card"><h2>Tools & System Info</h2><h3>System Status</h3><div class="form-grid"><div class="field"><span>Firmware Version</span><div id="fwVersionDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Build Date</span><div id="fwBuildDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Firmware Last Updated</span><div id="fwLastUpdatedDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Notecard Supply (V+ rail)</span><div id="serverVoltageDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div><div class="field"><span>Server Time</span><div id="serverTimeDisplay" style="padding:10px 12px;background:var(--chip);border:1px solid var(--card-border)">Loading...</div></div></div><h3>Notecard Status</h3><div id="notecardStatusPanel" style="padding:16px;background:var(--chip);border:1px solid var(--card-border);border-radius:var(--radius);margin-bottom:16px;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span id="notecardStatusDot" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#888;"></span><strong id="notecardStatusLabel">Checking...</strong></div><div class="form-grid" style="margin:0;"><div class="field"><span>Connection</span><div id="ncConnStatus" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Product UID</span><div id="ncProductUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Server UID</span><div id="ncServerUid" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div><div class="field"><span>Sync Mode</span><div id="ncSyncMode" style="padding:6px 10px;background:var(--bg);border:1px solid var(--card-border);font-size:0.9rem;">--</div></div></div><div class="actions" style="margin-top:12px;"><button type="button" class="secondary" id="ncRefreshBtn">Refresh Notecard Status</button></div></div><h3>Firmware Update (DFU)</h3><div id="dfuStatus" style="padding:12px;background:var(--chip);border:1px solid var(--card-border);margin-bottom:12px"><span id="dfuStatusText">Checking for updates...</span></div><div class="actions"><button type="button" id="dfuCheckBtn" class="secondary">Check for Update</button><button type="button" id="dfuEnableBtn" disabled>Install Update</button></div><p style="color:var(--muted);font-size:0.85rem;margin-top:8px">Manual install uses the policy source. GitHub Alert/Auto policies try GitHub Direct first and fall back to Notehub DFU. All other policies use Notehub DFU.</p><h3>Quick Access</h3><div class="actions"><button type="button" class="secondary" id="pauseBodyBtn">Pause Server</button><a class="pill" href="/serial-monitor">Open Serial Monitor</a><a class="pill" href="/transmission-log">Transmission Log</a><a class="pill secondary" href="https://github.com/SenaxInc/ArduinoSMSTankAlarm/blob/master/Tutorials/Tutorials-112025/SERVER_INSTALLATION_GUIDE.md" target="_blank" title="View Server Installation Guide">Help</a></div></div></main><div id="toast"></div><div id="contactSelectModal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2 id="contactSelectTitle">Add Recipient</h2><button class="modal-close" onclick="closeContactSelectModal()">&times;</button></div><form id="contactSelectForm"><div class="form-grid"><div class="form-field"><label>Select Contact</label><select id="contactSelectDropdown" required><option value="">Choose a contact...</option></select></div></div><div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;"><button type="button" class="btn btn-secondary" onclick="closeContactSelectModal()">Cancel</button><button type="submit" class="btn btn-primary">Add</button></div></form></div></div><div id="pinModal" class="modal hidden"><div class="modal-card"><div class="modal-badge" id="pinSessionBadge">Session</div><h2 id="pinModalTitle">Set Admin PIN</h2><p id="pinModalDescription">Enter a 4-digit PIN to unlock configuration changes.</p><form id="pinForm"><label class="field hidden" id="pinCurrentGroup"><span>Current PIN</span><input type="password" id="pinCurrentInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><label class="field" id="pinPrimaryGroup"><span id="pinPrimaryLabel">PIN</span><input type="password" id="pinInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off" required placeholder="4 digits" aria-describedby="pinHint" title="Enter exactly four digits (0-9)"><small class="pin-hint" id="pinHint">Use exactly 4 digits (0-9). The PIN is kept locally in this browser for 90 days.</small></label><label class="field hidden" id="pinConfirmGroup"><span>Confirm PIN</span><input type="password" id="pinConfirmInput" inputmode="numeric" pattern="\d*" maxlength="4" autocomplete="off"></label><div class="actions"><button type="submit" id="pinSubmit">Save PIN</button><button type="button" class="secondary" id="pinCancel">Cancel</button></div></form></div></div><script>document.addEventListener('DOMContentLoaded', async () => {try{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);const state={pin:null,pinConfigured:false,pendingAction:null,contacts:[],smsAlertRecipients:[],dailyReportRecipients:[],contactSelectMode:null};
+const getEl=(id)=>document.getElementById(id);const els={pauseBtn:getEl('pauseBtn'),pauseBodyBtn:getEl('pauseBodyBtn'),toast:getEl('toast'),form:getEl('settingsForm'),productUid:getEl('productUidInput'),serverDownSmsToggle:getEl('serverDownSmsToggle'),dailyEmailTime:getEl('dailyEmailTimeInput'),ftpEnabled:getEl('ftpEnabled'),ftpPassive:getEl('ftpPassive'),ftpsEnabled:getEl('ftpsEnabled'),ftpsTrustMode:getEl('ftpsTrustMode'),ftpsFingerprint:getEl('ftpsFingerprint'),ftpsTlsServerName:getEl('ftpsTlsServerName'),ftpBackupOnChange:getEl('ftpBackupOnChange'),ftpRestoreOnBoot:getEl('ftpRestoreOnBoot'),ftpHost:getEl('ftpHost'),ftpPort:getEl('ftpPort'),ftpUser:getEl('ftpUser'),ftpPass:getEl('ftpPass'),ftpPath:getEl('ftpPath'),ftpBackupNow:getEl('ftpBackupNow'),ftpRestoreNow:getEl('ftpRestoreNow'),changePinBtn:getEl('changePinBtn'),pinStatus:getEl('pinStatus'),pinBadge:getEl('pinBadge'),smsRecipientsList:getEl('smsRecipientsList'),dailyRecipientsList:getEl('dailyRecipientsList'),addSmsRecipientBtn:getEl('addSmsRecipientBtn'),dailyRecipientDropdown:getEl('dailyRecipientDropdown'),addSelectedDailyRecipient:getEl('addSelectedDailyRecipient'),contactSelectModal:getEl('contactSelectModal'),contactSelectTitle:getEl('contactSelectTitle'),contactSelectDropdown:getEl('contactSelectDropdown'),contactSelectForm:getEl('contactSelectForm'),viewerEnabled:getEl('viewerEnabled'),updatePolicy:getEl('updatePolicy'),checkClientVersionAlerts:getEl('checkClientVersionAlerts'),checkViewerVersionAlerts:getEl('checkViewerVersionAlerts')};if(els.pauseBtn)els.pauseBtn.addEventListener('click',togglePause);if(els.pauseBodyBtn)els.pauseBodyBtn.addEventListener('click',togglePause);const pinEls={modal:getEl('pinModal'),title:getEl('pinModalTitle'),desc:getEl('pinModalDescription'),form:getEl('pinForm'),currentGroup:getEl('pinCurrentGroup'),currentInput:getEl('pinCurrentInput'),primaryGroup:getEl('pinPrimaryGroup'),primaryLabel:getEl('pinPrimaryLabel'),input:getEl('pinInput'),confirmGroup:getEl('pinConfirmGroup'),confirmInput:getEl('pinConfirmInput'),submit:getEl('pinSubmit'),cancel:getEl('pinCancel'),badge:getEl('pinSessionBadge')};)HTML"
 R"HTML(let pinMode='unlock';state.paused=false;funct)HTML" R"HTML(ion showToast(message, isError){if(els.toast)els.toast.textContent=message;if(els.toast)els.toast.style.background=isError?'#dc2626':'#0284c7';if(els.toast)els.toast.classList.add('show');setTimeout(()=>{if(els.toast)els.toast.classList.remove('show')},2500);})HTML"
 R"HTML(funct)HTML" R"HTML(ion escapeHtml(text){const div=document.createElement('div');div.textContent=text;return div.innerHTML;})HTML"
 R"HTML(funct)HTML" R"HTML(ion renderPauseButtons(){if(els.pauseBtn){els.pauseBtn.style.display=state.paused?'':'none';els.pauseBtn.textContent='Unpause';els.pauseBtn.title='Resume data flow';}if(els.pauseBodyBtn){els.pauseBodyBtn.style.display=state.paused?'none':'';els.pauseBodyBtn.textContent='Pause Server';els.pauseBodyBtn.title='Pause data flow';}})HTML"
@@ -1505,8 +1517,8 @@ funct)HTML" R"HTML(ion openContactSelectModal(mode){state.contactSelectMode=mode
 window.closeContactSelectModal=funct)HTML" R"HTML(ion(){els.contactSelectModal.classList.add('hidden');state.contactSelectMode=null;};els.contactSelectForm.addEventListener('submit',(e)=>{e.preventDefault();const contactId=els.contactSelectDropdown.value;if(!contactId){showToast('Please select a contact',true);return;}if(state.contactSelectMode==='sms'){if(!state.smsAlertRecipients.includes(contactId)){state.smsAlertRecipients.push(contactId);renderSmsRecipients();saveContactsData();}}closeContactSelectModal();});els.addSmsRecipientBtn.addEventListener('click',()=>openContactSelectModal('sms'));if(els.addSelectedDailyRecipient){els.addSelectedDailyRecipient.addEventListener('click',()=>{const contactId=els.dailyRecipientDropdown.value;if(!contactId){showToast('Please select a contact',true);return;}if(!state.dailyReportRecipients.includes(contactId)){state.dailyReportRecipients.push(contactId);renderDailyRecipients();openContactSelectModal('daily');saveContactsData();}});}loadSettings().then(()=>openContactSelectModal('daily'));)HTML"
 R"HTML(async funct)HTML" R"HTML(ion loadContactsData(){try{const res=await fetch('/api/contacts');if(!res.ok)throw new Error('Failed to load contacts');const data=await res.json();state.contacts=data.contacts||[];state.smsAlertRecipients=data.smsAlertRecipients||[];state.dailyReportRecipients=data.dailyReportRecipients||[];renderSmsRecipients();renderDailyRecipients();}catch(err){console.error('Failed to load contacts:',err);}}
 async funct)HTML" R"HTML(ion saveContactsData(){try{const res=await fetch('/api/contacts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:state.contacts,smsAlertRecipients:state.smsAlertRecipients,dailyReportRecipients:state.dailyReportRecipients})});if(!res.ok)throw new Error('Failed to save contacts');showToast('Recipients updated');}catch(err){showToast('Failed to save: '+err.message,true);}}
-async funct)HTML" R"HTML(ion loadSettings(){if(els.pinStatus){els.pinStatus.textContent='Loading...';els.pinStatus.style.color='var(--muted)';}try{const res=await fetch('/api/clients?summary=1');if(!res.ok)throw new Error('Server returned '+res.status);const data=await res.json();const s=(data&&data.srv)||{};const hour=typeof s.dh==='number'?s.dh:5;const minute=typeof s.dm==='number'?s.dm:0;const timeStr=String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0');state.pinConfigured=!!s.pc;state.paused=!!s.ps;updatePinButton();renderPauseButtons();if(els.productUid)els.productUid.value=s.pu||'';if(els.serverDownSmsToggle)els.serverDownSmsToggle.checked=s.sds!==false;if(els.dailyEmailTime)els.dailyEmailTime.value=timeStr;const ftp=s.ftp||{};if(els.ftpEnabled)els.ftpEnabled.checked=!!ftp.enabled;if(els.ftpPassive)els.ftpPassive.checked=ftp.passive!==false;if(els.ftpBackupOnChange)els.ftpBackupOnChange.checked=!!ftp.backupOnChange;if(els.ftpRestoreOnBoot)els.ftpRestoreOnBoot.checked=!!ftp.restoreOnBoot;if(els.ftpHost)els.ftpHost.value=ftp.host||'';if(els.ftpPort)els.ftpPort.value=ftp.port||21;if(els.ftpUser)els.ftpUser.value=ftp.user||'';if(els.ftpPath)els.ftpPath.value=ftp.path||'/tankalarm/server';if(els.ftpPass)els.ftpPass.value='';if(els.viewerEnabled)els.viewerEnabled.checked=!!s.ve;if(els.updatePolicy)els.updatePolicy.value=String(typeof s.up==='number'?s.up:0);if(els.checkClientVersionAlerts)els.checkClientVersionAlerts.checked=s.ccva!==false;if(els.checkViewerVersionAlerts)els.checkViewerVersionAlerts.checked=s.cvva!==false;await loadContactsData();}catch(err){showToast(err.message||'Failed to load settings',true);if(els.pinStatus){els.pinStatus.textContent='Failed to load';els.pinStatus.style.color='#ef4444';}}})HTML"
-R"HTML(async funct)HTML" R"HTML(ion saveSettingsImpl(){if(!els.productUid.value.trim()){showToast('Product UID is required',true);els.productUid.focus();return;}const ftpSettings={enabled:!!els.ftpEnabled.checked,passive:!!els.ftpPassive.checked,backupOnChange:!!els.ftpBackupOnChange.checked,restoreOnBoot:!!els.ftpRestoreOnBoot.checked,host:els.ftpHost.value.trim(),port:parseInt(els.ftpPort.value,10)||21,user:els.ftpUser.value.trim(),path:els.ftpPath.value.trim()||'/tankalarm/server'};const ftpPass=els.ftpPass.value.trim();if(ftpPass){ftpSettings.pass=ftpPass;}const timeValue=(els.dailyEmailTime&&els.dailyEmailTime.value)||'05:00';const timeParts=timeValue.split(':');const parsedHour=(timeParts.length===2&&!isNaN(parseInt(timeParts[0],10)))?Math.min(23,Math.max(0,parseInt(timeParts[0],10))):5;const parsedMinute=(timeParts.length===2&&!isNaN(parseInt(timeParts[1],10)))?Math.min(59,Math.max(0,parseInt(timeParts[1],10))):0;const payload={server:{productUid:els.productUid.value.trim(),serverDownSmsEnabled:!!(els.serverDownSmsToggle&&els.serverDownSmsToggle.checked),viewerEnabled:!!(els.viewerEnabled&&els.viewerEnabled.checked),updatePolicy:parseInt((els.updatePolicy&&els.updatePolicy.value)||'0',10),checkClientVersionAlerts:!!(els.checkClientVersionAlerts&&els.checkClientVersionAlerts.checked),checkViewerVersionAlerts:!!(els.checkViewerVersionAlerts&&els.checkViewerVersionAlerts.checked),dailyHour:parsedHour,dailyMinute:parsedMinute,ftp:ftpSettings}};try{const res=await fetch('/api/server-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text=await res.text();throw new Error(text||'Server rejected settings');}showToast('Settings saved successfully');await loadSettings();}catch(err){showToast(err.message||'Failed to save settings',true);}}if(els.form)els.form.addEventListener('submit',(e)=>{e.preventDefault();saveSettingsImpl();});async funct)HTML" R"HTML(ion performFtpAction(kind){const payload={};)HTML"
+async funct)HTML" R"HTML(ion loadSettings(){if(els.pinStatus){els.pinStatus.textContent='Loading...';els.pinStatus.style.color='var(--muted)';}try{const res=await fetch('/api/clients?summary=1');if(!res.ok)throw new Error('Server returned '+res.status);const data=await res.json();const s=(data&&data.srv)||{};const hour=typeof s.dh==='number'?s.dh:5;const minute=typeof s.dm==='number'?s.dm:0;const timeStr=String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0');state.pinConfigured=!!s.pc;state.paused=!!s.ps;updatePinButton();renderPauseButtons();if(els.productUid)els.productUid.value=s.pu||'';if(els.serverDownSmsToggle)els.serverDownSmsToggle.checked=s.sds!==false;if(els.dailyEmailTime)els.dailyEmailTime.value=timeStr;const ftp=s.ftp||{};if(els.ftpEnabled)els.ftpEnabled.checked=!!ftp.enabled;if(els.ftpPassive)els.ftpPassive.checked=ftp.passive!==false;if(els.ftpsEnabled)els.ftpsEnabled.checked=!!ftp.ftpsEnabled;if(els.ftpsTrustMode)els.ftpsTrustMode.value=String(typeof ftp.ftpsTrustMode==='number'?ftp.ftpsTrustMode:0);if(els.ftpsFingerprint)els.ftpsFingerprint.value=ftp.ftpsFingerprint||'';if(els.ftpsTlsServerName)els.ftpsTlsServerName.value=ftp.ftpsTlsServerName||'';if(els.ftpBackupOnChange)els.ftpBackupOnChange.checked=!!ftp.backupOnChange;if(els.ftpRestoreOnBoot)els.ftpRestoreOnBoot.checked=!!ftp.restoreOnBoot;if(els.ftpHost)els.ftpHost.value=ftp.host||'';if(els.ftpPort)els.ftpPort.value=ftp.port||21;if(els.ftpUser)els.ftpUser.value=ftp.user||'';if(els.ftpPath)els.ftpPath.value=ftp.path||'/tankalarm/server';if(els.ftpPass)els.ftpPass.value='';if(els.viewerEnabled)els.viewerEnabled.checked=!!s.ve;if(els.updatePolicy)els.updatePolicy.value=String(typeof s.up==='number'?s.up:0);if(els.checkClientVersionAlerts)els.checkClientVersionAlerts.checked=s.ccva!==false;if(els.checkViewerVersionAlerts)els.checkViewerVersionAlerts.checked=s.cvva!==false;await loadContactsData();}catch(err){showToast(err.message||'Failed to load settings',true);if(els.pinStatus){els.pinStatus.textContent='Failed to load';els.pinStatus.style.color='#ef4444';}}})HTML"
+R"HTML(async funct)HTML" R"HTML(ion saveSettingsImpl(){if(!els.productUid.value.trim()){showToast('Product UID is required',true);els.productUid.focus();return;}const ftpSettings={enabled:!!els.ftpEnabled.checked,passive:!!els.ftpPassive.checked,ftpsEnabled:!!(els.ftpsEnabled&&els.ftpsEnabled.checked),ftpsTrustMode:parseInt((els.ftpsTrustMode&&els.ftpsTrustMode.value)||'0',10)||0,ftpsFingerprint:(els.ftpsFingerprint&&els.ftpsFingerprint.value?els.ftpsFingerprint.value.trim().toUpperCase():''),ftpsTlsServerName:els.ftpsTlsServerName&&els.ftpsTlsServerName.value?els.ftpsTlsServerName.value.trim():'',backupOnChange:!!els.ftpBackupOnChange.checked,restoreOnBoot:!!els.ftpRestoreOnBoot.checked,host:els.ftpHost.value.trim(),port:parseInt(els.ftpPort.value,10)||21,user:els.ftpUser.value.trim(),path:els.ftpPath.value.trim()||'/tankalarm/server'};const ftpPass=els.ftpPass.value.trim();if(ftpPass){ftpSettings.pass=ftpPass;}const timeValue=(els.dailyEmailTime&&els.dailyEmailTime.value)||'05:00';const timeParts=timeValue.split(':');const parsedHour=(timeParts.length===2&&!isNaN(parseInt(timeParts[0],10)))?Math.min(23,Math.max(0,parseInt(timeParts[0],10))):5;const parsedMinute=(timeParts.length===2&&!isNaN(parseInt(timeParts[1],10)))?Math.min(59,Math.max(0,parseInt(timeParts[1],10))):0;const payload={server:{productUid:els.productUid.value.trim(),serverDownSmsEnabled:!!(els.serverDownSmsToggle&&els.serverDownSmsToggle.checked),viewerEnabled:!!(els.viewerEnabled&&els.viewerEnabled.checked),updatePolicy:parseInt((els.updatePolicy&&els.updatePolicy.value)||'0',10),checkClientVersionAlerts:!!(els.checkClientVersionAlerts&&els.checkClientVersionAlerts.checked),checkViewerVersionAlerts:!!(els.checkViewerVersionAlerts&&els.checkViewerVersionAlerts.checked),dailyHour:parsedHour,dailyMinute:parsedMinute,ftp:ftpSettings}};try{const res=await fetch('/api/server-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text=await res.text();throw new Error(text||'Server rejected settings');}showToast('Settings saved successfully');await loadSettings();}catch(err){showToast(err.message||'Failed to save settings',true);}}if(els.form)els.form.addEventListener('submit',(e)=>{e.preventDefault();saveSettingsImpl();});async funct)HTML" R"HTML(ion performFtpAction(kind){const payload={};)HTML"
 R"HTML(const endpoint=kind==='restore'?'/api/ftp-restore':'/api/ftp-backup';try{const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!res.ok){const text=await res.text();throw new Error(text||`${kind} failed`);}const data=await res.json();if(data&&data.message){showToast(data.message,false);}else{showToast(kind==='restore'?'FTP restore completed':'FTP backup completed');}}catch(err){showToast(err.message||`FTP ${kind} failed`,true);}}if(els.ftpBackupNow)els.ftpBackupNow.addEventListener('click',()=>performFtpAction('backup'));if(els.ftpRestoreNow)els.ftpRestoreNow.addEventListener('click',()=>performFtpAction('restore'));const ncEls={dot:getEl('notecardStatusDot'),label:getEl('notecardStatusLabel'),conn:getEl('ncConnStatus'),product:getEl('ncProductUid'),uid:getEl('ncServerUid'),mode:getEl('ncSyncMode'),refreshBtn:getEl('ncRefreshBtn')};async function loadNotecardStatus(){if(ncEls.label)ncEls.label.textContent='Checking...';if(ncEls.dot)ncEls.dot.style.background='#888';try{const res=await fetch('/api/notecard/status');if(!res.ok)throw new Error('Failed');const d=await res.json();const ok=d.connected;if(ncEls.dot)ncEls.dot.style.background=ok?'#10b981':'#ef4444';if(ncEls.label)ncEls.label.textContent=ok?'Connected':'Disconnected';if(ncEls.conn)ncEls.conn.textContent=ok?'I2C OK — Notecard responding':'I2C FAILED — no response from Notecard';if(ncEls.conn)ncEls.conn.style.color=ok?'#10b981':'#ef4444';if(ncEls.product)ncEls.product.textContent=d.productUid||'Not configured';if(ncEls.uid)ncEls.uid.textContent=d.serverUid||'Unknown';if(ncEls.mode)ncEls.mode.textContent=d.syncMode||'Unknown';if(!ok&&ncEls.product){ncEls.product.style.color='var(--muted)';}}catch(err){if(ncEls.dot)ncEls.dot.style.background='#f59e0b';if(ncEls.label)ncEls.label.textContent='Error: '+err.message;if(ncEls.conn)ncEls.conn.textContent='Could not reach server';}}if(ncEls.refreshBtn)ncEls.refreshBtn.addEventListener('click',loadNotecardStatus);const dfuEls={checkBtn:getEl('dfuCheckBtn'),enableBtn:getEl('dfuEnableBtn'),statusText:getEl('dfuStatusText'),fwVersion:getEl('fwVersionDisplay'),fwBuild:getEl('fwBuildDisplay'),voltage:getEl('serverVoltageDisplay'),serverTime:getEl('serverTimeDisplay'),fwLastUpdated:getEl('fwLastUpdatedDisplay')};function updateDfuUI(data){if(dfuEls.fwVersion)dfuEls.fwVersion.textContent='v'+data.currentVersion;if(dfuEls.fwBuild)dfuEls.fwBuild.textContent=data.buildDate||'Unknown';if(dfuEls.fwLastUpdated){if(data.buildDate){var updatedStr=data.buildDate;if(data.buildTime)updatedStr+=' '+data.buildTime;dfuEls.fwLastUpdated.textContent=updatedStr;}else{dfuEls.fwLastUpdated.textContent='Unknown';}}if(dfuEls.voltage){var vParts=[];if(data.inputVoltage>0.5){vParts.push('Vin: '+data.inputVoltage.toFixed(2)+'V');}if(data.notecardVoltage>0){vParts.push('NC: '+data.notecardVoltage.toFixed(2)+'V');}dfuEls.voltage.textContent=vParts.length>0?vParts.join(' | '):'Not available';}if(dfuEls.serverTime){if(data.serverTime>0){const d=new Date(data.serverTime*1000);dfuEls.serverTime.textContent=d.toLocaleString();}else{dfuEls.serverTime.textContent='Not synced';}}var mode=data.dfuMode||'idle';if(data.dfuInProgress){if(dfuEls.statusText)dfuEls.statusText.textContent='Firmware update in progress... ('+mode+')';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=true;}else if(mode==='downloading'){if(dfuEls.statusText)dfuEls.statusText.textContent='Downloading firmware from Notehub...';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}else if(mode==='ready'||data.updateAvailable){var verText=data.availableVersion||'';if(dfuEls.statusText)dfuEls.statusText.textContent=mode==='ready'?'Update ready to install: v'+verText:'Update available: v'+verText;if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=false;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}else if(mode==='error'){var errDetail=data.dfuError?' ('+data.dfuError+')':'';if(dfuEls.statusText)dfuEls.statusText.textContent='DFU error'+errDetail+' - try checking again';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}else{if(dfuEls.statusText)dfuEls.statusText.textContent='Firmware is up to date (v'+data.currentVersion+')';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}}async function loadDfuStatus(){try{const res=await fetch('/api/dfu/status');if(!res.ok)throw new Error('Failed to fetch DFU status');const data=await res.json();updateDfuUI(data);}catch(err){if(dfuEls.statusText)dfuEls.statusText.textContent='Error: '+err.message;if(dfuEls.fwVersion)dfuEls.fwVersion.textContent='Unknown';if(dfuEls.fwBuild)dfuEls.fwBuild.textContent='Unknown';if(dfuEls.fwLastUpdated)dfuEls.fwLastUpdated.textContent='Unknown';if(dfuEls.voltage)dfuEls.voltage.textContent='Not available';if(dfuEls.serverTime)dfuEls.serverTime.textContent='Not synced';if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=true;if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}}if(dfuEls.checkBtn)dfuEls.checkBtn.addEventListener('click',async()=>{dfuEls.checkBtn.disabled=true;if(dfuEls.statusText)dfuEls.statusText.textContent='Querying Notecard for updates...';try{const res=await fetch('/api/dfu/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});if(!res.ok)throw new Error('Check failed');const data=await res.json();updateDfuUI(data);showToast(data.updateAvailable?'Update found: v'+data.availableVersion:'No updates available');}catch(err){if(dfuEls.statusText)dfuEls.statusText.textContent='Error checking: '+err.message;showToast('Failed to check for updates',true);}finally{if(dfuEls.checkBtn)dfuEls.checkBtn.disabled=false;}});if(dfuEls.enableBtn)dfuEls.enableBtn.addEventListener('click',async()=>{if(!confirm('Install firmware update using selected source? (May fall back to Notehub if configured)'))return;try{dfuEls.enableBtn.disabled=true;if(dfuEls.statusText)dfuEls.statusText.textContent='Starting firmware install...';const res=await fetch('/api/dfu/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});if(!res.ok){const text=await res.text();throw new Error(text||'Failed to enable DFU');}const data=await res.json();showToast(data.message||'Firmware install started');if(dfuEls.statusText)dfuEls.statusText.textContent=data.message||'Firmware install started';setTimeout(loadDfuStatus,5000);}catch(err){showToast(err.message,true);if(dfuEls.enableBtn)dfuEls.enableBtn.disabled=false;if(dfuEls.statusText)dfuEls.statusText.textContent='Error: '+err.message;}});await loadDfuStatus();await loadNotecardStatus();await loadSettings();}catch(e){console.error(e);const t=document.getElementById('toast');if(t){t.innerText='Script Error! '+e.message;t.style.background='red';t.classList.add('show');}}});</script></body></html>)HTML";
 
 static const char EMAIL_FORMAT_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Email Formatting - Tank Alarm</title><link rel="stylesheet" href="/style.css"><style>.format-section{border:1px solid var(--border);padding:var(--space-3);margin-bottom:var(--space-3);background:#fafafa}.format-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-2)}.format-title{font-weight:600;font-size:1rem}.preview-box{border:1px solid var(--border);background:#fff;padding:var(--space-3);font-family:ui-monospace,Consolas,monospace;font-size:0.85rem;white-space:pre-wrap;max-height:400px;overflow:auto}.field-list{display:flex;flex-direction:column;gap:var(--space-2)}.field-item{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2);border:1px solid var(--border);background:#fff}.field-item label{flex:1;display:flex;align-items:center;gap:8px}.field-item input[type="checkbox"]{width:auto}.drag-handle{cursor:grab;color:var(--muted);padding:0 8px}.drag-handle:active{cursor:grabbing}</style></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Daily Email Format</h2><p style="color:var(--muted);margin-bottom:16px;">Customize the content and layout of daily sensor summary emails. Changes are saved automatically.</p><form id="formatForm"><div class="format-section"><div class="format-header"><span class="format-title">Email Header</span></div><div class="form-grid"><label class="field"><span>Email Subject</span><input type="text" id="emailSubject" value="Daily Tank Summary - {date}" placeholder="Daily Tank Summary - {date}"></label><label class="field"><span>Company/Organization Name</span><input type="text" id="companyName" value="" placeholder="Your Company Name (optional)"></label></div><div class="toggle-group" style="margin-top:12px"><label class="toggle"><span>Include Date in Header</span><input type="checkbox" id="includeDate" checked></label><label class="toggle"><span>Include Time Generated</span><input type="checkbox" id="includeTime"></label><label class="toggle"><span>Include Server Name</span><input type="checkbox" id="includeServerName" checked></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Site Information</span></div><div class="toggle-group"><label class="toggle"><span>Group Sensors by Site</span><input type="checkbox" id="groupBySite" checked></label><label class="toggle"><span>Show Site Summary (total change)</span><input type="checkbox" id="showSiteSummary" checked></label><label class="toggle"><span>Show Site Total Capacity</span><input type="checkbox" id="showSiteCapacity"></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Tank Details</span></div><p style="color:var(--muted);font-size:0.85rem;margin-bottom:12px">Select which fields to include for each sensor:</p><div class="toggle-group"><label class="toggle"><span>Tank Number</span><input type="checkbox" id="fieldSensorIndex" checked></label><label class="toggle"><span>Tank Name</span><input type="checkbox" id="fieldSensorName" checked></label><label class="toggle"><span>Contents (Diesel, Water, etc.)</span><input type="checkbox" id="fieldContents" checked></label><label class="toggle"><span>Current Level (inches)</span><input type="checkbox" id="fieldLevelInches" checked></label><label class="toggle"><span>Current Level (percentage)</span><input type="checkbox" id="fieldLevelPercent"></label><label class="toggle"><span>Level Change (24h)</span><input type="checkbox" id="fieldLevelChange" checked></label><label class="toggle"><span>Delivery Indicator</span><input type="checkbox" id="fieldDeliveryIndicator" checked></label><label class="toggle"><span>Last Reading Time</span><input type="checkbox" id="fieldLastReading"></label><label class="toggle"><span>Sensor Raw Value (mA)</span><input type="checkbox" id="fieldSensorMa"></label><label class="toggle"><span>High/Low Alarm Status</span><input type="checkbox" id="fieldAlarmStatus" checked></label><label class="toggle"><span>Tank Capacity (max height)</span><input type="checkbox" id="fieldCapacity"></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Summary Section</span></div><div class="toggle-group"><label class="toggle"><span>Include Fleet Summary</span><input type="checkbox" id="includeFleetSummary" checked></label><label class="toggle"><span>Total Sensors Monitored</span><input type="checkbox" id="summaryTotalSensors" checked></label><label class="toggle"><span>Sensors with Active Alarms</span><input type="checkbox" id="summaryActiveAlarms" checked></label><label class="toggle"><span>Total Deliveries (24h)</span><input type="checkbox" id="summaryDeliveries" checked></label><label class="toggle"><span>Stale Readings Warning</span><input type="checkbox" id="summaryStaleWarning" checked></label></div></div><div class="format-section"><div class="format-header"><span class="format-title">Formatting Options</span></div><div class="form-grid"><label class="field"><span>Number Format</span><select id="numberFormat"><option value="decimal">Decimal (12.5)</option><option value="fraction">Fraction (12 1/2)</option></select></label><label class="field"><span>Date Format</span><select id="dateFormat"><option value="us">US (MM/DD/YYYY)</option><option value="iso">ISO (YYYY-MM-DD)</option><option value="eu">EU (DD/MM/YYYY)</option></select></label><label class="field"><span>Change Indicator Style</span><select id="changeStyle"><option value="arrow">Arrows (&#x2191; &#x2193;)</option><option value="plusminus">Plus/Minus (+5.2 / -3.1)</option><option value="text">Text (increased/decreased)</option></select></label></div><div class="toggle-group" style="margin-top:12px"><label class="toggle"><span>Use Color Coding (HTML emails)</span><input type="checkbox" id="useColors" checked></label><label class="toggle"><span>Include Horizontal Dividers</span><input type="checkbox" id="useDividers" checked></label></div></div><div class="actions"><button type="submit">Save Format</button><button type="button" class="secondary" id="previewBtn">Preview Email</button><button type="button" class="secondary" id="resetBtn">Reset to Defaults</button><a class="pill secondary" href="/server-settings">Back to Settings</a></div></form></div><div class="card" id="previewCard" style="display:none"><h2>Email Preview</h2><div id="previewContent" class="preview-box"></div></div></main><div id="toast"></div><script>document.addEventListener('DOMContentLoaded',()=>{const token=localStorage.getItem('tankalarm_token');const _s=localStorage.getItem('tankalarm_session');if(!token||!_s){window.location.href='/login?redirect='+encodeURIComponent(window.location.pathname);return;}const _F=window.fetch;window.fetch=function(u,o){if(!o)o={};if(!o.headers)o.headers={};if(o.headers instanceof Headers)o.headers.set('X-Session',_s);else o.headers['X-Session']=_s;return _F.call(window,u,o).then(function(r){if(r.status===401){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}return r;});};async function _ckSess(){const sid=localStorage.getItem('tankalarm_session');if(!sid){window.location.href='/login?reason=expired';return;}try{const r=await fetch('/api/session/check');const d=await r.json();if(!d.valid){localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login?reason=expired';}}catch(e){}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)_ckSess();});setInterval(_ckSess,30000);const toast=document.getElementById('toast');const previewCard=document.getElementById('previewCard');const previewContent=document.getElementById('previewContent');function showToast(msg,isError){toast.textContent=msg;toast.style.background=isError?'#dc2626':'#0284c7';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500);}const fields=['emailSubject','companyName','includeDate','includeTime','includeServerName','groupBySite','showSiteSummary','showSiteCapacity','fieldSensorIndex','fieldSensorName','fieldContents','fieldLevelInches','fieldLevelPercent','fieldLevelChange','fieldDeliveryIndicator','fieldLastReading','fieldSensorMa','fieldAlarmStatus','fieldCapacity','includeFleetSummary','summaryTotalSensors','summaryActiveAlarms','summaryDeliveries','summaryStaleWarning','numberFormat','dateFormat','changeStyle','useColors','useDividers'];function getFormData(){const data={};fields.forEach(f=>{const el=document.getElementById(f);if(el.type==='checkbox')data[f]=el.checked;else data[f]=el.value;});return data;}function setFormData(data){fields.forEach(f=>{const el=document.getElementById(f);if(!el)return;if(el.type==='checkbox')el.checked=!!data[f];else if(data[f]!==undefined)el.value=data[f];});}async function loadFormat(){try{const res=await fetch('/api/email-format');if(!res.ok)throw new Error('Failed to load');const data=await res.json();setFormData(data);}catch(err){console.log('Using defaults');}}async function saveFormat(e){if(e)e.preventDefault();const data=getFormData();try{const res=await fetch('/api/email-format',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!res.ok)throw new Error('Failed to save');showToast('Format saved successfully');}catch(err){showToast(err.message,true);}}function generatePreview(){const d=getFormData();const dateStr=d.dateFormat==='iso'?new Date().toISOString().split('T')[0]:d.dateFormat==='eu'?new Date().toLocaleDateString('en-GB'):new Date().toLocaleDateString('en-US');let subject=d.emailSubject.replace('{date}',dateStr);let preview='Subject: '+subject+'\n\n';if(d.companyName)preview+=d.companyName+'\n';if(d.includeServerName)preview+='Server: TankAlarm-Server-01\n';if(d.includeDate)preview+='Date: '+dateStr+'\n';if(d.includeTime)preview+='Generated: '+new Date().toLocaleTimeString()+'\n';preview+='\n'+'-'.repeat(50)+'\n\n';const sites=[{name:'Site Alpha',sensors:[{num:1,name:'Main Tank',contents:'Diesel',level:85.5,change:12.3,alarm:false,capacity:120},{num:2,name:'Reserve',contents:'Diesel',level:45.2,change:-8.1,alarm:true,alarmType:'low',capacity:100}]},{name:'Site Beta',sensors:[{num:1,name:'Water Tank',contents:'Water',level:92.0,change:0,alarm:false,capacity:150}]}];if(d.groupBySite){sites.forEach(site=>{preview+='=== '+site.name+' ===\n';if(d.showSiteSummary){const totalChange=site.sensors.reduce((s,t)=>s+t.change,0);const arrow=d.changeStyle==='arrow'?(totalChange>0?'\u2191':'\u2193'):d.changeStyle==='plusminus'?(totalChange>0?'+':''):' ';preview+='Site Total Change: '+arrow+(d.numberFormat==='fraction'?Math.round(Math.abs(totalChange)):Math.abs(totalChange).toFixed(1))+' in\n';}if(d.showSiteCapacity){const totalCap=site.sensors.reduce((s,t)=>s+t.capacity,0);preview+='Total Capacity: '+totalCap+' in\n';}preview+='\n';site.sensors.forEach(t=>{let line='';if(d.fieldSensorIndex)line+='Tank #'+t.num+' ';if(d.fieldSensorName)line+=t.name+' ';if(d.fieldContents)line+='['+t.contents+'] ';preview+=line.trim()+'\n';let details='  ';if(d.fieldLevelInches)details+='Level: '+(d.numberFormat==='fraction'?Math.round(t.level):t.level.toFixed(1))+' in  ';if(d.fieldLevelPercent)details+=Math.round(t.level/t.capacity*100)+'%  ';if(d.fieldLevelChange&&t.change!==0){const arrow=d.changeStyle==='arrow'?(t.change>0?'\u2191':'\u2193'):d.changeStyle==='plusminus'?(t.change>0?'+':''): '';details+=arrow+Math.abs(t.change).toFixed(1)+' in  ';}if(d.fieldDeliveryIndicator&&t.change>5)details+='&#x1F4E6; DELIVERY  ';if(d.fieldAlarmStatus&&t.alarm)details+='&#x26A0;&#xFE0F; '+t.alarmType.toUpperCase()+' ALARM  ';if(d.fieldCapacity)details+='(Cap: '+t.capacity+' in)  ';preview+=details.trim()+'\n';if(d.fieldLastReading)preview+='  Last: '+new Date().toLocaleString()+'\n';if(d.fieldSensorMa)preview+='  Sensor: 12.45 mA\n';preview+='\n';});if(d.useDividers)preview+='-'.repeat(50)+'\n\n';});}if(d.includeFleetSummary){preview+='=== FLEET SUMMARY ===\n';if(d.summaryTotalSensors)preview+='Total Sensors: 3\n';if(d.summaryActiveAlarms)preview+='Active Alarms: 1\n';if(d.summaryDeliveries)preview+='Deliveries (24h): 1\n';if(d.summaryStaleWarning)preview+='Stale Readings: 0\n';}previewContent.textContent=preview;previewCard.style.display='block';previewCard.scrollIntoView({behavior:'smooth'});}document.getElementById('formatForm').addEventListener('submit',saveFormat);document.getElementById('previewBtn').addEventListener('click',generatePreview);document.getElementById('resetBtn').addEventListener('click',()=>{const defaults={emailSubject:'Daily Tank Summary - {date}',companyName:'',includeDate:true,includeTime:false,includeServerName:true,groupBySite:true,showSiteSummary:true,showSiteCapacity:false,fieldSensorIndex:true,fieldSensorName:true,fieldContents:true,fieldLevelInches:true,fieldLevelPercent:false,fieldLevelChange:true,fieldDeliveryIndicator:true,fieldLastReading:false,fieldSensorMa:false,fieldAlarmStatus:true,fieldCapacity:false,includeFleetSummary:true,summaryTotalSensors:true,summaryActiveAlarms:true,summaryDeliveries:true,summaryStaleWarning:true,numberFormat:'decimal',dateFormat:'us',changeStyle:'arrow',useColors:true,useDividers:true};setFormData(defaults);showToast('Reset to defaults');});loadFormat();});</script></body></html>)HTML";
@@ -4427,6 +4439,10 @@ static void createDefaultConfig(ServerConfig &cfg) {
   strlcpy(cfg.ftpUser, "", sizeof(cfg.ftpUser));
   strlcpy(cfg.ftpPass, "", sizeof(cfg.ftpPass));
   strlcpy(cfg.ftpPath, FTP_PATH_DEFAULT, sizeof(cfg.ftpPath));
+  cfg.ftpsEnabled = false;
+  cfg.ftpsTrustMode = 0;
+  cfg.ftpsFingerprint[0] = '\0';
+  cfg.ftpsTlsServerName[0] = '\0';
 }
 
 static void buildFtpCredentialKey(const char *productUid, const char *configPin, char *out, size_t outSize) {
@@ -4695,6 +4711,26 @@ static bool loadConfig(ServerConfig &cfg) {
     gConfigDirty = true;
   }
 
+  // FTPS fields (default: disabled, fingerprint mode, empty fingerprint/server name)
+  cfg.ftpsEnabled = ftpObj ? (ftpObj["ftpsEnabled"].is<bool>() ? ftpObj["ftpsEnabled"].as<bool>() : false) : false;
+  cfg.ftpsTrustMode = ftpObj ? (ftpObj["ftpsTrustMode"].is<uint8_t>() ? ftpObj["ftpsTrustMode"].as<uint8_t>() : 0) : 0;
+  const char *ftpsFingerprintObf = ftpObj ? ftpObj["ftpsFingerprintObf"].as<const char *>() : nullptr;
+  if (ftpsFingerprintObf && ftpsFingerprintObf[0] != '\0') {
+    if (!decodeFtpCredential(ftpsFingerprintObf, cfg.productUid, cfg.configPin, cfg.ftpsFingerprint, sizeof(cfg.ftpsFingerprint))) {
+      Serial.println(F("Failed to decode stored FTPS fingerprint"));
+      cfg.ftpsFingerprint[0] = '\0';
+    }
+  } else if (ftpObj && ftpObj["ftpsFingerprint"]) {
+    strlcpy(cfg.ftpsFingerprint, ftpObj["ftpsFingerprint"], sizeof(cfg.ftpsFingerprint));
+  } else {
+    cfg.ftpsFingerprint[0] = '\0';
+  }
+  if (ftpObj && ftpObj["ftpsTlsServerName"]) {
+    strlcpy(cfg.ftpsTlsServerName, ftpObj["ftpsTlsServerName"], sizeof(cfg.ftpsTlsServerName));
+  } else {
+    cfg.ftpsTlsServerName[0] = '\0';
+  }
+
   if (doc["staticIp"]) {
     JsonArrayConst ip = doc["staticIp"].as<JsonArrayConst>();
     if (ip.size() == 4) {
@@ -4734,8 +4770,10 @@ static bool saveConfig(const ServerConfig &cfg) {
   
   char ftpUserObf[80];
   char ftpPassObf[80];
+  char ftpsFingerprintObf[136];
   if (!encodeFtpCredential(cfg.ftpUser, cfg.productUid, cfg.configPin, ftpUserObf, sizeof(ftpUserObf)) ||
-      !encodeFtpCredential(cfg.ftpPass, cfg.productUid, cfg.configPin, ftpPassObf, sizeof(ftpPassObf))) {
+      !encodeFtpCredential(cfg.ftpPass, cfg.productUid, cfg.configPin, ftpPassObf, sizeof(ftpPassObf)) ||
+      !encodeFtpCredential(cfg.ftpsFingerprint, cfg.productUid, cfg.configPin, ftpsFingerprintObf, sizeof(ftpsFingerprintObf))) {
     Serial.println(F("Failed to obfuscate FTP credentials for storage"));
     return false;
   }
@@ -4776,6 +4814,14 @@ static bool saveConfig(const ServerConfig &cfg) {
     ftp["passObf"] = ftpPassObf;
   }
   ftp["path"] = cfg.ftpPath;
+  ftp["ftpsEnabled"] = cfg.ftpsEnabled;
+  ftp["ftpsTrustMode"] = cfg.ftpsTrustMode;
+  if (ftpsFingerprintObf[0] != '\0') {
+    ftp["ftpsFingerprintObf"] = ftpsFingerprintObf;
+  }
+  if (cfg.ftpsTlsServerName[0] != '\0') {
+    ftp["ftpsTlsServerName"] = cfg.ftpsTlsServerName;
+  }
 
   JsonArray ip = doc["staticIp"].to<JsonArray>();
   ip.add(gStaticIp[0]);
@@ -5273,6 +5319,148 @@ static void ftpQuit(FtpSession &session) {
   }
 }
 
+static void serviceTransferWatchdog() {
+#ifdef TANKALARM_WATCHDOG_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    mbedWatchdog.kick();
+  #else
+    IWatchdog.reload();
+  #endif
+#endif
+}
+
+static const char *ftpsErrorName(FtpsError error) {
+  switch (error) {
+    case FtpsError::None: return "None";
+    case FtpsError::NetworkNotInitialized: return "NetworkNotInitialized";
+    case FtpsError::BannerReadFailed: return "BannerReadFailed";
+    case FtpsError::PbszRejected: return "PbszRejected";
+    case FtpsError::ProtPRejected: return "ProtPRejected";
+    case FtpsError::TypeRejected: return "TypeRejected";
+    case FtpsError::PasvParseFailed: return "PasvParseFailed";
+    case FtpsError::DataConnectionFailed: return "DataConnectionFailed";
+    case FtpsError::QuitFailed: return "QuitFailed";
+    case FtpsError::AuthTlsRejected: return "AuthTlsRejected";
+    case FtpsError::ControlTlsHandshakeFailed: return "ControlTlsHandshakeFailed";
+    case FtpsError::CertValidationFailed: return "CertValidationFailed";
+    case FtpsError::DataTlsHandshakeFailed: return "DataTlsHandshakeFailed";
+    case FtpsError::SessionReuseRequired: return "SessionReuseRequired";
+    case FtpsError::LoginRejected: return "LoginRejected";
+    case FtpsError::TransferFailed: return "TransferFailed";
+    case FtpsError::FinalReplyFailed: return "FinalReplyFailed";
+    case FtpsError::PassiveModeRejected: return "PassiveModeRejected";
+    case FtpsError::ConnectionFailed: return "ConnectionFailed";
+    case FtpsError::DirectoryCreateFailed: return "DirectoryCreateFailed";
+    case FtpsError::SizeQueryFailed: return "SizeQueryFailed";
+    default: return "Unknown";
+  }
+}
+
+static void ftpsTraceCallback(const char *phase) {
+#ifdef DEBUG_MODE
+  Serial.print(F("FTPS phase: "));
+  Serial.println(phase ? phase : "?");
+#else
+  (void)phase;
+#endif
+}
+
+static void ftpsAppendDiagnostics(char *error, size_t errorSize) {
+  if (!error || errorSize == 0) {
+    return;
+  }
+  char suffix[96];
+  snprintf(suffix, sizeof(suffix), " [phase=%s err=%s]",
+           gFtpsClient.lastPhase(), ftpsErrorName(gFtpsClient.lastError()));
+  size_t used = strlen(error);
+  if (used + 1 < errorSize) {
+    snprintf(error + used, errorSize - used, "%s", suffix);
+  }
+}
+
+static bool ftpsConnectAndLogin(char *error, size_t errorSize) {
+  if (!gConfig.ftpEnabled || strlen(gConfig.ftpHost) == 0) {
+    snprintf(error, errorSize, "FTPS disabled or host missing");
+    return false;
+  }
+
+  if (gConfig.ftpsTrustMode > 1) {
+    snprintf(error, errorSize, "FTPS trust mode invalid");
+    return false;
+  }
+
+  NetworkInterface *network = Ethernet.getNetwork();
+  if (network == nullptr) {
+    snprintf(error, errorSize, "FTPS network unavailable");
+    return false;
+  }
+
+  if (!gFtpsClient.begin(network, error, errorSize)) {
+    ftpsAppendDiagnostics(error, errorSize);
+    return false;
+  }
+
+  FtpsServerConfig serverConfig;
+  serverConfig.host = gConfig.ftpHost;
+  serverConfig.port = gConfig.ftpPort;
+  serverConfig.user = (gConfig.ftpUser[0] != '\0') ? gConfig.ftpUser : "anonymous";
+  serverConfig.password = (gConfig.ftpPass[0] != '\0') ? gConfig.ftpPass : "guest";
+  serverConfig.tlsServerName = (gConfig.ftpsTlsServerName[0] != '\0') ? gConfig.ftpsTlsServerName : nullptr;
+  serverConfig.trustMode = (gConfig.ftpsTrustMode == 1) ? FtpsTrustMode::ImportedCert : FtpsTrustMode::Fingerprint;
+  serverConfig.fingerprint = (gConfig.ftpsFingerprint[0] != '\0') ? gConfig.ftpsFingerprint : nullptr;
+  serverConfig.rootCaPem = nullptr;
+  serverConfig.validateServerCert = true;
+
+  if (serverConfig.trustMode == FtpsTrustMode::ImportedCert) {
+    snprintf(error, errorSize, "FTPS imported cert mode not configured");
+    return false;
+  }
+  if (serverConfig.fingerprint == nullptr || serverConfig.fingerprint[0] == '\0') {
+    snprintf(error, errorSize, "FTPS fingerprint required");
+    return false;
+  }
+
+  gFtpsClient.setTraceCallback(ftpsTraceCallback);
+  if (!gFtpsClient.connect(serverConfig, error, errorSize)) {
+    ftpsAppendDiagnostics(error, errorSize);
+    return false;
+  }
+  return true;
+}
+
+static bool ftpsStoreBuffer(const char *remoteFile, const uint8_t *data, size_t len, char *error, size_t errorSize) {
+  if (!data || len == 0) {
+    snprintf(error, errorSize, "No data to upload");
+    return false;
+  }
+  serviceTransferWatchdog();
+  if (!gFtpsClient.store(remoteFile, data, len, error, errorSize)) {
+    ftpsAppendDiagnostics(error, errorSize);
+    return false;
+  }
+  serviceTransferWatchdog();
+  return true;
+}
+
+static bool ftpsRetrieveBuffer(const char *remoteFile, char *out, size_t outMax, size_t &outLen, char *error, size_t errorSize) {
+  if (!out || outMax < 2) {
+    snprintf(error, errorSize, "Buffer too small");
+    return false;
+  }
+  serviceTransferWatchdog();
+  if (!gFtpsClient.retrieve(remoteFile, (uint8_t *)out, outMax - 1, outLen, error, errorSize)) {
+    ftpsAppendDiagnostics(error, errorSize);
+    return false;
+  }
+  out[outLen] = '\0';
+  serviceTransferWatchdog();
+  return true;
+}
+
+static void ftpsQuit() {
+  gFtpsClient.quit();
+}
+
 // ============================================================================
 // National Weather Service API Integration
 // ============================================================================
@@ -5586,7 +5774,7 @@ static float getCachedTemperature(const char *clientUid) {
 }
 
 // Upload per-client configs (from in-memory snapshots) as individual files plus a manifest.
-static bool ftpBackupClientConfigs(FtpSession &session, char *error, size_t errorSize, uint8_t &uploadedFiles) {
+static bool ftpBackupClientConfigs(FtpSession &session, bool useFtps, char *error, size_t errorSize, uint8_t &uploadedFiles) {
   uploadedFiles = 0;
   if (gClientConfigCount == 0) {
     return true;  // Nothing to do
@@ -5605,7 +5793,9 @@ static bool ftpBackupClientConfigs(FtpSession &session, char *error, size_t erro
 
   char manifestPath[192];
   buildRemotePath(manifestPath, sizeof(manifestPath), "clients_manifest.txt");
-  if (!ftpStoreBuffer(session, manifestPath, (const uint8_t *)manifest, strlen(manifest), error, errorSize)) {
+  serviceTransferWatchdog();
+  if ((useFtps && !ftpsStoreBuffer(manifestPath, (const uint8_t *)manifest, strlen(manifest), error, errorSize)) ||
+      (!useFtps && !ftpStoreBuffer(session, manifestPath, (const uint8_t *)manifest, strlen(manifest), error, errorSize))) {
     return false;
   }
   uploadedFiles++;
@@ -5624,7 +5814,9 @@ static bool ftpBackupClientConfigs(FtpSession &session, char *error, size_t erro
     snprintf(fileName, sizeof(fileName), "clients/%s.json", snap.uid);
     buildRemotePath(remotePath, sizeof(remotePath), fileName);
 
-    if (ftpStoreBuffer(session, remotePath, (const uint8_t *)snap.payload, len, error, errorSize)) {
+    serviceTransferWatchdog();
+    if ((useFtps && ftpsStoreBuffer(remotePath, (const uint8_t *)snap.payload, len, error, errorSize)) ||
+        (!useFtps && ftpStoreBuffer(session, remotePath, (const uint8_t *)snap.payload, len, error, errorSize))) {
       uploadedFiles++;
       Serial.print(F("FTP backup client config: "));
       Serial.println(remotePath);
@@ -5635,7 +5827,7 @@ static bool ftpBackupClientConfigs(FtpSession &session, char *error, size_t erro
 }
 
 // Download per-client configs if present and rebuild the cache file locally.
-static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t errorSize, uint8_t &restoredFiles) {
+static bool ftpRestoreClientConfigs(FtpSession &session, bool useFtps, char *error, size_t errorSize, uint8_t &restoredFiles) {
   restoredFiles = 0;
 
   char manifestPath[192];
@@ -5643,7 +5835,9 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
 
   char manifest[2048];
   size_t manifestLen = 0;
-  if (!ftpRetrieveBuffer(session, manifestPath, manifest, sizeof(manifest), manifestLen, error, errorSize)) {
+  serviceTransferWatchdog();
+  if ((useFtps && !ftpsRetrieveBuffer(manifestPath, manifest, sizeof(manifest), manifestLen, error, errorSize)) ||
+      (!useFtps && !ftpRetrieveBuffer(session, manifestPath, manifest, sizeof(manifest), manifestLen, error, errorSize))) {
     // Manifest not found; treat as optional and succeed silently.
     return true;
   }
@@ -5689,7 +5883,9 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
         // Use 4KB buffer to accommodate larger client configs (was 1KB, risked truncation)
         char cfg[4096];
         size_t cfgLen = 0;
-        if (ftpRetrieveBuffer(session, remotePath, cfg, sizeof(cfg), cfgLen, error, errorSize)) {
+        serviceTransferWatchdog();
+        if ((useFtps && ftpsRetrieveBuffer(remotePath, cfg, sizeof(cfg), cfgLen, error, errorSize)) ||
+          (!useFtps && ftpRetrieveBuffer(session, remotePath, cfg, sizeof(cfg), cfgLen, error, errorSize))) {
             // Trim cfg
             char *cStart = cfg;
             while(*cStart && isspace(*cStart)) cStart++;
@@ -5733,9 +5929,8 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
 
 // FTP backup with detailed result reporting
 //
-// SECURITY WARNING: This function transmits sensitive configuration data (including FTP 
-// credentials, SMS numbers, and email addresses) over unencrypted FTP, which is vulnerable 
-// to interception by attackers on the same network or in a man-in-the-middle position.
+// SECURITY WARNING: If FTPS is disabled, this function transmits sensitive
+// configuration data over unencrypted FTP, which is vulnerable to interception.
 //
 // RECOMMENDED SECURITY MEASURES:
 // - Use FTP only on physically isolated/trusted networks (e.g., dedicated management VLAN)
@@ -5744,8 +5939,7 @@ static bool ftpRestoreClientConfigs(FtpSession &session, char *error, size_t err
 // - Rotate FTP credentials regularly and use strong passwords
 // - Monitor FTP server logs for unauthorized access attempts
 //
-// FUTURE ENHANCEMENT: Migrate to SFTP/FTPS or HTTPS-based backup (planned for future release)
-// See README.md roadmap for timeline on secure transport implementation.
+// FTPS mode is supported through gConfig.ftpsEnabled.
 static FtpResult performFtpBackupDetailed() {
   FtpResult result;
   
@@ -5754,31 +5948,20 @@ static FtpResult performFtpBackupDetailed() {
     return result;
   }
 
-  // Kick watchdog before detailed operation
-  #ifdef TANKALARM_WATCHDOG_AVAILABLE
-    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-      mbedWatchdog.kick();
-    #else
-      IWatchdog.reload();
-    #endif
-  #endif
+  serviceTransferWatchdog();
 
+  const bool useFtps = gConfig.ftpsEnabled;
   FtpSession session;
   char err[128];
-  if (!ftpConnectAndLogin(session, err, sizeof(err))) {
+  bool connected = useFtps ? ftpsConnectAndLogin(err, sizeof(err))
+                           : ftpConnectAndLogin(session, err, sizeof(err));
+  if (!connected) {
     strlcpy(result.errorMessage, err, sizeof(result.errorMessage));
     return result;
   }
 
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
-    // Keep watchdog alive during file processing
-    #ifdef TANKALARM_WATCHDOG_AVAILABLE
-      #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-        mbedWatchdog.kick();
-      #else
-        IWatchdog.reload();
-      #endif
-    #endif
+    serviceTransferWatchdog();
 
     const BackupFileEntry &entry = kBackupFiles[i];
     char contents[2048];
@@ -5789,7 +5972,10 @@ static FtpResult performFtpBackupDetailed() {
 
     char remotePath[192];
     buildRemotePath(remotePath, sizeof(remotePath), entry.remoteName);
-    if (ftpStoreBuffer(session, remotePath, (const uint8_t *)contents, len, err, sizeof(err))) {
+    bool stored = useFtps
+                    ? ftpsStoreBuffer(remotePath, (const uint8_t *)contents, len, err, sizeof(err))
+                    : ftpStoreBuffer(session, remotePath, (const uint8_t *)contents, len, err, sizeof(err));
+    if (stored) {
       result.filesProcessed++;
       Serial.print(F("FTP backup: "));
       Serial.println(remotePath);
@@ -5803,21 +5989,16 @@ static FtpResult performFtpBackupDetailed() {
 
   // Also back up per-client cached configs (manifest + per-uid JSON)
   uint8_t clientUploaded = 0;
-  // Note: ftpBackupClientConfigs should also ideally kick watchdog internally if processing many files
-  if (ftpBackupClientConfigs(session, err, sizeof(err), clientUploaded)) {
+  if (ftpBackupClientConfigs(session, useFtps, err, sizeof(err), clientUploaded)) {
     result.filesProcessed += clientUploaded;
   }
 
-  ftpQuit(session);
-  
-  // Final watchdog kick after operation
-  #ifdef TANKALARM_WATCHDOG_AVAILABLE
-    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-      mbedWatchdog.kick();
-    #else
-      IWatchdog.reload();
-    #endif
-  #endif
+  if (useFtps) {
+    ftpsQuit();
+  } else {
+    ftpQuit(session);
+  }
+  serviceTransferWatchdog();
 
   result.success = (result.filesProcessed > 0);
   return result;
@@ -5834,9 +6015,8 @@ static bool performFtpBackup(char *errorOut, size_t errorSize) {
 
 // FTP restore with detailed result reporting
 // 
-// SECURITY WARNING: This function transmits sensitive configuration data (including FTP 
-// credentials, SMS numbers, and email addresses) over unencrypted FTP, which is vulnerable 
-// to interception by attackers on the same network or in a man-in-the-middle position.
+// SECURITY WARNING: If FTPS is disabled, this function transmits sensitive
+// configuration data over unencrypted FTP, which is vulnerable to interception.
 //
 // RECOMMENDED SECURITY MEASURES:
 // - Use FTP only on physically isolated/trusted networks (e.g., dedicated management VLAN)
@@ -5845,8 +6025,7 @@ static bool performFtpBackup(char *errorOut, size_t errorSize) {
 // - Rotate FTP credentials regularly and use strong passwords
 // - Monitor FTP server logs for unauthorized access attempts
 //
-// FUTURE ENHANCEMENT: Migrate to SFTP/FTPS or HTTPS-based backup (planned for future release)
-// See README.md roadmap for timeline on secure transport implementation.
+// FTPS mode is supported through gConfig.ftpsEnabled.
 static FtpResult performFtpRestoreDetailed() {
   FtpResult result;
   
@@ -5855,31 +6034,20 @@ static FtpResult performFtpRestoreDetailed() {
     return result;
   }
 
-  // Kick watchdog before detailed operation
-  #ifdef TANKALARM_WATCHDOG_AVAILABLE
-    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-      mbedWatchdog.kick();
-    #else
-      IWatchdog.reload();
-    #endif
-  #endif
+  serviceTransferWatchdog();
 
+  const bool useFtps = gConfig.ftpsEnabled;
   FtpSession session;
   char err[128];
-  if (!ftpConnectAndLogin(session, err, sizeof(err))) {
+  bool connected = useFtps ? ftpsConnectAndLogin(err, sizeof(err))
+                           : ftpConnectAndLogin(session, err, sizeof(err));
+  if (!connected) {
     strlcpy(result.errorMessage, err, sizeof(result.errorMessage));
     return result;
   }
 
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
-    // Keep watchdog alive during file processing
-    #ifdef TANKALARM_WATCHDOG_AVAILABLE
-      #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-        mbedWatchdog.kick();
-      #else
-        IWatchdog.reload();
-      #endif
-    #endif
+    serviceTransferWatchdog();
 
     const BackupFileEntry &entry = kBackupFiles[i];
     char contents[2048];
@@ -5887,7 +6055,10 @@ static FtpResult performFtpRestoreDetailed() {
 
     char remotePath[192];
     buildRemotePath(remotePath, sizeof(remotePath), entry.remoteName);
-    if (!ftpRetrieveBuffer(session, remotePath, contents, sizeof(contents), len, err, sizeof(err))) {
+    bool retrieved = useFtps
+                       ? ftpsRetrieveBuffer(remotePath, contents, sizeof(contents), len, err, sizeof(err))
+                       : ftpRetrieveBuffer(session, remotePath, contents, sizeof(contents), len, err, sizeof(err));
+    if (!retrieved) {
       result.filesFailed++;
       result.addFailedFile(entry.remoteName);
       continue;
@@ -5905,20 +6076,16 @@ static FtpResult performFtpRestoreDetailed() {
 
   // Attempt to restore per-client cached configs (optional)
   uint8_t clientRestored = 0;
-  if (ftpRestoreClientConfigs(session, err, sizeof(err), clientRestored)) {
+  if (ftpRestoreClientConfigs(session, useFtps, err, sizeof(err), clientRestored)) {
     result.filesProcessed += clientRestored;
   }
 
-  ftpQuit(session);
-
-  // Final watchdog kick after operation
-  #ifdef TANKALARM_WATCHDOG_AVAILABLE
-    #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
-      mbedWatchdog.kick();
-    #else
-      IWatchdog.reload();
-    #endif
-  #endif
+  if (useFtps) {
+    ftpsQuit();
+  } else {
+    ftpQuit(session);
+  }
+  serviceTransferWatchdog();
 
   result.success = (result.filesProcessed > 0);
   if (!result.success) {
@@ -6337,9 +6504,12 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
   serializeJson(doc, jsonOut);
   
   // Upload to FTP
+  const bool useFtps = gConfig.ftpsEnabled;
   FtpSession session;
   char err[128];
-  if (!ftpConnectAndLogin(session, err, sizeof(err))) {
+  bool connected = useFtps ? ftpsConnectAndLogin(err, sizeof(err))
+                           : ftpConnectAndLogin(session, err, sizeof(err));
+  if (!connected) {
     Serial.print(F("FTP archive failed: "));
     Serial.println(err);
     return false;
@@ -6350,14 +6520,25 @@ static bool archiveMonthToFtp(uint16_t year, uint8_t month) {
   snprintf(remotePath, sizeof(remotePath), "%s/history/%04d%02d_history.json", 
            gConfig.ftpPath, year, month);
   
-  if (!ftpStoreBuffer(session, remotePath, (const uint8_t *)jsonOut.c_str(), jsonOut.length(), err, sizeof(err))) {
+  bool stored = useFtps
+                  ? ftpsStoreBuffer(remotePath, (const uint8_t *)jsonOut.c_str(), jsonOut.length(), err, sizeof(err))
+                  : ftpStoreBuffer(session, remotePath, (const uint8_t *)jsonOut.c_str(), jsonOut.length(), err, sizeof(err));
+  if (!stored) {
     Serial.print(F("FTP store failed: "));
     Serial.println(err);
-    ftpQuit(session);
+    if (useFtps) {
+      ftpsQuit();
+    } else {
+      ftpQuit(session);
+    }
     return false;
   }
   
-  ftpQuit(session);
+  if (useFtps) {
+    ftpsQuit();
+  } else {
+    ftpQuit(session);
+  }
   
   gHistorySettings.lastFtpSyncEpoch = gLastSyncedEpoch > 0.0 ? gLastSyncedEpoch : 0.0;
   saveHistorySettings();
@@ -6374,9 +6555,12 @@ static bool loadArchivedMonth(uint16_t year, uint8_t month, JsonDocument &doc) {
     return false;
   }
   
+  const bool useFtps = gConfig.ftpsEnabled;
   FtpSession session;
   char err[128];
-  if (!ftpConnectAndLogin(session, err, sizeof(err))) {
+  bool connected = useFtps ? ftpsConnectAndLogin(err, sizeof(err))
+                           : ftpConnectAndLogin(session, err, sizeof(err));
+  if (!connected) {
     return false;
   }
   
@@ -6387,12 +6571,23 @@ static bool loadArchivedMonth(uint16_t year, uint8_t month, JsonDocument &doc) {
   // Use static buffer to avoid 16KB stack allocation (Mbed OS stack is only 4-8KB)
   static char buffer[16384];
   size_t len = 0;
-  if (!ftpRetrieveBuffer(session, remotePath, buffer, sizeof(buffer), len, err, sizeof(err))) {
-    ftpQuit(session);
+  bool retrieved = useFtps
+                     ? ftpsRetrieveBuffer(remotePath, buffer, sizeof(buffer), len, err, sizeof(err))
+                     : ftpRetrieveBuffer(session, remotePath, buffer, sizeof(buffer), len, err, sizeof(err));
+  if (!retrieved) {
+    if (useFtps) {
+      ftpsQuit();
+    } else {
+      ftpQuit(session);
+    }
     return false;
   }
   
-  ftpQuit(session);
+  if (useFtps) {
+    ftpsQuit();
+  } else {
+    ftpQuit(session);
+  }
   
   // Parse JSON
   if (deserializeJson(doc, buffer, len) != DeserializationError::Ok) {
@@ -7499,7 +7694,12 @@ static void serveServerSettingsPage(EthernetClient &client) {
 
   const int insertAt = body.lastIndexOf(F("</body>"));
   if (insertAt >= 0) {
-    body.insert(insertAt, injection);
+    String merged;
+    merged.reserve(body.length() + injection.length() + 1);
+    merged = body.substring(0, insertAt);
+    merged += injection;
+    merged += body.substring(insertAt);
+    body = merged;
   } else {
     body += injection;
   }
@@ -8482,6 +8682,25 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
   serverObj["ps"] = gPaused;
 
   JsonObject ftpObj = serverObj["ftp"].to<JsonObject>();
+  ftpObj["enabled"] = gConfig.ftpEnabled;
+  ftpObj["passive"] = gConfig.ftpPassive;
+  ftpObj["backupOnChange"] = gConfig.ftpBackupOnChange;
+  ftpObj["restoreOnBoot"] = gConfig.ftpRestoreOnBoot;
+  ftpObj["port"] = gConfig.ftpPort;
+  ftpObj["host"] = gConfig.ftpHost;
+  ftpObj["user"] = gConfig.ftpUser;
+  ftpObj["path"] = gConfig.ftpPath;
+  ftpObj["passwordSet"] = (gConfig.ftpPass[0] != '\0');
+  ftpObj["ftpsEnabled"] = gConfig.ftpsEnabled;
+  ftpObj["ftpsTrustMode"] = gConfig.ftpsTrustMode;
+  if (gConfig.ftpsFingerprint[0] != '\0') {
+    ftpObj["ftpsFingerprint"] = gConfig.ftpsFingerprint;
+  }
+  if (gConfig.ftpsTlsServerName[0] != '\0') {
+    ftpObj["ftpsTlsServerName"] = gConfig.ftpsTlsServerName;
+  }
+
+  // Legacy abbreviated keys retained for compatibility with old consumers.
   ftpObj["en"] = gConfig.ftpEnabled;
   ftpObj["pas"] = gConfig.ftpPassive;
   ftpObj["boc"] = gConfig.ftpBackupOnChange;
@@ -8491,6 +8710,14 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
   ftpObj["usr"] = gConfig.ftpUser;
   ftpObj["pth"] = gConfig.ftpPath;
   ftpObj["pset"] = (gConfig.ftpPass[0] != '\0');
+  ftpObj["ftps"] = gConfig.ftpsEnabled;
+  ftpObj["tm"] = gConfig.ftpsTrustMode;
+  if (gConfig.ftpsFingerprint[0] != '\0') {
+    ftpObj["fp"] = gConfig.ftpsFingerprint;
+  }
+  if (gConfig.ftpsTlsServerName[0] != '\0') {
+    ftpObj["tsn"] = gConfig.ftpsTlsServerName;
+  }
 
   doc["si"] = gServerUid;
   doc["nde"] = gNextDailyEmailEpoch;
@@ -8800,6 +9027,19 @@ static void handleConfigPost(EthernetClient &client, const String &body) {
       }
       if (ftpObj.containsKey("path")) {
         strlcpy(gConfig.ftpPath, ftpObj["path"], sizeof(gConfig.ftpPath));
+      }
+      if (ftpObj.containsKey("ftpsEnabled")) {
+        gConfig.ftpsEnabled = ftpObj["ftpsEnabled"].as<bool>();
+      }
+      if (ftpObj.containsKey("ftpsTrustMode")) {
+        uint8_t mode = ftpObj["ftpsTrustMode"].as<uint8_t>();
+        gConfig.ftpsTrustMode = (mode <= 1) ? mode : 0;
+      }
+      if (ftpObj.containsKey("ftpsFingerprint")) {
+        strlcpy(gConfig.ftpsFingerprint, ftpObj["ftpsFingerprint"] | "", sizeof(gConfig.ftpsFingerprint));
+      }
+      if (ftpObj.containsKey("ftpsTlsServerName")) {
+        strlcpy(gConfig.ftpsTlsServerName, ftpObj["ftpsTlsServerName"] | "", sizeof(gConfig.ftpsTlsServerName));
       }
     }
     gConfigDirty = true;
@@ -12141,18 +12381,29 @@ static bool archiveClientToFtp(const char *clientUid) {
   snprintf(remotePath, sizeof(remotePath), "%s/%s/archived_clients/%s_%s-%s_%s.json",
            base, uid, safeSite, startYM, endYM, uidSuffix);
 
+  const bool useFtps = gConfig.ftpsEnabled;
   FtpSession session;
   char err[128];
-  if (!ftpConnectAndLogin(session, err, sizeof(err))) {
+  bool connected = useFtps ? ftpsConnectAndLogin(err, sizeof(err))
+                           : ftpConnectAndLogin(session, err, sizeof(err));
+  if (!connected) {
     Serial.print(F("FTP archive client failed (login): "));
     Serial.println(err);
     return false;
   }
 
-  bool ok = ftpStoreBuffer(session, remotePath,
-                           (const uint8_t *)jsonOut.c_str(), jsonOut.length(),
-                           err, sizeof(err));
-  ftpQuit(session);
+  bool ok = useFtps
+              ? ftpsStoreBuffer(remotePath,
+                                (const uint8_t *)jsonOut.c_str(), jsonOut.length(),
+                                err, sizeof(err))
+              : ftpStoreBuffer(session, remotePath,
+                               (const uint8_t *)jsonOut.c_str(), jsonOut.length(),
+                               err, sizeof(err));
+  if (useFtps) {
+    ftpsQuit();
+  } else {
+    ftpQuit(session);
+  }
 
   if (ok) {
     char detail[128];
@@ -13948,6 +14199,19 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
     }
     if (ftpObj.containsKey("path")) {
       strlcpy(gConfig.ftpPath, ftpObj["path"] | "/tankalarm/server", sizeof(gConfig.ftpPath));
+    }
+    if (ftpObj.containsKey("ftpsEnabled")) {
+      gConfig.ftpsEnabled = ftpObj["ftpsEnabled"] | false;
+    }
+    if (ftpObj.containsKey("ftpsTrustMode")) {
+      uint8_t mode = ftpObj["ftpsTrustMode"] | 0;
+      gConfig.ftpsTrustMode = (mode <= 1) ? mode : 0;
+    }
+    if (ftpObj.containsKey("ftpsFingerprint")) {
+      strlcpy(gConfig.ftpsFingerprint, ftpObj["ftpsFingerprint"] | "", sizeof(gConfig.ftpsFingerprint));
+    }
+    if (ftpObj.containsKey("ftpsTlsServerName")) {
+      strlcpy(gConfig.ftpsTlsServerName, ftpObj["ftpsTlsServerName"] | "", sizeof(gConfig.ftpsTlsServerName));
     }
   }
 
