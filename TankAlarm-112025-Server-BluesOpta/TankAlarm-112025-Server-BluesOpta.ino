@@ -203,6 +203,26 @@
 #define FTP_MAX_FILE_BYTES 24576UL
 #endif
 
+// Diagnostic switch: when enabled, skip watchdog kicks only inside the
+// ftp-backup critical path to help distinguish watchdog resets from faults.
+#ifndef FTP_BACKUP_DISABLE_WATCHDOG_KICK_DIAG
+#define FTP_BACKUP_DISABLE_WATCHDOG_KICK_DIAG 0
+#endif
+
+#ifndef FTP_BACKUP_MARKER_PATH
+#define FTP_BACKUP_MARKER_PATH "/ftp_backup_marker.txt"
+#endif
+
+// Diagnostic switch: when enabled for FTPS backups, reconnect for each file
+// upload so we can test whether control-session reuse triggers the reset.
+#ifndef FTP_BACKUP_FTPS_RECONNECT_PER_FILE_DIAG
+#define FTP_BACKUP_FTPS_RECONNECT_PER_FILE_DIAG 0
+#endif
+
+#ifndef FTP_BACKUP_FORCE_PLAIN_FTP_DIAG
+#define FTP_BACKUP_FORCE_PLAIN_FTP_DIAG 0
+#endif
+
 #ifndef MAX_CLIENT_CONFIG_SNAPSHOTS
 #define MAX_CLIENT_CONFIG_SNAPSHOTS 20
 #endif
@@ -734,6 +754,7 @@ static bool ftpsConnectAndLogin(char *error, size_t errorSize);
 static bool ftpsStoreBuffer(const char *remoteFile, const uint8_t *data, size_t len, char *error, size_t errorSize);
 static bool ftpsRetrieveBuffer(const char *remoteFile, char *out, size_t outMax, size_t &outLen, char *error, size_t errorSize);
 static void ftpsQuit();
+static void ftpsProgressKick();
 static bool ftpBackupClientConfigs(FtpSession &session, bool useFtps, char *error, size_t errorSize, uint8_t &uploadedFiles);
 static bool ftpRestoreClientConfigs(FtpSession &session, bool useFtps, char *error, size_t errorSize, uint8_t &restoredFiles);
 static FtpResult performFtpBackupDetailed();
@@ -2020,6 +2041,10 @@ static void handleConfigPost(EthernetClient &client, const String &body);
 static void handlePausePost(EthernetClient &client, const String &body);
 static void handleFtpBackupPost(EthernetClient &client, const String &body);
 static void handleFtpRestorePost(EthernetClient &client, const String &body);
+static void handleFtpBackupStatusGet(EthernetClient &client);
+static bool readFtpBackupMarker(char *out, size_t outSize);
+static void writeFtpBackupMarker(const char *stage);
+static void clearFtpBackupMarker();
 // Enum definitions
 enum class SerialRequestResult : uint8_t {
   Sent = 0,
@@ -4483,8 +4508,12 @@ static bool encodeFtpCredential(const char *plainText, const char *productUid, c
     return true;
   }
 
+  // Must be large enough for the longest obfuscated field: the 64-char
+  // SHA-256 FTPS fingerprint plus the 4-char "TA1:" prefix + NUL (69 bytes).
+  // Bumping from the legacy 40-byte size prevents silent saveConfig failures
+  // when an FTPS fingerprint is configured.
   static const char kPrefix[] = "TA1:";
-  char payload[40];
+  char payload[96];
   int payloadLen = snprintf(payload, sizeof(payload), "%s%s", kPrefix, plainText);
   if (payloadLen <= 0 || (size_t)payloadLen >= sizeof(payload)) {
     return false;
@@ -4521,8 +4550,10 @@ static bool decodeFtpCredential(const char *encoded, const char *productUid, con
     return false;
   }
 
+  // Must match the encode-side buffer size so a 64-char FTPS fingerprint
+  // round-trips successfully (64 + "TA1:" + NUL).
   static const char kPrefix[] = "TA1:";
-  char payload[40];
+  char payload[96];
   size_t payloadLen = encodedLen / 2U;
   if (payloadLen <= strlen(kPrefix) || payloadLen >= sizeof(payload)) {
     return false;
@@ -4770,7 +4801,10 @@ static bool saveConfig(const ServerConfig &cfg) {
   
   char ftpUserObf[80];
   char ftpPassObf[80];
-  char ftpsFingerprintObf[136];
+  // Must hold 2*(strlen("TA1:") + 64) + 1 = 137 bytes of hex for a full
+  // SHA-256 fingerprint; previous 136-byte size was one byte short and
+  // caused encodeFtpCredential() to return false, failing saveConfig().
+  char ftpsFingerprintObf[160];
   if (!encodeFtpCredential(cfg.ftpUser, cfg.productUid, cfg.configPin, ftpUserObf, sizeof(ftpUserObf)) ||
       !encodeFtpCredential(cfg.ftpPass, cfg.productUid, cfg.configPin, ftpPassObf, sizeof(ftpPassObf)) ||
       !encodeFtpCredential(cfg.ftpsFingerprint, cfg.productUid, cfg.configPin, ftpsFingerprintObf, sizeof(ftpsFingerprintObf))) {
@@ -5006,6 +5040,10 @@ static bool readFileToBuffer(const char *relativePath, char *out, size_t outMax,
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
   FILE *file = fopen(fullPath, "rb");
   if (!file) {
+    Serial.print(F("readFileToBuffer: fopen failed for "));
+    Serial.print(fullPath);
+    Serial.print(F(" errno="));
+    Serial.println(errno);
     return false;
   }
 
@@ -5206,11 +5244,25 @@ static bool ftpEnterPassive(FtpSession &session, IPAddress &dataHost, uint16_t &
   return true;
 }
 
-static void buildRemotePath(char *out, size_t outLen, const char *fileName) {
+// Return the per-server remote base directory.
+// Replaces ':' with '_' in the server UID so the path is valid on both Windows
+// FTP servers (where ':' is reserved) and Linux.
+static void buildRemoteBaseDir(char *out, size_t outLen) {
   const char *base = (strlen(gConfig.ftpPath) > 0) ? gConfig.ftpPath : FTP_PATH_DEFAULT;
   const char *uid = (strlen(gServerUid) > 0) ? gServerUid : "server";
   bool baseHasSlash = base[strlen(base) - 1] == '/';
-  snprintf(out, outLen, "%s%s%s/%s", base, baseHasSlash ? "" : "/", uid, fileName);
+  char safeUid[64];
+  strlcpy(safeUid, uid, sizeof(safeUid));
+  for (char *p = safeUid; *p; ++p) {
+    if (*p == ':') *p = '_';
+  }
+  snprintf(out, outLen, "%s%s%s", base, baseHasSlash ? "" : "/", safeUid);
+}
+
+static void buildRemotePath(char *out, size_t outLen, const char *fileName) {
+  char baseDir[128];
+  buildRemoteBaseDir(baseDir, sizeof(baseDir));
+  snprintf(out, outLen, "%s/%s", baseDir, fileName);
 }
 
 static bool ftpStoreBuffer(FtpSession &session, const char *remoteFile, const uint8_t *data, size_t len, char *error, size_t errorSize) {
@@ -5320,6 +5372,12 @@ static void ftpQuit(FtpSession &session) {
 }
 
 static void serviceTransferWatchdog() {
+#if FTP_BACKUP_DISABLE_WATCHDOG_KICK_DIAG
+  if (gFtpBackupCriticalPathActive) {
+    return;
+  }
+#endif
+
 #ifdef TANKALARM_WATCHDOG_AVAILABLE
   #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
     mbedWatchdog.kick();
@@ -5327,6 +5385,10 @@ static void serviceTransferWatchdog() {
     IWatchdog.reload();
   #endif
 #endif
+}
+
+static void ftpsProgressKick() {
+  serviceTransferWatchdog();
 }
 
 static const char *ftpsErrorName(FtpsError error) {
@@ -5356,13 +5418,159 @@ static const char *ftpsErrorName(FtpsError error) {
   }
 }
 
-static void ftpsTraceCallback(const char *phase) {
-#ifdef DEBUG_MODE
-  Serial.print(F("FTPS phase: "));
-  Serial.println(phase ? phase : "?");
+static bool ftpsSessionLikelyDead(FtpsError error) {
+  switch (error) {
+    case FtpsError::ConnectionFailed:
+    case FtpsError::PassiveModeRejected:
+    case FtpsError::DataConnectionFailed:
+    case FtpsError::FinalReplyFailed:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Persistent ring buffer of recent FTPS trace phases so we can read them over
+// HTTP after a failure (USB CDC sometimes detaches during FTPS work).
+// NOTE: Kept small (64 bytes) to stay within the available stack/heap budget.
+// The ring-buffer drop-oldest-half logic below handles overflow safely.
+static char gFtpsTraceBuf[1024] = {0};
+static size_t gFtpsTraceLen = 0;
+static char gFtpBackupStage[32] = "idle";
+static unsigned long gFtpBackupStageMs = 0;
+static bool gFtpBackupCriticalPathActive = false;
+
+static void ftpsTraceReset() {
+  gFtpsTraceBuf[0] = '\0';
+  gFtpsTraceLen = 0;
+}
+
+static bool readFtpBackupMarker(char *out, size_t outSize) {
+  if (!out || outSize == 0) {
+    return false;
+  }
+  out[0] = '\0';
+
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) {
+      return false;
+    }
+    FILE *f = fopen("/fs" FTP_BACKUP_MARKER_PATH, "rb");
+    if (!f) {
+      return false;
+    }
+    size_t n = fread(out, 1, outSize - 1, f);
+    fclose(f);
+    out[n] = '\0';
+    return n > 0;
+  #else
+    if (!LittleFS.exists(FTP_BACKUP_MARKER_PATH)) {
+      return false;
+    }
+    File f = LittleFS.open(FTP_BACKUP_MARKER_PATH, "r");
+    if (!f) {
+      return false;
+    }
+    size_t n = f.read((uint8_t *)out, outSize - 1);
+    f.close();
+    out[n] = '\0';
+    return n > 0;
+  #endif
 #else
-  (void)phase;
+  return false;
 #endif
+}
+
+static void writeFtpBackupMarker(const char *stage) {
+  const char *s = (stage && stage[0] != '\0') ? stage : "unknown";
+  char marker[96];
+  snprintf(marker, sizeof(marker), "%lu:%s", (unsigned long)millis(), s);
+
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) {
+      return;
+    }
+    (void)tankalarm_posix_write_file_atomic("/fs" FTP_BACKUP_MARKER_PATH,
+                                            marker,
+                                            strlen(marker));
+  #else
+    (void)tankalarm_littlefs_write_file_atomic(FTP_BACKUP_MARKER_PATH,
+                                               (const uint8_t *)marker,
+                                               strlen(marker));
+  #endif
+#endif
+}
+
+static void clearFtpBackupMarker() {
+#ifdef FILESYSTEM_AVAILABLE
+  #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
+    if (!mbedFS) {
+      return;
+    }
+    remove("/fs" FTP_BACKUP_MARKER_PATH);
+  #else
+    if (LittleFS.exists(FTP_BACKUP_MARKER_PATH)) {
+      LittleFS.remove(FTP_BACKUP_MARKER_PATH);
+    }
+  #endif
+#endif
+}
+
+static void setFtpBackupStage(const char *stage) {
+  const char *value = (stage && stage[0] != '\0') ? stage : "unknown";
+  strlcpy(gFtpBackupStage, value, sizeof(gFtpBackupStage));
+  gFtpBackupStageMs = millis();
+  writeFtpBackupMarker(gFtpBackupStage);
+  addServerSerialLog(gFtpBackupStage, "info", "ftp");
+  Serial.print(F("/api/ftp-backup: stage="));
+  Serial.println(gFtpBackupStage);
+}
+
+static void handleFtpBackupStatusGet(EthernetClient &client) {
+  JsonDocument doc;
+  char marker[96] = {0};
+  bool hasMarker = readFtpBackupMarker(marker, sizeof(marker));
+  doc["stage"] = gFtpBackupStage;
+  doc["stageMs"] = gFtpBackupStageMs;
+  doc["nowMs"] = millis();
+  doc["trace"] = gFtpsTraceBuf;
+  doc["marker"] = hasMarker ? marker : "";
+  doc["backupCriticalPath"] = gFtpBackupCriticalPathActive;
+  respondJson(client, doc, 200);
+}
+
+static void ftpsTraceCallback(const char *phase) {
+  const char *p = phase ? phase : "?";
+  Serial.print(F("FTPS phase: "));
+  Serial.println(p);
+  // DIAG: Persist every phase to the on-disk backup marker so we can recover
+  // the last-executed FTPS phase across a watchdog reboot. Marker writes are
+  // atomic and rare (one per store()/connect() milestone), so this does not
+  // materially affect FTPS timing. NOTE: do NOT kick the watchdog here --
+  // kicking during closeData() converts a watchdog reset (recoverable) into
+  // a permanent indefinite hang because the underlying Mbed close still
+  // blocks forever.
+  writeFtpBackupMarker(p);
+  // Also append to RAM buffer, with elapsed millis, separated by '|'.
+  char line[96];
+  int n = snprintf(line, sizeof(line), "%lu:%s|", (unsigned long)millis(), p);
+  if (n <= 0) return;
+  if (gFtpsTraceLen + (size_t)n + 1 >= sizeof(gFtpsTraceBuf)) {
+    // Drop the oldest half to make room.
+    size_t keep = sizeof(gFtpsTraceBuf) / 2;
+    if (gFtpsTraceLen > keep) {
+      memmove(gFtpsTraceBuf, gFtpsTraceBuf + (gFtpsTraceLen - keep), keep);
+      gFtpsTraceLen = keep;
+      gFtpsTraceBuf[gFtpsTraceLen] = '\0';
+    }
+  }
+  if (gFtpsTraceLen + (size_t)n + 1 < sizeof(gFtpsTraceBuf)) {
+    memcpy(gFtpsTraceBuf + gFtpsTraceLen, line, n);
+    gFtpsTraceLen += n;
+    gFtpsTraceBuf[gFtpsTraceLen] = '\0';
+  }
 }
 
 static void ftpsAppendDiagnostics(char *error, size_t errorSize) {
@@ -5421,10 +5629,15 @@ static bool ftpsConnectAndLogin(char *error, size_t errorSize) {
   }
 
   gFtpsClient.setTraceCallback(ftpsTraceCallback);
+  setFtpsTransportTraceHook(ftpsTraceCallback);
+  setFtpsClientProgressHook(ftpsProgressKick);
+  writeFtpBackupMarker("ftps-connect:start");
   if (!gFtpsClient.connect(serverConfig, error, errorSize)) {
+    writeFtpBackupMarker("ftps-connect:fail");
     ftpsAppendDiagnostics(error, errorSize);
     return false;
   }
+  writeFtpBackupMarker("ftps-connect:ok");
   return true;
 }
 
@@ -5433,12 +5646,27 @@ static bool ftpsStoreBuffer(const char *remoteFile, const uint8_t *data, size_t 
     snprintf(error, errorSize, "No data to upload");
     return false;
   }
+  writeFtpBackupMarker("ftps-store:start");
   serviceTransferWatchdog();
   if (!gFtpsClient.store(remoteFile, data, len, error, errorSize)) {
+    writeFtpBackupMarker("ftps-store:fail");
     ftpsAppendDiagnostics(error, errorSize);
     return false;
   }
+  writeFtpBackupMarker("ftps-store:ok");
   serviceTransferWatchdog();
+
+  // Diagnostic: Check if control connection is still alive immediately after STOR
+  char checkErr[128] = {};
+  if (!gFtpsClient.isControlAlive(checkErr, sizeof(checkErr))) {
+    Serial.print(F("WARNING: Control connection DEAD after successful STOR: "));
+    Serial.println(checkErr);
+    writeFtpBackupMarker("ftps-ctrl:dead");
+  } else {
+    Serial.println(F("OK: Control connection still alive after STOR"));
+    writeFtpBackupMarker("ftps-ctrl:ok");
+  }
+  
   return true;
 }
 
@@ -5780,6 +6008,19 @@ static bool ftpBackupClientConfigs(FtpSession &session, bool useFtps, char *erro
     return true;  // Nothing to do
   }
 
+  // Ensure the remote clients subdirectory exists before uploading snapshots.
+  if (useFtps) {
+    char clientsDir[192];
+    buildRemotePath(clientsDir, sizeof(clientsDir), "clients");
+    if (!gFtpsClient.mkd(clientsDir, error, errorSize)) {
+      Serial.print(F("FTP backup: MKD clients warning (non-fatal): "));
+      Serial.println(error);
+      if (error && errorSize > 0) {
+        error[0] = '\0';
+      }
+    }
+  }
+
   // Build and upload manifest listing client UIDs (and optional site for readability)
   char manifest[2048];
   manifest[0] = 0;
@@ -5942,39 +6183,129 @@ static bool ftpRestoreClientConfigs(FtpSession &session, bool useFtps, char *err
 // FTPS mode is supported through gConfig.ftpsEnabled.
 static FtpResult performFtpBackupDetailed() {
   FtpResult result;
+  bool abortRemainingTransfers = false;
   
   if (!gConfig.ftpEnabled) {
     strlcpy(result.errorMessage, "FTP disabled", sizeof(result.errorMessage));
     return result;
   }
 
+  // Patch C: pre-scan /fs before opening an FTP/FTPS session. If there is
+  // nothing to upload, bail immediately instead of burning seconds on TLS
+  // handshake + 9 failed reads + teardown while the HTTP peer is waiting.
+#if defined(FILESYSTEM_AVAILABLE) && (defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED))
+  uint8_t readable = 0;
+  for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
+    char probe[96];
+    buildLocalPath(kBackupFiles[i].localPath, probe, sizeof(probe));
+    FILE *f = fopen(probe, "rb");
+    if (f) {
+      readable++;
+      fclose(f);
+    }
+  }
+  Serial.print(F("performFtpBackup: pre-scan readable="));
+  Serial.print(readable);
+  Serial.print(F("/"));
+  Serial.print((unsigned)(sizeof(kBackupFiles) / sizeof(kBackupFiles[0])));
+  Serial.print(F(" clientSnapshots="));
+  Serial.println(gClientConfigCount);
+  Serial.flush();
+  if (readable == 0 && gClientConfigCount == 0) {
+    strlcpy(result.errorMessage,
+            "No local files available to upload (check /fs)",
+            sizeof(result.errorMessage));
+    return result;
+  }
+#endif
+
   serviceTransferWatchdog();
 
-  const bool useFtps = gConfig.ftpsEnabled;
+  const bool useFtps = gConfig.ftpsEnabled && (FTP_BACKUP_FORCE_PLAIN_FTP_DIAG == 0);
+  const bool reconnectPerFile = useFtps && (FTP_BACKUP_FTPS_RECONNECT_PER_FILE_DIAG != 0);
   FtpSession session;
   char err[128];
-  bool connected = useFtps ? ftpsConnectAndLogin(err, sizeof(err))
-                           : ftpConnectAndLogin(session, err, sizeof(err));
-  if (!connected) {
-    strlcpy(result.errorMessage, err, sizeof(result.errorMessage));
-    return result;
+  err[0] = '\0';
+  bool connected = true;
+  if (!reconnectPerFile) {
+    connected = useFtps ? ftpsConnectAndLogin(err, sizeof(err))
+                        : ftpConnectAndLogin(session, err, sizeof(err));
+    if (!connected) {
+      strlcpy(result.errorMessage, err, sizeof(result.errorMessage));
+      return result;
+    }
+
+    // Create the per-server directory if it does not already exist.
+    // Best-effort: a failure here is logged but does not abort the backup.
+    if (useFtps) {
+      char remoteBaseDir[128];
+      buildRemoteBaseDir(remoteBaseDir, sizeof(remoteBaseDir));
+      if (!gFtpsClient.mkd(remoteBaseDir, err, sizeof(err))) {
+        Serial.print(F("FTP backup: MKD warning (non-fatal): "));
+        Serial.println(err);
+      }
+    }
   }
 
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
+    if (abortRemainingTransfers) {
+      break;
+    }
+
     serviceTransferWatchdog();
 
     const BackupFileEntry &entry = kBackupFiles[i];
     char contents[2048];
     size_t len = 0;
     if (!readFileToBuffer(entry.localPath, contents, sizeof(contents), len)) {
-      continue;  // Missing or too large; skip quietly (not counted as failure)
+      // Log every skip so we can see why a backup produced no STORs.
+      // Common causes: file absent on /fs, larger than buffer, or FS error.
+      Serial.print(F("FTP backup skip (unreadable): "));
+      Serial.print(entry.localPath);
+      Serial.print(F(" -> "));
+      Serial.println(entry.remoteName);
+      continue;
     }
 
     char remotePath[192];
     buildRemotePath(remotePath, sizeof(remotePath), entry.remoteName);
+    if (reconnectPerFile) {
+      if (!ftpsConnectAndLogin(err, sizeof(err))) {
+        abortRemainingTransfers = true;
+        strlcpy(result.errorMessage, err, sizeof(result.errorMessage));
+        break;
+      }
+      char remoteBaseDir[128];
+      buildRemoteBaseDir(remoteBaseDir, sizeof(remoteBaseDir));
+      if (!gFtpsClient.mkd(remoteBaseDir, err, sizeof(err))) {
+        Serial.print(F("FTP backup: MKD warning (non-fatal): "));
+        Serial.println(err);
+      }
+    }
+
     bool stored = useFtps
                     ? ftpsStoreBuffer(remotePath, (const uint8_t *)contents, len, err, sizeof(err))
                     : ftpStoreBuffer(session, remotePath, (const uint8_t *)contents, len, err, sizeof(err));
+
+    // Workaround for control-channel resets immediately after STOR on some
+    // stacks: if reconnect-per-file mode is active, reconnect and verify SIZE.
+    if (!stored && reconnectPerFile && useFtps && len > 0 &&
+        ftpsSessionLikelyDead(gFtpsClient.lastError())) {
+      char verifyErr[128] = {0};
+      size_t remoteBytes = 0;
+      if (ftpsConnectAndLogin(verifyErr, sizeof(verifyErr)) &&
+          gFtpsClient.size(remotePath, remoteBytes, verifyErr, sizeof(verifyErr)) &&
+          remoteBytes == len) {
+        stored = true;
+        Serial.print(F("FTP backup verified via SIZE after reset: "));
+        Serial.println(remotePath);
+      }
+      ftpsQuit();
+    }
+
+    if (reconnectPerFile) {
+      ftpsQuit();
+    }
     if (stored) {
       result.filesProcessed++;
       Serial.print(F("FTP backup: "));
@@ -5984,23 +6315,46 @@ static FtpResult performFtpBackupDetailed() {
       result.addFailedFile(entry.remoteName);
       Serial.print(F("FTP upload failed for "));
       Serial.println(remotePath);
+
+      if (useFtps && ftpsSessionLikelyDead(gFtpsClient.lastError())) {
+        abortRemainingTransfers = true;
+        if (result.errorMessage[0] == '\0') {
+          strlcpy(result.errorMessage,
+                  "FTPS session dropped; aborted remaining uploads",
+                  sizeof(result.errorMessage));
+        }
+      }
     }
   }
 
   // Also back up per-client cached configs (manifest + per-uid JSON)
   uint8_t clientUploaded = 0;
-  if (ftpBackupClientConfigs(session, useFtps, err, sizeof(err), clientUploaded)) {
+  if (!abortRemainingTransfers && reconnectPerFile) {
+    // Keep this diagnostic mode scoped to baseline file uploads only. Client
+    // snapshots can involve many transfers and would reintroduce mixed behavior.
+    Serial.println(F("FTP backup: client snapshot uploads skipped (diag reconnect mode)"));
+  } else if (!abortRemainingTransfers &&
+      ftpBackupClientConfigs(session, useFtps, err, sizeof(err), clientUploaded)) {
     result.filesProcessed += clientUploaded;
+  } else if (!abortRemainingTransfers && err[0] != '\0' && result.errorMessage[0] == '\0') {
+    strlcpy(result.errorMessage, err, sizeof(result.errorMessage));
   }
 
-  if (useFtps) {
+  if (useFtps && !reconnectPerFile) {
     ftpsQuit();
-  } else {
+  } else if (!useFtps) {
     ftpQuit(session);
   }
   serviceTransferWatchdog();
 
   result.success = (result.filesProcessed > 0);
+  if (!result.success && result.errorMessage[0] == '\0') {
+    // Connection + login succeeded, but no file was readable from /fs — make
+    // that visible instead of returning an empty "Backup failed".
+    strlcpy(result.errorMessage,
+            "Connected, but no local files available to upload (check /fs)",
+            sizeof(result.errorMessage));
+  }
   return result;
 }
 
@@ -8049,6 +8403,8 @@ static void handleWebRequests() {
     } else {
       handleFtpRestorePost(client, body);
     }
+  } else if (method == "GET" && path == "/api/ftp-backup-status") {
+    handleFtpBackupStatusGet(client);
   } else if (method == "GET" && path == "/api/transmission-log") {
     handleTransmissionLogGet(client);
   } else if (method == "GET" && path == "/api/notecard/status") {
@@ -8388,10 +8744,15 @@ static void respondHtml(EthernetClient &client, const String &body) {
 static void respondJson(EthernetClient &client, const String &body, int status) {
   client.print(F("HTTP/1.1 "));
   client.print(status);
-  if (status == 200) {
-    client.println(F(" OK"));
-  } else {
-    client.println();
+  switch (status) {
+    case 200: client.println(F(" OK")); break;
+    case 400: client.println(F(" Bad Request")); break;
+    case 401: client.println(F(" Unauthorized")); break;
+    case 403: client.println(F(" Forbidden")); break;
+    case 404: client.println(F(" Not Found")); break;
+    case 413: client.println(F(" Payload Too Large")); break;
+    case 500: client.println(F(" Internal Server Error")); break;
+    default:  client.println(F(" Error")); break;
   }
   client.println(F("Content-Type: application/json"));
   client.println(F("Connection: close"));
@@ -8410,6 +8771,7 @@ static void respondJson(EthernetClient &client, const String &body, int status) 
     offset += toSend;
     remaining -= toSend;
   }
+  client.flush();
 }
 
 static bool respondJson(EthernetClient &client, const JsonDocument &doc, int status) {
@@ -9543,8 +9905,29 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
     return;
   }
 
+  Serial.println(F("/api/ftp-backup: start"));
+  unsigned long t0 = millis();
+  gFtpBackupCriticalPathActive = true;
+  setFtpBackupStage("start");
+  ftpsTraceReset();
+
   // Use detailed result for comprehensive error reporting
+  setFtpBackupStage("backup-running");
   FtpResult result = performFtpBackupDetailed();
+  gFtpBackupCriticalPathActive = false;
+  setFtpBackupStage("backup-done");
+
+  Serial.print(F("/api/ftp-backup: done success="));
+  Serial.print(result.success ? 1 : 0);
+  Serial.print(F(" proc="));
+  Serial.print(result.filesProcessed);
+  Serial.print(F(" failed="));
+  Serial.print(result.filesFailed);
+  Serial.print(F(" elapsed_ms="));
+  Serial.print(millis() - t0);
+  Serial.print(F(" err='"));
+  Serial.print(result.errorMessage);
+  Serial.println(F("'"));
 
   JsonDocument resp;
   resp["ok"] = result.success;
@@ -9565,9 +9948,27 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
       resp["failedFiles"] = result.failedFiles;
     }
   }
+  resp["trace"] = gFtpsTraceBuf;
   String json;
   serializeJson(resp, json);
+
+  Serial.print(F("/api/ftp-backup: respondJson status="));
+  Serial.print(result.success ? 200 : 500);
+  Serial.print(F(" len="));
+  Serial.print(json.length());
+  Serial.print(F(" client.connected="));
+  Serial.println(client.connected() ? 1 : 0);
+
+  if (!client.connected()) {
+    setFtpBackupStage("client-gone");
+    Serial.println(F("/api/ftp-backup: client gone, skipping response write"));
+    return;
+  }
+  setFtpBackupStage("response-writing");
   respondJson(client, json, result.success ? 200 : 500);
+  setFtpBackupStage("response-sent");
+  clearFtpBackupMarker();
+  Serial.println(F("/api/ftp-backup: response sent"));
 }
 
 static void handleFtpRestorePost(EthernetClient &client, const String &body) {
@@ -14061,13 +14462,20 @@ static void handleServerSettingsPost(EthernetClient &client, const String &body)
     return;
   }
 
-  // Extract server settings from JSON
-  // Support both flat structure (JS) and nested "server" object
-  JsonObject settings; 
-  if (doc.containsKey("server")) {
-    settings = doc["server"];
+  // Extract server settings from JSON.
+  // Support both flat structure and nested "server" object. The UI historically
+  // wrapped the payload under {"server":{...}}, so this branch must work.
+  // ArduinoJson v7: use .is<JsonObject>()/.as<JsonObject>() instead of
+  // containsKey()+implicit cast, which could leave `settings` null.
+  JsonObject settings;
+  if (doc["server"].is<JsonObject>()) {
+    settings = doc["server"].as<JsonObject>();
   } else {
     settings = doc.as<JsonObject>();
+  }
+  if (settings.isNull()) {
+    respondStatus(client, 400, "Missing settings object");
+    return;
   }
     
   // Update Notecard Product UID (requires reinitialization)
