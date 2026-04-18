@@ -260,6 +260,16 @@
 #ifndef FTP_BACKUP_INTER_FILE_DELAY_MS
 #define FTP_BACKUP_INTER_FILE_DELAY_MS 65000UL
 #endif
+// Deterministic retry-path verification hook.
+// When enabled, the first successful transfer of the target file is
+// intentionally treated as a retriable -3005 failure so the next attempt
+// exercises the bounded retry/recovery telemetry path.
+#ifndef FTP_BACKUP_TEST_FORCE_ONE_RETRY
+#define FTP_BACKUP_TEST_FORCE_ONE_RETRY 0
+#endif
+#ifndef FTP_BACKUP_TEST_FORCE_ONE_RETRY_TARGET
+#define FTP_BACKUP_TEST_FORCE_ONE_RETRY_TARGET "server_config.json"
+#endif
 
 #ifndef MAX_CLIENT_CONFIG_SNAPSHOTS
 #define MAX_CLIENT_CONFIG_SNAPSHOTS 20
@@ -5512,45 +5522,12 @@ static bool ftpsSessionLikelyDead(FtpsError error) {
 }
 
 // --- Refined classifiers (PER_FILE_RETRY_PLAN_04172026.md, Phase 0) ---------
-// ftpsSessionLikelyDead() above conflates "control channel gone" with
-// "transient data-channel fault". The two helpers below split that decision:
-//
-//   ftpsSessionDead(err)              -> abort the entire backup batch
-//   ftpsTransferRetriable(err, nsapi) -> retry just this file
+// Standardized in ArduinoOPTA-FTPS as:
+//   ftpsIsSessionDead(err)                  -> abort the entire backup batch
+//   ftpsIsTransferRetriable(err, nsapiCode) -> retry just this file
 //
 // A failure that is neither dead-session nor retriable (e.g. server 5xx on
 // STOR, connect timeout) means "skip this file but keep the batch going".
-static bool ftpsSessionDead(FtpsError err) {
-  switch (err) {
-    case FtpsError::ConnectionFailed:           // TCP connect failed at session start
-    case FtpsError::NetworkNotInitialized:
-    case FtpsError::BannerReadFailed:
-    case FtpsError::AuthTlsRejected:            // server refused AUTH TLS
-    case FtpsError::ControlTlsHandshakeFailed:  // control-path TLS
-    case FtpsError::CertValidationFailed:
-    case FtpsError::LoginRejected:              // USER/PASS rejected
-    case FtpsError::PbszRejected:
-    case FtpsError::ProtPRejected:
-    case FtpsError::TypeRejected:
-      return true;
-    default:
-      return false;
-  }
-}
-
-static bool ftpsTransferRetriable(FtpsError err, int nsapiCode) {
-  if (err == FtpsError::DataConnectionFailed) {
-    // Only LWIP pool exhaustion is retriable. -3008 (timeout) and -3001
-    // (DNS) are persistent for this transfer; let the file fail cleanly.
-    // If lastNsapiError() is unavailable (older library or other transport
-    // that returns 0), be permissive: retry any DataConnectionFailed.
-    return nsapiCode == 0 || nsapiCode == -3005;
-  }
-  if (err == FtpsError::DataTlsHandshakeFailed) {
-    return true;  // Bounded attempts handle a transient TLS handshake.
-  }
-  return false;
-}
 
 // Persistent ring buffer of recent FTPS trace phases so we can read them over
 // HTTP after a failure (USB CDC sometimes detaches during FTPS work).
@@ -6372,6 +6349,7 @@ static FtpResult performFtpBackupDetailed() {
   }
 
   uint8_t consecutiveFailFiles = 0;
+  bool forcedRetriableInjected = false;
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
     if (abortRemainingTransfers) {
       break;
@@ -6445,17 +6423,28 @@ static FtpResult performFtpBackupDetailed() {
       stored = useFtps
                  ? ftpsStoreBuffer(remotePath, (const uint8_t *)contents, len, err, sizeof(err))
                  : ftpStoreBuffer(session, remotePath, (const uint8_t *)contents, len, err, sizeof(err));
+
+      FtpsError lastErr = gFtpsClient.lastError();
+      int lastNsapi = gFtpsClient.lastNsapiError();
+      if (useFtps && FTP_BACKUP_TEST_FORCE_ONE_RETRY != 0 && !forcedRetriableInjected &&
+          attempts == 1 && stored && strcmp(entry.remoteName, FTP_BACKUP_TEST_FORCE_ONE_RETRY_TARGET) == 0) {
+        forcedRetriableInjected = true;
+        stored = false;
+        strlcpy(err, "injected retriable failure (test)", sizeof(err));
+        lastErr = FtpsError::DataConnectionFailed;
+        lastNsapi = -3005;
+        Serial.print(F("ftp-retry-test: injected retriable failure for "));
+        Serial.println(entry.remoteName);
+      }
+
       if (stored) break;
       if (!useFtps) break;  // Plain-FTP path keeps single-shot semantics.
 
-      const FtpsError lastErr  = gFtpsClient.lastError();
-      const int       lastNsapi = gFtpsClient.lastNsapiError();
-
-      if (ftpsSessionDead(lastErr)) {
+      if (ftpsIsSessionDead(lastErr)) {
         // Control channel gone: no point retrying or continuing the batch.
         break;
       }
-      if (!ftpsTransferRetriable(lastErr, lastNsapi)) {
+      if (!ftpsIsTransferRetriable(lastErr, lastNsapi)) {
         // Permanent transfer failure (server reject, persistent network
         // condition). Skip this file but keep the batch.
         break;
@@ -6527,7 +6516,7 @@ static FtpResult performFtpBackupDetailed() {
 
       if (useFtps) {
         const FtpsError lastErr = gFtpsClient.lastError();
-        if (ftpsSessionDead(lastErr)) {
+        if (ftpsIsSessionDead(lastErr)) {
           abortRemainingTransfers = true;
           if (result.errorMessage[0] == '\0') {
             strlcpy(result.errorMessage,
@@ -6535,7 +6524,7 @@ static FtpResult performFtpBackupDetailed() {
                     sizeof(result.errorMessage));
           }
         } else if (attempts >= FTP_BACKUP_PER_FILE_MAX_ATTEMPTS &&
-                   ftpsTransferRetriable(lastErr, gFtpsClient.lastNsapiError())) {
+                   ftpsIsTransferRetriable(lastErr, gFtpsClient.lastNsapiError())) {
           // File burned its full retry budget on a retriable error. Track
           // consecutive occurrences; abort the batch if it keeps happening
           // because the LWIP pool / server is sustained-saturated and the
