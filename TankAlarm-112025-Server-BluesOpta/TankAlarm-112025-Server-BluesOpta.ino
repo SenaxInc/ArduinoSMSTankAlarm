@@ -223,6 +223,44 @@
 #define FTP_BACKUP_FORCE_PLAIN_FTP_DIAG 0
 #endif
 
+// --- Per-file retry policy (FTPS multi-file backup) -------------------------
+// See CODE REVIEW/PER_FILE_RETRY_PLAN_04172026.md for the full rationale.
+//
+// On Arduino Opta the LWIP socket pool is hard-baked at 4 PCBs and SO_LINGER
+// is unsupported, so a freshly-closed data socket sits in TIME_WAIT for ~60s.
+// If a STOR fails because the previous data PCB has not yet drained, the
+// failure presents as -3005 (NSAPI_ERROR_NO_SOCKET) wrapped in
+// FtpsError::DataConnectionFailed. The control channel is still alive in that
+// case, so a bounded retry of just that file is safe and usually recovers.
+//
+// Retries are gated TWICE: by FtpsError class AND by the underlying NSAPI
+// code. -3005 is retried; -3008 (timeout) and -3001 (DNS) are not.
+//
+// If FTP_BACKUP_PER_FILE_MAX_ATTEMPTS files in a row exhaust their retries we
+// abort the rest of the batch — the situation is systemic and burning more
+// retry waits is wasteful.
+#ifndef FTP_BACKUP_PER_FILE_MAX_ATTEMPTS
+#define FTP_BACKUP_PER_FILE_MAX_ATTEMPTS 3
+#endif
+#ifndef FTP_BACKUP_MAX_CONSECUTIVE_FAIL_FILES
+#define FTP_BACKUP_MAX_CONSECUTIVE_FAIL_FILES 2
+#endif
+// Stepped backoff between retries (ms). Index 0 used between attempt 1 and
+// attempt 2 (catches a partially-drained TIME_WAIT). Index 1 used between
+// attempt 2 and attempt 3 (covers a full TIME_WAIT cycle).
+#ifndef FTP_BACKUP_RETRY_BACKOFF_1_MS
+#define FTP_BACKUP_RETRY_BACKOFF_1_MS 20000UL
+#endif
+#ifndef FTP_BACKUP_RETRY_BACKOFF_2_MS
+#define FTP_BACKUP_RETRY_BACKOFF_2_MS 40000UL
+#endif
+// Inter-file pacing: see SPEED-OPT comment near the loop body. Promoted from
+// magic literal to a #define so it can be tuned without code-search regressions
+// once retry telemetry shows we can shorten it (target 45000 once stable).
+#ifndef FTP_BACKUP_INTER_FILE_DELAY_MS
+#define FTP_BACKUP_INTER_FILE_DELAY_MS 65000UL
+#endif
+
 #ifndef MAX_CLIENT_CONFIG_SNAPSHOTS
 #define MAX_CLIENT_CONFIG_SNAPSHOTS 20
 #endif
@@ -959,10 +997,16 @@ struct FtpResult {
   bool success;               // Overall operation success
   uint8_t filesProcessed;     // Number of files successfully processed
   uint8_t filesFailed;        // Number of files that failed
+  // Per-file retry telemetry (FTPS backup only). All counts are batch-scoped.
+  uint16_t retryAttemptsTotal;     // Total retry attempts across all files (excludes first attempt)
+  uint8_t  filesRecoveredByRetry;  // Files that succeeded only after >= 1 retry
+  uint8_t  filesRetryExhausted;    // Files that consumed all attempts and still failed
   char failedFiles[256];      // Comma-separated list of failed file names
   char errorMessage[128];     // Human-readable error message
   
-  FtpResult() : success(false), filesProcessed(0), filesFailed(0) {
+  FtpResult() : success(false), filesProcessed(0), filesFailed(0),
+                retryAttemptsTotal(0), filesRecoveredByRetry(0),
+                filesRetryExhausted(0) {
     failedFiles[0] = '\0';
     errorMessage[0] = '\0';
   }
@@ -4327,6 +4371,27 @@ void loop() {
     }
   }
 
+#ifndef FTP_AUTO_TEST_ON_BOOT
+#define FTP_AUTO_TEST_ON_BOOT 0
+#endif
+#if FTP_AUTO_TEST_ON_BOOT
+  {
+    static bool sAutoBackupFired = false;
+    static unsigned long sAutoBackupArmMs = 0;
+    if (!sAutoBackupFired) {
+      if (sAutoBackupArmMs == 0 && Ethernet.linkStatus() == LinkON && gConfig.ftpEnabled) {
+        sAutoBackupArmMs = now;
+        Serial.println(F("[ftp-auto-test] armed — backup will trigger in 20s"));
+      }
+      if (sAutoBackupArmMs != 0 && now - sAutoBackupArmMs > 20000UL && !gBackupInProgress && !gPendingFtpBackup) {
+        Serial.println(F("[ftp-auto-test] firing one-shot FTP backup"));
+        gPendingFtpBackup = true;
+        sAutoBackupFired = true;
+      }
+    }
+  }
+#endif
+
   if (gPendingFtpBackup) {
     char error[128];
     gBackupInProgress = true;
@@ -5446,6 +5511,47 @@ static bool ftpsSessionLikelyDead(FtpsError error) {
   }
 }
 
+// --- Refined classifiers (PER_FILE_RETRY_PLAN_04172026.md, Phase 0) ---------
+// ftpsSessionLikelyDead() above conflates "control channel gone" with
+// "transient data-channel fault". The two helpers below split that decision:
+//
+//   ftpsSessionDead(err)              -> abort the entire backup batch
+//   ftpsTransferRetriable(err, nsapi) -> retry just this file
+//
+// A failure that is neither dead-session nor retriable (e.g. server 5xx on
+// STOR, connect timeout) means "skip this file but keep the batch going".
+static bool ftpsSessionDead(FtpsError err) {
+  switch (err) {
+    case FtpsError::ConnectionFailed:           // TCP connect failed at session start
+    case FtpsError::NetworkNotInitialized:
+    case FtpsError::BannerReadFailed:
+    case FtpsError::AuthTlsRejected:            // server refused AUTH TLS
+    case FtpsError::ControlTlsHandshakeFailed:  // control-path TLS
+    case FtpsError::CertValidationFailed:
+    case FtpsError::LoginRejected:              // USER/PASS rejected
+    case FtpsError::PbszRejected:
+    case FtpsError::ProtPRejected:
+    case FtpsError::TypeRejected:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static bool ftpsTransferRetriable(FtpsError err, int nsapiCode) {
+  if (err == FtpsError::DataConnectionFailed) {
+    // Only LWIP pool exhaustion is retriable. -3008 (timeout) and -3001
+    // (DNS) are persistent for this transfer; let the file fail cleanly.
+    // If lastNsapiError() is unavailable (older library or other transport
+    // that returns 0), be permissive: retry any DataConnectionFailed.
+    return nsapiCode == 0 || nsapiCode == -3005;
+  }
+  if (err == FtpsError::DataTlsHandshakeFailed) {
+    return true;  // Bounded attempts handle a transient TLS handshake.
+  }
+  return false;
+}
+
 // Persistent ring buffer of recent FTPS trace phases so we can read them over
 // HTTP after a failure (USB CDC sometimes detaches during FTPS work).
 // NOTE: Kept small (64 bytes) to stay within the available stack/heap budget.
@@ -5680,17 +5786,11 @@ static bool ftpsStoreBuffer(const char *remoteFile, const uint8_t *data, size_t 
   writeFtpBackupMarker("ftps-store:ok");
   serviceTransferWatchdog();
 
-  // Diagnostic: Check if control connection is still alive immediately after STOR
-  char checkErr[128] = {};
-  if (!gFtpsClient.isControlAlive(checkErr, sizeof(checkErr))) {
-    Serial.print(F("WARNING: Control connection DEAD after successful STOR: "));
-    Serial.println(checkErr);
-    writeFtpBackupMarker("ftps-ctrl:dead");
-  } else {
-    Serial.println(F("OK: Control connection still alive after STOR"));
-    writeFtpBackupMarker("ftps-ctrl:ok");
-  }
-  
+  // Note: the post-STOR isControlAlive() NOOP probe was removed 2026-04-17.
+  // It mutated the session (15 s reply timeout fires on slow servers) and
+  // could mark a healthy session dead, poisoning the per-file retry decision.
+  // See CODE REVIEW/PER_FILE_RETRY_PLAN_04172026.md (Phase 0, P0-1).
+
   return true;
 }
 
@@ -6271,6 +6371,7 @@ static FtpResult performFtpBackupDetailed() {
     }
   }
 
+  uint8_t consecutiveFailFiles = 0;
   for (size_t i = 0; i < sizeof(kBackupFiles) / sizeof(kBackupFiles[0]); ++i) {
     if (abortRemainingTransfers) {
       break;
@@ -6280,20 +6381,18 @@ static FtpResult performFtpBackupDetailed() {
     // precompiled so MBED_CONF_LWIP_SOCKET_MAX cannot be raised). SO_LINGER is
     // unsupported (-3002) so each closed data socket sits in TIME_WAIT for
     // ~60s. Without waiting, the 2nd or 3rd file fails -3005 NO_SOCKET.
-    // Sleep 65s between files (after the first) to let TIME_WAIT drain;
-    // service the 30s watchdog every 100ms so we don't reset.
+    // Sleep FTP_BACKUP_INTER_FILE_DELAY_MS (default 65s) between files
+    // (after the first) to let TIME_WAIT drain; service the 30s watchdog
+    // every 100ms so we don't reset.
     //
-    // SPEED-OPT (inter-file delay): Lowering this constant is the single
-    // biggest knob to shorten total backup time. Safe range is 30000-65000.
-    // Below ~30s a fresh data-open will intermittently hit -3005 because
-    // the previous data socket is still inside the LWIP TIME_WAIT window
-    // (default MSL = 30s, so 2*MSL = 60s). Pair any reduction with the
-    // per-file retry plan in CODE REVIEW/PER_FILE_RETRY_PLAN_04172026.md so
-    // the occasional -3005 is recoverable instead of fatal to the run.
+    // SPEED-OPT (inter-file delay): The retry loop below recovers from
+    // occasional -3005 failures, so this delay can be reduced once retry
+    // telemetry shows it is safe. Target 45000UL after a few clean cycles.
+    // See CODE REVIEW/PER_FILE_RETRY_PLAN_04172026.md (Phase 3).
     if (i > 0 && useFtps) {
       Serial.println(F("FTPS phase: inter-file:wait-tw"));
       uint32_t waitStart = millis();
-      while (millis() - waitStart < 65000UL) {
+      while (millis() - waitStart < FTP_BACKUP_INTER_FILE_DELAY_MS) {
         serviceTransferWatchdog();
         delay(100);
       }
@@ -6331,9 +6430,57 @@ static FtpResult performFtpBackupDetailed() {
       }
     }
 
-    bool stored = useFtps
-                    ? ftpsStoreBuffer(remotePath, (const uint8_t *)contents, len, err, sizeof(err))
-                    : ftpStoreBuffer(session, remotePath, (const uint8_t *)contents, len, err, sizeof(err));
+    // --- Per-file bounded retry (FTPS only; plain FTP keeps single-shot) ---
+    // Plan: PER_FILE_RETRY_PLAN_04172026.md.
+    // - Retry only on transient data-channel faults (DataConnectionFailed
+    //   with NSAPI -3005, or DataTlsHandshakeFailed).
+    // - Stepped backoff: 20s, then 40s.
+    // - Abort the batch if the control channel is gone, or if too many
+    //   files in a row exhaust their retry budget.
+    bool stored = false;
+    uint8_t attempts = 0;
+    while (attempts < FTP_BACKUP_PER_FILE_MAX_ATTEMPTS) {
+      attempts++;
+      err[0] = '\0';
+      stored = useFtps
+                 ? ftpsStoreBuffer(remotePath, (const uint8_t *)contents, len, err, sizeof(err))
+                 : ftpStoreBuffer(session, remotePath, (const uint8_t *)contents, len, err, sizeof(err));
+      if (stored) break;
+      if (!useFtps) break;  // Plain-FTP path keeps single-shot semantics.
+
+      const FtpsError lastErr  = gFtpsClient.lastError();
+      const int       lastNsapi = gFtpsClient.lastNsapiError();
+
+      if (ftpsSessionDead(lastErr)) {
+        // Control channel gone: no point retrying or continuing the batch.
+        break;
+      }
+      if (!ftpsTransferRetriable(lastErr, lastNsapi)) {
+        // Permanent transfer failure (server reject, persistent network
+        // condition). Skip this file but keep the batch.
+        break;
+      }
+      if (attempts >= FTP_BACKUP_PER_FILE_MAX_ATTEMPTS) break;
+
+      const uint32_t waitMs = (attempts == 1) ? FTP_BACKUP_RETRY_BACKOFF_1_MS
+                                              : FTP_BACKUP_RETRY_BACKOFF_2_MS;
+      Serial.print(F("ftp-retry: file="));
+      Serial.print(entry.remoteName);
+      Serial.print(F(" attempt="));
+      Serial.print(attempts + 1);
+      Serial.print(F("/"));
+      Serial.print(FTP_BACKUP_PER_FILE_MAX_ATTEMPTS);
+      Serial.print(F(" nsapi="));
+      Serial.print(lastNsapi);
+      Serial.print(F(" wait_ms="));
+      Serial.println(waitMs);
+      result.retryAttemptsTotal++;
+      uint32_t retryStart = millis();
+      while (millis() - retryStart < waitMs) {
+        serviceTransferWatchdog();
+        delay(100);
+      }
+    }
 
     // Workaround for control-channel resets immediately after STOR on some
     // stacks: if reconnect-per-file mode is active, reconnect and verify SIZE.
@@ -6356,17 +6503,17 @@ static FtpResult performFtpBackupDetailed() {
     }
     if (stored) {
       result.filesProcessed++;
+      if (attempts > 1) {
+        result.filesRecoveredByRetry++;
+        Serial.print(F("ftp-retry: recovered file="));
+        Serial.print(remotePath);
+        Serial.print(F(" after attempts="));
+        Serial.println(attempts);
+      }
+      consecutiveFailFiles = 0;
       Serial.print(F("FTP backup: "));
       Serial.println(remotePath);
     } else {
-      // SPEED-OPT (per-file retry): Today a single failure here aborts the
-      // entire remaining backup when the session looks dead. Most -3005
-      // failures are transient LWIP pool exhaustion (data socket only;
-      // control channel is still alive) and would succeed on retry after
-      // a short additional wait. See CODE REVIEW/PER_FILE_RETRY_PLAN_04172026.md
-      // for the proposed bounded-retry algorithm. Adding retry here would
-      // also unlock shorter inter-file delays above, since occasional
-      // pool exhaustion would no longer be fatal.
       result.filesFailed++;
       result.addFailedFile(entry.remoteName);
       Serial.print(F("FTP upload failed for "));
@@ -6378,12 +6525,39 @@ static FtpResult performFtpBackupDetailed() {
       }
       Serial.println();
 
-      if (useFtps && ftpsSessionLikelyDead(gFtpsClient.lastError())) {
-        abortRemainingTransfers = true;
-        if (result.errorMessage[0] == '\0') {
-          strlcpy(result.errorMessage,
-                  "FTPS session dropped; aborted remaining uploads",
-                  sizeof(result.errorMessage));
+      if (useFtps) {
+        const FtpsError lastErr = gFtpsClient.lastError();
+        if (ftpsSessionDead(lastErr)) {
+          abortRemainingTransfers = true;
+          if (result.errorMessage[0] == '\0') {
+            strlcpy(result.errorMessage,
+                    "FTPS control channel dropped; aborted remaining uploads",
+                    sizeof(result.errorMessage));
+          }
+        } else if (attempts >= FTP_BACKUP_PER_FILE_MAX_ATTEMPTS &&
+                   ftpsTransferRetriable(lastErr, gFtpsClient.lastNsapiError())) {
+          // File burned its full retry budget on a retriable error. Track
+          // consecutive occurrences; abort the batch if it keeps happening
+          // because the LWIP pool / server is sustained-saturated and the
+          // remaining files would only burn more retry waits.
+          result.filesRetryExhausted++;
+          consecutiveFailFiles++;
+          if (consecutiveFailFiles >= FTP_BACKUP_MAX_CONSECUTIVE_FAIL_FILES) {
+            abortRemainingTransfers = true;
+            if (result.errorMessage[0] == '\0') {
+              snprintf(result.errorMessage, sizeof(result.errorMessage),
+                       "Aborted: %u consecutive files exhausted retries",
+                       (unsigned)consecutiveFailFiles);
+            }
+            Serial.print(F("ftp-retry: aborting batch after "));
+            Serial.print(consecutiveFailFiles);
+            Serial.println(F(" consecutive retry-exhausted files"));
+          }
+        } else {
+          // Non-retriable but session-alive failure (server 5xx, etc.):
+          // keep batch going, reset the consecutive counter so a single
+          // bad file does not trip the abort threshold.
+          consecutiveFailFiles = 0;
         }
       }
     }
@@ -10024,6 +10198,12 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
   Serial.print(result.filesProcessed);
   Serial.print(F(" failed="));
   Serial.print(result.filesFailed);
+  Serial.print(F(" retries="));
+  Serial.print(result.retryAttemptsTotal);
+  Serial.print(F(" recovered="));
+  Serial.print(result.filesRecoveredByRetry);
+  Serial.print(F(" exhausted="));
+  Serial.print(result.filesRetryExhausted);
   Serial.print(F(" elapsed_ms="));
   Serial.print(millis() - t0);
   Serial.print(F(" err='"));
@@ -10034,6 +10214,9 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
   resp["ok"] = result.success;
   resp["filesUploaded"] = result.filesProcessed;
   resp["filesFailed"] = result.filesFailed;
+  resp["retryAttempts"] = result.retryAttemptsTotal;
+  resp["filesRecoveredByRetry"] = result.filesRecoveredByRetry;
+  resp["filesRetryExhausted"] = result.filesRetryExhausted;
   if (result.success) {
     if (result.filesFailed > 0) {
       resp["message"] = result.errorMessage;  // "X files uploaded, Y failed"
