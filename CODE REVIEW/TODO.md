@@ -500,9 +500,33 @@ Items from the COMMON_HEADER_AUDIT_02192026.md that need cleanup.
 
 ### FTPS Integration — Migrate Server FTP to Explicit FTPS (resolves I-20)
 
-> **Library:** [dorkmo/ArduinoOPTA-FTPS](https://github.com/dorkmo/ArduinoOPTA-FTPS) (CC0-1.0, release v0.1.0)  
+> **Library:** [dorkmo/ArduinoOPTA-FTPS](https://github.com/dorkmo/ArduinoOPTA-FTPS) (CC0-1.0)  
 > **Study:** FTPS_LIBRARY_INTEGRATION_STUDY_04152026.md  
 > **Prerequisite:** Library must be validated on real Opta hardware against at least one reference server before server-side integration begins.
+
+> **STATUS UPDATE — April 17, 2026:** FTPS transport is integrated and
+> end-to-end multi-file backup is **verified live** against a pyftpdlib
+> FTPS server: **8 files uploaded, 0 failed** in a single session
+> (`proc=8 failed=0`, ~656 s total). Two integrator-side workarounds
+> were required to live within Opta's hard LWIP socket-pool limit
+> (`MBED_CONF_LWIP_SOCKET_MAX = 4`, baked into the precompiled
+> `libmbed.a`) and the absence of `SO_LINGER` support
+> (every close goes through ~60 s `TIME_WAIT`):
+> 1. Release the listening web-server socket during backup
+>    (`gWebServer.end()` before, `gWebServer.begin()` after).
+> 2. Pace inter-file uploads with a ~65 s wait so the previous data
+>    socket's `TIME_WAIT` drains before opening the next.
+>
+> **New follow-up documents (this folder):**
+> - [MULTI_FILE_BACKUP_FOLLOWUPS_04172026.md](MULTI_FILE_BACKUP_FOLLOWUPS_04172026.md) — 7 ranked optimization opportunities.
+> - [OPTA_LWIP_BACKUP_RECIPE_04172026.md](OPTA_LWIP_BACKUP_RECIPE_04172026.md) — integrator recipe / known-good pattern.
+> - [PER_FILE_RETRY_PLAN_04172026.md](PER_FILE_RETRY_PLAN_04172026.md) — bounded per-file retry plan for `-3005` failures.
+> - [NIGHTLY_BACKUP_PLAN_04172026.md](NIGHTLY_BACKUP_PLAN_04172026.md) — scheduled nightly backup plan.
+>
+> Items F-1 through F-13 below are landed in code but have not yet been
+> individually re-audited and re-checked in this list. F-15 (pyftpdlib
+> validation) is **complete**. F-16 (PR1400 NAS validation) is still
+> outstanding.
 
 #### Phase 1 — Config Schema & Persistence **(S)**
 - [ ] **F-1: Add FTPS fields to `ServerConfig`** — `ftpsTrustMode` (fingerprint / imported-cert), `ftpsFingerprint[65]`, `ftpsTlsServerName[128]`, `ftpsRootCaPem[4097]`, `ftpsEnabled` (bool, opt-in gate to avoid breaking existing plain-FTP users).
