@@ -40,6 +40,7 @@
 #include <time.h>
 #include <FtpsClient.h>
 #include <FtpsTypes.h>
+#include <FtpsErrors.h>
 
 // POSIX-compliant standard library headers
 #include <stdio.h>
@@ -5521,6 +5522,9 @@ static bool ftpsSessionLikelyDead(FtpsError error) {
   }
 }
 
+// Compatibility classifiers used by backup retry logic.
+// These mirror ArduinoOPTA-FTPS helper behavior so this sketch builds
+// against both older and newer FTPS library snapshots.
 // --- Refined classifiers (PER_FILE_RETRY_PLAN_04172026.md, Phase 0) ---------
 // Standardized in ArduinoOPTA-FTPS as:
 //   ftpsIsSessionDead(err)                  -> abort the entire backup batch
