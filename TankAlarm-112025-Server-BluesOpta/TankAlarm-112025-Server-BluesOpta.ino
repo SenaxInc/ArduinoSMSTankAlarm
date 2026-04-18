@@ -4331,6 +4331,11 @@ void loop() {
     char error[128];
     gBackupInProgress = true;
     gWebServer.end();  // Free LISTEN PCB so FTPS data sockets have headroom (Opta LWIP pool=4)
+    // SPEED-OPT (background backup): performFtpBackup is synchronous and
+    // currently blocks the main loop for ~N*65 seconds. Moving it to a
+    // ticker that runs one file per loop pass would let the device keep
+    // serving telemetry/web requests during a long backup. See
+    // CODE REVIEW/MULTI_FILE_BACKUP_FOLLOWUPS_04172026.md item 3.
     bool ok = performFtpBackup(error, sizeof(error));
     gWebServer.begin();
     gBackupInProgress = false;
@@ -6277,6 +6282,14 @@ static FtpResult performFtpBackupDetailed() {
     // ~60s. Without waiting, the 2nd or 3rd file fails -3005 NO_SOCKET.
     // Sleep 65s between files (after the first) to let TIME_WAIT drain;
     // service the 30s watchdog every 100ms so we don't reset.
+    //
+    // SPEED-OPT (inter-file delay): Lowering this constant is the single
+    // biggest knob to shorten total backup time. Safe range is 30000-65000.
+    // Below ~30s a fresh data-open will intermittently hit -3005 because
+    // the previous data socket is still inside the LWIP TIME_WAIT window
+    // (default MSL = 30s, so 2*MSL = 60s). Pair any reduction with the
+    // per-file retry plan in CODE REVIEW/PER_FILE_RETRY_PLAN_04172026.md so
+    // the occasional -3005 is recoverable instead of fatal to the run.
     if (i > 0 && useFtps) {
       Serial.println(F("FTPS phase: inter-file:wait-tw"));
       uint32_t waitStart = millis();
@@ -6346,6 +6359,14 @@ static FtpResult performFtpBackupDetailed() {
       Serial.print(F("FTP backup: "));
       Serial.println(remotePath);
     } else {
+      // SPEED-OPT (per-file retry): Today a single failure here aborts the
+      // entire remaining backup when the session looks dead. Most -3005
+      // failures are transient LWIP pool exhaustion (data socket only;
+      // control channel is still alive) and would succeed on retry after
+      // a short additional wait. See CODE REVIEW/PER_FILE_RETRY_PLAN_04172026.md
+      // for the proposed bounded-retry algorithm. Adding retry here would
+      // also unlock shorter inter-file delays above, since occasional
+      // pool exhaustion would no longer be fatal.
       result.filesFailed++;
       result.addFailedFile(entry.remoteName);
       Serial.print(F("FTP upload failed for "));
