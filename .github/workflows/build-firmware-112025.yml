@@ -81,8 +81,13 @@ jobs:
 
       - name: Build server firmware (.bin)
         run: |
+          LIB_ROOT="$RUNNER_TEMP/arduino-libraries"
+          mkdir -p "$LIB_ROOT/ArduinoOPTA-FTPS" "$LIB_ROOT/TankAlarm-112025-Common"
+          cp -r arduino-opta-ftps/src arduino-opta-ftps/library.properties "$LIB_ROOT/ArduinoOPTA-FTPS/"
+          cp -r TankAlarm-112025-Common/src TankAlarm-112025-Common/library.properties "$LIB_ROOT/TankAlarm-112025-Common/"
+
           arduino-cli compile --fqbn arduino:mbed_opta:opta \
-            --library TankAlarm-112025-Common \
+            --libraries "$LIB_ROOT" \
             --output-dir firmware/112025/server \
             TankAlarm-112025-Server-BluesOpta/TankAlarm-112025-Server-BluesOpta.ino
 
