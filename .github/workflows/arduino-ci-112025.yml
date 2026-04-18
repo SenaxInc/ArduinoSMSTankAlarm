@@ -31,10 +31,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Checkout ArduinoOPTA-FTPS library
+      - name: Checkout FTPSclientOPTA library
         uses: actions/checkout@v4
         with:
-          repository: dorkmo/ArduinoOPTA-FTPS
+          repository: dorkmo/FTPSclientOPTA
           path: arduino-opta-ftps
 
       - name: Setup Arduino CLI
@@ -88,8 +88,8 @@ jobs:
         continue-on-error: true
         run: |
           LIB_ROOT="$RUNNER_TEMP/arduino-libraries"
-          mkdir -p "$LIB_ROOT/ArduinoOPTA-FTPS" "$LIB_ROOT/TankAlarm-112025-Common"
-          cp -r arduino-opta-ftps/src arduino-opta-ftps/library.properties "$LIB_ROOT/ArduinoOPTA-FTPS/"
+          mkdir -p "$LIB_ROOT/FTPSclientOPTA" "$LIB_ROOT/TankAlarm-112025-Common"
+          cp -r arduino-opta-ftps/src arduino-opta-ftps/library.properties "$LIB_ROOT/FTPSclientOPTA/"
           cp -r TankAlarm-112025-Common/src TankAlarm-112025-Common/library.properties "$LIB_ROOT/TankAlarm-112025-Common/"
 
           arduino-cli compile --fqbn arduino:mbed_opta:opta \
