@@ -2,7 +2,7 @@
   "_type": "ftps_library_test",
   "firmware_version": "0.0.2",
   "device": "Arduino Opta",
-  "library": "ArduinoOPTA-FTPS",
+  "library": "FTPSclientOPTA",
   "message": "If you can read this file, FTPS upload succeeded.",
   "sensor_sample": {
     "tank_id": "TANK-001",

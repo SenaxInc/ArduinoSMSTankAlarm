@@ -1,5 +1,5 @@
 """
-Explicit FTPS test server for ArduinoOPTA-FTPS library validation.
+Explicit FTPS test server for FTPSclientOPTA library validation.
 
 Uses pyftpdlib with TLS (AUTH TLS / Explicit FTPS) to serve files over
 protected passive-mode connections. Designed to be used alongside the
@@ -76,7 +76,7 @@ def main():
     handler.passive_ports = range(pasv_low, pasv_high + 1)
 
     # Banner
-    handler.banner = "pyftpdlib FTPS test server ready (ArduinoOPTA-FTPS validation)"
+    handler.banner = "pyftpdlib FTPS test server ready (FTPSclientOPTA validation)"
 
     # Enable logging
     logging.basicConfig(level=logging.INFO)
@@ -87,7 +87,7 @@ def main():
 
     # Print summary
     print("=" * 60)
-    print("  ArduinoOPTA-FTPS Test Server (pyftpdlib + TLS)")
+    print("  FTPSclientOPTA Test Server (pyftpdlib + TLS)")
     print("=" * 60)
     print(f"  Listen:     {args.host}:{args.port}")
     print(f"  PASV range: {pasv_low}-{pasv_high}")

@@ -1918,7 +1918,7 @@ static const char kUploadPayload[] =
     "  \"_type\": \"ftps_library_test\",\r\n"
     "  \"firmware_version\": \"" FTPS_TEST_VERSION "\",\r\n"
     "  \"device\": \"Arduino Opta\",\r\n"
-    "  \"library\": \"ArduinoOPTA-FTPS\",\r\n"
+    "  \"library\": \"FTPSclientOPTA\",\r\n"
     "  \"message\": \"If you can read this file, FTPS upload succeeded.\",\r\n"
     "  \"sensor_sample\": {\r\n"
     "    \"tank_id\": \"TANK-001\",\r\n"
@@ -2161,7 +2161,7 @@ button:disabled{opacity:0.5;cursor:not-allowed}
 .dfu-available{color:#00d4ff;font-weight:bold}
 </style>
 </head><body>
-<h1>ArduinoOPTA-FTPS Library Test</h1>
+<h1>FTPSclientOPTA Library Test</h1>
 <div class="subtitle">TankAlarm-112025-FTPS_Server_Test v)HTML"));
   client.print(F(FTPS_TEST_VERSION));
   client.print(F(R"HTML( &mdash; )HTML"));

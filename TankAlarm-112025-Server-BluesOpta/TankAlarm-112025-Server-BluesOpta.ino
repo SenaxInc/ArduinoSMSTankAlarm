@@ -423,7 +423,7 @@ struct ServerConfig {
   char ftpUser[32];
   char ftpPass[32];
   char ftpPath[64];
-  // FTPS (Explicit TLS) settings — requires ArduinoOPTA-FTPS library
+  // FTPS (Explicit TLS) settings — requires FTPSclientOPTA library
   bool ftpsEnabled;                // true = use FTPS (TLS), false = plain FTP
   uint8_t ftpsTrustMode;           // 0 = Fingerprint, 1 = Imported PEM cert
   char ftpsFingerprint[65];        // SHA-256 hex fingerprint (64 chars + null)
@@ -5523,10 +5523,10 @@ static bool ftpsSessionLikelyDead(FtpsError error) {
 }
 
 // Compatibility classifiers used by backup retry logic.
-// These mirror ArduinoOPTA-FTPS helper behavior so this sketch builds
+// These mirror FTPSclientOPTA helper behavior so this sketch builds
 // against both older and newer FTPS library snapshots.
 // --- Refined classifiers (PER_FILE_RETRY_PLAN_04172026.md, Phase 0) ---------
-// Standardized in ArduinoOPTA-FTPS as:
+// Standardized in FTPSclientOPTA as:
 //   ftpsIsSessionDead(err)                  -> abort the entire backup batch
 //   ftpsIsTransferRetriable(err, nsapiCode) -> retry just this file
 //
