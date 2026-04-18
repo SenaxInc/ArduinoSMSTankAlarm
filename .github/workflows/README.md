@@ -1,6 +1,6 @@
 # GitHub Actions Workflows
 
-This directory contains automated CI/CD workflows for the ArduinoSMSTankAlarm project.
+This directory contains automated CI/CD workflows for the SenaxTankAlarm project.
 
 ## Arduino CI Workflow
 

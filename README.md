@@ -411,7 +411,7 @@ For technical support, bug reports, or feature requests, please open an issue on
 ## 🏗️ Repository Structure
 
 ```
-ArduinoSMSTankAlarm/
+SenaxTankAlarm/
 ├── TankAlarm-112025-Client-BluesOpta/    # Remote monitoring client
 ├── TankAlarm-112025-Server-BluesOpta/    # Central server & dashboard
 ├── TankAlarm-112025-Viewer-BluesOpta/    # Read-only viewer

@@ -123,7 +123,7 @@ struct GitHubFirmwareTargetState {
 
 #define DFU_CHECK_INTERVAL_MS (30UL * 60UL * 1000UL)  // 30 minutes
 #define GITHUB_REPO_OWNER "SenaxInc"
-#define GITHUB_REPO_NAME  "ArduinoSMSTankAlarm"
+#define GITHUB_REPO_NAME  "SenaxTankAlarm"
 #define GITHUB_DIRECT_DOWNLOAD_CHUNK_SIZE 1024U
 #define GITHUB_DIRECT_MAX_REDIRECTS 4
 #define GITHUB_DIRECT_HTTP_TIMEOUT_MS 15000

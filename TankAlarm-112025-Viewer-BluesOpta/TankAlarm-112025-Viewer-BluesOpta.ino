@@ -170,7 +170,7 @@ static unsigned long gLastGitHubCheckMs = 0;
 static bool gGitHubBootCheckDone = false;
 #define GITHUB_CHECK_INTERVAL_MS 86400000UL  // 24 hours
 #define GITHUB_REPO_OWNER "SenaxInc"
-#define GITHUB_REPO_NAME  "ArduinoSMSTankAlarm"
+#define GITHUB_REPO_NAME  "SenaxTankAlarm"
 
 // Watchdog kick wrapper for IAP DFU callback
 static void dfuKickWatchdog() {

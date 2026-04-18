@@ -14,12 +14,12 @@ Create a symlink in your Arduino libraries folder:
 
 **Windows (PowerShell as Admin):**
 ```powershell
-New-Item -ItemType Junction -Path "$env:USERPROFILE\Documents\Arduino\libraries\TankAlarm-112025-Common" -Target "C:\path\to\ArduinoSMSTankAlarm\TankAlarm-112025-Common"
+New-Item -ItemType Junction -Path "$env:USERPROFILE\Documents\Arduino\libraries\TankAlarm-112025-Common" -Target "C:\path\to\SenaxTankAlarm\TankAlarm-112025-Common"
 ```
 
 **Linux/macOS:**
 ```bash
-ln -s /path/to/ArduinoSMSTankAlarm/TankAlarm-112025-Common ~/Arduino/libraries/TankAlarm-112025-Common
+ln -s /path/to/SenaxTankAlarm/TankAlarm-112025-Common ~/Arduino/libraries/TankAlarm-112025-Common
 ```
 
 ### Option 2: Copy

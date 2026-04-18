@@ -936,7 +936,7 @@ If main loop hangs, Opta automatically resets.
 **Technical Support:**
 - **Arduino**: [Arduino Forum - Opta](https://forum.arduino.cc/c/hardware/opta/181)
 - **Blues**: [Blues Community Forum](https://community.blues.io)
-- **GitHub**: [Project Issues](https://github.com/SenaxInc/ArduinoSMSTankAlarm/issues)
+- **GitHub**: [Project Issues](https://github.com/SenaxInc/SenaxTankAlarm/issues)
 
 **Useful Commands:**
 

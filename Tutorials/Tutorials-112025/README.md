@@ -578,7 +578,7 @@ All tutorials in this directory include:
 **Community Support:**
 - [Blues Community Forum](https://community.blues.io)
 - [Arduino Forum - Opta](https://forum.arduino.cc/c/hardware/opta/181)
-- [GitHub Issues](https://github.com/SenaxInc/ArduinoSMSTankAlarm/issues)
+- [GitHub Issues](https://github.com/SenaxInc/SenaxTankAlarm/issues)
 
 **Video Tutorials:**
 - [Blues Notecard Quickstart](https://www.youtube.com/blues_wireless)
@@ -773,7 +773,7 @@ These tutorials are maintained alongside firmware releases:
 
 Found a problem with a tutorial or have a suggestion?
 
-1. **Documentation Issues**: [GitHub Issues](https://github.com/SenaxInc/ArduinoSMSTankAlarm/issues)
+1. **Documentation Issues**: [GitHub Issues](https://github.com/SenaxInc/SenaxTankAlarm/issues)
 2. **Technical Support**: [Blues Community Forum](https://community.blues.io)
 3. **Feature Requests**: Submit via GitHub Issues with `[ENHANCEMENT]` tag
 
@@ -822,7 +822,7 @@ These tutorials and firmware are provided for both personal and commercial use. 
 
 **Project Maintainer:**  
 Senax Inc.  
-[GitHub Repository](https://github.com/SenaxInc/ArduinoSMSTankAlarm)
+[GitHub Repository](https://github.com/SenaxInc/SenaxTankAlarm)
 
 **Support Channels:**
 - GitHub Issues (bug reports, feature requests)

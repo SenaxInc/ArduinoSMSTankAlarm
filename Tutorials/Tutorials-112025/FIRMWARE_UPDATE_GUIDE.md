@@ -571,7 +571,7 @@ Blues Notecard DFU includes built-in security features:
 
 **Technical Assistance:**
 - Blues.io Community Forum: [community.blues.io](https://community.blues.io)
-- GitHub Issues: [SenaxInc/ArduinoSMSTankAlarm](https://github.com/SenaxInc/ArduinoSMSTankAlarm/issues)
+- GitHub Issues: [SenaxInc/SenaxTankAlarm](https://github.com/SenaxInc/SenaxTankAlarm/issues)
 
 **Blues Resources:**
 - [Notehub Documentation](https://dev.blues.io/reference/notehub-api/api-introduction/)

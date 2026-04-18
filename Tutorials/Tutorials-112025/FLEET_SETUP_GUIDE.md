@@ -949,7 +949,7 @@ For advanced scenarios beyond standard fleets:
 ### Community and Support
 
 - **Blues Community**: [community.blues.io](https://community.blues.io)
-- **GitHub Issues**: [SenaxInc/ArduinoSMSTankAlarm](https://github.com/SenaxInc/ArduinoSMSTankAlarm/issues)
+- **GitHub Issues**: [SenaxInc/SenaxTankAlarm](https://github.com/SenaxInc/SenaxTankAlarm/issues)
 - **Arduino Forum**: [forum.arduino.cc/opta](https://forum.arduino.cc/c/hardware/opta/181)
 
 ### Video Tutorials

@@ -824,7 +824,7 @@ Project Root:
 
 - **Blues Community**: [community.blues.io](https://community.blues.io)
 - **Arduino Forum**: [forum.arduino.cc/opta](https://forum.arduino.cc/c/hardware/opta/181)
-- **GitHub Issues**: [Project Repository](https://github.com/SenaxInc/ArduinoSMSTankAlarm)
+- **GitHub Issues**: [Project Repository](https://github.com/SenaxInc/SenaxTankAlarm)
 
 ### Video Walkthroughs
 
