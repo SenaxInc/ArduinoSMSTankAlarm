@@ -985,6 +985,13 @@ static EthernetServer gWebServer(ETHERNET_PORT);
 static FtpsClient gFtpsClient;
 static char gServerUid[48] = {0};
 
+// Set true while performFtpBackup is running so handleWebRequests refuses
+// new connections. Each accepted browser request consumes a precious LWIP
+// socket slot and the FTPS data channels need every slot they can get.
+// Connection that initiated the backup is unaffected (it's already past
+// the accept stage and just blocked in respondJson).
+static volatile bool gBackupInProgress = false;
+
 static double gLastSyncedEpoch = 0.0;
 static unsigned long gLastSyncMillis = 0;
 static double gNextDailyEmailEpoch = 0.0;
@@ -4322,7 +4329,11 @@ void loop() {
 
   if (gPendingFtpBackup) {
     char error[128];
+    gBackupInProgress = true;
+    gWebServer.end();  // Free LISTEN PCB so FTPS data sockets have headroom (Opta LWIP pool=4)
     bool ok = performFtpBackup(error, sizeof(error));
+    gWebServer.begin();
+    gBackupInProgress = false;
     gPendingFtpBackup = false;
     if (!ok) {
       Serial.print(F("FTP auto-backup failed: "));
@@ -5637,6 +5648,14 @@ static bool ftpsConnectAndLogin(char *error, size_t errorSize) {
     ftpsAppendDiagnostics(error, errorSize);
     return false;
   }
+  // Per-file control reconnect was originally enabled to work around an
+  // Mbed-OS close-path issue that left the control channel in a zombie
+  // state after the first STOR. The root cause has since been fixed in
+  // the FTPS library (full TLS+TCP cleanup with reordered teardown), so
+  // per-file reconnect is no longer needed and now actively harms us by
+  // exhausting the LWIP socket pool with TIME_WAIT slots after 1-2
+  // files. Leave control alive for the whole backup batch.
+  gFtpsClient.setReconnectBetweenStores(false);
   writeFtpBackupMarker("ftps-connect:ok");
   return true;
 }
@@ -6252,6 +6271,22 @@ static FtpResult performFtpBackupDetailed() {
       break;
     }
 
+    // Inter-file delay: Opta LWIP pool is hard-baked at 4 PCBs (libmbed.a is
+    // precompiled so MBED_CONF_LWIP_SOCKET_MAX cannot be raised). SO_LINGER is
+    // unsupported (-3002) so each closed data socket sits in TIME_WAIT for
+    // ~60s. Without waiting, the 2nd or 3rd file fails -3005 NO_SOCKET.
+    // Sleep 65s between files (after the first) to let TIME_WAIT drain;
+    // service the 30s watchdog every 100ms so we don't reset.
+    if (i > 0 && useFtps) {
+      Serial.println(F("FTPS phase: inter-file:wait-tw"));
+      uint32_t waitStart = millis();
+      while (millis() - waitStart < 65000UL) {
+        serviceTransferWatchdog();
+        delay(100);
+      }
+      Serial.println(F("FTPS phase: inter-file:wait-done"));
+    }
+
     serviceTransferWatchdog();
 
     const BackupFileEntry &entry = kBackupFiles[i];
@@ -6314,7 +6349,13 @@ static FtpResult performFtpBackupDetailed() {
       result.filesFailed++;
       result.addFailedFile(entry.remoteName);
       Serial.print(F("FTP upload failed for "));
-      Serial.println(remotePath);
+      Serial.print(remotePath);
+      if (err[0] != '\0') {
+        Serial.print(F(" err='"));
+        Serial.print(err);
+        Serial.print(F("'"));
+      }
+      Serial.println();
 
       if (useFtps && ftpsSessionLikelyDead(gFtpsClient.lastError())) {
         abortRemainingTransfers = true;
@@ -7911,33 +7952,58 @@ static void initializeEthernet() {
     return;
   }
 
-  // Retrieve hardware MAC address if not set
+  // Retrieve hardware MAC address if not set. On PortentaEthernet the
+  // factory MAC is not readable until AFTER Ethernet.begin() has brought
+  // the PHY up, so before first begin() gMacAddress may still be zero.
   bool usingFactoryMac = true;
-  if (gMacAddress[0] == 0 && gMacAddress[1] == 0 && gMacAddress[2] == 0 && 
-      gMacAddress[3] == 0 && gMacAddress[4] == 0 && gMacAddress[5] == 0) {
-    // Read MAC into buffer
-    Ethernet.MACAddress(gMacAddress);
-  } else {
-    // Using manually configured MAC
+  if (!(gMacAddress[0] == 0 && gMacAddress[1] == 0 && gMacAddress[2] == 0 &&
+        gMacAddress[3] == 0 && gMacAddress[4] == 0 && gMacAddress[5] == 0)) {
+    // Application-provided MAC overrides the factory one.
     usingFactoryMac = false;
   }
-  
-  int status;
-  if (gConfig.useStaticIp) {
-    status = Ethernet.begin(gMacAddress, gStaticIp, gStaticDns, gStaticGateway, gStaticSubnet);
-  } else {
-    status = Ethernet.begin(gMacAddress);
+
+  // Retry DHCP a few times. The first attempt often fails because the
+  // PHY link has not finished auto-negotiating yet; spacing the retries
+  // out by 1.5s lets the switch/router learn the port and respond.
+  const int kMaxAttempts = 4;
+  int status = 0;
+  for (int attempt = 1; attempt <= kMaxAttempts && status == 0; ++attempt) {
+    if (gConfig.useStaticIp) {
+      status = Ethernet.begin(gMacAddress, gStaticIp, gStaticDns, gStaticGateway, gStaticSubnet);
+    } else if (usingFactoryMac) {
+      // No caller-supplied MAC: let PortentaEthernet use the factory MAC.
+      status = Ethernet.begin();
+    } else {
+      status = Ethernet.begin(gMacAddress);
+    }
+    if (status == 0) {
+      Serial.print(F(" attempt "));
+      Serial.print(attempt);
+      Serial.print(F(" failed"));
+      if (attempt < kMaxAttempts) {
+        Serial.print(F(", retrying..."));
+        safeSleep(1500);
+      } else {
+        Serial.println();
+      }
+    }
   }
 
   if (status == 0) {
     Serial.println(F(" FAILED - Could not configure Ethernet!"));
     if (!gConfig.useStaticIp) {
-      Serial.println(F("ERROR: DHCP failed. Check network cable and DHCP server."));
+      Serial.println(F("ERROR: DHCP failed after retries. Check network cable and DHCP server."));
     } else {
       Serial.println(F("ERROR: Static IP configuration failed."));
     }
     // Don't halt, just return and let the main loop handle the lack of network
     return;
+  }
+
+  // If the caller didn't supply a MAC, pull the factory MAC now (post-begin)
+  // so we can log it and reuse it elsewhere.
+  if (usingFactoryMac) {
+    Ethernet.MACAddress(gMacAddress);
   }
   
   // Check link status
@@ -8161,6 +8227,16 @@ static void handleLoginPost(EthernetClient &client, const String &body) {
 static void handleWebRequests() {
   EthernetClient client = gWebServer.available();
   if (!client) {
+    return;
+  }
+
+  // While an FTP backup is running, drop new web requests immediately so
+  // browser polling does not pin LWIP socket slots that the FTPS data
+  // channels need. The originating /api/ftp-backup request is not on this
+  // path — it is already inside its handler waiting for performFtpBackup
+  // to return — so this only affects subsequent connections.
+  if (gBackupInProgress) {
+    client.stop();
     return;
   }
 
@@ -9913,7 +9989,11 @@ static void handleFtpBackupPost(EthernetClient &client, const String &body) {
 
   // Use detailed result for comprehensive error reporting
   setFtpBackupStage("backup-running");
+  gBackupInProgress = true;
+  gWebServer.end();  // Free LISTEN PCB so FTPS data sockets have headroom (Opta LWIP pool=4)
   FtpResult result = performFtpBackupDetailed();
+  gWebServer.begin();
+  gBackupInProgress = false;
   gFtpBackupCriticalPathActive = false;
   setFtpBackupStage("backup-done");
 
