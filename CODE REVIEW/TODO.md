@@ -569,6 +569,7 @@ Items from the COMMON_HEADER_AUDIT_02192026.md that need cleanup.
 - [ ] **Pump Off Control Implementation** — Review and implement pump-off control options per PUMP_OFF_CONTROL_OPTIONS_03202026.md.
 - [ ] **Modularization** — Break monolithic `.ino` files into modular compilation units. Blocked by Arduino IDE constraints. Consider PlatformIO migration.
 - [ ] **Power State Machine Test Automation** — Execute the 7 documented test scenarios (POWER_STATE_TEST_COVERAGE.md). Currently test procedures exist, but execution status is unknown.
+- [ ] **Pre-LVD Emergency Save/Sync Path (Client)** — After hardware validation confirms baseline behavior, add an optional pre-LVD path that triggers one-time state save + telemetry sync when battery/load indicators show imminent disconnect risk. Keep this deferred until code-hardware validation is complete.
 
 ---
 

@@ -18,6 +18,37 @@
 static char _faultDescBuffer[128];
 static char _alarmDescBuffer[128];
 
+static bool readHoldingRegisters(uint8_t slaveId, uint16_t startAddress, uint8_t count, uint16_t *buffer) {
+  if (!ModbusRTUClient.requestFrom(slaveId, HOLDING_REGISTERS, startAddress, count)) {
+    return false;
+  }
+
+  for (uint8_t index = 0; index < count; ++index) {
+    buffer[index] = (uint16_t)ModbusRTUClient.read();
+  }
+
+  return true;
+}
+
+static bool readInputRegisters(uint8_t slaveId, uint16_t startAddress, uint8_t count, uint16_t *buffer) {
+  if (!ModbusRTUClient.requestFrom(slaveId, INPUT_REGISTERS, startAddress, count)) {
+    return false;
+  }
+
+  for (uint8_t index = 0; index < count; ++index) {
+    buffer[index] = (uint16_t)ModbusRTUClient.read();
+  }
+
+  return true;
+}
+
+static bool readRegistersWithFallback(uint8_t slaveId, uint16_t startAddress, uint8_t count, uint16_t *buffer) {
+  if (readHoldingRegisters(slaveId, startAddress, count, buffer)) {
+    return true;
+  }
+  return readInputRegisters(slaveId, startAddress, count, buffer);
+}
+
 SolarManager::SolarManager() 
   : _initialized(false), _lastPollMillis(0) {
   memset(&_data, 0, sizeof(SolarData));
@@ -56,6 +87,9 @@ bool SolarManager::begin(const SolarConfig& config) {
   
   // Set read timeout
   ModbusRTUClient.setTimeout(_config.modbusTimeoutMs);
+
+  // Mirror bench-proven defaults used by standalone diagnostics.
+  RS485.setDelays(50, 50);
   
   Serial.print(F("Solar: Modbus RTU initialized at "));
   Serial.print(_config.modbusBaudRate);
@@ -66,8 +100,26 @@ bool SolarManager::begin(const SolarConfig& config) {
   _data.communicationOk = false;
   _data.consecutiveErrors = 0;
   
-  // Do an initial read
-  readRegisters();
+  // Probe both holding and input register models before first full poll.
+  uint16_t startupProbe = 0;
+  bool startupHolding = readHoldingRegisters(_config.modbusSlaveId, SS_REG_BATTERY_VOLTAGE, 1, &startupProbe);
+  bool startupInput = false;
+  if (!startupHolding) {
+    startupInput = readInputRegisters(_config.modbusSlaveId, 0x0008, 1, &startupProbe);
+  }
+
+  if (startupHolding) {
+    Serial.println(F("Solar: Startup probe OK via FC03 (holding)"));
+  } else if (startupInput) {
+    Serial.println(F("Solar: Startup probe OK via FC04 (input)"));
+  } else {
+    Serial.println(F("Solar: Startup probe failed for both FC03 and FC04"));
+  }
+
+  // Do an initial full read to populate the data cache when possible.
+  if (!readRegisters()) {
+    Serial.println(F("Solar: Modbus transport initialized, but full initial read failed"));
+  }
   
   return true;
 }
@@ -95,100 +147,61 @@ bool SolarManager::poll(unsigned long nowMillis) {
   }
   
   _lastPollMillis = nowMillis;
-  return readRegisters();
+  readRegisters();
+  return true;
 }
 
 bool SolarManager::readRegisters() {
   bool success = true;
-  
-  // Read battery voltage (register 19, address 0x0012)
-  if (ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_BATTERY_VOLTAGE, 1)) {
-    uint16_t raw = ModbusRTUClient.read();
-    _data.batteryVoltage = scaleVoltage(raw);
+  SolarData nextData = _data;
+  uint16_t realtimeRegs[4];
+  uint16_t temperatureRegs[2];
+  uint16_t statusRegs[5];
+  uint16_t dailyChargeRegs[1];
+  uint16_t dailyVoltageRegs[2];
+
+  // Group contiguous Modbus reads to reduce total blocking time per poll.
+  if (readRegistersWithFallback(_config.modbusSlaveId, SS_REG_CHARGE_CURRENT, 4, realtimeRegs)) {
+    nextData.chargeCurrent = scaleCurrent(realtimeRegs[0]);
+    nextData.loadCurrent = scaleCurrent(realtimeRegs[1]);
+    nextData.batteryVoltage = scaleVoltage(realtimeRegs[2]);
+    nextData.arrayVoltage = scaleVoltage(realtimeRegs[3]);
   } else {
     success = false;
   }
-  
-  // Read array voltage (register 20, address 0x0013)
-  if (success && ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_ARRAY_VOLTAGE, 1)) {
-    uint16_t raw = ModbusRTUClient.read();
-    _data.arrayVoltage = scaleVoltage(raw);
+
+  if (success && readRegistersWithFallback(_config.modbusSlaveId, SS_REG_HEATSINK_TEMP, 2, temperatureRegs)) {
+    nextData.heatsinkTemp = (int8_t)((int16_t)temperatureRegs[0]);
+    nextData.batteryTemp = (int8_t)((int16_t)temperatureRegs[1]);
   } else {
     success = false;
   }
-  
-  // Read charge current (register 17, address 0x0010)
-  if (success && ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_CHARGE_CURRENT, 1)) {
-    uint16_t raw = ModbusRTUClient.read();
-    _data.chargeCurrent = scaleCurrent(raw);
+
+  if (success && readRegistersWithFallback(_config.modbusSlaveId, SS_REG_CHARGE_STATE, 5, statusRegs)) {
+    nextData.chargeState = (SolarChargeState)(statusRegs[0] & 0xFF);
+    nextData.faults = statusRegs[1];
+    nextData.alarms = statusRegs[3];
+    nextData.loadOn = (statusRegs[4] != 0);
   } else {
     success = false;
   }
-  
-  // Read load current (register 18, address 0x0011)
-  if (success && ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_LOAD_CURRENT, 1)) {
-    uint16_t raw = ModbusRTUClient.read();
-    _data.loadCurrent = scaleCurrent(raw);
+
+  if (success && readRegistersWithFallback(_config.modbusSlaveId, SS_REG_AH_DAILY, 1, dailyChargeRegs)) {
+    nextData.ampHoursDaily = dailyChargeRegs[0] * 0.1f;  // Scale: 0.1 Ah per count
   } else {
     success = false;
   }
-  
-  // Read heatsink temperature (register 28, address 0x001B)
-  if (success && ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_HEATSINK_TEMP, 1)) {
-    int16_t raw = (int16_t)ModbusRTUClient.read();
-    _data.heatsinkTemp = (int8_t)raw;  // Direct signed value in °C
-  } else {
-    success = false;
-  }
-  
-  // Read charge state (register 44, address 0x002B)
-  if (success && ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_CHARGE_STATE, 1)) {
-    uint16_t raw = ModbusRTUClient.read();
-    _data.chargeState = (SolarChargeState)(raw & 0xFF);
-  } else {
-    success = false;
-  }
-  
-  // Read faults (register 45, address 0x002C)
-  if (success && ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_FAULTS, 1)) {
-    _data.faults = ModbusRTUClient.read();
-  } else {
-    success = false;
-  }
-  
-  // Read alarms (register 47, address 0x002E)
-  if (success && ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_ALARMS, 1)) {
-    _data.alarms = ModbusRTUClient.read();
-  } else {
-    success = false;
-  }
-  
-  // Read daily min battery voltage (register 62, address 0x003D)
-  if (success && ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_BATTERY_V_MIN_DAILY, 1)) {
-    uint16_t raw = ModbusRTUClient.read();
-    _data.batteryVoltageMinDaily = scaleVoltage(raw);
-  } else {
-    success = false;
-  }
-  
-  // Read daily max battery voltage (register 63, address 0x003E)
-  if (success && ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_BATTERY_V_MAX_DAILY, 1)) {
-    uint16_t raw = ModbusRTUClient.read();
-    _data.batteryVoltageMaxDaily = scaleVoltage(raw);
-  } else {
-    success = false;
-  }
-  
-  // Read amp-hours today (register 53, address 0x0034)
-  if (success && ModbusRTUClient.requestFrom(_config.modbusSlaveId, HOLDING_REGISTERS, SS_REG_AH_DAILY, 1)) {
-    uint16_t raw = ModbusRTUClient.read();
-    _data.ampHoursDaily = raw * 0.1f;  // Scale: 0.1 Ah per count
+
+  if (success && readRegistersWithFallback(_config.modbusSlaveId, SS_REG_BATTERY_V_MIN_DAILY, 2, dailyVoltageRegs)) {
+    nextData.batteryVoltageMinDaily = scaleVoltage(dailyVoltageRegs[0]);
+    nextData.batteryVoltageMaxDaily = scaleVoltage(dailyVoltageRegs[1]);
   } else {
     success = false;
   }
   
   // Update communication status
   if (success) {
+    _data = nextData;
     _data.communicationOk = true;
     _data.lastReadMillis = millis();
     _data.consecutiveErrors = 0;
@@ -228,9 +241,6 @@ void SolarManager::updateHealthStatus() {
                       _data.chargeState == CHARGE_STATE_ABSORPTION ||
                       _data.chargeState == CHARGE_STATE_EQUALIZE);
   _data.isFullyCharged = (_data.chargeState == CHARGE_STATE_FLOAT);
-  
-  // Load state
-  _data.loadOn = (_data.chargeState != CHARGE_STATE_FAULT);  // Simplified; could read load state register
   
   // Battery health assessment
   _data.batteryHealthy = (_data.batteryVoltage >= _config.batteryLowVoltage) &&

@@ -363,7 +363,7 @@ The system supports optional monitoring of Morningstar SunSaver MPPT solar batte
 
 **Required Hardware:**
 
-1. **Arduino Opta with RS485** - Use the Opta WiFi/RS485 variant (AFX00005) which has built-in RS485, or add an RS485 expansion to the Opta Lite
+1. **Arduino Opta with RS485** - Use Opta WiFi (AFX00002) or Opta RS485 (AFX00001), both of which include built-in RS485. Opta Lite (AFX00003) requires an external RS485 transceiver.
 
 2. **Morningstar MRC-1 Adapter** (MeterBus to EIA-485)
    - Converts SunSaver's proprietary RJ-11 MeterBus to industry-standard RS-485
@@ -458,6 +458,38 @@ When `includeInDaily` is enabled, the daily report includes:
 **Example Alert Message:**
 
 ```
+
+### Non-Modbus Solar Charger Support (SunKeeper-6 / Basic Regulators)
+
+You can still run solar-powered deployments without Modbus telemetry.
+
+Use this path when the charge controller does not expose RS-485/Modbus data
+(for example, SunKeeper-6 style PWM regulators).
+
+What remains supported in firmware:
+
+- Power-state control via `solarPowered`
+- Battery health from Notecard direct voltage (`batteryMonitor`)
+- Optional analog divider voltage monitoring (`vinMonitor`)
+- Daily reporting and alarm logic based on available battery sources
+
+What is not available in this mode:
+
+- SunSaver register telemetry (charge state, fault/alarm bitfields, array voltage, charge current)
+- RS-485 communication diagnostics for the charger
+
+Configuration guidance:
+
+- Keep `solarPowered: true`
+- Keep `solarCharger.enabled: false` (this disables Modbus path)
+- Use `powerSource: solar` or `powerSource: solar_vin` for basic PWM chargers (for example SunKeeper-6)
+- Use `powerSource: solar_mppt` for higher-quality non-monitored chargers (still no RS-485 monitoring)
+- Enable `batteryMonitor` and/or `vinMonitor` to keep battery protection features
+
+Hardware guidance:
+
+- Opta Lite (AFX00003) is sufficient for this mode
+- No RS-485 transceiver or MRC-1 adapter is required
 Solar: Battery voltage CRITICAL (11.3V)
 Site: North Tank Farm
 Charge State: Night

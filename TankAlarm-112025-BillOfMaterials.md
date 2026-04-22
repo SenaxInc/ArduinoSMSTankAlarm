@@ -212,8 +212,8 @@ Cellular Data Plan | [Blues Wireless](https://blues.io/pricing/) | Pay-as-you-go
 
 ### Arduino Opta Models
 - **Opta Lite** (AFX00003) - Recommended for most installations
-- **Opta WiFi** (AFX00001) - Can be used but WiFi not utilized in this design
-- **Opta RS485** (AFX00002) - Can be used for Modbus sensor integration
+- **Opta WiFi** (AFX00002) - Includes built-in RS485 and WiFi/BLE
+- **Opta RS485** (AFX00001) - Includes built-in RS485 (no WiFi/BLE)
 
 ### Blues Notecard Models
 - **NOTE-NBGL-500** - North America (LTE-M/NB-IoT)

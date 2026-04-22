@@ -36,6 +36,10 @@
 #include <errno.h>
 #include <sys/types.h>
 
+// Forward-declare FluidType so Arduino's auto-generated function prototypes
+// (inserted near the top of the .ino) can reference it before its definition below.
+enum FluidType : uint8_t;
+
 // POSIX file I/O types (for platforms that support it)
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
   #include <fcntl.h>
@@ -81,6 +85,23 @@ static inline bool isStorageAvailable() {
 // For PRODUCTION: Leave commented out (default) to save 5-10% power consumption
 // For DEVELOPMENT: Uncomment the line below for troubleshooting and monitoring
 //#define DEBUG_MODE
+
+// Solar hardware test serial output (opt-in)
+// Enable during RS-485/Modbus bring-up to print one structured line per poll.
+// Leave disabled for normal deployments to minimize serial/log overhead.
+#define SOLAR_HW_TEST_SERIAL
+
+// Optional test-only override: force-enable SunSaver polling with known defaults
+// even when flash config currently has solarCharger.enabled=false.
+#define SOLAR_HW_TEST_FORCE_SOLAR_CONFIG
+
+#ifdef SOLAR_HW_TEST_SERIAL
+  #define SOLAR_TEST_PRINT(x) Serial.print(x)
+  #define SOLAR_TEST_PRINTLN(x) Serial.println(x)
+#else
+  #define SOLAR_TEST_PRINT(x)
+  #define SOLAR_TEST_PRINTLN(x)
+#endif
 
 // Debug output macros - no-op when DEBUG_MODE is disabled
 #ifdef DEBUG_MODE
@@ -398,6 +419,10 @@ static float getDistanceConversionFactorByName(const char* unit) {
   return getDistanceConversionFactor(DistanceUnit::INCH); // Default: assume inches
 }
 
+// Forward decl: defined after MonitorConfig is in scope below.
+struct MonitorConfig;
+static float getEffectiveSpecificGravity(const MonitorConfig &cfg);
+
 // Object types - what is being monitored
 enum ObjectType : uint8_t {
   OBJECT_TANK = 0,        // Liquid storage tank (level monitoring)
@@ -407,6 +432,82 @@ enum ObjectType : uint8_t {
   OBJECT_FLOW = 4,        // Flow meter (liquid or gas flow rate)
   OBJECT_CUSTOM = 255     // User-defined/other
 };
+
+// Fluid type presets - used to derive specific gravity for pressure->height conversion.
+// Specific gravity (SG) is the ratio of fluid density to water density at standard conditions.
+// SG affects how much head pressure a column of fluid produces:
+//   inches_of_fluid = (PSI * 27.68) / SG
+// So a 27.68 in/PSI conversion (assuming water) under-reports level for fluids lighter
+// than water (e.g., diesel SG=0.85 reads ~17% low) and over-reports for heavier fluids.
+enum FluidType : uint8_t {
+  FLUID_WATER = 0,         // 1.00
+  FLUID_DIESEL = 1,        // 0.85
+  FLUID_GASOLINE = 2,      // 0.74
+  FLUID_HEATING_OIL = 3,   // 0.85
+  FLUID_PROPANE_LPG = 4,   // 0.50 (liquid LPG)
+  FLUID_BRINE = 5,         // 1.20
+  FLUID_CRUDE_OIL = 6,     // 0.83
+  FLUID_USED_OIL = 7,      // 0.92
+  FLUID_GLYCOL_50 = 8,     // 1.07 (50/50 propylene glycol antifreeze)
+  FLUID_DEF_ADBLUE = 9,    // 1.09 (Diesel Exhaust Fluid / AdBlue)
+  FLUID_ETHANOL = 10,      // 0.79
+  FLUID_CUSTOM = 255       // Use MonitorConfig.fluidSpecificGravity (manual entry)
+};
+
+// Returns the preset SG for a fluid type. For FLUID_CUSTOM, returns 0.0 to signal
+// "caller must use the manually entered fluidSpecificGravity".
+static float getPresetSpecificGravity(FluidType ft) {
+  switch (ft) {
+    case FLUID_WATER:        return 1.00f;
+    case FLUID_DIESEL:       return 0.85f;
+    case FLUID_GASOLINE:     return 0.74f;
+    case FLUID_HEATING_OIL:  return 0.85f;
+    case FLUID_PROPANE_LPG:  return 0.50f;
+    case FLUID_BRINE:        return 1.20f;
+    case FLUID_CRUDE_OIL:    return 0.83f;
+    case FLUID_USED_OIL:     return 0.92f;
+    case FLUID_GLYCOL_50:    return 1.07f;
+    case FLUID_DEF_ADBLUE:   return 1.09f;
+    case FLUID_ETHANOL:      return 0.79f;
+    case FLUID_CUSTOM:       return 0.0f;  // signal: use manual override
+    default:                 return 1.00f;
+  }
+}
+
+static FluidType parseFluidTypeName(const char *name) {
+  if (!name) return FLUID_WATER;
+  if (strcmp(name, "water") == 0)        return FLUID_WATER;
+  if (strcmp(name, "diesel") == 0)       return FLUID_DIESEL;
+  if (strcmp(name, "gasoline") == 0)     return FLUID_GASOLINE;
+  if (strcmp(name, "heatingOil") == 0)   return FLUID_HEATING_OIL;
+  if (strcmp(name, "propane") == 0 || strcmp(name, "lpg") == 0) return FLUID_PROPANE_LPG;
+  if (strcmp(name, "brine") == 0)        return FLUID_BRINE;
+  if (strcmp(name, "crudeOil") == 0)     return FLUID_CRUDE_OIL;
+  if (strcmp(name, "usedOil") == 0)      return FLUID_USED_OIL;
+  if (strcmp(name, "glycol50") == 0)     return FLUID_GLYCOL_50;
+  if (strcmp(name, "def") == 0 || strcmp(name, "adblue") == 0) return FLUID_DEF_ADBLUE;
+  if (strcmp(name, "ethanol") == 0)      return FLUID_ETHANOL;
+  if (strcmp(name, "custom") == 0)       return FLUID_CUSTOM;
+  return FLUID_WATER;
+}
+
+static const char *fluidTypeName(FluidType ft) {
+  switch (ft) {
+    case FLUID_WATER:       return "water";
+    case FLUID_DIESEL:      return "diesel";
+    case FLUID_GASOLINE:    return "gasoline";
+    case FLUID_HEATING_OIL: return "heatingOil";
+    case FLUID_PROPANE_LPG: return "propane";
+    case FLUID_BRINE:       return "brine";
+    case FLUID_CRUDE_OIL:   return "crudeOil";
+    case FLUID_USED_OIL:    return "usedOil";
+    case FLUID_GLYCOL_50:   return "glycol50";
+    case FLUID_DEF_ADBLUE:  return "def";
+    case FLUID_ETHANOL:     return "ethanol";
+    case FLUID_CUSTOM:      return "custom";
+    default:                return "water";
+  }
+}
 
 // Sensor interface types - how the measurement is taken
 enum SensorInterface : uint8_t {
@@ -495,6 +596,10 @@ struct MonitorConfig {
   float sensorRangeMin;    // Minimum native sensor range (e.g., 0 for 0-5 PSI or 0-10m)
   float sensorRangeMax;    // Maximum native sensor range (e.g., 5 for 0-5 PSI, 10 for 0-10m)
   char sensorRangeUnit[8]; // Unit for sensor range: "PSI", "bar", "m", "ft", "in", etc.
+  // Fluid characterization (for liquid tanks; ignored for OBJECT_GAS / non-tank objects).
+  // Used as the fallback SG before the server's calibration learning takes over.
+  FluidType fluidType;             // Fluid preset (default FLUID_WATER)
+  float fluidSpecificGravity;      // Manual SG override; only used when fluidType == FLUID_CUSTOM
   // Analog voltage sensor settings (for sensors like Dwyer 626 with voltage output)
   float analogVoltageMin;  // Minimum voltage output (e.g., 0.0 for 0-10V, 1.0 for 1-5V)
   float analogVoltageMax;  // Maximum voltage output (e.g., 10.0 for 0-10V, 5.0 for 1-5V)
@@ -1143,6 +1248,8 @@ static void sendSerialAck(const char *status);
 static void evaluateUnload(uint8_t idx);
 static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, double peakEpoch);
 static void sendSolarAlarm(SolarAlertType alertType);
+static void logSolarHardwareTestHeartbeat(unsigned long now);
+static void logSolarPollSnapshot(unsigned long now, SolarAlertType alertType);
 static bool appendSolarDataToDaily(JsonDocument &doc);
 static void recoverI2CBus();
 static void logI2CRecoveryEvent(I2CRecoveryTrigger trigger);
@@ -1236,6 +1343,18 @@ void setup() {
 
   initializeStorage();
   ensureConfigLoaded();
+
+#if defined(SOLAR_HW_TEST_SERIAL) && defined(SOLAR_HW_TEST_FORCE_SOLAR_CONFIG)
+  // Test override so RS-485 bring-up can be exercised without editing flash JSON.
+  gConfig.solarCharger.enabled = true;
+  gConfig.solarCharger.modbusSlaveId = 1;
+  gConfig.solarCharger.modbusBaudRate = 9600;
+  gConfig.solarCharger.modbusTimeoutMs = 500;
+  gConfig.solarCharger.pollIntervalSec = 10;
+  gConfig.solarCharger.alertOnCommFailure = true;
+  Serial.println(F("Solar HW test: forced solarCharger config enabled"));
+#endif
+
   printHardwareRequirements(gConfig);
 
   Wire.begin();
@@ -1374,8 +1493,13 @@ void setup() {
   // Initialize solar/battery charger monitoring (SunSaver MPPT via RS-485)
   if (gConfig.solarCharger.enabled) {
     if (gSolarManager.begin(gConfig.solarCharger)) {
-      Serial.println(F("Solar charger monitoring enabled"));
-      addSerialLog("Solar charger monitoring initialized");
+      if (gSolarManager.isCommunicationOk()) {
+        Serial.println(F("Solar charger monitoring enabled"));
+        addSerialLog("Solar charger monitoring initialized");
+      } else {
+        Serial.println(F("Solar charger transport initialized, initial Modbus read failed"));
+        addSerialLog("Solar charger initial Modbus read failed");
+      }
     } else {
       Serial.println(F("Warning: Solar charger initialization failed"));
       addSerialLog("Solar charger init failed");
@@ -1475,6 +1599,8 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+
+  logSolarHardwareTestHeartbeat(now);
 
 #ifdef TANKALARM_WATCHDOG_AVAILABLE
   // Reset watchdog timer to prevent system reset
@@ -1708,7 +1834,8 @@ void loop() {
   // battery recovery, but at reduced frequency (controlled by sleep duration).
   if (gSolarManager.isEnabled()) {
     if (gSolarManager.poll(now)) {
-      // New data available - check for alerts (suppress alarm sending in CRITICAL to save power)
+      // A poll was attempted - check alerts using the refreshed communication state
+      // (suppress alarm sending in CRITICAL to save power).
       SolarAlertType alert = gSolarManager.checkAlerts();
       if (alert != SOLAR_ALERT_NONE && gNotecardAvailable && gPowerState != POWER_STATE_CRITICAL_HIBERNATE) {
         // Only send alert if different from last, or enough time has passed
@@ -1721,6 +1848,9 @@ void loop() {
       } else if (alert == SOLAR_ALERT_NONE) {
         gLastSolarAlert = SOLAR_ALERT_NONE;  // Clear last alert state
       }
+
+      // Optional serial output for hardware bring-up.
+      logSolarPollSnapshot(now, alert);
     }
   }
   
@@ -1911,24 +2041,47 @@ static PulseSamplingRecommendation getRecommendedPulseSampling(float expectedRat
 
 // Helper function: Get tank height/capacity based on sensor configuration
 static float getMonitorHeight(const MonitorConfig &cfg) {
+  // Gas pressure monitors don't have a meaningful "height" — return the raw
+  // pressure full-scale value so callers that compare current reading vs height
+  // (e.g., percentage gauges) still get sensible numbers in the sensor's own units.
+  if (cfg.objectType == OBJECT_GAS) {
+    return cfg.sensorRangeMax;
+  }
   if (cfg.sensorInterface == SENSOR_CURRENT_LOOP) {
     if (cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
       // For ultrasonic sensors, mount height IS the tank height (distance to bottom)
       return cfg.sensorMountHeight;
     } else {
-      // For pressure sensors, max range + mount height approximates full tank height
-      float rangeInches = cfg.sensorRangeMax * getPressureConversionFactorByName(cfg.sensorRangeUnit);
+      // Pressure-driven liquid level: divide by SG so non-water fluids size correctly.
+      float sg = getEffectiveSpecificGravity(cfg);
+      float rangeInches = cfg.sensorRangeMax * getPressureConversionFactorByName(cfg.sensorRangeUnit) / sg;
       return rangeInches + cfg.sensorMountHeight;
     }
   } else if (cfg.sensorInterface == SENSOR_ANALOG) {
-    // For analog sensors, max range + mount height approximates full tank height
-    float rangeInches = cfg.sensorRangeMax * getPressureConversionFactorByName(cfg.sensorRangeUnit);
+    float sg = getEffectiveSpecificGravity(cfg);
+    float rangeInches = cfg.sensorRangeMax * getPressureConversionFactorByName(cfg.sensorRangeUnit) / sg;
     return rangeInches + cfg.sensorMountHeight;
   } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
     // Digital sensors are binary, treat 1.0 as full
     return 1.0f;
   }
   return 0.0f;
+}
+
+// Returns the specific gravity to use for pressure->height conversion in the client's
+// local fallback path (used until/unless the server's calibration learning takes over).
+// Priority:  manual override (FLUID_CUSTOM + fluidSpecificGravity > 0)  >  fluid preset  >  water (1.0)
+static float getEffectiveSpecificGravity(const MonitorConfig &cfg) {
+  if (cfg.fluidType == FLUID_CUSTOM && cfg.fluidSpecificGravity >= 0.3f && cfg.fluidSpecificGravity <= 2.0f) {
+    return cfg.fluidSpecificGravity;
+  }
+  // For non-custom presets, fluidSpecificGravity > 0 still wins as an explicit override
+  // (lets the server push a learned-calibration-derived SG without changing the type label).
+  if (cfg.fluidSpecificGravity >= 0.3f && cfg.fluidSpecificGravity <= 2.0f) {
+    return cfg.fluidSpecificGravity;
+  }
+  float preset = getPresetSpecificGravity(cfg.fluidType);
+  return (preset > 0.0f) ? preset : 1.0f;
 }
 
 /**
@@ -2091,6 +2244,8 @@ static void createDefaultConfig(ClientConfig &cfg) {
   strlcpy(cfg.monitors[0].sensorRangeUnit, "PSI", sizeof(cfg.monitors[0].sensorRangeUnit)); // Default: PSI
   cfg.monitors[0].analogVoltageMin = 0.0f;  // Default: 0V (for 0-10V sensors)
   cfg.monitors[0].analogVoltageMax = 10.0f; // Default: 10V (for 0-10V sensors)
+  cfg.monitors[0].fluidType = FLUID_WATER;       // Default fluid: water (SG 1.0)
+  cfg.monitors[0].fluidSpecificGravity = 0.0f;   // 0 = use preset for fluidType
   strlcpy(cfg.monitors[0].measurementUnit, "inches", sizeof(cfg.monitors[0].measurementUnit)); // Default: inches
   cfg.monitors[0].expectedPulseRate = 0.0f; // Default: not configured (0 = no baseline)
   cfg.monitors[0].stuckDetectionEnabled = false; // Default: off (opt-in via config)
@@ -2113,7 +2268,8 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.currentLoopI2cAddress = CURRENT_LOOP_I2C_ADDRESS; // Default 0x64
   
   // Solar/Battery charger monitoring defaults (disabled)
-  // Requires: Arduino Opta RS485 + Morningstar MRC-1 adapter + SunSaver MPPT
+  // Requires: Arduino Opta with RS485 (Opta WiFi AFX00002 or Opta RS485 AFX00001),
+  // Morningstar MRC-1 adapter, and SunSaver MPPT
   cfg.solarCharger.enabled = false;                          // Disabled by default
   cfg.solarCharger.modbusSlaveId = SOLAR_DEFAULT_SLAVE_ID;   // Default: 1
   cfg.solarCharger.modbusBaudRate = SOLAR_DEFAULT_BAUD_RATE; // Default: 9600
@@ -2212,6 +2368,10 @@ static void initMonitorDefaults(MonitorConfig &mon, uint8_t index) {
   strlcpy(mon.sensorRangeUnit, "PSI", sizeof(mon.sensorRangeUnit));
   mon.analogVoltageMin = 0.0f;
   mon.analogVoltageMax = 10.0f;
+
+  // Fluid characterization defaults (water, no manual SG override)
+  mon.fluidType = FLUID_WATER;
+  mon.fluidSpecificGravity = 0.0f;
 
   // Stuck sensor detection
   mon.stuckDetectionEnabled = true;
@@ -2399,6 +2559,24 @@ static void parseMonitorFromJson(MonitorConfig &mon, JsonObjectConst t, uint8_t 
 
   const char *rangeUnitStr = t["sensorRangeUnit"].as<const char *>();
   if (rangeUnitStr) strlcpy(mon.sensorRangeUnit, rangeUnitStr, sizeof(mon.sensorRangeUnit));
+
+  // ---- Fluid characterization (liquid tanks only; ignored for OBJECT_GAS / RPM / flow) ----
+  // Accept either a preset name ("diesel", "gasoline", ...) or numeric enum value.
+  const char *fluidTypeStr = t["fluidType"].as<const char *>();
+  if (fluidTypeStr) {
+    mon.fluidType = parseFluidTypeName(fluidTypeStr);
+  } else if (t["fluidType"].is<uint8_t>()) {
+    mon.fluidType = (FluidType)t["fluidType"].as<uint8_t>();
+  }
+  if (t["fluidSpecificGravity"].is<float>()) {
+    float sg = t["fluidSpecificGravity"].as<float>();
+    // Reject implausible values silently; SG between 0.3 and 2.0 covers anything realistic.
+    if (sg >= 0.3f && sg <= 2.0f) {
+      mon.fluidSpecificGravity = sg;
+    } else if (sg == 0.0f) {
+      mon.fluidSpecificGravity = 0.0f;  // 0 = use preset table value
+    }
+  }
 
   // ---- Measurement unit (for display/reporting) ----
   // Explicit field takes priority; otherwise derive from object type and sensor config
@@ -2872,6 +3050,11 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
     t["sensorRangeMin"] = cfg.monitors[i].sensorRangeMin;
     t["sensorRangeMax"] = cfg.monitors[i].sensorRangeMax;
     t["sensorRangeUnit"] = cfg.monitors[i].sensorRangeUnit;
+    // Save fluid characterization (allows server to display preset and round-trip custom SG)
+    t["fluidType"] = fluidTypeName(cfg.monitors[i].fluidType);
+    if (cfg.monitors[i].fluidSpecificGravity > 0.0f) {
+      t["fluidSpecificGravity"] = cfg.monitors[i].fluidSpecificGravity;
+    }
     // Save analog voltage range settings
     t["analogVoltageMin"] = cfg.monitors[i].analogVoltageMin;
     t["analogVoltageMax"] = cfg.monitors[i].analogVoltageMax;
@@ -2988,7 +3171,8 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
   }
   if (cfg.solarCharger.enabled) {
     Serial.println(F("Solar Charger Monitoring (SunSaver MPPT):"));
-    Serial.println(F("  - Arduino Opta with RS485 (WiFi/RS485 model or RS485 shield)"));
+    Serial.println(F("  - Arduino Opta WiFi (AFX00002) or Opta RS485 (AFX00001)"));
+    Serial.println(F("    Opta Lite (AFX00003) requires external RS485 transceiver"));
     Serial.println(F("  - Morningstar MRC-1 (MeterBus to EIA-485 Adapter)"));
     Serial.println(F("    Powered by SunSaver via RJ-11, no external power needed"));
     Serial.println(F("  - RS485 Wiring: Opta A(-) to MRC-1 B(-), Opta B(+) to MRC-1 A(+)"));
@@ -2997,6 +3181,11 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
     Serial.print(F(", "));
     Serial.print(cfg.solarCharger.modbusBaudRate);
     Serial.println(F(" baud"));
+  } else if (cfg.solarPowered) {
+    Serial.println(F("Solar Power (Non-Modbus Charger):"));
+    Serial.println(F("  - Compatible with simple regulators (e.g., SunKeeper-6)"));
+    Serial.println(F("  - No RS485 or Modbus telemetry required"));
+    Serial.println(F("  - Use batteryMonitor and/or vinMonitor for voltage health"));
   }
   if (cfg.batteryMonitor.enabled) {
     Serial.println(F("Battery Voltage Monitoring (Notecard direct):"));
@@ -4212,13 +4401,17 @@ static bool validateSensorReading(uint8_t idx, float reading) {
   
   if ((isCurrentLoop || isAnalogWithVoltageRange) && hasNativeRange) {
     // For sensors with native range, calculate max from sensor range
-    if (isCurrentLoop && cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
+    if (cfg.objectType == OBJECT_GAS) {
+      // Gas pressure: bound is just the raw range (no inches conversion / mount add).
+      maxValid = cfg.sensorRangeMax * 1.1f;
+    } else if (isCurrentLoop && cfg.currentLoopType == CURRENT_LOOP_ULTRASONIC) {
       // Ultrasonic: max level is sensorMountHeight (when tank is full)
       maxValid = cfg.sensorMountHeight * 1.1f;
     } else {
-      // Pressure: calculate max from pressure range
+      // Pressure-driven liquid level: include SG so bounds match the actual fluid column.
       float conversionFactor = getPressureConversionFactorByName(cfg.sensorRangeUnit);
-      maxValid = (cfg.sensorRangeMax * conversionFactor + cfg.sensorMountHeight) * 1.1f;
+      float sg = getEffectiveSpecificGravity(cfg);
+      maxValid = ((cfg.sensorRangeMax * conversionFactor / sg) + cfg.sensorMountHeight) * 1.1f;
     }
     minValid = -maxValid * 0.1f;
   } else if (cfg.sensorInterface == SENSOR_DIGITAL) {
@@ -4383,9 +4576,17 @@ static float readAnalogSensor(const MonitorConfig &cfg, uint8_t idx) {
   float pressure = linearMap(voltage, cfg.analogVoltageMin, cfg.analogVoltageMax,
                              cfg.sensorRangeMin, cfg.sensorRangeMax);
 
-  // Convert pressure to liquid height in inches using appropriate conversion factor
+  // Gas pressure monitors: report the raw pressure in its native unit (no level conversion).
+  if (cfg.objectType == OBJECT_GAS) {
+    if (pressure < 0.0f) pressure = 0.0f;
+    return pressure;
+  }
+
+  // Convert pressure to liquid height in inches using fluid SG (defaults to water=1.0).
+  // inches_of_fluid = (pressure * 27.68 in_H2O/PSI) / SG
   float conversionFactor = getPressureConversionFactorByName(cfg.sensorRangeUnit);
-  float liquidAboveSensor = pressure * conversionFactor;
+  float sg = getEffectiveSpecificGravity(cfg);
+  float liquidAboveSensor = (pressure * conversionFactor) / sg;
 
   // Total height from tank bottom = liquid above sensor + sensor mount height
   float levelInches = liquidAboveSensor + cfg.sensorMountHeight;
@@ -4457,8 +4658,19 @@ static float readCurrentLoopSensor(const MonitorConfig &cfg, uint8_t idx) {
 
     float pressure = linearMap(milliamps, 4.0f, 20.0f,
                                cfg.sensorRangeMin, cfg.sensorRangeMax);
+
+    // Gas pressure monitors: report the raw pressure in its native unit. No PSI->inches
+    // conversion, no mount-height add — gas pressure isn't a fluid column.
+    if (cfg.objectType == OBJECT_GAS) {
+      if (pressure < 0.0f) pressure = 0.0f;
+      return pressure;
+    }
+
+    // Liquid level: divide by fluid specific gravity so we don't assume water.
+    // inches_of_fluid = (pressure_PSI * 27.68 in_H2O/PSI) / SG
     float conversionFactor = getPressureConversionFactorByName(cfg.sensorRangeUnit);
-    float liquidAboveSensor = pressure * conversionFactor;
+    float sg = getEffectiveSpecificGravity(cfg);
+    float liquidAboveSensor = (pressure * conversionFactor) / sg;
 
     // Total height from tank bottom = liquid above sensor + sensor mount height
     levelInches = liquidAboveSensor + cfg.sensorMountHeight;
@@ -5261,6 +5473,83 @@ static void sendUnloadEvent(uint8_t idx, float peakInches, float currentInches, 
 // Solar/Battery Charger Alarm Functions (SunSaver MPPT via RS-485)
 // ============================================================================
 
+static void logSolarHardwareTestHeartbeat(unsigned long now) {
+#ifdef SOLAR_HW_TEST_SERIAL
+  static unsigned long lastHeartbeatMillis = 0;
+  if (now - lastHeartbeatMillis < 10000UL) {
+    return;
+  }
+
+  lastHeartbeatMillis = now;
+
+  SOLAR_TEST_PRINT(F("SolarTest ms="));
+  SOLAR_TEST_PRINT(now);
+  SOLAR_TEST_PRINT(F(" solarEnabled="));
+  SOLAR_TEST_PRINT(gSolarManager.isEnabled() ? 1 : 0);
+  SOLAR_TEST_PRINT(F(" battEnabled="));
+  SOLAR_TEST_PRINT(gConfig.batteryMonitor.enabled ? 1 : 0);
+  SOLAR_TEST_PRINT(F(" notecard="));
+  SOLAR_TEST_PRINT(gNotecardAvailable ? F("OK") : F("FAIL"));
+  SOLAR_TEST_PRINT(F(" power="));
+  SOLAR_TEST_PRINT(getPowerStateDescription(gPowerState));
+
+  if (gSolarManager.isEnabled()) {
+    const SolarData &data = gSolarManager.getData();
+    SOLAR_TEST_PRINT(F(" comm="));
+    SOLAR_TEST_PRINT(data.communicationOk ? F("OK") : F("FAIL"));
+    SOLAR_TEST_PRINT(F(" err="));
+    SOLAR_TEST_PRINT(data.consecutiveErrors);
+  }
+
+  SOLAR_TEST_PRINTLN("");
+#else
+  (void)now;
+#endif
+}
+
+static void logSolarPollSnapshot(unsigned long now, SolarAlertType alertType) {
+#ifdef SOLAR_HW_TEST_SERIAL
+  const SolarData &data = gSolarManager.getData();
+
+  SOLAR_TEST_PRINT(F("SolarPoll ms="));
+  SOLAR_TEST_PRINT(now);
+  SOLAR_TEST_PRINT(F(" comm="));
+  SOLAR_TEST_PRINT(data.communicationOk ? F("OK") : F("FAIL"));
+  SOLAR_TEST_PRINT(F(" err="));
+  SOLAR_TEST_PRINT(data.consecutiveErrors);
+  SOLAR_TEST_PRINT(F(" bv="));
+  SOLAR_TEST_PRINT(roundTo(data.batteryVoltage, 2));
+  SOLAR_TEST_PRINT(F(" av="));
+  SOLAR_TEST_PRINT(roundTo(data.arrayVoltage, 2));
+  SOLAR_TEST_PRINT(F(" ic="));
+  SOLAR_TEST_PRINT(roundTo(data.chargeCurrent, 2));
+  SOLAR_TEST_PRINT(F(" lc="));
+  SOLAR_TEST_PRINT(roundTo(data.loadCurrent, 2));
+  SOLAR_TEST_PRINT(F(" cs="));
+  SOLAR_TEST_PRINT(gSolarManager.getChargeStateDescription());
+  SOLAR_TEST_PRINT(F(" faults=0x"));
+  if (data.faults < 0x1000) SOLAR_TEST_PRINT('0');
+  if (data.faults < 0x0100) SOLAR_TEST_PRINT('0');
+  if (data.faults < 0x0010) SOLAR_TEST_PRINT('0');
+  SOLAR_TEST_PRINT(data.faults);
+  SOLAR_TEST_PRINT(F(" alarms=0x"));
+  if (data.alarms < 0x1000) SOLAR_TEST_PRINT('0');
+  if (data.alarms < 0x0100) SOLAR_TEST_PRINT('0');
+  if (data.alarms < 0x0010) SOLAR_TEST_PRINT('0');
+  SOLAR_TEST_PRINT(data.alarms);
+
+  if (alertType != SOLAR_ALERT_NONE) {
+    SOLAR_TEST_PRINT(F(" alert="));
+    SOLAR_TEST_PRINT(gSolarManager.getAlertDescription(alertType));
+  }
+
+  SOLAR_TEST_PRINTLN("");
+#else
+  (void)now;
+  (void)alertType;
+#endif
+}
+
 static void sendSolarAlarm(SolarAlertType alertType) {
   if (!gSolarManager.isEnabled() || alertType == SOLAR_ALERT_NONE) {
     return;
@@ -5313,10 +5602,14 @@ static void sendSolarAlarm(SolarAlertType alertType) {
     doc["alarms"] = gSolarManager.getAlarmDescription();
   }
   
-  // SMS escalation if critical
-  bool critical = (alertType == SOLAR_ALERT_BATTERY_CRITICAL || 
-                   alertType == SOLAR_ALERT_FAULT);
-  if (critical && gConfig.solarCharger.alertOnLowBattery) {
+  // SMS escalation follows the corresponding alert policy.
+  bool escalateSms = false;
+  if (alertType == SOLAR_ALERT_BATTERY_CRITICAL) {
+    escalateSms = gConfig.solarCharger.alertOnLowBattery;
+  } else if (alertType == SOLAR_ALERT_FAULT || alertType == SOLAR_ALERT_ALARM) {
+    escalateSms = gConfig.solarCharger.alertOnFault;
+  }
+  if (escalateSms) {
     doc["se"] = true;
   }
   
@@ -5332,8 +5625,8 @@ static bool appendSolarDataToDaily(JsonDocument &doc) {
   
   const SolarData &data = gSolarManager.getData();
   
-  // Only include if we have valid communication
-  if (!data.communicationOk && data.lastReadMillis == 0) {
+  // Only include fresh solar data when communication is currently healthy.
+  if (!data.communicationOk) {
     return false;
   }
   

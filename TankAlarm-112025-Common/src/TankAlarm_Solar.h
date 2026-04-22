@@ -4,7 +4,10 @@
  * SunSaver MPPT Solar Charger Monitoring via RS485 Modbus RTU
  * 
  * Hardware Requirements:
- * - Arduino Opta with RS485 (AFX00003 or built-in on Opta WiFi/RS485)
+ * - Arduino Opta with built-in RS485:
+ *   - Opta WiFi (AFX00002), or
+ *   - Opta RS485 (AFX00001)
+ *   - Opta Lite (AFX00003) requires an external RS485 transceiver
  * - Morningstar MRC-1 (MeterBus to EIA-485 Adapter) - Recommended
  *   - Powered by SunSaver via RJ-11 cable (no external power required)
  *   - Provides isolated RS-485 connection to Opta
@@ -222,6 +225,7 @@ public:
   const SolarConfig& getConfig() const { return _config; }
   
   // Polling (call periodically from main loop)
+  // Returns true when a poll attempt was performed, regardless of read success.
   bool poll(unsigned long nowMillis);
   
   // Data access

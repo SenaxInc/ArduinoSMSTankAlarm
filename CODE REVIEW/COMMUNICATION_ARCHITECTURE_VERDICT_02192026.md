@@ -517,8 +517,8 @@ This section documents all hardware, firmware, software, and cloud service requi
 | Model | Part Number | WiFi | RS485 | Notes |
 |-------|-------------|------|-------|-------|
 | **Opta Lite** | AFX00003 | No | No | **Recommended** — lowest cost, all features used |
-| Opta WiFi | AFX00001 | Yes | No | Works but WiFi not used (Notecard handles wireless) |
-| Opta RS485 | AFX00002 | No | Yes | Useful if Modbus sensor integration needed |
+| Opta WiFi | AFX00002 | Yes | Yes | Includes built-in RS485; usable for Modbus integration |
+| Opta RS485 | AFX00001 | No | Yes | Includes built-in RS485; useful when WiFi/BLE is not needed |
 
 ### Compatible Blues Notecard Models
 
