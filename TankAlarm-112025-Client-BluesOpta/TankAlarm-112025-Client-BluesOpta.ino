@@ -2987,23 +2987,15 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   solarCfg["alertOnCommFail"] = cfg.solarCharger.alertOnCommFailure;
   solarCfg["includeInDaily"] = cfg.solarCharger.includeInDailyReport;
 
-  // Save battery voltage monitoring configuration (Notecard direct to battery)
-  JsonObject batCfg = doc["batteryMonitor"].to<JsonObject>();
+  // Save battery configuration (decoupled chemistry + nominal voltage).
+  // Mirrors the schema produced by the server config generator so the loader's
+  // single `batteryConfig` parser handles both server-pushed and flash-restored
+  // configs.
+  JsonObject batCfg = doc["batteryConfig"].to<JsonObject>();
   batCfg["enabled"] = cfg.batteryMonitor.enabled;
-  batCfg["type"] = (int)cfg.batteryMonitor.batteryType;
-  batCfg["highV"] = cfg.batteryMonitor.highVoltage;
-  batCfg["normalV"] = cfg.batteryMonitor.normalVoltage;
-  batCfg["lowV"] = cfg.batteryMonitor.lowVoltage;
-  batCfg["criticalV"] = cfg.batteryMonitor.criticalVoltage;
-  batCfg["calibration"] = cfg.batteryMonitor.calibrationOffset;
-  batCfg["pollIntervalSec"] = cfg.batteryMonitor.pollIntervalSec;
-  batCfg["trendHours"] = cfg.batteryMonitor.trendAnalysisHours;
-  batCfg["alertOnLow"] = cfg.batteryMonitor.alertOnLow;
-  batCfg["alertOnCritical"] = cfg.batteryMonitor.alertOnCritical;
-  batCfg["alertOnDecline"] = cfg.batteryMonitor.alertOnDeclining;
-  batCfg["alertOnRecovery"] = cfg.batteryMonitor.alertOnRecovery;
-  batCfg["declineThreshold"] = cfg.batteryMonitor.declineAlertThreshold;
-  batCfg["includeInDaily"] = cfg.batteryMonitor.includeInDailyReport;
+  batCfg["batteryType"] = (int)cfg.batteryMonitor.batteryType;
+  batCfg["batteryTypeName"] = batteryTypeLabel(cfg.batteryMonitor.batteryType);
+  batCfg["nominalVoltage"] = cfg.batteryMonitor.nominalVoltage;
 
   JsonArray sensors = doc["sensors"].to<JsonArray>();
   for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
