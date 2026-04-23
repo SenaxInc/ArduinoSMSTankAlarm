@@ -845,6 +845,18 @@ static bool gClearButtonInitialized = false;
 #define CLEAR_BUTTON_DEBOUNCE_MS 50
 #define CLEAR_BUTTON_MIN_PRESS_MS 500  // Require 500ms press to clear (prevent accidental triggers)
 
+// On-board front-panel USER button (BTN_USER) — short-press triggers an
+// immediate hub.sync so the operator can pull pending config/relay updates
+// from Notehub without waiting for the next polling interval.
+#ifdef BTN_USER
+static bool gUserButtonInitialized = false;
+static bool gUserButtonLastState = false;          // debounced pressed-state
+static unsigned long gUserButtonChangeTime = 0;    // last raw transition
+static unsigned long gUserButtonLastSyncTime = 0;  // last hub.sync trigger
+#define USER_BUTTON_DEBOUNCE_MS 50
+#define USER_BUTTON_SYNC_COOLDOWN_MS 30000UL  // throttle hub.sync to once per 30s
+#endif
+
 // RPM sensor state for Hall effect pulse counting
 // We track pulses per monitor that uses an RPM sensor
 static unsigned long gRpmLastSampleMillis[MAX_MONITORS] = {0};
@@ -1240,6 +1252,8 @@ static bool fetchNotecardLocation(float &latitude, float &longitude);
 static void resetRelayForMonitor(uint8_t idx);
 static void initializeClearButton();
 static void checkClearButton(unsigned long now);
+static void initializeUserButton();
+static void checkUserButton(unsigned long now);
 static void clearAllRelayAlarms();
 static void addSerialLog(const char *message);
 static void pollForSerialRequests();
@@ -1491,6 +1505,7 @@ void setup() {
 
   initializeRelays();
   initializeClearButton();
+  initializeUserButton();
   
   // Initialize solar/battery charger monitoring (SunSaver MPPT via RS-485)
   if (gConfig.solarCharger.enabled) {
@@ -1830,6 +1845,9 @@ void loop() {
   
   // Check for physical clear button press
   checkClearButton(now);
+
+  // Check for front-panel USER button press (triggers immediate hub.sync)
+  checkUserButton(now);
   
   // Poll solar charger for battery health data (SunSaver MPPT via RS-485)
   // In CRITICAL_HIBERNATE we still poll the solar charger (if enabled) to detect
@@ -7893,6 +7911,84 @@ static void checkClearButton(unsigned long now) {
       delay(50);
     }
   }
+}
+
+// ============================================================================
+// Front-Panel USER Button (BTN_USER) — manual hub.sync trigger
+// ============================================================================
+// On Arduino Opta the BTN_USER pin is the front-panel pushbutton (active LOW
+// with internal pullup). A short press forces an immediate Notecard hub.sync
+// so a field tech can pull pending config / relay commands from Notehub
+// without waiting for the next inbound polling interval (which can be
+// minutes-to-hours on solar/cellular). Throttled by USER_BUTTON_SYNC_COOLDOWN_MS
+// to prevent button-mashing from spamming Notehub.
+
+static void initializeUserButton() {
+#ifdef BTN_USER
+  pinMode(BTN_USER, INPUT_PULLUP);
+  gUserButtonInitialized = true;
+  gUserButtonLastState = false;
+  gUserButtonChangeTime = 0;
+  gUserButtonLastSyncTime = 0;
+  Serial.println(F("USER button enabled (press to force hub.sync)"));
+#endif
+}
+
+static void checkUserButton(unsigned long now) {
+#ifdef BTN_USER
+  if (!gUserButtonInitialized) return;
+
+  // BTN_USER is active LOW with pullup
+  bool pressedNow = (digitalRead(BTN_USER) == LOW);
+
+  // Debounce: state must be stable for USER_BUTTON_DEBOUNCE_MS
+  if (pressedNow != gUserButtonLastState) {
+    if (gUserButtonChangeTime == 0) {
+      gUserButtonChangeTime = now;
+      return;
+    }
+    if (now - gUserButtonChangeTime < USER_BUTTON_DEBOUNCE_MS) {
+      return;
+    }
+    // Stable transition
+    gUserButtonLastState = pressedNow;
+    gUserButtonChangeTime = 0;
+
+    // Trigger on press (LOW edge), not on release
+    if (pressedNow) {
+      if (gUserButtonLastSyncTime != 0 &&
+          (now - gUserButtonLastSyncTime) < USER_BUTTON_SYNC_COOLDOWN_MS) {
+        unsigned long remaining =
+            (USER_BUTTON_SYNC_COOLDOWN_MS - (now - gUserButtonLastSyncTime)) / 1000UL;
+        Serial.print(F("USER button: hub.sync throttled ("));
+        Serial.print(remaining);
+        Serial.println(F("s remaining)"));
+        return;
+      }
+
+      Serial.println(F("USER button pressed - forcing hub.sync"));
+      addSerialLog("USER button hub.sync triggered");
+      gUserButtonLastSyncTime = now;
+
+      if (!gNotecardAvailable) {
+        Serial.println(F("  (Notecard unavailable - sync deferred)"));
+        return;
+      }
+      J *syncReq = notecard.newRequest("hub.sync");
+      if (syncReq) {
+        if (notecard.sendRequest(syncReq)) {
+          Serial.println(F("  hub.sync command sent"));
+        } else {
+          Serial.println(F("  hub.sync command failed"));
+        }
+      }
+    }
+  } else {
+    gUserButtonChangeTime = 0;
+  }
+#else
+  (void)now;
+#endif
 }
 
 // Clear all relay alarms for all sensors (turn off all relays and reset state)
