@@ -38,33 +38,25 @@
  * Predefined battery types (chemistry only).
  * Nominal pack voltage (12V/24V) is carried separately in BatteryConfig.nominalVoltage
  * so that thresholds can be scaled at runtime instead of duplicating enum values.
- *
- * Legacy values (LEAD_ACID_12V=0, LIFEPO4_12V=1, LIPO=2, CUSTOM=3) are preserved
- * for back-compat with config files written by older firmware.
  */
 enum BatteryType : uint8_t {
-  // Legacy values (do not renumber)
-  BATTERY_TYPE_LEAD_ACID_12V = 0,  // Legacy: generic 12V lead-acid (= AGM)
-  BATTERY_TYPE_LIFEPO4_12V   = 1,  // Legacy: generic 12V LiFePO4
-  BATTERY_TYPE_LIPO          = 2,  // LiPo battery (Notecard default, single cell)
-  BATTERY_TYPE_CUSTOM        = 3,  // Custom thresholds (no auto-init)
-
-  // New chemistry-specific values (decoupled from pack voltage)
-  BATTERY_TYPE_NONE          = 4,  // No battery (solar-direct or grid-only)
-  BATTERY_TYPE_AGM           = 5,  // Sealed AGM lead-acid
-  BATTERY_TYPE_FLOODED       = 6,  // Flooded (wet) lead-acid (supports equalize)
-  BATTERY_TYPE_GEL           = 7,  // Gel lead-acid (no equalize)
-  BATTERY_TYPE_SLA           = 8,  // Generic sealed lead-acid (treated as AGM)
-  BATTERY_TYPE_LIFEPO4       = 9,  // LiFePO4 (any pack voltage; uses nominalVoltage)
-  BATTERY_TYPE_LI_ION        = 10  // Li-ion (NMC/LCO chemistry)
+  BATTERY_TYPE_NONE          = 0,  // No battery (solar-direct or grid-only)
+  BATTERY_TYPE_AGM           = 1,  // Sealed AGM lead-acid
+  BATTERY_TYPE_FLOODED       = 2,  // Flooded (wet) lead-acid (supports equalize)
+  BATTERY_TYPE_GEL           = 3,  // Gel lead-acid (no equalize)
+  BATTERY_TYPE_SLA           = 4,  // Generic sealed lead-acid (treated as AGM)
+  BATTERY_TYPE_LIFEPO4       = 5,  // LiFePO4 (any pack voltage; uses nominalVoltage)
+  BATTERY_TYPE_LI_ION        = 6,  // Li-ion (NMC/LCO chemistry)
+  BATTERY_TYPE_LIPO          = 7,  // LiPo single cell (Notecard internal default)
+  BATTERY_TYPE_CUSTOM        = 8   // Custom thresholds (no auto-init)
 };
 
 /**
  * Returns true if the battery type is any lead-acid chemistry.
  */
 inline bool batteryIsLeadAcid(BatteryType t) {
-  return t == BATTERY_TYPE_LEAD_ACID_12V || t == BATTERY_TYPE_AGM ||
-         t == BATTERY_TYPE_FLOODED || t == BATTERY_TYPE_GEL || t == BATTERY_TYPE_SLA;
+  return t == BATTERY_TYPE_AGM || t == BATTERY_TYPE_FLOODED ||
+         t == BATTERY_TYPE_GEL || t == BATTERY_TYPE_SLA;
 }
 
 /**
@@ -80,18 +72,16 @@ inline bool batterySupportsEqualize(BatteryType t) {
  */
 inline const char* batteryTypeLabel(BatteryType t) {
   switch (t) {
-    case BATTERY_TYPE_NONE:          return "None";
-    case BATTERY_TYPE_AGM:           return "AGM";
-    case BATTERY_TYPE_FLOODED:       return "Flooded";
-    case BATTERY_TYPE_GEL:           return "Gel";
-    case BATTERY_TYPE_SLA:           return "SLA";
-    case BATTERY_TYPE_LIFEPO4:       return "LiFePO4";
-    case BATTERY_TYPE_LI_ION:        return "Li-ion";
-    case BATTERY_TYPE_LIPO:          return "LiPo";
-    case BATTERY_TYPE_LEAD_ACID_12V: return "Lead-Acid 12V";
-    case BATTERY_TYPE_LIFEPO4_12V:   return "LiFePO4 12V";
-    case BATTERY_TYPE_CUSTOM:        return "Custom";
-    default:                         return "Unknown";
+    case BATTERY_TYPE_NONE:    return "None";
+    case BATTERY_TYPE_AGM:     return "AGM";
+    case BATTERY_TYPE_FLOODED: return "Flooded";
+    case BATTERY_TYPE_GEL:     return "Gel";
+    case BATTERY_TYPE_SLA:     return "SLA";
+    case BATTERY_TYPE_LIFEPO4: return "LiFePO4";
+    case BATTERY_TYPE_LI_ION:  return "Li-ion";
+    case BATTERY_TYPE_LIPO:    return "LiPo";
+    case BATTERY_TYPE_CUSTOM:  return "Custom";
+    default:                   return "Unknown";
   }
 }
 
@@ -382,7 +372,6 @@ inline void initBatteryConfig(BatteryConfig* config, BatteryType type, uint8_t n
       config->alertOnDeclining = false;
       break;
 
-    case BATTERY_TYPE_LEAD_ACID_12V:  // legacy
     case BATTERY_TYPE_AGM:
     case BATTERY_TYPE_GEL:
     case BATTERY_TYPE_SLA:
@@ -400,7 +389,6 @@ inline void initBatteryConfig(BatteryConfig* config, BatteryType type, uint8_t n
       config->criticalVoltage = LEAD_ACID_12V_CRITICAL * scale;
       break;
 
-    case BATTERY_TYPE_LIFEPO4_12V:  // legacy
     case BATTERY_TYPE_LIFEPO4:
       config->highVoltage     = 14.8f * scale;
       config->normalVoltage   = LIFEPO4_12V_NORMAL     * scale;

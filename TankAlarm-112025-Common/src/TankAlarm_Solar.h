@@ -32,6 +32,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 // ============================================================================
 // SunSaver MPPT Modbus Register Addresses (Holding Registers, Function Code 03)
@@ -64,6 +65,22 @@
 #define SS_REG_BATTERY_V_MAX_DAILY  0x003E  // Register 63: Maximum Battery Voltage Today
 #define SS_REG_AH_DAILY             0x0034  // Register 53: Amp-hours charged today
 #define SS_REG_WH_DAILY             0x0038  // Register 57: Watt-hours charged today (if available)
+
+// ============================================================================
+// Charge Setpoint Registers (used for chemistry verification vs. UI selection)
+// ============================================================================
+// SunSaver MPPT chemistry is selected via a 4-position DIP switch on the unit
+// (Sealed/Gel/Flooded/L16) and CANNOT be set over Modbus. However the active
+// setpoints derived from that DIP selection are exposed in RAM and reflect
+// whatever chemistry the controller booted with. We read them back to verify
+// the installer flipped the right switches against what was selected in the
+// web UI. Addresses per SunSaver MPPT MODBUS Specification:
+//   V_reg   = absorption / regulation voltage
+//   V_float = float voltage
+//   V_eq    = equalization voltage (zero for chemistries that don't equalize)
+#define SS_REG_V_REG                0x0033  // Regulation (absorption) setpoint
+#define SS_REG_V_FLOAT              0x0035  // Float setpoint
+#define SS_REG_V_EQ                 0x0036  // Equalization setpoint (0 = disabled)
 
 // ============================================================================
 // Scaling Factors for 12V System
@@ -165,6 +182,13 @@ struct SolarData {
   bool communicationOk;       // Last Modbus read successful
   uint32_t lastReadMillis;    // Timestamp of last successful read
   uint8_t consecutiveErrors;  // Count of consecutive read errors
+
+  // Charge setpoints read from controller (reflects DIP-switch chemistry).
+  // setpointsValid is false until we successfully read them at least once.
+  bool setpointsValid;
+  float vRegSetpoint;         // Absorption / regulation voltage (V)
+  float vFloatSetpoint;       // Float voltage (V)
+  float vEqSetpoint;          // Equalization voltage (V); 0 = disabled
 };
 
 // ============================================================================
@@ -252,6 +276,31 @@ public:
   
   // Reset daily statistics (call at midnight or report time)
   void resetDailyStats();
+
+  // Chemistry verification result vs. user-selected battery type.
+  enum ChemistryCheck : uint8_t {
+    CHEMISTRY_CHECK_OK             = 0,  // Setpoints match expected chemistry
+    CHEMISTRY_CHECK_PENDING        = 1,  // Setpoints not yet read
+    CHEMISTRY_CHECK_MISMATCH       = 2,  // Setpoints out of range for selected chemistry
+    CHEMISTRY_CHECK_VOLTAGE_MISMATCH = 3 // Setpoints suggest a different pack voltage
+  };
+
+  /**
+   * Compare the controller's read-back setpoints against the chemistry/voltage
+   * the user selected in the web UI. Returns CHEMISTRY_CHECK_PENDING until
+   * setpointsValid is true. The check is intentionally lenient: it only flags
+   * clear mismatches (e.g. AGM selected but V_eq is non-zero, or pack voltage
+   * is half of expected).
+   *
+   * @param expectedType    Chemistry the user picked in the web UI
+   * @param nominalVoltage  Pack voltage the user picked (12 or 24)
+   * @param outDescription  Optional buffer (>= 96 chars) for human-readable explanation
+   * @param descriptionLen  Length of outDescription buffer
+   */
+  ChemistryCheck verifyChemistry(uint8_t expectedType,
+                                 uint8_t nominalVoltage,
+                                 char* outDescription = nullptr,
+                                 size_t descriptionLen = 0) const;
   
 private:
   SolarConfig _config;

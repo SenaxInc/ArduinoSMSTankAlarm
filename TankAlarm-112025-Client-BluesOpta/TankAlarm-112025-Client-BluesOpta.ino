@@ -1866,6 +1866,27 @@ void loop() {
   // battery recovery, but at reduced frequency (controlled by sleep duration).
   if (gSolarManager.isEnabled()) {
     if (gSolarManager.poll(now)) {
+      // Chemistry verification: once setpoints are read, cross-check them
+      // against the user-selected battery type / pack voltage. This is a
+      // one-shot log so it doesn't spam the serial console.
+      static bool sChemistryChecked = false;
+      if (!sChemistryChecked && gSolarManager.getData().setpointsValid) {
+        sChemistryChecked = true;
+        char chemMsg[96];
+        SolarManager::ChemistryCheck cc = gSolarManager.verifyChemistry(
+          (uint8_t)gConfig.batteryMonitor.batteryType,
+          gConfig.batteryMonitor.nominalVoltage,
+          chemMsg, sizeof(chemMsg));
+        Serial.print(F("Solar: chemistry check: "));
+        switch (cc) {
+          case SolarManager::CHEMISTRY_CHECK_OK:               Serial.print(F("OK — "));        break;
+          case SolarManager::CHEMISTRY_CHECK_MISMATCH:         Serial.print(F("MISMATCH — ")); break;
+          case SolarManager::CHEMISTRY_CHECK_VOLTAGE_MISMATCH: Serial.print(F("V_PACK MISMATCH — ")); break;
+          case SolarManager::CHEMISTRY_CHECK_PENDING:          Serial.print(F("pending — ")); break;
+        }
+        Serial.println(chemMsg);
+      }
+
       // A poll was attempted - check alerts using the refreshed communication state
       // (suppress alarm sending in CRITICAL to save power).
       SolarAlertType alert = gSolarManager.checkAlerts();
@@ -2317,7 +2338,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   
   // Battery voltage monitoring defaults (Notecard direct to battery)
   // Requires: Notecard VIN wired directly to 12V battery (not through 5V regulator)
-  initBatteryConfig(&cfg.batteryMonitor, BATTERY_TYPE_LEAD_ACID_12V);
+  initBatteryConfig(&cfg.batteryMonitor, BATTERY_TYPE_AGM, 12);
   cfg.batteryMonitor.enabled = false;                        // Disabled by default
   
   // Analog Vin voltage divider defaults (disabled)
@@ -2809,33 +2830,9 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     cfg.solarCharger.includeInDailyReport = true;
   }
 
-  // Load battery voltage monitoring configuration (Notecard direct to battery)
-  JsonObject batCfg = doc["batteryMonitor"].as<JsonObject>();
-  if (batCfg) {
-    cfg.batteryMonitor.enabled = batCfg["enabled"].is<bool>() ? batCfg["enabled"].as<bool>() : false;
-    cfg.batteryMonitor.batteryType = batCfg["type"].is<int>() ? (BatteryType)batCfg["type"].as<int>() : BATTERY_TYPE_LEAD_ACID_12V;
-    cfg.batteryMonitor.highVoltage = batCfg["highV"].is<float>() ? batCfg["highV"].as<float>() : 14.8f;
-    cfg.batteryMonitor.normalVoltage = batCfg["normalV"].is<float>() ? batCfg["normalV"].as<float>() : LEAD_ACID_12V_NORMAL;
-    cfg.batteryMonitor.lowVoltage = batCfg["lowV"].is<float>() ? batCfg["lowV"].as<float>() : LEAD_ACID_12V_LOW;
-    cfg.batteryMonitor.criticalVoltage = batCfg["criticalV"].is<float>() ? batCfg["criticalV"].as<float>() : LEAD_ACID_12V_CRITICAL;
-    cfg.batteryMonitor.calibrationOffset = batCfg["calibration"].is<float>() ? batCfg["calibration"].as<float>() : BATTERY_DEFAULT_CALIBRATION;
-    cfg.batteryMonitor.pollIntervalSec = batCfg["pollIntervalSec"].is<int>() ? (uint16_t)batCfg["pollIntervalSec"].as<int>() : BATTERY_DEFAULT_POLL_INTERVAL_SEC;
-    cfg.batteryMonitor.trendAnalysisHours = batCfg["trendHours"].is<int>() ? (uint16_t)batCfg["trendHours"].as<int>() : BATTERY_DEFAULT_TREND_HOURS;
-    cfg.batteryMonitor.alertOnLow = batCfg["alertOnLow"].is<bool>() ? batCfg["alertOnLow"].as<bool>() : true;
-    cfg.batteryMonitor.alertOnCritical = batCfg["alertOnCritical"].is<bool>() ? batCfg["alertOnCritical"].as<bool>() : true;
-    cfg.batteryMonitor.alertOnDeclining = batCfg["alertOnDecline"].is<bool>() ? batCfg["alertOnDecline"].as<bool>() : true;
-    cfg.batteryMonitor.alertOnRecovery = batCfg["alertOnRecovery"].is<bool>() ? batCfg["alertOnRecovery"].as<bool>() : false;
-    cfg.batteryMonitor.declineAlertThreshold = batCfg["declineThreshold"].is<float>() ? batCfg["declineThreshold"].as<float>() : BATTERY_DEFAULT_DECLINE_THRESHOLD;
-    cfg.batteryMonitor.includeInDailyReport = batCfg["includeInDaily"].is<bool>() ? batCfg["includeInDaily"].as<bool>() : true;
-  } else {
-    // Default values if batteryMonitor object not present
-    initBatteryConfig(&cfg.batteryMonitor, BATTERY_TYPE_LEAD_ACID_12V);
-    cfg.batteryMonitor.enabled = false;
-  }
-
-  // Load decoupled batteryConfig block (sent by server v1.6.8+ generator).
-  // This block carries chemistry + nominal voltage as separate fields and lets
-  // initBatteryConfig() compute scaled thresholds. Overrides batteryMonitor when present.
+  // Load decoupled batteryConfig block (server v1.6.8+ generator).
+  // Carries chemistry + nominal pack voltage; initBatteryConfig() computes
+  // scaled thresholds. This is the single source of truth for battery setup.
   JsonObject batCfgNew = doc["batteryConfig"].as<JsonObject>();
   if (batCfgNew) {
     bool batEnabled = batCfgNew["enabled"].is<bool>() ? batCfgNew["enabled"].as<bool>() : true;
@@ -2847,12 +2844,16 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
       : 12;
     initBatteryConfig(&cfg.batteryMonitor, bt, nominalV);
     cfg.batteryMonitor.enabled = batEnabled && (bt != BATTERY_TYPE_NONE);
-    Serial.print(F("Battery config (decoupled): type="));
+    Serial.print(F("Battery config: type="));
     Serial.print(batteryTypeLabel(bt));
     Serial.print(F(" nominalV="));
     Serial.print(nominalV);
     Serial.print(F(" enabled="));
     Serial.println(cfg.batteryMonitor.enabled ? F("yes") : F("no"));
+  } else {
+    // No batteryConfig block — apply safe defaults (AGM 12V, monitoring disabled).
+    initBatteryConfig(&cfg.batteryMonitor, BATTERY_TYPE_AGM, 12);
+    cfg.batteryMonitor.enabled = false;
   }
 
   // Load analog Vin voltage divider configuration
@@ -3246,12 +3247,10 @@ static void printHardwareRequirements(const ClientConfig &cfg) {
     Serial.println(F("  - Notecard VIN wired directly to 12V battery"));
     Serial.println(F("  - Optional: Schottky diode for reverse polarity protection"));
     Serial.print(F("  - Battery type: "));
-    switch (cfg.batteryMonitor.batteryType) {
-      case BATTERY_TYPE_LEAD_ACID_12V: Serial.println(F("12V Lead-Acid (AGM/Flooded/Gel)")); break;
-      case BATTERY_TYPE_LIFEPO4_12V:   Serial.println(F("12V LiFePO4 (4S)")); break;
-      case BATTERY_TYPE_LIPO:          Serial.println(F("LiPo")); break;
-      default:                         Serial.println(F("Custom")); break;
-    }
+    Serial.print(batteryTypeLabel(cfg.batteryMonitor.batteryType));
+    Serial.print(F(" / "));
+    Serial.print(cfg.batteryMonitor.nominalVoltage);
+    Serial.println(F("V nominal"));
     Serial.print(F("  - Thresholds: Low="));
     Serial.print(cfg.batteryMonitor.lowVoltage, 1);
     Serial.print(F("V, Critical="));

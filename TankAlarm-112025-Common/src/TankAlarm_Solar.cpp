@@ -8,6 +8,7 @@
  */
 
 #include "TankAlarm_Solar.h"
+#include "TankAlarm_Battery.h"
 
 #if defined(ARDUINO_OPTA) || defined(ARDUINO_ARCH_MBED)
 
@@ -203,6 +204,39 @@ bool SolarManager::readRegisters() {
     nextData.loadCurrent    = scaleCurrent(realtimeRegs[4]);
   } else {
     success = false;
+  }
+
+  // Charge setpoints — read once per session after first successful realtime
+  // read, used by verifyChemistry() to confirm the SunSaver DIP-switch chemistry
+  // matches what the user selected in the web UI. The setpoints reflect the
+  // controller's active battery service (Sealed/Gel/Flooded/Custom) and only
+  // change at boot or DIP-switch change. Best-effort: failure does not mark the
+  // overall poll as failed.
+  if (success && !nextData.setpointsValid) {
+    uint16_t setpointRegs[4];  // V_reg, (gap), V_float, V_eq
+    if (readRegistersWithFallback(_config.modbusSlaveId, SS_REG_V_REG, 4, setpointRegs)) {
+      float vReg   = scaleVoltage(setpointRegs[0]);
+      float vFloat = scaleVoltage(setpointRegs[2]);
+      float vEq    = scaleVoltage(setpointRegs[3]);
+      // Sanity: setpoints must look like plausible battery voltages.
+      // Accept anything in 8..32V (covers 12V and 24V chargers, allows L16/equalize).
+      if (vReg >= 8.0f && vReg <= 32.0f && vFloat >= 8.0f && vFloat <= 32.0f) {
+        nextData.vRegSetpoint   = vReg;
+        nextData.vFloatSetpoint = vFloat;
+        nextData.vEqSetpoint    = (vEq >= 8.0f && vEq <= 32.0f) ? vEq : 0.0f;
+        nextData.setpointsValid = true;
+        Serial.print(F("Solar: setpoints read V_reg="));
+        Serial.print(vReg, 2);
+        Serial.print(F(" V_float="));
+        Serial.print(vFloat, 2);
+        Serial.print(F(" V_eq="));
+        Serial.println(nextData.vEqSetpoint, 2);
+      } else {
+        Serial.print(F("Solar: setpoint read returned implausible values, skipping verify (V_reg="));
+        Serial.print(vReg, 2);
+        Serial.println(F(")"));
+      }
+    }
   }
 
   // Suspect register blocks: only read when explicitly enabled for bench work.
@@ -463,6 +497,90 @@ void SolarManager::resetDailyStats() {
   _data.wattHoursDaily = 0.0f;
 }
 
+SolarManager::ChemistryCheck SolarManager::verifyChemistry(uint8_t expectedType,
+                                                            uint8_t nominalVoltage,
+                                                            char* outDescription,
+                                                            size_t descriptionLen) const {
+  if (!_data.setpointsValid) {
+    if (outDescription && descriptionLen) {
+      strncpy(outDescription, "setpoints not yet read from controller", descriptionLen - 1);
+      outDescription[descriptionLen - 1] = '\0';
+    }
+    return CHEMISTRY_CHECK_PENDING;
+  }
+
+  if (nominalVoltage == 0) nominalVoltage = 12;
+  const float scale = (float)nominalVoltage / 12.0f;
+  const float vReg   = _data.vRegSetpoint;
+  const float vFloat = _data.vFloatSetpoint;
+  const float vEq    = _data.vEqSetpoint;
+
+  // Pack-voltage sanity: V_float should be within ~30% of nominal*1.13 (e.g. 13.6V on 12V).
+  // If it's roughly half or double, the user picked the wrong pack voltage.
+  const float expectedFloat = 13.6f * scale;
+  if (vFloat < expectedFloat * 0.6f || vFloat > expectedFloat * 1.4f) {
+    if (outDescription && descriptionLen) {
+      snprintf(outDescription, descriptionLen,
+               "V_float=%.1fV does not match %dV pack (expected ~%.1fV)",
+               vFloat, (int)nominalVoltage, expectedFloat);
+    }
+    return CHEMISTRY_CHECK_VOLTAGE_MISMATCH;
+  }
+
+  // Chemistry-specific checks. Only flag clear mismatches.
+  // Reference (12V baseline; 24V doubles):
+  //   Sealed/AGM/Gel: V_reg ~14.15V, V_float ~13.4V, V_eq = 0
+  //   Flooded:        V_reg ~14.4V,  V_float ~13.4V, V_eq ~15.1V (non-zero)
+  //   LiFePO4 (custom): V_reg ~14.4V, V_float ~13.6V, V_eq = 0
+  bool eqExpected = false;
+  bool eqAllowed  = true;
+  switch ((BatteryType)expectedType) {
+    case BATTERY_TYPE_FLOODED:
+      eqExpected = true;
+      break;
+    case BATTERY_TYPE_AGM:
+    case BATTERY_TYPE_SLA:
+    case BATTERY_TYPE_GEL:
+    case BATTERY_TYPE_LIFEPO4:
+    case BATTERY_TYPE_LI_ION:
+      eqAllowed = false;
+      break;
+    case BATTERY_TYPE_CUSTOM:
+    case BATTERY_TYPE_NONE:
+    case BATTERY_TYPE_LIPO:
+    default:
+      // Cannot meaningfully verify — accept anything.
+      if (outDescription && descriptionLen) outDescription[0] = '\0';
+      return CHEMISTRY_CHECK_OK;
+  }
+
+  const bool eqActive = (vEq > 1.0f);  // anything > 1V counts as enabled
+  if (eqExpected && !eqActive) {
+    if (outDescription && descriptionLen) {
+      snprintf(outDescription, descriptionLen,
+               "Flooded selected but V_eq=%.1fV (expected non-zero); check DIP switches",
+               vEq);
+    }
+    return CHEMISTRY_CHECK_MISMATCH;
+  }
+  if (!eqAllowed && eqActive) {
+    if (outDescription && descriptionLen) {
+      snprintf(outDescription, descriptionLen,
+               "%s selected but V_eq=%.1fV is enabled; check DIP switches (Sealed/Gel)",
+               batteryTypeLabel((BatteryType)expectedType), vEq);
+    }
+    return CHEMISTRY_CHECK_MISMATCH;
+  }
+
+  if (outDescription && descriptionLen) {
+    snprintf(outDescription, descriptionLen,
+             "OK: V_reg=%.2f V_float=%.2f V_eq=%.2f matches %s/%dV",
+             vReg, vFloat, vEq,
+             batteryTypeLabel((BatteryType)expectedType), (int)nominalVoltage);
+  }
+  return CHEMISTRY_CHECK_OK;
+}
+
 #else // Platform not supported
 
 // Stub implementation for non-RS485 platforms
@@ -490,5 +608,13 @@ bool SolarManager::readRegisters() { return false; }
 float SolarManager::scaleVoltage(uint16_t raw) const { (void)raw; return 0.0f; }
 float SolarManager::scaleCurrent(uint16_t raw) const { (void)raw; return 0.0f; }
 void SolarManager::updateHealthStatus() {}
+SolarManager::ChemistryCheck SolarManager::verifyChemistry(uint8_t expectedType,
+                                                            uint8_t nominalVoltage,
+                                                            char* outDescription,
+                                                            size_t descriptionLen) const {
+  (void)expectedType; (void)nominalVoltage;
+  if (outDescription && descriptionLen) outDescription[0] = '\0';
+  return CHEMISTRY_CHECK_PENDING;
+}
 
 #endif // Platform check
