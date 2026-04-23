@@ -89,11 +89,13 @@ static inline bool isStorageAvailable() {
 // Solar hardware test serial output (opt-in)
 // Enable during RS-485/Modbus bring-up to print one structured line per poll.
 // Leave disabled for normal deployments to minimize serial/log overhead.
-#define SOLAR_HW_TEST_SERIAL
+//#define SOLAR_HW_TEST_SERIAL
 
 // Optional test-only override: force-enable SunSaver polling with known defaults
 // even when flash config currently has solarCharger.enabled=false.
-#define SOLAR_HW_TEST_FORCE_SOLAR_CONFIG
+// IMPORTANT: leave this commented in production -- it bypasses the server-pushed
+// flash config and forces the SunSaver poller on regardless of what the server says.
+//#define SOLAR_HW_TEST_FORCE_SOLAR_CONFIG
 
 #ifdef SOLAR_HW_TEST_SERIAL
   #define SOLAR_TEST_PRINT(x) Serial.print(x)
