@@ -1798,6 +1798,8 @@ window.validatePowerCombination=function(){
     msg='Solar-direct without a Vin Monitor cannot detect sunset. Strongly recommended to enable Vin Monitor.';
   }else if(ps==='grid'&&bt==='none'&&vin){
     msg='Vin Monitor on a grid-only install with no battery has nothing useful to read.';
+  }else if(ps==='solar_modbus_mppt'&&(bt==='lifepo4'||bt==='li_ion')){
+    msg='SunSaver MPPT has no lithium DIP preset. You MUST load a custom lithium charge profile via Morningstar MSView (USB MeterBus adapter) before connecting the battery — DIP-only lead-acid presets will undercharge LiFePO4 and may damage Li-ion. The firmware will read the setpoints back over Modbus and warn if they still look like a lead-acid preset.';
   }
   if(bv===24&&vin){
     const r1=parseFloat(document.getElementById('vinR1').value)||22;

@@ -527,24 +527,105 @@ SolarManager::ChemistryCheck SolarManager::verifyChemistry(uint8_t expectedType,
     return CHEMISTRY_CHECK_VOLTAGE_MISMATCH;
   }
 
-  // Chemistry-specific checks. Only flag clear mismatches.
-  // Reference (12V baseline; 24V doubles):
-  //   Sealed/AGM/Gel: V_reg ~14.15V, V_float ~13.4V, V_eq = 0
-  //   Flooded:        V_reg ~14.4V,  V_float ~13.4V, V_eq ~15.1V (non-zero)
-  //   LiFePO4 (custom): V_reg ~14.4V, V_float ~13.6V, V_eq = 0
-  bool eqExpected = false;
-  bool eqAllowed  = true;
+  // Chemistry-specific checks.
+  // The SunSaver MPPT has only lead-acid DIP presets (Sealed/Gel/Flooded/L16).
+  // Lithium chemistries REQUIRE custom EEPROM setpoints loaded via Morningstar
+  // MSView (USB MeterBus) or Modbus EEPROM writes — there is no lithium DIP
+  // preset, so a lithium selection in our UI must be cross-checked against the
+  // actual setpoints to catch installers who forgot to load the custom profile.
+  //
+  // Reference setpoints at 12V (24V scales 2x):
+  //   Sealed/AGM:  V_reg ~14.15V, V_float ~13.4V,  V_eq = 0
+  //   Gel:         V_reg ~14.0V,  V_float ~13.4V,  V_eq = 0
+  //   Flooded:     V_reg ~14.4V,  V_float ~13.4V,  V_eq ~15.1V
+  //   LiFePO4:     V_reg ~14.2V,  V_float ~13.6V,  V_eq = 0  (typical MSView profile)
+  //   Li-ion 3S:   V_reg ~12.6V,  V_float ~12.4V,  V_eq = 0
+  const bool eqActive = (vEq > 1.0f);  // >1V counts as enabled
+
   switch ((BatteryType)expectedType) {
-    case BATTERY_TYPE_FLOODED:
-      eqExpected = true;
+    case BATTERY_TYPE_FLOODED: {
+      if (!eqActive) {
+        if (outDescription && descriptionLen) {
+          snprintf(outDescription, descriptionLen,
+                   "Flooded selected but V_eq=%.1fV (expected non-zero); check DIP switches",
+                   vEq);
+        }
+        return CHEMISTRY_CHECK_MISMATCH;
+      }
       break;
+    }
+
     case BATTERY_TYPE_AGM:
     case BATTERY_TYPE_SLA:
-    case BATTERY_TYPE_GEL:
-    case BATTERY_TYPE_LIFEPO4:
-    case BATTERY_TYPE_LI_ION:
-      eqAllowed = false;
+    case BATTERY_TYPE_GEL: {
+      if (eqActive) {
+        if (outDescription && descriptionLen) {
+          snprintf(outDescription, descriptionLen,
+                   "%s selected but V_eq=%.1fV is enabled; check DIP switches",
+                   batteryTypeLabel((BatteryType)expectedType), vEq);
+        }
+        return CHEMISTRY_CHECK_MISMATCH;
+      }
       break;
+    }
+
+    case BATTERY_TYPE_LIFEPO4: {
+      // LiFePO4 needs custom MSView profile. Catch the common failure mode:
+      // installer left DIP on Sealed/Gel/Flooded so V_float reads ~13.4V instead
+      // of ~13.6V, or V_eq is enabled (which would damage a LiFePO4 pack).
+      if (eqActive) {
+        if (outDescription && descriptionLen) {
+          snprintf(outDescription, descriptionLen,
+                   "LiFePO4 selected but V_eq=%.1fV is ENABLED — DANGER, load lithium profile via MSView",
+                   vEq);
+        }
+        return CHEMISTRY_CHECK_MISMATCH;
+      }
+      const float liFloatMin = 13.5f * scale;
+      const float liFloatMax = 13.9f * scale;
+      const float liRegMin   = 13.8f * scale;
+      const float liRegMax   = 14.6f * scale;
+      if (vFloat < liFloatMin || vFloat > liFloatMax ||
+          vReg   < liRegMin   || vReg   > liRegMax) {
+        if (outDescription && descriptionLen) {
+          snprintf(outDescription, descriptionLen,
+                   "LiFePO4 selected but setpoints look like a lead-acid DIP preset "
+                   "(V_reg=%.2f V_float=%.2f). Load lithium profile via MSView.",
+                   vReg, vFloat);
+        }
+        return CHEMISTRY_CHECK_MISMATCH;
+      }
+      break;
+    }
+
+    case BATTERY_TYPE_LI_ION: {
+      // Li-ion 3S full charge ~12.6V — very different from any lead preset
+      // (which sit in the 13.4–14.4V band), so a wrong DIP is easy to flag.
+      if (eqActive) {
+        if (outDescription && descriptionLen) {
+          snprintf(outDescription, descriptionLen,
+                   "Li-ion selected but V_eq=%.1fV is ENABLED — DANGER, load lithium profile via MSView",
+                   vEq);
+        }
+        return CHEMISTRY_CHECK_MISMATCH;
+      }
+      const float liFloatMin = 12.0f * scale;
+      const float liFloatMax = 12.8f * scale;
+      const float liRegMin   = 12.4f * scale;
+      const float liRegMax   = 12.9f * scale;
+      if (vFloat < liFloatMin || vFloat > liFloatMax ||
+          vReg   < liRegMin   || vReg   > liRegMax) {
+        if (outDescription && descriptionLen) {
+          snprintf(outDescription, descriptionLen,
+                   "Li-ion selected but setpoints look like a lead-acid DIP preset "
+                   "(V_reg=%.2f V_float=%.2f). Load lithium profile via MSView.",
+                   vReg, vFloat);
+        }
+        return CHEMISTRY_CHECK_MISMATCH;
+      }
+      break;
+    }
+
     case BATTERY_TYPE_CUSTOM:
     case BATTERY_TYPE_NONE:
     case BATTERY_TYPE_LIPO:
@@ -552,24 +633,6 @@ SolarManager::ChemistryCheck SolarManager::verifyChemistry(uint8_t expectedType,
       // Cannot meaningfully verify — accept anything.
       if (outDescription && descriptionLen) outDescription[0] = '\0';
       return CHEMISTRY_CHECK_OK;
-  }
-
-  const bool eqActive = (vEq > 1.0f);  // anything > 1V counts as enabled
-  if (eqExpected && !eqActive) {
-    if (outDescription && descriptionLen) {
-      snprintf(outDescription, descriptionLen,
-               "Flooded selected but V_eq=%.1fV (expected non-zero); check DIP switches",
-               vEq);
-    }
-    return CHEMISTRY_CHECK_MISMATCH;
-  }
-  if (!eqAllowed && eqActive) {
-    if (outDescription && descriptionLen) {
-      snprintf(outDescription, descriptionLen,
-               "%s selected but V_eq=%.1fV is enabled; check DIP switches (Sealed/Gel)",
-               batteryTypeLabel((BatteryType)expectedType), vEq);
-    }
-    return CHEMISTRY_CHECK_MISMATCH;
   }
 
   if (outDescription && descriptionLen) {
