@@ -2279,7 +2279,7 @@ static void createDefaultConfig(ClientConfig &cfg) {
   cfg.solarCharger.batteryCriticalVoltage = BATTERY_VOLTAGE_CRITICAL; // Default: 11.5V
   cfg.solarCharger.batteryHighVoltage = BATTERY_VOLTAGE_HIGH; // Default: 14.8V
   cfg.solarCharger.alertOnLowBattery = true;                 // Send alerts for low battery
-  cfg.solarCharger.alertOnFault = true;                      // Send alerts for charger faults
+  cfg.solarCharger.alertOnFault = false;                     // Disabled until SunSaver fault register addresses are bench-verified (2026-04-22)
   cfg.solarCharger.alertOnCommFailure = false;               // Don't alert on comm failures (too noisy)
   cfg.solarCharger.includeInDailyReport = true;              // Include in daily report
   
@@ -2758,7 +2758,7 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     cfg.solarCharger.batteryCriticalVoltage = solarCfg["batteryCriticalV"].is<float>() ? solarCfg["batteryCriticalV"].as<float>() : BATTERY_VOLTAGE_CRITICAL;
     cfg.solarCharger.batteryHighVoltage = solarCfg["batteryHighV"].is<float>() ? solarCfg["batteryHighV"].as<float>() : BATTERY_VOLTAGE_HIGH;
     cfg.solarCharger.alertOnLowBattery = solarCfg["alertOnLow"].is<bool>() ? solarCfg["alertOnLow"].as<bool>() : true;
-    cfg.solarCharger.alertOnFault = solarCfg["alertOnFault"].is<bool>() ? solarCfg["alertOnFault"].as<bool>() : true;
+    cfg.solarCharger.alertOnFault = solarCfg["alertOnFault"].is<bool>() ? solarCfg["alertOnFault"].as<bool>() : false;
     cfg.solarCharger.alertOnCommFailure = solarCfg["alertOnCommFail"].is<bool>() ? solarCfg["alertOnCommFail"].as<bool>() : false;
     cfg.solarCharger.includeInDailyReport = solarCfg["includeInDaily"].is<bool>() ? solarCfg["includeInDaily"].as<bool>() : true;
   } else {
@@ -2772,7 +2772,7 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     cfg.solarCharger.batteryCriticalVoltage = BATTERY_VOLTAGE_CRITICAL;
     cfg.solarCharger.batteryHighVoltage = BATTERY_VOLTAGE_HIGH;
     cfg.solarCharger.alertOnLowBattery = true;
-    cfg.solarCharger.alertOnFault = true;
+    cfg.solarCharger.alertOnFault = false;
     cfg.solarCharger.alertOnCommFailure = false;
     cfg.solarCharger.includeInDailyReport = true;
   }

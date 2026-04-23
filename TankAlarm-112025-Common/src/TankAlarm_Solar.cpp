@@ -64,7 +64,11 @@ SolarManager::SolarManager()
   _config.batteryCriticalVoltage = BATTERY_VOLTAGE_CRITICAL;
   _config.batteryHighVoltage = BATTERY_VOLTAGE_HIGH;
   _config.alertOnLowBattery = true;
-  _config.alertOnFault = true;
+  // 2026-04-22: alertOnFault default flipped to FALSE because the status/fault
+  // register addresses on this firmware revision are not yet verified and
+  // returned implausible values during bench testing. Re-enable in user config
+  // (or per-build override) once SS_REG_FAULTS / SS_REG_ALARMS are confirmed.
+  _config.alertOnFault = false;
   _config.alertOnCommFailure = false;
   _config.includeInDailyReport = true;
 }
@@ -78,23 +82,40 @@ bool SolarManager::begin(const SolarConfig& config) {
   setConfig(config);
   
   // Initialize Modbus RTU Client
-  // Arduino Opta RS485 uses the built-in RS485 interface
-  if (!ModbusRTUClient.begin(_config.modbusBaudRate)) {
+  // Arduino Opta RS485 uses the built-in RS485 interface.
+  // Modbus RTU spec requires 8N2 when no parity is used; SunSaver MPPT
+  // (and Morningstar MRC-1 adapter) expect 8N2. ArduinoModbus default is
+  // 8N1, which often appears to work but produces intermittent CRC errors.
+  if (!ModbusRTUClient.begin(_config.modbusBaudRate, SERIAL_8N2)) {
     Serial.println(F("Solar: Failed to initialize Modbus RTU Client"));
     _initialized = false;
     return false;
   }
   
-  // Set read timeout
+  // Set read timeout. Clamp to >=500 ms because SunSaver MPPT can take several
+  // hundred ms to assemble a reply over the MRC-1 MeterBus->RS-485 bridge,
+  // and the default 200 ms in older saved configs causes the client to
+  // give up before the reply arrives.
+  if (_config.modbusTimeoutMs < 500) {
+    _config.modbusTimeoutMs = 500;
+  }
   ModbusRTUClient.setTimeout(_config.modbusTimeoutMs);
 
-  // Mirror bench-proven defaults used by standalone diagnostics.
-  RS485.setDelays(50, 50);
+  // RS-485 timing fix per Arduino forum thread #1421875 post #18:
+  // The Opta needs a post-TX delay of one full character time before DE drops,
+  // otherwise the last byte of the Modbus query is corrupted on the wire and
+  // the slave silently rejects it. setDelays(pre, post) is in microseconds.
+  // Use 1200 us as a safe upper bound (covers 9600 8N1=1042 us, 9600 8N2=1146 us).
+  // The previous (50, 50) value was 50 us post-delay -- ~20x too short.
+  RS485.setDelays(0, 1200);
   
   Serial.print(F("Solar: Modbus RTU initialized at "));
   Serial.print(_config.modbusBaudRate);
-  Serial.print(F(" baud, slave ID "));
-  Serial.println(_config.modbusSlaveId);
+  Serial.print(F(" baud 8N2, slave ID "));
+  Serial.print(_config.modbusSlaveId);
+  Serial.print(F(", timeout "));
+  Serial.print(_config.modbusTimeoutMs);
+  Serial.println(F(" ms"));
   
   _initialized = true;
   _data.communicationOk = false;
@@ -154,50 +175,77 @@ bool SolarManager::poll(unsigned long nowMillis) {
 bool SolarManager::readRegisters() {
   bool success = true;
   SolarData nextData = _data;
-  uint16_t realtimeRegs[4];
-  uint16_t temperatureRegs[2];
-  uint16_t statusRegs[5];
-  uint16_t dailyChargeRegs[1];
-  uint16_t dailyVoltageRegs[2];
 
-  // Group contiguous Modbus reads to reduce total blocking time per poll.
-  if (readRegistersWithFallback(_config.modbusSlaveId, SS_REG_CHARGE_CURRENT, 4, realtimeRegs)) {
-    nextData.chargeCurrent = scaleCurrent(realtimeRegs[0]);
-    nextData.loadCurrent = scaleCurrent(realtimeRegs[1]);
-    nextData.batteryVoltage = scaleVoltage(realtimeRegs[2]);
-    nextData.arrayVoltage = scaleVoltage(realtimeRegs[3]);
+  // ==========================================================================
+  // 2026-04-22 FIELD-READY POLICY:
+  // Only the live/filtered ADC block at 0x0008..0x000C has been bench-verified
+  // on this SunSaver MPPT firmware revision. The previously-coded addresses
+  // for temperature (0x001B/0x001C), status (0x002B/0x002C/0x002E/0x002F),
+  // daily Ah (0x0034) and daily V min/max (0x003D/0x003E) all returned either
+  // zeros or values that look like extra voltage snapshots, NOT the documented
+  // SunSaver semantics. Reading them and feeding the result into derived
+  // health flags (chargeState/faults/alarms/heatsinkTemp) caused false
+  // "FAULT" indications in the bench capture (e.g. faults=0x4235 with no
+  // physical fault). Until the addresses are confirmed against a Morningstar
+  // datasheet for this exact firmware, we skip those reads entirely.
+  //
+  // To re-enable for bench experimentation, define SOLAR_ENABLE_UNVERIFIED_REGISTERS.
+  // ==========================================================================
+
+  // Real-time block: 5 contiguous filtered ADC registers starting at adc_vb_f
+  //   0x0008 batt V, 0x0009 array V, 0x000A load V, 0x000B charge I, 0x000C load I.
+  uint16_t realtimeRegs[5];
+  if (readRegistersWithFallback(_config.modbusSlaveId, SS_REG_BATTERY_VOLTAGE, 5, realtimeRegs)) {
+    nextData.batteryVoltage = scaleVoltage(realtimeRegs[0]);
+    nextData.arrayVoltage   = scaleVoltage(realtimeRegs[1]);
+    // realtimeRegs[2] is load voltage (adc_vl_f) -- not currently exposed in SolarData.
+    nextData.chargeCurrent  = scaleCurrent(realtimeRegs[3]);
+    nextData.loadCurrent    = scaleCurrent(realtimeRegs[4]);
   } else {
     success = false;
   }
 
+  // Suspect register blocks: only read when explicitly enabled for bench work.
+  // In production these stay zeroed so derived health logic does not false-trip.
+#ifdef SOLAR_ENABLE_UNVERIFIED_REGISTERS
+  uint16_t temperatureRegs[2];
   if (success && readRegistersWithFallback(_config.modbusSlaveId, SS_REG_HEATSINK_TEMP, 2, temperatureRegs)) {
     nextData.heatsinkTemp = (int8_t)((int16_t)temperatureRegs[0]);
     nextData.batteryTemp = (int8_t)((int16_t)temperatureRegs[1]);
-  } else {
-    success = false;
   }
 
+  uint16_t statusRegs[5];
   if (success && readRegistersWithFallback(_config.modbusSlaveId, SS_REG_CHARGE_STATE, 5, statusRegs)) {
     nextData.chargeState = (SolarChargeState)(statusRegs[0] & 0xFF);
     nextData.faults = statusRegs[1];
     nextData.alarms = statusRegs[3];
     nextData.loadOn = (statusRegs[4] != 0);
-  } else {
-    success = false;
   }
 
+  uint16_t dailyChargeRegs[1];
   if (success && readRegistersWithFallback(_config.modbusSlaveId, SS_REG_AH_DAILY, 1, dailyChargeRegs)) {
     nextData.ampHoursDaily = dailyChargeRegs[0] * 0.1f;  // Scale: 0.1 Ah per count
-  } else {
-    success = false;
   }
 
+  uint16_t dailyVoltageRegs[2];
   if (success && readRegistersWithFallback(_config.modbusSlaveId, SS_REG_BATTERY_V_MIN_DAILY, 2, dailyVoltageRegs)) {
     nextData.batteryVoltageMinDaily = scaleVoltage(dailyVoltageRegs[0]);
     nextData.batteryVoltageMaxDaily = scaleVoltage(dailyVoltageRegs[1]);
-  } else {
-    success = false;
   }
+#else
+  // Force unverified fields to safe defaults every poll so a stale value from
+  // a prior bench session can never leak into health logic or daily reports.
+  nextData.heatsinkTemp = 0;
+  nextData.batteryTemp = 0;
+  nextData.chargeState = CHARGE_STATE_START;
+  nextData.faults = 0;
+  nextData.alarms = 0;
+  nextData.loadOn = false;
+  nextData.ampHoursDaily = 0.0f;
+  nextData.wattHoursDaily = 0.0f;
+  nextData.batteryVoltageMinDaily = nextData.batteryVoltage;
+  nextData.batteryVoltageMaxDaily = nextData.batteryVoltage;
+#endif
   
   // Update communication status
   if (success) {

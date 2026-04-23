@@ -21,18 +21,20 @@
 #include <ArduinoRS485.h>
 #include <ArduinoModbus.h>
 
-// SunSaver MPPT register addresses (0-based for ArduinoModbus)
-#define SS_REG_CHARGE_CURRENT   0x0010  // Reg 17
-#define SS_REG_LOAD_CURRENT     0x0011  // Reg 18
-#define SS_REG_BATTERY_VOLTAGE  0x0012  // Reg 19
-#define SS_REG_ARRAY_VOLTAGE    0x0013  // Reg 20
-#define SS_REG_HEATSINK_TEMP    0x001B  // Reg 28
-#define SS_REG_CHARGE_STATE     0x002B  // Reg 44
-#define SS_REG_FAULTS           0x002C  // Reg 45
-#define SS_REG_ALARMS           0x002E  // Reg 47
+// SunSaver MPPT register addresses (0-based for ArduinoModbus).
+// Live filtered ADC values are at 0x0008..0x000C (adc_*_f), NOT 0x0010..0x0013.
+// Verified by direct bench capture 2026-04-22.
+#define SS_REG_BATTERY_VOLTAGE  0x0008  // adc_vb_f: filtered battery voltage
+#define SS_REG_ARRAY_VOLTAGE    0x0009  // adc_va_f: filtered array voltage
+#define SS_REG_CHARGE_CURRENT   0x000B  // adc_ic_f: filtered charge current
+#define SS_REG_LOAD_CURRENT     0x000C  // adc_il_f: filtered load current
+#define SS_REG_HEATSINK_TEMP    0x001B  // T_hs   : heatsink temperature (signed)
+#define SS_REG_CHARGE_STATE     0x002B  // charge_state
+#define SS_REG_FAULTS           0x002C  // faults bitfield
+#define SS_REG_ALARMS           0x002E  // alarms bitfield
 
-// Scaling factors for 12V SunSaver
-static const float SS_SCALE_VOLTAGE = 100.0f;
+// Scaling factors per SunSaver MPPT PDU (12V version): V_PU=96.667, I_PU=79.16.
+static const float SS_SCALE_VOLTAGE = 96.667f;
 static const float SS_SCALE_CURRENT = 79.16f;
 static const float SS_SCALE_DIVISOR = 32768.0f;
 
@@ -161,11 +163,13 @@ void setup() {
     gModbusReady = false;
   } else {
     ModbusRTUClient.setTimeout(MODBUS_TIMEOUT_MS);
-    // Give the RS-485 transceiver extra pre/post-send time. The MRC-1
-    // and the on-board Opta transceiver can both be slow to flip direction;
-    // 50 us pre + 50 us post is a safe default.
-    RS485.setDelays(50, 50);
-    Serial.println(F("ModbusRTUClient.begin() OK (8N2, delays=50/50us)"));
+    // Opta RS485 post-TX delay must be >= one full character time at this
+    // baud, or the last byte of the query is corrupted on the wire and the
+    // SunSaver silently rejects it. See Arduino forum thread #1421875 post #18.
+    // 1042 us = 10/9600 * 1e6 (8N1); 1146 us = 11/9600 * 1e6 (8N2).
+    // Use 1200 us as a safe upper bound covering both framings.
+    RS485.setDelays(0, 1200);
+    Serial.println(F("ModbusRTUClient.begin() OK (8N2, postDelay=1200us)"));
     gModbusReady = true;
   }
 }

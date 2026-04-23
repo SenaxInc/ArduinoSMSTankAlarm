@@ -375,13 +375,17 @@ The system supports optional monitoring of Morningstar SunSaver MPPT solar batte
 
 **RS-485 Wiring (Using MRC-1):**
 
+Morningstar uses the older convention where their Terminal A is the inverting/negative line (DATA-) and Terminal B is the non-inverting/positive line (DATA+). This is opposite of the modern DATA+/DATA- convention used on the Arduino Opta, so the wires must be **crossed**:
+
 | Arduino Opta RS485 | MRC-1 Terminal | Function |
 |--------------------|----------------|----------|
-| **A (-)** | **Terminal B (-)** | Data Negative |
-| **B (+)** | **Terminal A (+)** | Data Positive |
+| **A** (DATA+) | **Terminal B** (Morningstar "+", non-inverting, MARK=high) | Data Positive |
+| **B** (DATA-) | **Terminal A** (Morningstar "-", inverting, MARK=low) | Data Negative |
 | **GND** | **Terminal G** | Signal Ground |
 
-> **Note:** A/B labeling varies between manufacturers. If communication fails, try swapping the A and B wires at the Opta end.
+> **Source:** Morningstar Technical Support — Terminal A on Morningstar charge controllers and the MRC-1 is inverted from the UART pin (MARK=low), and Terminal B is the same as the UART pin (MARK=high). Most modern RS-485 adapters use the opposite convention, so Morningstar A connects to the adapter's B / DATA-, and Morningstar B connects to the adapter's A / DATA+.
+>
+> **Troubleshooting:** If communication fails after correct wiring, also verify (1) Signal Ground is connected, (2) the SunSaver's RJ-11 cable is fully seated into the MRC-1 (the MRC-1 is bus-powered from the SunSaver), (3) Modbus framing is 8N2, and (4) slave ID and baud rate match the SunSaver.
 
 **Configuration Parameters:**
 

@@ -36,13 +36,18 @@
 // ============================================================================
 // SunSaver MPPT Modbus Register Addresses (Holding Registers, Function Code 03)
 // Note: ArduinoModbus uses 0-based addresses, so address = register - 1
+// Register addresses verified by direct bench capture against a SunSaver MPPT
+// charger via MRC-1 on 2026-04-22. The legacy choice of 0x0010..0x0013 was
+// reading min/max derived registers that hold zero on this firmware revision.
+// The live filtered ADC values are at 0x0008..0x000C (adc_*_f).
 // ============================================================================
 
-// Voltage and Current Registers (Real-time)
-#define SS_REG_BATTERY_VOLTAGE      0x0012  // Register 19: Battery Voltage
-#define SS_REG_ARRAY_VOLTAGE        0x0013  // Register 20: Array (Solar Panel) Voltage  
-#define SS_REG_CHARGE_CURRENT       0x0010  // Register 17: Charge Current
-#define SS_REG_LOAD_CURRENT         0x0011  // Register 18: Load Current
+// Voltage and Current Registers (Real-time, filtered)
+#define SS_REG_BATTERY_VOLTAGE      0x0008  // adc_vb_f: filtered battery voltage
+#define SS_REG_ARRAY_VOLTAGE        0x0009  // adc_va_f: filtered array (panel) voltage
+#define SS_REG_LOAD_VOLTAGE         0x000A  // adc_vl_f: filtered load voltage
+#define SS_REG_CHARGE_CURRENT       0x000B  // adc_ic_f: filtered charge current
+#define SS_REG_LOAD_CURRENT         0x000C  // adc_il_f: filtered load current
 
 // Temperature
 #define SS_REG_HEATSINK_TEMP        0x001B  // Register 28: Heatsink Temperature (°C, signed)
@@ -64,8 +69,9 @@
 // Scaling Factors for 12V System
 // Formula: Actual = (Raw * Scale) / 32768
 // ============================================================================
-#define SS_SCALE_VOLTAGE_12V        100.0f    // Voltage scaling: Raw * 100 / 32768
-#define SS_SCALE_CURRENT_12V        79.16f    // Current scaling: Raw * 79.16 / 32768
+// Per Morningstar SunSaver MPPT PDU: V_PU (12V controller) = 96.667 V, I_PU = 79.16 A.
+#define SS_SCALE_VOLTAGE_12V        96.667f   // Voltage scaling: Raw * 96.667 / 32768
+#define SS_SCALE_CURRENT_12V        79.16f    // Current scaling: Raw * 79.16  / 32768
 #define SS_SCALE_DIVISOR            32768.0f  // Common divisor
 
 // ============================================================================
@@ -183,7 +189,7 @@ struct SolarConfig {
   bool enabled;               // true = solar monitoring enabled
   uint8_t modbusSlaveId;      // Modbus slave ID (default: 1)
   uint16_t modbusBaudRate;    // Baud rate (default: 9600)
-  uint16_t modbusTimeoutMs;   // Modbus read timeout (default: 200ms)
+  uint16_t modbusTimeoutMs;   // Modbus read timeout (default: 1000ms)
   uint16_t pollIntervalSec;   // Polling interval (default: 60 seconds)
   
   // Battery thresholds (customizable for different battery types)
@@ -203,7 +209,7 @@ struct SolarConfig {
 // ============================================================================
 #define SOLAR_DEFAULT_SLAVE_ID          1
 #define SOLAR_DEFAULT_BAUD_RATE         9600
-#define SOLAR_DEFAULT_TIMEOUT_MS        200
+#define SOLAR_DEFAULT_TIMEOUT_MS        1000
 #define SOLAR_DEFAULT_POLL_INTERVAL_SEC 60
 #define SOLAR_COMM_FAILURE_THRESHOLD    5
 
