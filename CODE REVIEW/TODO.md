@@ -1,7 +1,7 @@
 # TankAlarm Master TODO List
 
-> **Current Version:** 1.6.2 (April 9, 2026)  
-> **Last Updated:** April 16, 2026 (added FTPS deployment/validation execution checklist for local Pyftpdlib and PR1400 NAS)  
+> **Current Version:** 1.6.12 (April 23, 2026)  
+> **Last Updated:** April 23, 2026 (logged v1.6.3–v1.6.12 SunSaver/battery work; added I-24/I-25/I-26 applyConfigUpdate parity gaps)  
 > **Purpose:** Comprehensive tracker for all unimplemented changes identified in code reviews and logic reviews. Update after every new review or commit.
 
 ---
@@ -176,6 +176,21 @@ These items represent data loss, safety, or security risks.
 - [x] The Server now sets the real session token in an `HttpOnly` cookie and request parsing prefers the cookie-backed session. The browser only retains a non-secret placeholder value for compatibility with existing page scripts.
 - **Source:** LOGIC_REVIEW_04132026.md (LR-20)
 - **Fixed:** April 13, 2026 — login/logout and request auth flow moved to cookie-backed sessions.
+
+### I-24: `applyConfigUpdate()` Ignores `solarCharger` Block **(C)** — CONFIG INTEGRITY
+- [ ] Same bug class as the `batteryConfig` regression fixed in v1.6.12 (and similar to I-17). `loadConfigFromFlash()` parses `doc["solarCharger"]`, but `applyConfigUpdate()` does not. When the server pushes a `solarCharger` change, the client silently drops it; the next `saveConfigToFlash()` then overwrites flash with the in-memory (stale) values, so a reboot does not recover.
+- **Source:** Self-audit during v1.6.12 bug review (April 23, 2026)
+- **Fix:** Add a `doc["solarCharger"]` parser to `applyConfigUpdate()` mirroring the flash loader; gate any RS485/Modbus reinit on changed enable/baud fields.
+
+### I-25: `applyConfigUpdate()` Has No Save Path for `vinMonitor` **(C)** — DURABILITY
+- [ ] `applyConfigUpdate()` correctly applies inbound `vinMonitor` settings, but `saveConfigToFlash()` does not serialize the `vinMonitor` block. Pushed Vin-divider config survives in RAM only — a reboot reverts to the last server-pushed config, which is fine *if* the server keeps re-pushing, but breaks offline-only deployments and any first-boot-from-flash path.
+- **Source:** Self-audit during v1.6.12 bug review (April 23, 2026)
+- **Fix:** Add a `doc["vinMonitor"]` block to `saveConfigToFlash()` mirroring the apply-side fields.
+
+### I-26: `applyConfigUpdate()` Has No Save Path for `solarOnlyConfig` **(C)** — DURABILITY
+- [ ] Same shape as I-25: inbound `solarOnlyConfig` is applied to RAM but never written to flash by `saveConfigToFlash()`. Solar-only deployments lose their startup-debounce / sunset thresholds across a reboot if the server doesn't immediately re-push.
+- **Source:** Self-audit during v1.6.12 bug review (April 23, 2026)
+- **Fix:** Add a `doc["solarOnlyConfig"]` block to `saveConfigToFlash()` mirroring the apply-side fields.
 
 ### ~~I-6: Config Retry State Inconsistency **(S)** — STATE MACHINE~~ ✅ FIXED
 - [x] Manual retry now keeps `pendingDispatch=true` and resets `dispatchAttempts=1` on successful Notecard send. ACK from client clears the pending flag (consistent with auto-retry behavior).
@@ -591,6 +606,29 @@ Items from the COMMON_HEADER_AUDIT_02192026.md that need cleanup.
 
 Items moved here after implementation. Include version number and date.
 
+### Completed in v1.6.12 (April 23, 2026)
+- [x] **BUG (Critical):** `applyConfigUpdate()` ignored the `batteryConfig` block — server-pushed chemistry/nominal-voltage changes were silently dropped, then `saveConfigToFlash()` overwrote flash with the stale in-memory value, so reboots did not recover. Parser added; mirrors `loadConfigFromFlash()` (Client)
+- [x] **BUG (Medium):** Chemistry-mismatch message buffer `chemMsg[96]` truncated the worst-case lithium MISMATCH warning (~124 chars). Bumped to 160 (Client)
+- [x] **Cleanup:** Dropped redundant `batteryTypeName` field from `saveConfigToFlash()` (loader uses int enum) (Client)
+
+### Completed in v1.6.11 (April 23, 2026)
+- [x] **REGRESSION FIX:** `saveConfigToFlash()` was still emitting the legacy `batteryMonitor` JSON block after the v1.6.9 cleanup removed the loader. Now writes `batteryConfig` (enabled/batteryType/nominalVoltage) matching the server schema, so chemistry/voltage selections survive reboot (Client)
+
+### Completed in v1.6.10 (April 22, 2026)
+- [x] **Tightened lithium chemistry verification:** A default Sealed-DIP SunSaver under a "LiFePO4" UI selection now flags MISMATCH instead of passing. `verifyChemistry()` lithium ranges narrowed; active V_eq with a lithium selection escalates to DANGER (Common/Solar)
+
+### Completed in v1.6.9 (April 22, 2026)
+- [x] **SunSaver chemistry cross-check:** Best-effort 4-register burst at `SS_REG_V_REG`/`V_FLOAT`/`V_EQ` reads SunSaver active setpoints over Modbus. New `SolarManager::verifyChemistry()` warns when the configured battery chemistry doesn't match the SunSaver DIP-derived setpoints. One-shot serial log on first valid poll. Plausibility-gated (8..32V) so absent/garbled reads safe-fail (Common/Solar, Client)
+- [x] **Back-compat removal (decoupled battery):** `BatteryType` enum renumbered to chemistry-only (NONE=0, AGM=1, FLOODED=2, GEL=3, SLA=4, LIFEPO4=5, LI_ION=6, LIPO=7, CUSTOM=8). Legacy `LEAD_ACID_12V`/`LIFEPO4_12V` aliases removed. `derivePowerSource()` JS helper removed from server. Server `loadConfig()` `revMap` and client loader updated; no legacy fallback (Common/Battery, Server, Client)
+- [x] **Caveat documented:** SunSaver Modbus does NOT expose chemistry presets remotely — DIP switch only handles lead-acid, lithium MUST be loaded via MSView (USB MeterBus) custom EEPROM profile. `validatePowerCombination()` warns on Modbus-MPPT + lithium combo with explicit MSView instruction (Server)
+- [x] **Setpoint registers (BENCH-UNVERIFIED):** `SS_REG_V_REG=0x0033`, `SS_REG_V_FLOAT=0x0035`, `SS_REG_V_EQ=0x0036` — addresses still need bench confirmation against a real SunSaver before relying on the verification path in production (Common/Solar)
+
+### Completed in v1.6.8 (April 22, 2026)
+- [x] **Decouple battery chemistry from power source UI:** Replaced single combined dropdown with 4 decoupled controls (power source, battery chemistry, nominal pack voltage, monitoring enable). New `batteryConfig` JSON block; `initBatteryConfig(BatteryConfig*, BatteryType, uint8_t nominalVoltage=0)` scales 12V baselines by `nominalVoltage/12`. `BatteryConfig.nominalVoltage` is `uint8_t` (0 sentinel for LiPo, else 12 or 24). New `batteryIsLeadAcid()`, `batterySupportsEqualize()` (FLOODED only), `batteryTypeLabel()` helpers (Common/Battery, Server, Client)
+
+### Completed in v1.6.7 (April 21, 2026)
+- [x] **30-minute service window after boot:** Client honors a service-mode window after boot for installers (Client)
+
 ### Completed in v1.6.1 Implementation Review Fixes (April 8, 2026)
 - [x] **CRITICAL:** `relay_timeout` re-activation loop — `sendAlarm()` now excludes `relay_timeout` from `isAlarm`, preventing infinite timeout→activate→timeout cycle (Client)
 - [x] **HIGH:** Server clears alarm state on `relay_timeout` — separated into own branch that preserves `alarmActive` and does not call `clearAlarmEvent()` (Server)
@@ -719,6 +757,9 @@ This TODO was compiled from the following documents, sorted by date:
 
 | Date | Document | Type |
 |------|----------|------|
+| 2026-04-23 | v1.6.12 self-audit (this conversation) | Bug audit of v1.6.7\u2013v1.6.11 SunSaver/battery work; shipped applyConfigUpdate batteryConfig parser, chemMsg buffer bump; logged I-24/I-25/I-26 applyConfigUpdate parity gaps |
+| 2026-04-22 | v1.6.8\u2013v1.6.10 SunSaver chemistry work | Decoupled battery UI, chemistry verification via Modbus setpoint readback, lithium MISMATCH detection, legacy enum aliases removed |
+| 2026-04-21 | v1.6.7 service window | 30-min service-mode window after boot |
 | 2026-04-15 | FTPS_LIBRARY_INTEGRATION_STUDY_04152026.md | ArduinoOPTA-FTPS library integration feasibility study; server-side FTPS migration tasks F-1 through F-13 |
 | 2026-04-13 | FTPS planning note/checklist update | Narrowed the future secure-transport plan to Explicit TLS FTPS only; left Implicit TLS out of the current implementation scope |
 | 2026-04-13 | Validated April 13 implementation pass | Implemented C-7, I-15 thru I-19, I-21, I-23, M-18 thru M-21, M-24 thru M-26, and FTP credential obfuscation at rest; revalidated M-27 as already fixed in API output; deferred secure FTP transport follow-up |
