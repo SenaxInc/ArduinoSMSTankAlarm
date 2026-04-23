@@ -2833,6 +2833,28 @@ static bool loadConfigFromFlash(ClientConfig &cfg) {
     cfg.batteryMonitor.enabled = false;
   }
 
+  // Load decoupled batteryConfig block (sent by server v1.6.8+ generator).
+  // This block carries chemistry + nominal voltage as separate fields and lets
+  // initBatteryConfig() compute scaled thresholds. Overrides batteryMonitor when present.
+  JsonObject batCfgNew = doc["batteryConfig"].as<JsonObject>();
+  if (batCfgNew) {
+    bool batEnabled = batCfgNew["enabled"].is<bool>() ? batCfgNew["enabled"].as<bool>() : true;
+    BatteryType bt = batCfgNew["batteryType"].is<int>()
+      ? (BatteryType)batCfgNew["batteryType"].as<int>()
+      : BATTERY_TYPE_AGM;
+    uint8_t nominalV = batCfgNew["nominalVoltage"].is<int>()
+      ? (uint8_t)batCfgNew["nominalVoltage"].as<int>()
+      : 12;
+    initBatteryConfig(&cfg.batteryMonitor, bt, nominalV);
+    cfg.batteryMonitor.enabled = batEnabled && (bt != BATTERY_TYPE_NONE);
+    Serial.print(F("Battery config (decoupled): type="));
+    Serial.print(batteryTypeLabel(bt));
+    Serial.print(F(" nominalV="));
+    Serial.print(nominalV);
+    Serial.print(F(" enabled="));
+    Serial.println(cfg.batteryMonitor.enabled ? F("yes") : F("no"));
+  }
+
   // Load analog Vin voltage divider configuration
   JsonObject vinCfg = doc["vinMonitor"].as<JsonObject>();
   if (vinCfg) {

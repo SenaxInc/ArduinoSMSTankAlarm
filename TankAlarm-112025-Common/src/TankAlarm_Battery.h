@@ -35,15 +35,65 @@
 // ============================================================================
 
 /**
- * Predefined battery types with appropriate voltage thresholds.
- * These map to the Notecard's card.voltage "mode" settings.
+ * Predefined battery types (chemistry only).
+ * Nominal pack voltage (12V/24V) is carried separately in BatteryConfig.nominalVoltage
+ * so that thresholds can be scaled at runtime instead of duplicating enum values.
+ *
+ * Legacy values (LEAD_ACID_12V=0, LIFEPO4_12V=1, LIPO=2, CUSTOM=3) are preserved
+ * for back-compat with config files written by older firmware.
  */
 enum BatteryType : uint8_t {
-  BATTERY_TYPE_LEAD_ACID_12V = 0,  // 12V lead-acid (AGM, flooded, gel)
-  BATTERY_TYPE_LIFEPO4_12V   = 1,  // 12V LiFePO4 (4S configuration)
-  BATTERY_TYPE_LIPO          = 2,  // LiPo battery (Notecard default)
-  BATTERY_TYPE_CUSTOM        = 3   // Custom thresholds
+  // Legacy values (do not renumber)
+  BATTERY_TYPE_LEAD_ACID_12V = 0,  // Legacy: generic 12V lead-acid (= AGM)
+  BATTERY_TYPE_LIFEPO4_12V   = 1,  // Legacy: generic 12V LiFePO4
+  BATTERY_TYPE_LIPO          = 2,  // LiPo battery (Notecard default, single cell)
+  BATTERY_TYPE_CUSTOM        = 3,  // Custom thresholds (no auto-init)
+
+  // New chemistry-specific values (decoupled from pack voltage)
+  BATTERY_TYPE_NONE          = 4,  // No battery (solar-direct or grid-only)
+  BATTERY_TYPE_AGM           = 5,  // Sealed AGM lead-acid
+  BATTERY_TYPE_FLOODED       = 6,  // Flooded (wet) lead-acid (supports equalize)
+  BATTERY_TYPE_GEL           = 7,  // Gel lead-acid (no equalize)
+  BATTERY_TYPE_SLA           = 8,  // Generic sealed lead-acid (treated as AGM)
+  BATTERY_TYPE_LIFEPO4       = 9,  // LiFePO4 (any pack voltage; uses nominalVoltage)
+  BATTERY_TYPE_LI_ION        = 10  // Li-ion (NMC/LCO chemistry)
 };
+
+/**
+ * Returns true if the battery type is any lead-acid chemistry.
+ */
+inline bool batteryIsLeadAcid(BatteryType t) {
+  return t == BATTERY_TYPE_LEAD_ACID_12V || t == BATTERY_TYPE_AGM ||
+         t == BATTERY_TYPE_FLOODED || t == BATTERY_TYPE_GEL || t == BATTERY_TYPE_SLA;
+}
+
+/**
+ * Returns true if the battery type supports equalization charging.
+ * Only flooded lead-acid benefits from periodic equalization.
+ */
+inline bool batterySupportsEqualize(BatteryType t) {
+  return t == BATTERY_TYPE_FLOODED;
+}
+
+/**
+ * Human-readable label for a BatteryType (for UI/reports).
+ */
+inline const char* batteryTypeLabel(BatteryType t) {
+  switch (t) {
+    case BATTERY_TYPE_NONE:          return "None";
+    case BATTERY_TYPE_AGM:           return "AGM";
+    case BATTERY_TYPE_FLOODED:       return "Flooded";
+    case BATTERY_TYPE_GEL:           return "Gel";
+    case BATTERY_TYPE_SLA:           return "SLA";
+    case BATTERY_TYPE_LIFEPO4:       return "LiFePO4";
+    case BATTERY_TYPE_LI_ION:        return "Li-ion";
+    case BATTERY_TYPE_LIPO:          return "LiPo";
+    case BATTERY_TYPE_LEAD_ACID_12V: return "Lead-Acid 12V";
+    case BATTERY_TYPE_LIFEPO4_12V:   return "LiFePO4 12V";
+    case BATTERY_TYPE_CUSTOM:        return "Custom";
+    default:                         return "Unknown";
+  }
+}
 
 // ============================================================================
 // 12V Lead-Acid Battery Thresholds (AGM/Flooded/Gel)
@@ -118,9 +168,10 @@ struct BatteryData {
 // ============================================================================
 struct BatteryConfig {
   bool enabled;               // true = battery monitoring enabled
-  BatteryType batteryType;    // Battery type for automatic thresholds
+  BatteryType batteryType;    // Battery chemistry for automatic thresholds
+  uint8_t nominalVoltage;     // Nominal pack voltage: 12 or 24 (0 = legacy/auto)
   
-  // Voltage thresholds (set automatically from batteryType, or custom)
+  // Voltage thresholds (set automatically from batteryType+nominalVoltage, or custom)
   float highVoltage;          // High voltage warning (overcharge)
   float normalVoltage;        // Normal operating minimum
   float lowVoltage;           // Low voltage warning threshold
@@ -280,15 +331,31 @@ inline void initSolarOnlyConfig(SolarOnlyConfig* config) {
 
 /**
  * Initialize BatteryConfig with defaults for a specific battery type.
- * 
+ *
  * @param config Pointer to BatteryConfig to initialize
- * @param type Battery type to configure for
+ * @param type Battery chemistry to configure for
+ * @param nominalVoltage Nominal pack voltage (12 or 24). Pass 0 for legacy/auto
+ *                      (legacy types LEAD_ACID_12V/LIFEPO4_12V imply 12V).
+ *
+ * Threshold scaling: for non-LiPo chemistries, the 12V baseline thresholds are
+ * multiplied by (nominalVoltage/12). A 24V AGM bank therefore inherits 25.4V/23.6V
+ * from the 12.7V/11.8V 12V values.
  */
-inline void initBatteryConfig(BatteryConfig* config, BatteryType type) {
+inline void initBatteryConfig(BatteryConfig* config, BatteryType type, uint8_t nominalVoltage = 0) {
   if (!config) return;
-  
-  config->enabled = false;  // Must be explicitly enabled
+
+  // Resolve nominal voltage. Legacy *_12V enums force 12V; explicit 0 also defaults to 12V.
+  if (nominalVoltage == 0) {
+    nominalVoltage = 12;
+  }
+  // LiPo is a single-cell chemistry (~3.7V); pack voltage is meaningless here.
+  if (type == BATTERY_TYPE_LIPO) {
+    nominalVoltage = 0;  // sentinel: don't scale
+  }
+
+  config->enabled = (type != BATTERY_TYPE_NONE);  // None = disabled by default
   config->batteryType = type;
+  config->nominalVoltage = (type == BATTERY_TYPE_LIPO) ? 0 : nominalVoltage;
   config->calibrationOffset = BATTERY_DEFAULT_CALIBRATION;
   config->pollIntervalSec = BATTERY_DEFAULT_POLL_INTERVAL_SEC;
   config->trendAnalysisHours = BATTERY_DEFAULT_TREND_HOURS;
@@ -298,38 +365,73 @@ inline void initBatteryConfig(BatteryConfig* config, BatteryType type) {
   config->alertOnRecovery = false;  // Usually not needed
   config->declineAlertThreshold = BATTERY_DEFAULT_DECLINE_THRESHOLD;
   config->includeInDailyReport = true;
-  
-  // Set thresholds based on battery type
+
+  // Scale factor for threshold math: 24V pack -> 2.0x the 12V baseline.
+  const float scale = (nominalVoltage > 0) ? (float)nominalVoltage / 12.0f : 1.0f;
+
+  // Set thresholds based on chemistry, scaled by pack voltage where applicable.
   switch (type) {
-    case BATTERY_TYPE_LEAD_ACID_12V:
-      config->highVoltage = 14.8f;  // Typical equalization voltage
-      config->normalVoltage = LEAD_ACID_12V_NORMAL;
-      config->lowVoltage = LEAD_ACID_12V_LOW;
-      config->criticalVoltage = LEAD_ACID_12V_CRITICAL;
+    case BATTERY_TYPE_NONE:
+      // No battery: thresholds are meaningless but populate with safe sentinels.
+      config->highVoltage = 0.0f;
+      config->normalVoltage = 0.0f;
+      config->lowVoltage = 0.0f;
+      config->criticalVoltage = 0.0f;
+      config->alertOnLow = false;
+      config->alertOnCritical = false;
+      config->alertOnDeclining = false;
       break;
-      
-    case BATTERY_TYPE_LIFEPO4_12V:
-      config->highVoltage = 14.8f;  // Above max charge voltage
-      config->normalVoltage = LIFEPO4_12V_NORMAL;
-      config->lowVoltage = LIFEPO4_12V_LOW;
-      config->criticalVoltage = LIFEPO4_12V_CRITICAL;
+
+    case BATTERY_TYPE_LEAD_ACID_12V:  // legacy
+    case BATTERY_TYPE_AGM:
+    case BATTERY_TYPE_GEL:
+    case BATTERY_TYPE_SLA:
+      config->highVoltage     = 14.8f * scale;  // typical absorption ceiling
+      config->normalVoltage   = LEAD_ACID_12V_NORMAL   * scale;
+      config->lowVoltage      = LEAD_ACID_12V_LOW      * scale;
+      config->criticalVoltage = LEAD_ACID_12V_CRITICAL * scale;
       break;
-      
+
+    case BATTERY_TYPE_FLOODED:
+      // Flooded tolerates higher equalization voltage (~15.5V on a 12V bank).
+      config->highVoltage     = 15.5f * scale;
+      config->normalVoltage   = LEAD_ACID_12V_NORMAL   * scale;
+      config->lowVoltage      = LEAD_ACID_12V_LOW      * scale;
+      config->criticalVoltage = LEAD_ACID_12V_CRITICAL * scale;
+      break;
+
+    case BATTERY_TYPE_LIFEPO4_12V:  // legacy
+    case BATTERY_TYPE_LIFEPO4:
+      config->highVoltage     = 14.8f * scale;
+      config->normalVoltage   = LIFEPO4_12V_NORMAL     * scale;
+      config->lowVoltage      = LIFEPO4_12V_LOW        * scale;
+      config->criticalVoltage = LIFEPO4_12V_CRITICAL   * scale;
+      break;
+
+    case BATTERY_TYPE_LI_ION:
+      // Li-ion (NMC) 3S nominal ~11.1V, 4.2V/cell max -> 12.6V full at 3S.
+      // For a 24V (7S) pack, scale accordingly.
+      config->highVoltage     = 12.6f * scale;
+      config->normalVoltage   = 11.4f * scale;
+      config->lowVoltage      = 10.5f * scale;
+      config->criticalVoltage =  9.9f * scale;
+      break;
+
     case BATTERY_TYPE_LIPO:
-      // Use Notecard defaults for LiPo
+      // Single cell (Notecard default).
       config->highVoltage = 4.6f;
       config->normalVoltage = 3.5f;
       config->lowVoltage = 3.2f;
       config->criticalVoltage = 3.0f;
       break;
-      
+
     case BATTERY_TYPE_CUSTOM:
     default:
-      // Safe defaults
-      config->highVoltage = 15.0f;
-      config->normalVoltage = 12.0f;
-      config->lowVoltage = 11.5f;
-      config->criticalVoltage = 11.0f;
+      // Safe defaults at the requested nominal voltage.
+      config->highVoltage     = 15.0f * scale;
+      config->normalVoltage   = 12.0f * scale;
+      config->lowVoltage      = 11.5f * scale;
+      config->criticalVoltage = 11.0f * scale;
       break;
   }
 }
