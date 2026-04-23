@@ -857,6 +857,13 @@ static unsigned long gUserButtonLastSyncTime = 0;  // last hub.sync trigger
 #define USER_BUTTON_SYNC_COOLDOWN_MS 30000UL  // throttle hub.sync to once per 30s
 #endif
 
+// Temporary continuous-mode "service window" — opened by USER button on
+// solar/periodic clients so any inbound notes that arrive at Notehub during
+// the window are delivered immediately. Auto-restores to periodic when expired.
+static unsigned long gServiceWindowUntil = 0;     // 0 = inactive; else millis() expiry
+static bool gServiceWindowActive = false;
+#define SERVICE_WINDOW_DURATION_MS 120000UL  // 2 minutes
+
 // RPM sensor state for Hall effect pulse counting
 // We track pulses per monitor that uses an RPM sensor
 static unsigned long gRpmLastSampleMillis[MAX_MONITORS] = {0};
@@ -1254,6 +1261,8 @@ static void initializeClearButton();
 static void checkClearButton(unsigned long now);
 static void initializeUserButton();
 static void checkUserButton(unsigned long now);
+static void openServiceWindow(unsigned long now);
+static void checkServiceWindowExpiry(unsigned long now);
 static void clearAllRelayAlarms();
 static void addSerialLog(const char *message);
 static void pollForSerialRequests();
@@ -1848,6 +1857,9 @@ void loop() {
 
   // Check for front-panel USER button press (triggers immediate hub.sync)
   checkUserButton(now);
+
+  // Restore periodic mode when the temporary service window expires
+  checkServiceWindowExpiry(now);
   
   // Poll solar charger for battery health data (SunSaver MPPT via RS-485)
   // In CRITICAL_HIBERNATE we still poll the solar charger (if enabled) to detect
@@ -7982,6 +7994,13 @@ static void checkUserButton(unsigned long now) {
           Serial.println(F("  hub.sync command failed"));
         }
       }
+
+      // Open a temporary continuous-mode service window so any inbound
+      // notes that arrive during the next SERVICE_WINDOW_DURATION_MS are
+      // delivered immediately (instead of waiting for the next periodic
+      // inbound interval). Skipped on grid clients (already continuous)
+      // and in low-power states (don't burn battery).
+      openServiceWindow(now);
     }
   } else {
     gUserButtonChangeTime = 0;
@@ -7989,6 +8008,72 @@ static void checkUserButton(unsigned long now) {
 #else
   (void)now;
 #endif
+}
+
+// ----------------------------------------------------------------------------
+// Service window: temporarily switch the Notecard to continuous mode so any
+// inbound notes that arrive during the window are delivered immediately.
+// Used by the USER button to give a field tech a ~2 minute service window
+// to push config changes from the server without waiting on the periodic
+// inbound interval. No-op on grid clients (already continuous) and in
+// low-power states (don't burn battery for convenience).
+// ----------------------------------------------------------------------------
+static void openServiceWindow(unsigned long now) {
+  if (!gNotecardAvailable) return;
+  // Grid clients are already continuous — nothing to do.
+  if (!gConfig.solarPowered) return;
+  // Don't burn battery in degraded power states.
+  if (gPowerState >= POWER_STATE_ECO) {
+    Serial.println(F("  Service window: skipped (power state degraded)"));
+    return;
+  }
+
+  // If a window is already open, just extend it.
+  if (gServiceWindowActive) {
+    gServiceWindowUntil = now + SERVICE_WINDOW_DURATION_MS;
+    Serial.print(F("  Service window extended to "));
+    Serial.print(SERVICE_WINDOW_DURATION_MS / 1000UL);
+    Serial.println(F("s"));
+    return;
+  }
+
+  J *req = notecard.newRequest("hub.set");
+  if (!req) return;
+  JAddStringToObject(req, "mode", "continuous");
+  if (!notecard.sendRequest(req)) {
+    Serial.println(F("  Service window: hub.set continuous failed"));
+    return;
+  }
+
+  gServiceWindowActive = true;
+  gServiceWindowUntil = now + SERVICE_WINDOW_DURATION_MS;
+  Serial.print(F("  Service window opened: continuous mode for "));
+  Serial.print(SERVICE_WINDOW_DURATION_MS / 1000UL);
+  Serial.println(F("s"));
+  addSerialLog("Service window opened (continuous mode)");
+}
+
+static void checkServiceWindowExpiry(unsigned long now) {
+  if (!gServiceWindowActive) return;
+  if ((long)(now - gServiceWindowUntil) < 0) return;  // not yet expired
+
+  // Restore periodic mode (matching configureNotecardHubMode logic for solar).
+  if (gNotecardAvailable) {
+    J *req = notecard.newRequest("hub.set");
+    if (req) {
+      int inboundMinutes = (gConfig.monitorCount == 0)
+          ? AWAITING_CONFIG_SOLAR_INBOUND_MINUTES
+          : SOLAR_INBOUND_INTERVAL_MINUTES;
+      JAddStringToObject(req, "mode", "periodic");
+      JAddIntToObject(req, "outbound", SOLAR_OUTBOUND_INTERVAL_MINUTES);
+      JAddIntToObject(req, "inbound", inboundMinutes);
+      notecard.sendRequest(req);
+    }
+  }
+  gServiceWindowActive = false;
+  gServiceWindowUntil = 0;
+  Serial.println(F("Service window closed - restored periodic mode"));
+  addSerialLog("Service window closed");
 }
 
 // Clear all relay alarms for all sensors (turn off all relays and reset state)
