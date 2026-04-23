@@ -862,7 +862,7 @@ static unsigned long gUserButtonLastSyncTime = 0;  // last hub.sync trigger
 // the window are delivered immediately. Auto-restores to periodic when expired.
 static unsigned long gServiceWindowUntil = 0;     // 0 = inactive; else millis() expiry
 static bool gServiceWindowActive = false;
-#define SERVICE_WINDOW_DURATION_MS 120000UL  // 2 minutes
+#define SERVICE_WINDOW_DURATION_MS 1800000UL  // 30 minutes
 
 // RPM sensor state for Hall effect pulse counting
 // We track pulses per monitor that uses an RPM sensor
@@ -8032,8 +8032,8 @@ static void openServiceWindow(unsigned long now) {
   if (gServiceWindowActive) {
     gServiceWindowUntil = now + SERVICE_WINDOW_DURATION_MS;
     Serial.print(F("  Service window extended to "));
-    Serial.print(SERVICE_WINDOW_DURATION_MS / 1000UL);
-    Serial.println(F("s"));
+    Serial.print(SERVICE_WINDOW_DURATION_MS / 60000UL);
+    Serial.println(F(" min"));
     return;
   }
 
@@ -8048,8 +8048,8 @@ static void openServiceWindow(unsigned long now) {
   gServiceWindowActive = true;
   gServiceWindowUntil = now + SERVICE_WINDOW_DURATION_MS;
   Serial.print(F("  Service window opened: continuous mode for "));
-  Serial.print(SERVICE_WINDOW_DURATION_MS / 1000UL);
-  Serial.println(F("s"));
+  Serial.print(SERVICE_WINDOW_DURATION_MS / 60000UL);
+  Serial.println(F(" min"));
   addSerialLog("Service window opened (continuous mode)");
 }
 
