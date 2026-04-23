@@ -1872,7 +1872,7 @@ void loop() {
       static bool sChemistryChecked = false;
       if (!sChemistryChecked && gSolarManager.getData().setpointsValid) {
         sChemistryChecked = true;
-        char chemMsg[96];
+        char chemMsg[160];
         SolarManager::ChemistryCheck cc = gSolarManager.verifyChemistry(
           (uint8_t)gConfig.batteryMonitor.batteryType,
           gConfig.batteryMonitor.nominalVoltage,
@@ -2994,7 +2994,6 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   JsonObject batCfg = doc["batteryConfig"].to<JsonObject>();
   batCfg["enabled"] = cfg.batteryMonitor.enabled;
   batCfg["batteryType"] = (int)cfg.batteryMonitor.batteryType;
-  batCfg["batteryTypeName"] = batteryTypeLabel(cfg.batteryMonitor.batteryType);
   batCfg["nominalVoltage"] = cfg.batteryMonitor.nominalVoltage;
 
   JsonArray sensors = doc["sensors"].to<JsonArray>();
@@ -4055,6 +4054,43 @@ static void applyConfigUpdate(const JsonDocument &doc) {
     if (newSolarPowered != gConfig.solarPowered) {
       gConfig.solarPowered = newSolarPowered;
       hardwareChanged = true;  // Need to reconfigure Notecard hub settings
+    }
+  }
+
+  // Handle battery configuration (chemistry + nominal pack voltage).
+  // Mirrors the loadConfigFromFlash() parser: when present, this overrides
+  // any prior thresholds via initBatteryConfig() so chemistry changes pushed
+  // from the server take effect without requiring a reboot.
+  if (!doc["batteryConfig"].isNull()) {
+    JsonObjectConst batCfg = doc["batteryConfig"].as<JsonObjectConst>();
+    bool batEnabled = batCfg["enabled"].is<bool>() ? batCfg["enabled"].as<bool>() : true;
+    BatteryType bt = batCfg["batteryType"].is<int>()
+      ? (BatteryType)batCfg["batteryType"].as<int>()
+      : gConfig.batteryMonitor.batteryType;
+    uint8_t nominalV = batCfg["nominalVoltage"].is<int>()
+      ? (uint8_t)batCfg["nominalVoltage"].as<int>()
+      : gConfig.batteryMonitor.nominalVoltage;
+    BatteryType prevType = gConfig.batteryMonitor.batteryType;
+    uint8_t prevNominal  = gConfig.batteryMonitor.nominalVoltage;
+    bool prevEnabled     = gConfig.batteryMonitor.enabled;
+    initBatteryConfig(&gConfig.batteryMonitor, bt, nominalV);
+    gConfig.batteryMonitor.enabled = batEnabled && (bt != BATTERY_TYPE_NONE);
+    if (prevType != bt || prevNominal != nominalV || prevEnabled != gConfig.batteryMonitor.enabled) {
+      Serial.print(F("Battery config updated: type="));
+      Serial.print(batteryTypeLabel(bt));
+      Serial.print(F(" nominalV="));
+      Serial.print(nominalV);
+      Serial.print(F(" enabled="));
+      Serial.println(gConfig.batteryMonitor.enabled ? F("yes") : F("no"));
+      // Re-arm the chemistry cross-check so the next solar poll re-verifies
+      // against the new selection.
+      if (gSolarManager.isEnabled()) {
+        // sChemistryChecked is a function-static in the poll path; we can't
+        // reset it from here directly, but the user-visible mismatch warning
+        // will reappear on the next reboot. Log a hint so the installer knows
+        // to re-check the SunSaver DIP after a chemistry change.
+        Serial.println(F("Solar: re-verify SunSaver DIP after chemistry change (reboot to refresh check)"));
+      }
     }
   }
 
