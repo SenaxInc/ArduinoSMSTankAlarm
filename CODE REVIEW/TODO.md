@@ -1,7 +1,7 @@
 # TankAlarm Master TODO List
 
-> **Current Version:** 1.6.12 (April 23, 2026)  
-> **Last Updated:** April 23, 2026 (logged v1.6.3–v1.6.12 SunSaver/battery work; added I-24/I-25/I-26 applyConfigUpdate parity gaps)  
+> **Current Version:** 1.6.13 (April 23, 2026)  
+> **Last Updated:** April 23, 2026 (v1.6.13: applyConfigUpdate solarCharger parser, vinMonitor+solarOnlyConfig flash save, m-8 stale solar alert ordering)  
 > **Purpose:** Comprehensive tracker for all unimplemented changes identified in code reviews and logic reviews. Update after every new review or commit.
 
 ---
@@ -177,20 +177,20 @@ These items represent data loss, safety, or security risks.
 - **Source:** LOGIC_REVIEW_04132026.md (LR-20)
 - **Fixed:** April 13, 2026 — login/logout and request auth flow moved to cookie-backed sessions.
 
-### I-24: `applyConfigUpdate()` Ignores `solarCharger` Block **(C)** — CONFIG INTEGRITY
-- [ ] Same bug class as the `batteryConfig` regression fixed in v1.6.12 (and similar to I-17). `loadConfigFromFlash()` parses `doc["solarCharger"]`, but `applyConfigUpdate()` does not. When the server pushes a `solarCharger` change, the client silently drops it; the next `saveConfigToFlash()` then overwrites flash with the in-memory (stale) values, so a reboot does not recover.
+### ~~I-24: `applyConfigUpdate()` Ignores `solarCharger` Block **(C)** — CONFIG INTEGRITY~~ ✅ FIXED
+- [x] `applyConfigUpdate()` now parses `doc["solarCharger"]` and re-initializes the `SolarManager` when `enabled`/`slaveId`/`baudRate`/`timeoutMs` change. Server-pushed solar charger settings now take effect at runtime instead of being silently dropped and overwritten on the next `saveConfigToFlash()`.
 - **Source:** Self-audit during v1.6.12 bug review (April 23, 2026)
-- **Fix:** Add a `doc["solarCharger"]` parser to `applyConfigUpdate()` mirroring the flash loader; gate any RS485/Modbus reinit on changed enable/baud fields.
+- **Fixed:** April 23, 2026 — v1.6.13.
 
-### I-25: `applyConfigUpdate()` Has No Save Path for `vinMonitor` **(C)** — DURABILITY
-- [ ] `applyConfigUpdate()` correctly applies inbound `vinMonitor` settings, but `saveConfigToFlash()` does not serialize the `vinMonitor` block. Pushed Vin-divider config survives in RAM only — a reboot reverts to the last server-pushed config, which is fine *if* the server keeps re-pushing, but breaks offline-only deployments and any first-boot-from-flash path.
+### ~~I-25: `applyConfigUpdate()` Has No Save Path for `vinMonitor` **(C)** — DURABILITY~~ ✅ FIXED
+- [x] `saveConfigToFlash()` now serializes the `vinMonitor` block (`enabled`/`pin`/`r1Kohm`/`r2Kohm`/`pollIntervalSec`/`includeInDaily`) so server-pushed Vin-divider config survives a reboot in offline-only deployments.
 - **Source:** Self-audit during v1.6.12 bug review (April 23, 2026)
-- **Fix:** Add a `doc["vinMonitor"]` block to `saveConfigToFlash()` mirroring the apply-side fields.
+- **Fixed:** April 23, 2026 — v1.6.13.
 
-### I-26: `applyConfigUpdate()` Has No Save Path for `solarOnlyConfig` **(C)** — DURABILITY
-- [ ] Same shape as I-25: inbound `solarOnlyConfig` is applied to RAM but never written to flash by `saveConfigToFlash()`. Solar-only deployments lose their startup-debounce / sunset thresholds across a reboot if the server doesn't immediately re-push.
+### ~~I-26: `applyConfigUpdate()` Has No Save Path for `solarOnlyConfig` **(C)** — DURABILITY~~ ✅ FIXED
+- [x] `saveConfigToFlash()` now serializes the `solarOnlyConfig` block so solar-only deployments retain their startup-debounce / sunset thresholds across a reboot when the server isn't around to re-push.
 - **Source:** Self-audit during v1.6.12 bug review (April 23, 2026)
-- **Fix:** Add a `doc["solarOnlyConfig"]` block to `saveConfigToFlash()` mirroring the apply-side fields.
+- **Fixed:** April 23, 2026 — v1.6.13.
 
 ### ~~I-6: Config Retry State Inconsistency **(S)** — STATE MACHINE~~ ✅ FIXED
 - [x] Manual retry now keeps `pendingDispatch=true` and resets `dispatchAttempts=1` on successful Notecard send. ACK from client clears the pending flag (consistent with auto-retry behavior).
@@ -427,9 +427,10 @@ These items represent data loss, safety, or security risks.
 - **Source:** LOGICREVIEW-20260324
 - **Fixed:** June 9, 2026 — merged with H4 fix.
 
-### m-8: Solar Alert Reports Stale Data **(C)**
-- [ ] Reports battery-critical before communication-failure. Past reading persists after comms go down.
+### ~~m-8: Solar Alert Reports Stale Data **(C)**~~ ✅ FIXED
+- [x] `SolarManager::checkAlerts()` now surfaces `SOLAR_ALERT_COMM_FAILURE` (or `NONE` if `alertOnCommFailure` is off) before any voltage/temp/fault branch when `_data.communicationOk` is false. Prevents stale `battery_critical`/`battery_low` alerts from firing on the last known voltage after the Modbus link drops mid-poll.
 - **Source:** LOGICREVIEW-20260324
+- **Fixed:** April 23, 2026 — v1.6.13 (`TankAlarm_Solar.cpp`).
 
 ### m-3: millis() Rollover at 49.7 Days **(C)**
 - [ ] Rate limiter briefly fails at `millis()` rollover. Low risk; debounce catches on next cycle.
@@ -606,6 +607,12 @@ Items from the COMMON_HEADER_AUDIT_02192026.md that need cleanup.
 
 Items moved here after implementation. Include version number and date.
 
+### Completed in v1.6.13 (April 23, 2026)
+- [x] **I-24:** `applyConfigUpdate()` now parses `doc["solarCharger"]` and re-inits the `SolarManager` when `enabled`/`slaveId`/`baudRate`/`timeoutMs` change. Same bug class as the v1.6.12 `batteryConfig` regression — server-pushed solar charger settings now actually take effect at runtime (Client)
+- [x] **I-25:** `saveConfigToFlash()` now serializes the `vinMonitor` block (was previously loaded and applied but never written back to flash) (Client)
+- [x] **I-26:** `saveConfigToFlash()` now serializes the `solarOnlyConfig` block (same gap as I-25; broke offline-only deployments) (Client)
+- [x] **m-8:** `SolarManager::checkAlerts()` now surfaces `COMM_FAILURE` (or `NONE` if opted out) before any voltage/temp/fault branch when `communicationOk` is false. Stops stale `battery_critical`/`battery_low` alerts from firing on the last cached voltage after the Modbus link drops (Common/Solar)
+
 ### Completed in v1.6.12 (April 23, 2026)
 - [x] **BUG (Critical):** `applyConfigUpdate()` ignored the `batteryConfig` block — server-pushed chemistry/nominal-voltage changes were silently dropped, then `saveConfigToFlash()` overwrote flash with the stale in-memory value, so reboots did not recover. Parser added; mirrors `loadConfigFromFlash()` (Client)
 - [x] **BUG (Medium):** Chemistry-mismatch message buffer `chemMsg[96]` truncated the worst-case lithium MISMATCH warning (~124 chars). Bumped to 160 (Client)
@@ -756,8 +763,7 @@ Items moved here after implementation. Include version number and date.
 This TODO was compiled from the following documents, sorted by date:
 
 | Date | Document | Type |
-|------|----------|------|
-| 2026-04-23 | v1.6.12 self-audit (this conversation) | Bug audit of v1.6.7\u2013v1.6.11 SunSaver/battery work; shipped applyConfigUpdate batteryConfig parser, chemMsg buffer bump; logged I-24/I-25/I-26 applyConfigUpdate parity gaps |
+|------|----------|------|| 2026-04-23 | v1.6.13 implementation pass (this conversation) | Closed I-24/I-25/I-26 (applyConfigUpdate solarCharger parser; vinMonitor+solarOnlyConfig flash save) and m-8 (stale solar alert ordering); both client+server compile clean || 2026-04-23 | v1.6.12 self-audit (this conversation) | Bug audit of v1.6.7\u2013v1.6.11 SunSaver/battery work; shipped applyConfigUpdate batteryConfig parser, chemMsg buffer bump; logged I-24/I-25/I-26 applyConfigUpdate parity gaps |
 | 2026-04-22 | v1.6.8\u2013v1.6.10 SunSaver chemistry work | Decoupled battery UI, chemistry verification via Modbus setpoint readback, lithium MISMATCH detection, legacy enum aliases removed |
 | 2026-04-21 | v1.6.7 service window | 30-min service-mode window after boot |
 | 2026-04-15 | FTPS_LIBRARY_INTEGRATION_STUDY_04152026.md | ArduinoOPTA-FTPS library integration feasibility study; server-side FTPS migration tasks F-1 through F-13 |
