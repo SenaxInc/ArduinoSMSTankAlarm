@@ -340,9 +340,23 @@ SolarAlertType SolarManager::checkAlerts() const {
   if (!_config.enabled) {
     return SOLAR_ALERT_NONE;
   }
-  
-  // Priority order: most critical first
-  
+
+  // Priority order: most critical first.
+  //
+  // m-8 fix (v1.6.13): when the Modbus link is down, _data.batteryVoltage,
+  // _data.heatsinkTemp, _data.hasFault and _data.hasAlarm are stale (held
+  // from the last successful poll). Acting on stale data can fire a
+  // BATTERY_CRITICAL alert long after the battery is gone, or hide a real
+  // fault behind an old "OK" snapshot. Surface the comm failure first (if
+  // the operator opted in) and suppress the data-driven branches whenever
+  // communicationOk is false.
+  if (!_data.communicationOk) {
+    if (_config.alertOnCommFailure) {
+      return SOLAR_ALERT_COMM_FAILURE;
+    }
+    return SOLAR_ALERT_NONE;
+  }
+
   // Critical battery voltage
   if (_data.batteryVoltage < _config.batteryCriticalVoltage && _data.batteryVoltage > 0) {
     return SOLAR_ALERT_BATTERY_CRITICAL;
@@ -351,11 +365,6 @@ SolarAlertType SolarManager::checkAlerts() const {
   // Hardware faults
   if (_data.hasFault && _config.alertOnFault) {
     return SOLAR_ALERT_FAULT;
-  }
-  
-  // Communication failure
-  if (!_data.communicationOk && _config.alertOnCommFailure) {
-    return SOLAR_ALERT_COMM_FAILURE;
   }
   
   // Low battery voltage (warning level)

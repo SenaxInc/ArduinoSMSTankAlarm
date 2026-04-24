@@ -2996,6 +2996,32 @@ static bool saveConfigToFlash(const ClientConfig &cfg) {
   batCfg["batteryType"] = (int)cfg.batteryMonitor.batteryType;
   batCfg["nominalVoltage"] = cfg.batteryMonitor.nominalVoltage;
 
+  // Save analog Vin voltage divider configuration (I-25 fix v1.6.13).
+  // applyConfigUpdate() applies inbound vinMonitor settings, so the save
+  // path must mirror the loader to keep the round-trip durable.
+  JsonObject vinCfg = doc["vinMonitor"].to<JsonObject>();
+  vinCfg["enabled"] = cfg.vinMonitor.enabled;
+  vinCfg["pin"] = cfg.vinMonitor.analogPin;
+  vinCfg["r1Kohm"] = cfg.vinMonitor.r1Kohm;
+  vinCfg["r2Kohm"] = cfg.vinMonitor.r2Kohm;
+  vinCfg["pollIntervalSec"] = cfg.vinMonitor.pollIntervalSec;
+  vinCfg["includeInDaily"] = cfg.vinMonitor.includeInDailyReport;
+
+  // Save solar-only (no-battery) mode configuration (I-26 fix v1.6.13).
+  // Same shape as the load/apply path so a server-pushed solarOnlyConfig
+  // survives a reboot in offline-only deployments.
+  JsonObject soCfg = doc["solarOnlyConfig"].to<JsonObject>();
+  soCfg["enabled"] = cfg.solarOnlyConfig.enabled;
+  soCfg["startupDebounceVoltage"] = cfg.solarOnlyConfig.startupDebounceVoltage;
+  soCfg["startupDebounceSec"] = cfg.solarOnlyConfig.startupDebounceSec;
+  soCfg["startupWarmupSec"] = cfg.solarOnlyConfig.startupWarmupSec;
+  soCfg["sensorGateVoltage"] = cfg.solarOnlyConfig.sensorGateVoltage;
+  soCfg["sunsetVoltage"] = cfg.solarOnlyConfig.sunsetVoltage;
+  soCfg["sunsetConfirmSec"] = cfg.solarOnlyConfig.sunsetConfirmSec;
+  soCfg["opportunisticReportHours"] = cfg.solarOnlyConfig.opportunisticReportHours;
+  soCfg["batteryFailureFallback"] = cfg.solarOnlyConfig.batteryFailureFallback;
+  soCfg["batteryFailureThreshold"] = cfg.solarOnlyConfig.batteryFailureThreshold;
+
   JsonArray sensors = doc["sensors"].to<JsonArray>();
   for (uint8_t i = 0; i < cfg.monitorCount; ++i) {
     JsonObject t = sensors.add<JsonObject>();
@@ -4061,8 +4087,7 @@ static void applyConfigUpdate(const JsonDocument &doc) {
   // Mirrors the loadConfigFromFlash() parser: when present, this overrides
   // any prior thresholds via initBatteryConfig() so chemistry changes pushed
   // from the server take effect without requiring a reboot.
-  if (!doc["batteryConfig"].isNull()) {
-    JsonObjectConst batCfg = doc["batteryConfig"].as<JsonObjectConst>();
+  if (!doc["batteryConfig"].isNull()) {    JsonObjectConst batCfg = doc["batteryConfig"].as<JsonObjectConst>();
     bool batEnabled = batCfg["enabled"].is<bool>() ? batCfg["enabled"].as<bool>() : true;
     BatteryType bt = batCfg["batteryType"].is<int>()
       ? (BatteryType)batCfg["batteryType"].as<int>()
@@ -4091,6 +4116,53 @@ static void applyConfigUpdate(const JsonDocument &doc) {
         // to re-check the SunSaver DIP after a chemistry change.
         Serial.println(F("Solar: re-verify SunSaver DIP after chemistry change (reboot to refresh check)"));
       }
+    }
+  }
+
+  // Handle solar charger (SunSaver MPPT via RS-485) configuration update.
+  // I-24 fix (v1.6.13): mirror the loadConfigFromFlash()/saveConfigToFlash()
+  // schema so server-pushed solarCharger changes actually take effect at
+  // runtime instead of being silently dropped and overwritten on next save.
+  // If the enabled flag or transport parameters change, restart the
+  // SolarManager so the RS-485 transport picks up the new settings.
+  if (!doc["solarCharger"].isNull()) {
+    JsonObjectConst solarCfg = doc["solarCharger"].as<JsonObjectConst>();
+    bool prevEnabled  = gConfig.solarCharger.enabled;
+    uint8_t prevSlave = gConfig.solarCharger.modbusSlaveId;
+    uint16_t prevBaud = gConfig.solarCharger.modbusBaudRate;
+    uint16_t prevTo   = gConfig.solarCharger.modbusTimeoutMs;
+
+    if (solarCfg["enabled"].is<bool>())            gConfig.solarCharger.enabled = solarCfg["enabled"].as<bool>();
+    if (solarCfg["slaveId"].is<int>())             gConfig.solarCharger.modbusSlaveId = (uint8_t)solarCfg["slaveId"].as<int>();
+    if (solarCfg["baudRate"].is<int>())            gConfig.solarCharger.modbusBaudRate = (uint16_t)solarCfg["baudRate"].as<int>();
+    if (solarCfg["timeoutMs"].is<int>())           gConfig.solarCharger.modbusTimeoutMs = (uint16_t)solarCfg["timeoutMs"].as<int>();
+    if (solarCfg["pollIntervalSec"].is<int>())     gConfig.solarCharger.pollIntervalSec = (uint16_t)solarCfg["pollIntervalSec"].as<int>();
+    if (solarCfg["batteryLowV"].is<float>())       gConfig.solarCharger.batteryLowVoltage = solarCfg["batteryLowV"].as<float>();
+    if (solarCfg["batteryCriticalV"].is<float>())  gConfig.solarCharger.batteryCriticalVoltage = solarCfg["batteryCriticalV"].as<float>();
+    if (solarCfg["batteryHighV"].is<float>())      gConfig.solarCharger.batteryHighVoltage = solarCfg["batteryHighV"].as<float>();
+    if (solarCfg["alertOnLow"].is<bool>())         gConfig.solarCharger.alertOnLowBattery = solarCfg["alertOnLow"].as<bool>();
+    if (solarCfg["alertOnFault"].is<bool>())       gConfig.solarCharger.alertOnFault = solarCfg["alertOnFault"].as<bool>();
+    if (solarCfg["alertOnCommFail"].is<bool>())    gConfig.solarCharger.alertOnCommFailure = solarCfg["alertOnCommFail"].as<bool>();
+    if (solarCfg["includeInDaily"].is<bool>())     gConfig.solarCharger.includeInDailyReport = solarCfg["includeInDaily"].as<bool>();
+
+    bool transportChanged = (prevSlave != gConfig.solarCharger.modbusSlaveId) ||
+                            (prevBaud  != gConfig.solarCharger.modbusBaudRate) ||
+                            (prevTo    != gConfig.solarCharger.modbusTimeoutMs);
+
+    if (gConfig.solarCharger.enabled && (!prevEnabled || transportChanged)) {
+      // (Re)initialize transport with the new config.
+      gSolarManager.end();
+      if (gSolarManager.begin(gConfig.solarCharger)) {
+        Serial.println(F("Solar charger reinitialized via config update"));
+        addSerialLog("Solar charger reinitialized via config update");
+      } else {
+        Serial.println(F("Solar charger reinit FAILED via config update"));
+        addSerialLog("Solar charger reinit failed via config update");
+      }
+    } else if (!gConfig.solarCharger.enabled && prevEnabled) {
+      gSolarManager.end();
+      Serial.println(F("Solar charger disabled via config update"));
+      addSerialLog("Solar charger disabled via config update");
     }
   }
 
