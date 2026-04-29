@@ -1286,7 +1286,7 @@ static void enableDfuMode() {
  * @param bufLen Size of buf (at least 24 bytes recommended)
  */
 static void epochToDateStr(double epoch, char *buf, size_t bufLen) {
-  if (epoch <= 0.0 || !buf || bufLen < 20) {
+  if (epoch < 0.0 || !buf || bufLen < 20) {
     if (buf && bufLen > 0) strlcpy(buf, "--", bufLen);
     return;
   }
@@ -1466,7 +1466,7 @@ static void sendDailyPrintJob() {
   printer.print(F("   Firmware v"));
   printer.println(F(FIRMWARE_VERSION));
   printer.println(F("================================"));
-  printer.println((char)'\f');  // Form-feed — ejects the page on most printers
+  printer.println('\f');  // Form-feed — ejects the page on most printers
 
   printer.flush();
   safeSleep(500);
