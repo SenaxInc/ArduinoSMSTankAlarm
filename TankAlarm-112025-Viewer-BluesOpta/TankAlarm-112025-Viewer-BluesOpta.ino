@@ -178,7 +178,15 @@ static SensorRecord gSensorRecords[MAX_SENSOR_RECORDS];
 static uint8_t gSensorRecordCount = 0;
 
 // Printer state
-static uint32_t gLastPrintDay = 0;  // Day number (epoch/86400) of the last successful print job
+// NOTE: gLastPrintDay is RAM-only and resets to 0 on every power cycle.
+// If the device reboots after the scheduled print hour but before midnight UTC,
+// a second print job will be dispatched once the hour condition is met again.
+// This is typically acceptable for daily reporting; if duplicates are a concern,
+// power the device from an uninterrupted supply to minimize unexpected reboots.
+static uint32_t gLastPrintDay = 0;         // Day number (epoch/86400) of last successful print
+static unsigned long gLastPrintAttemptMs = 0;  // millis() of last print attempt (success or fail)
+// Retry failed print attempts at most once every 15 minutes within the same UTC day.
+#define PRINT_RETRY_INTERVAL_MS (15UL * 60UL * 1000UL)
 
 static Notecard notecard;
 static EthernetServer gWebServer(ETHERNET_PORT);
@@ -249,7 +257,7 @@ static void handleGitHubUpdateGet(EthernetClient &client);
 static bool attemptGitHubDirectInstall(String &statusMessage);
 static void epochToDateStr(double epoch, char *buf, size_t bufLen);
 static void checkDailyPrint();
-static void sendDailyPrintJob();
+static bool sendDailyPrintJob();
 
 // ============================================================================
 // Diagnostics Helpers
@@ -1322,6 +1330,10 @@ static void epochToDateStr(double epoch, char *buf, size_t bufLen) {
  *   3. The current UTC hour >= gConfig.printDailyHour
  *   4. A job has not already been sent today (gLastPrintDay tracks the day)
  *
+ * On connect failure the day is NOT marked as done; the job is retried at most
+ * once every PRINT_RETRY_INTERVAL_MS (15 min) until it succeeds or a new
+ * UTC day begins.
+ *
  * Called from loop().
  */
 static void checkDailyPrint() {
@@ -1340,12 +1352,20 @@ static void checkDailyPrint() {
   if (today == gLastPrintDay) return;             // Already printed today
 
   // Only fire at or after the configured UTC hour
-  uint32_t secondsOfDay = (uint32_t)fmod(epoch, 86400.0);
-  uint8_t  currentHour  = (uint8_t)(secondsOfDay / 3600);
+  uint32_t secondsOfDay = ((uint32_t)epoch) % 86400U;
+  uint8_t  currentHour  = (uint8_t)(secondsOfDay / 3600U);
   if (currentHour < gConfig.printDailyHour) return;
 
-  sendDailyPrintJob();
-  gLastPrintDay = today;
+  // Throttle retries — don't hammer the printer every loop() iteration
+  unsigned long now = millis();
+  if (gLastPrintAttemptMs != 0 && (now - gLastPrintAttemptMs) < PRINT_RETRY_INTERVAL_MS) {
+    return;
+  }
+  gLastPrintAttemptMs = now;
+
+  if (sendDailyPrintJob()) {
+    gLastPrintDay = today;  // Mark success; suppress further attempts today
+  }
 }
 
 /**
@@ -1359,8 +1379,10 @@ static void checkDailyPrint() {
  * The function is intentionally synchronous: it blocks until the job is
  * transmitted or the connection fails.  Watchdog kicks are inserted around
  * the potentially slow connect() call to prevent a hardware reset.
+ *
+ * @return true on successful send, false on connection failure.
  */
-static void sendDailyPrintJob() {
+static bool sendDailyPrintJob() {
   IPAddress printerAddr(gConfig.printerIp[0], gConfig.printerIp[1],
                         gConfig.printerIp[2], gConfig.printerIp[3]);
 
@@ -1378,8 +1400,8 @@ static void sendDailyPrintJob() {
 
   EthernetClient printer;
   if (!printer.connect(printerAddr, gConfig.printerPort)) {
-    Serial.println(F("Daily print: could not connect to printer — will retry tomorrow"));
-    return;
+    Serial.println(F("Daily print: could not connect to printer — will retry in 15 min"));
+    return false;
   }
 
   // ---- Report header ----
@@ -1473,4 +1495,5 @@ static void sendDailyPrintJob() {
   printer.stop();
 
   Serial.println(F("Daily print job sent successfully"));
+  return true;
 }
