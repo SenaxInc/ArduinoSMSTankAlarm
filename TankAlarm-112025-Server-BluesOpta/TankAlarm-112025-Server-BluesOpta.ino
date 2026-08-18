@@ -15781,8 +15781,11 @@ static void loadSensorRegistry() {
       rec.smsAlertsInLastHour = obj["sa"] | 0;
       rec.reminderSnoozeEpoch = obj["sz"] | 0.0;
       
-      insertSensorIntoHash(gSensorRecordCount);
+      // v2.2.14: increment BEFORE inserting — insertSensorIntoHash rejects index >= count,
+      // so the old insert-then-increment order silently left the hash table empty after
+      // every boot (findSensorByHash missed all loaded records until their next note upsert).
       gSensorRecordCount++;
+      insertSensorIntoHash((uint8_t)(gSensorRecordCount - 1));
     }
     
     if (dupsMerged > 0) {
