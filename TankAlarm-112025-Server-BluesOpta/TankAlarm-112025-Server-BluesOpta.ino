@@ -487,6 +487,9 @@ struct SensorRecord {
   double lastSmsAlertEpoch;
   uint8_t smsAlertsInLastHour;
   double smsAlertTimestamps[10];  // Track last 10 SMS alerts per sensor
+  // Reminder snooze (v2.2.13): >0 = reminder engine muted for this sensor since this epoch.
+  // Set/cleared via /api/alarm/snooze or SMS SNOOZE/UNSNOOZE; auto-reset when the alarm clears.
+  double reminderSnoozeEpoch;
 };
 
 // Per-client metadata (VIN voltage, etc.)
@@ -1954,7 +1957,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 static const char EMAIL_SETUP_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Email Setup - Tank Alarm</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Email Delivery Setup &mdash; Google Workspace</h2><p>The server never contacts an email provider directly. Alarm and daily-report emails are published as <code>email.qo</code> notes to the Notecard, which syncs them to Blues Notehub even across cellular outages. A Notehub <b>Route</b> then delivers each note by HTTP. This guide wires that route to your <b>Google Workspace (Gmail)</b> account through a free Apps Script bridge, so alerts are sent from your real company mailbox. Nothing on this page changes server behavior &mdash; all setup happens at script.google.com and notehub.io.</p><p style="color:var(--muted);font-size:0.85rem;">Prefer a transactional provider instead? The SendGrid variant is documented in the repository tutorial <code>NOTEHUB_ROUTES_SETUP.md</code>, Step 7. Only the Route destination differs &mdash; the firmware and this server's settings are identical either way.</p></div><div class="card"><h3>Step 1 &mdash; Create the Apps Script</h3><ol style="line-height:1.7;"><li>Sign in at <b>script.google.com</b> with the Workspace account that should send the mail (e.g. <code>alerts@yourcompany.com</code>).</li><li>Click <b>New project</b> and name it <i>TankAlarm Email Bridge</i>.</li><li>Replace the contents of <code>Code.gs</code> with the script below.</li><li>Change <code>SECRET</code> to a long random string &mdash; it shields the endpoint from strangers who discover the URL.</li></ol><div class="actions" style="margin-bottom:8px;"><button type="button" class="secondary" id="copyBtn" onclick="copyCode()">Copy Script</button></div><pre id="code" style="background:var(--panel,#f6f8fa);border:1px solid var(--border,#d0d7de);padding:12px;border-radius:8px;overflow:auto;font-size:0.78rem;line-height:1.5;max-height:420px;"></pre></div><div class="card"><h3>Step 2 &mdash; Deploy as a Web App</h3><ol style="line-height:1.7;"><li>Click <b>Deploy &rarr; New deployment</b>, choose type <b>Web app</b>.</li><li>Set <b>Execute as: Me</b> and <b>Who has access: Anyone</b>, then click <b>Deploy</b> and authorize when prompted.</li><li>Copy the <b>Web app URL</b> (it ends in <code>/exec</code>).</li></ol><p style="color:var(--muted);font-size:0.85rem;"><b>Updating later:</b> use <b>Deploy &rarr; Manage deployments &rarr; edit (pencil) &rarr; Version: New</b> so the URL stays the same. Creating a brand-new deployment issues a different URL and silently breaks the route.</p></div><div class="card"><h3>Step 3 &mdash; Create the Notehub Route</h3><ol style="line-height:1.7;"><li>In your Notehub project open <b>Routes &rarr; Create Route</b> and choose <b>General HTTP/HTTPS Request/Response</b>.</li><li>Name it <code>EmailRoute</code>.</li><li><b>URL:</b> paste the Web app URL and append <code>?key=YOUR_SECRET</code> (the same value as <code>SECRET</code> in the script).</li><li><b>Notefiles:</b> Selected Notefiles &rarr; <code>email.qo</code>.</li><li><b>Transform Data:</b> none required &mdash; the script reads the note <code>body</code> from the full event.</li><li>Enable <b>Automatic reroute on failure</b> and save.</li></ol><p style="color:var(--muted);font-size:0.85rem;"><b>Route log shows HTTP 302?</b> That is normal &mdash; Apps Script answers every POST with a redirect. Actual send results live in the Apps Script editor under <b>Executions</b>.</p></div><div class="card"><h3>Step 4 &mdash; Verify</h3><ol style="line-height:1.7;"><li>Open <a href="/server-settings">Server Settings</a> and click <b>Send Test Email</b> (recipients need the <b>Email alerts</b> checkbox on the <a href="/contacts">Contacts</a> page).</li><li>Check the recipient inbox, the Apps Script <b>Executions</b> log, and the Notehub route log.</li></ol><p style="color:var(--muted);font-size:0.85rem;"><b>Quotas:</b> Google Workspace accounts may send to 1,500 recipients/day via Apps Script (consumer Gmail: 100/day) &mdash; far above normal alarm + daily-report volume. Daily-report layout options are on the <a href="/email-format">Daily Report Editor</a> page; the script receives them in the <code>fmt</code> field and the sample below prints company and server name from it.</p></div><div class="card"><h3>Optional &mdash; Reply-STOP unsubscribe handling</h3><p>Recipients can unsubscribe by replying <b>STOP</b> to any alert email. A second, time-driven Apps Script scans the sending mailbox and forwards STOP/START replies to this server, which maintains the <b>Email Opt-Out List</b> on the <a href="/contacts">Contacts</a> page and suppresses all email (including daily reports) to listed addresses. Without this, the admin manages the list manually on the Contacts page &mdash; fine for small teams.</p><ol style="line-height:1.7;"><li>In Notehub: <b>Settings &rarr; Programmatic API access</b> &rarr; create an OAuth client (or reuse the one from the SMS setup) and note the client ID and secret.</li><li>Add the function below to an Apps Script project on the <b>sending</b> account and fill in the four constants.</li><li>Add a trigger: <b>Triggers &rarr; Add Trigger &rarr; checkStopReplies &rarr; time-driven &rarr; every 15 minutes</b>.</li></ol><div class="actions" style="margin-bottom:8px;"><button type="button" class="secondary" id="copyBtn2" onclick="copyCode2()">Copy Script</button></div><pre id="code2" style="background:var(--panel,#f6f8fa);border:1px solid var(--border,#d0d7de);padding:12px;border-radius:8px;overflow:auto;font-size:0.78rem;line-height:1.5;max-height:420px;"></pre><p style="color:var(--muted);font-size:0.85rem;">Matched replies are marked read. STOP, UNSUBSCRIBE, CANCEL, END, QUIT, and REMOVE opt an address out; START, SUBSCRIBE, or YES opts it back in.</p></div></main><script>var CODE=["var SECRET = 'CHANGE-ME';","","function doPost(e) {","  try {","    if (!e || !e.parameter || e.parameter.key !== SECRET) {","      return ContentService.createTextOutput('forbidden');","    }","    var ev = JSON.parse(e.postData.contents);","    var b = ev.body || ev;","    var to = String(b.to || '').split(',').map(function(s){ return s.trim(); }).filter(String);","    if (!to.length) return ContentService.createTextOutput('no recipients');","    var subject = b.subject || 'TankAlarm';","    var text;","    if (b.message) {","      // Alarm / reminder / unload / test alert shape","      text = b.message;","    } else if (b.sensors && b.sensors.length) {","      // Daily report shape","      var lines = [];","      if (b.company) lines.push(b.company);","      if (b.serverName) lines.push(b.serverName);","      if (lines.length) lines.push('');","      b.sensors.forEach(function(s){","        var l = (s.site || '') + ' ' + (s.label || '') + ' #' + s.sensorIndex + ': ' + s.levelInches;","        if (s.sensorMa !== undefined) l += ' (' + s.sensorMa + ' mA)';","        if (s.alarm) l += '  ** ALARM: ' + (s.alarmType || '') + ' **';","        lines.push(l);","      });","      text = lines.join('\\n');","    } else {","      text = JSON.stringify(b, null, 2);","    }","    MailApp.sendEmail({ to: to.join(','), subject: subject, body: text });","    return ContentService.createTextOutput('ok');","  } catch (err) {","    return ContentService.createTextOutput('error: ' + String(err));","  }","}"];document.getElementById('code').textContent=CODE.join("\n");function copyCode(){var t=document.createElement('textarea');t.value=CODE.join("\n");document.body.appendChild(t);t.select();try{document.execCommand('copy');var btn=document.getElementById('copyBtn');btn.textContent='Copied!';setTimeout(function(){btn.textContent='Copy Script';},2000);}catch(e){}document.body.removeChild(t);}var CODE2=["// Optional: scan the sending mailbox for STOP/START replies and forward them","// to the TankAlarm server via Blues Notehub (time-driven trigger, every 15 min).","var CLIENT_ID = 'your-notehub-oauth-client-id';","var CLIENT_SECRET = 'your-notehub-oauth-client-secret';","var PROJECT_UID = 'app:00000000-0000-0000-0000-000000000000';","var DEVICE_UID = 'dev:000000000000000';","","function checkStopReplies() {","  var threads = GmailApp.search('in:inbox is:unread newer_than:2d');","  threads.forEach(function (t) {","    t.getMessages().forEach(function (m) {","      if (!m.isUnread()) return;","      var word = (m.getPlainBody() || '').trim().toUpperCase().split(/\\s+/)[0] || '';","      var keywords = ['STOP','UNSUBSCRIBE','CANCEL','END','QUIT','REMOVE','START','SUBSCRIBE','YES'];","      if (keywords.indexOf(word) >= 0) {","        var from = m.getFrom();","        var email = from.indexOf('<') >= 0 ? from.replace(/^.*</, '').replace(/>.*$/, '') : from;","        forwardToNotehub(email.trim(), word);","        m.markRead();","      }","    });","  });","}","","function forwardToNotehub(from, word) {","  var tok = UrlFetchApp.fetch('https://notehub.io/oauth2/token', {","    method: 'post',","    payload: { grant_type: 'client_credentials', client_id: CLIENT_ID, client_secret: CLIENT_SECRET }","  });","  var access = JSON.parse(tok.getContentText()).access_token;","  UrlFetchApp.fetch('https://api.notehub.io/v1/projects/' + PROJECT_UID +","      '/devices/' + DEVICE_UID + '/notes/email_inbound.qi', {","    method: 'post',","    contentType: 'application/json',","    headers: { Authorization: 'Bearer ' + access },","    payload: JSON.stringify({ body: { from: from, body: word } })","  });","}"];document.getElementById('code2').textContent=CODE2.join("\n");function copyCode2(){var t=document.createElement('textarea');t.value=CODE2.join("\n");document.body.appendChild(t);t.select();try{document.execCommand('copy');var btn=document.getElementById('copyBtn2');btn.textContent='Copied!';setTimeout(function(){btn.textContent='Copy Script';},2000);}catch(e){}document.body.removeChild(t);}</script></body></html>)HTML";
 
-static const char SMS_SETUP_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SMS Setup - Tank Alarm</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>SMS Delivery Setup &mdash; Twilio</h2><p>The server never talks to Twilio directly. Each alert is published as one <code>sms.qo</code> note per recipient (<code>{message, to}</code>) to the Notecard, which syncs to Blues Notehub even across cellular outages. A Notehub <b>Twilio route</b> then delivers each note as a text message. This guide covers the outbound route, the inbound <b>STOP/START/HELP</b> reply webhook, and the automatic <b>welcome message</b> sent to newly enrolled recipients. Nothing on this page changes server behavior &mdash; setup happens at twilio.com and notehub.io.</p><p style="color:var(--muted);font-size:0.85rem;">If Twilio rejects your account or campaign, drop-in alternatives (Telnyx, Vonage, Plivo, AWS SNS) are cataloged in the repository doc <code>CODE REVIEW/EMAIL_DELIVERY_OPTIONS_07082026.md</code> &sect;A7 &mdash; only the Notehub route changes, never the firmware.</p></div><div class="card"><h3>Step 1 &mdash; Twilio account &amp; phone number</h3><ol style="line-height:1.7;"><li>Create an account at <b>twilio.com</b> and open the Console.</li><li>Buy an SMS-capable phone number. For automated alarm traffic a <b>Toll-Free number</b> is recommended: submit its <b>Toll-Free Verification</b> (a single use-case form, typically approved in days). Unverified/unregistered numbers get carrier-filtered in the US.</li><li>Note your <b>Account SID</b> and <b>Auth Token</b> from the Console home page.</li></ol></div><div class="card"><h3>Step 2 &mdash; Outbound route in Notehub (Route #4)</h3><ol style="line-height:1.7;"><li>In your Notehub project open <b>Routes &rarr; Create Route</b> and choose the <b>Twilio</b> route type.</li><li>Name it <code>TwilioSMS</code>.</li><li><b>Account SID</b> / <b>Auth Token</b>: from Step 1.</li><li><b>From Number:</b> your Twilio number in E.164 form (e.g. <code>+18005551234</code>).</li><li><b>To Number:</b> <code>[.body.to]</code> &nbsp;&mdash;&nbsp; <b>Message:</b> <code>[.body.message]</code> (the leading dot is required &mdash; without it Notehub passes the text through literally and Twilio fails with error 21265)</li><li><b>Notefiles:</b> Selected Notefiles &rarr; <code>sms.qo</code>.</li><li>Enable <b>Automatic reroute on failure</b> and save.</li></ol><p style="color:var(--muted);font-size:0.85rem;">The server queues <b>one note per recipient</b>, so <code>[.body.to]</code> fans out correctly &mdash; do not put a fixed number in the To field.</p></div><div class="card"><h3>Step 3 &mdash; Inbound replies (STOP / START / HELP)</h3><p>Replies to your Twilio number reach this server through a small <b>Twilio Function</b> that forwards each message to the Blues Notehub API, which drops it into <code>sms_inbound.qi</code> on this device.</p><ol style="line-height:1.7;"><li>In Notehub: <b>Settings &rarr; Programmatic API access</b> &rarr; create an OAuth client and copy the <b>client ID</b> and <b>client secret</b>.</li><li>In Twilio Console: <b>Functions &amp; Assets &rarr; Services &rarr; Create Service</b> (name it <i>tankalarm</i>), add a Function at path <code>/sms-inbound</code>, paste the code below, fill in the four constants, then <b>Deploy All</b>.</li><li>Under <b>Phone Numbers &rarr; your number &rarr; Messaging Configuration</b>, set <b>"A message comes in"</b> to <b>Function</b> and pick the service/function. Save.</li></ol><div class="actions" style="margin-bottom:8px;"><button type="button" class="secondary" id="copyBtn" onclick="copyCode()">Copy Function Code</button></div><pre id="code" style="background:var(--panel,#f6f8fa);border:1px solid var(--border,#d0d7de);padding:12px;border-radius:8px;overflow:auto;font-size:0.78rem;line-height:1.5;max-height:420px;"></pre><p style="color:var(--muted);font-size:0.85rem;"><code>PROJECT_UID</code> is on the Notehub project settings page (<code>app:...</code>); <code>DEVICE_UID</code> is <b>this server's</b> device UID (<code>dev:...</code>).</p></div><div class="card"><h3>Step 4 &mdash; What happens automatically</h3><ul style="line-height:1.8;"><li><b>Welcome message:</b> every newly enrolled SMS recipient (checkbox on <a href="/contacts">Contacts</a>, or a viewer-added contact) is texted: <i>&quot;You are now receiving alerts from TankAlarm. For help, reply HELP. To opt-out, reply STOP.&quot;</i></li><li><b>STOP</b> (also STOPALL/UNSUBSCRIBE/CANCEL/END/QUIT): Twilio blocks the number at the platform level, and this server adds it to the <b>SMS Opt-Out List</b> &mdash; the contact shows an <b>OPTED OUT</b> badge and all SMS to them is suppressed.</li><li><b>START</b> (also UNSTOP/YES): the server removes them from the list and re-sends the welcome message.</li><li><b>HELP</b>: answered by Twilio &mdash; set the reply text in Twilio Console &rarr; <b>Messaging &rarr; Opt-out management</b>. The server logs it.</li><li>The opt-out list is managed at the bottom of the <a href="/contacts">Contacts</a> page (admin can manually remove an entry).</li></ul></div><div class="card"><h3>Step 5 &mdash; Verify</h3><ol style="line-height:1.7;"><li>Open <a href="/server-settings">Server Settings</a> and click <b>Send Test SMS</b>.</li><li>Add your own number as a contact and tick its <b>SMS alerts</b> checkbox &mdash; the welcome text should arrive.</li><li>Reply <b>STOP</b>: within about a minute the <b>OPTED OUT</b> badge appears on the <a href="/contacts">Contacts</a> page and the number joins the opt-out list.</li><li>Reply <b>START</b>: the badge clears and the welcome message arrives again.</li></ol></div></main><script>var CODE=["// Twilio Function: forward inbound SMS to the TankAlarm server via Blues Notehub","// Wire it to your number's 'A message comes in' webhook (see Step 3).","const PROJECT_UID = 'app:00000000-0000-0000-0000-000000000000';","const DEVICE_UID = 'dev:000000000000000';","const CLIENT_ID = 'your-notehub-oauth-client-id';","const CLIENT_SECRET = 'your-notehub-oauth-client-secret';","","exports.handler = async function (context, event, callback) {","  const twiml = new Twilio.twiml.MessagingResponse();","  try {","    const tokenRes = await fetch('https://notehub.io/oauth2/token', {","      method: 'POST',","      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },","      body: 'grant_type=client_credentials&client_id=' + CLIENT_ID +","            '&client_secret=' + CLIENT_SECRET","    });","    const token = (await tokenRes.json()).access_token;","    await fetch('https://api.notehub.io/v1/projects/' + PROJECT_UID +","                '/devices/' + DEVICE_UID + '/notes/sms_inbound.qi', {","      method: 'POST',","      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },","      body: JSON.stringify({ body: { from: event.From, body: event.Body } })","    });","  } catch (err) {","    console.error('Notehub forward failed:', err);","  }","  return callback(null, twiml); // empty response - Twilio's opt-out engine sends STOP/HELP replies","};"];document.getElementById('code').textContent=CODE.join("\n");function copyCode(){var t=document.createElement('textarea');t.value=CODE.join("\n");document.body.appendChild(t);t.select();try{document.execCommand('copy');var btn=document.getElementById('copyBtn');btn.textContent='Copied!';setTimeout(function(){btn.textContent='Copy Function Code';},2000);}catch(e){}document.body.removeChild(t);}</script></body></html>)HTML";
+static const char SMS_SETUP_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SMS Setup - Tank Alarm</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>SMS Delivery Setup &mdash; Twilio</h2><p>The server never talks to Twilio directly. Each alert is published as one <code>sms.qo</code> note per recipient (<code>{message, to}</code>) to the Notecard, which syncs to Blues Notehub even across cellular outages. A Notehub <b>Twilio route</b> then delivers each note as a text message. This guide covers the outbound route, the inbound <b>STOP/START/HELP</b> reply webhook, and the automatic <b>welcome message</b> sent to newly enrolled recipients. Nothing on this page changes server behavior &mdash; setup happens at twilio.com and notehub.io.</p><p style="color:var(--muted);font-size:0.85rem;">If Twilio rejects your account or campaign, drop-in alternatives (Telnyx, Vonage, Plivo, AWS SNS) are cataloged in the repository doc <code>CODE REVIEW/EMAIL_DELIVERY_OPTIONS_07082026.md</code> &sect;A7 &mdash; only the Notehub route changes, never the firmware.</p></div><div class="card"><h3>Step 1 &mdash; Twilio account &amp; phone number</h3><ol style="line-height:1.7;"><li>Create an account at <b>twilio.com</b> and open the Console.</li><li>Buy an SMS-capable phone number. For automated alarm traffic a <b>Toll-Free number</b> is recommended: submit its <b>Toll-Free Verification</b> (a single use-case form, typically approved in days). Unverified/unregistered numbers get carrier-filtered in the US.</li><li>Note your <b>Account SID</b> and <b>Auth Token</b> from the Console home page.</li></ol></div><div class="card"><h3>Step 2 &mdash; Outbound route in Notehub (Route #4)</h3><ol style="line-height:1.7;"><li>In your Notehub project open <b>Routes &rarr; Create Route</b> and choose the <b>Twilio</b> route type.</li><li>Name it <code>TwilioSMS</code>.</li><li><b>Account SID</b> / <b>Auth Token</b>: from Step 1.</li><li><b>From Number:</b> your Twilio number in E.164 form (e.g. <code>+18005551234</code>).</li><li><b>To Number:</b> <code>[.body.to]</code> &nbsp;&mdash;&nbsp; <b>Message:</b> <code>[.body.message]</code> (the leading dot is required &mdash; without it Notehub passes the text through literally and Twilio fails with error 21265)</li><li><b>Notefiles:</b> Selected Notefiles &rarr; <code>sms.qo</code>.</li><li>Enable <b>Automatic reroute on failure</b> and save.</li></ol><p style="color:var(--muted);font-size:0.85rem;">The server queues <b>one note per recipient</b>, so <code>[.body.to]</code> fans out correctly &mdash; do not put a fixed number in the To field.</p></div><div class="card"><h3>Step 3 &mdash; Inbound replies (STOP / START / HELP)</h3><p>Replies to your Twilio number reach this server through a small <b>Twilio Function</b> that forwards each message to the Blues Notehub API, which drops it into <code>sms_inbound.qi</code> on this device.</p><ol style="line-height:1.7;"><li>In Notehub: <b>Settings &rarr; Programmatic API access</b> &rarr; create an OAuth client and copy the <b>client ID</b> and <b>client secret</b>.</li><li>In Twilio Console: <b>Functions &amp; Assets &rarr; Services &rarr; Create Service</b> (name it <i>tankalarm</i>), add a Function at path <code>/sms-inbound</code>, paste the code below, fill in the four constants, then <b>Deploy All</b>.</li><li>Under <b>Phone Numbers &rarr; your number &rarr; Messaging Configuration</b>, set <b>"A message comes in"</b> to <b>Function</b> and pick the service/function. Save.</li></ol><div class="actions" style="margin-bottom:8px;"><button type="button" class="secondary" id="copyBtn" onclick="copyCode()">Copy Function Code</button></div><pre id="code" style="background:var(--panel,#f6f8fa);border:1px solid var(--border,#d0d7de);padding:12px;border-radius:8px;overflow:auto;font-size:0.78rem;line-height:1.5;max-height:420px;"></pre><p style="color:var(--muted);font-size:0.85rem;"><code>PROJECT_UID</code> is on the Notehub project settings page (<code>app:...</code>); <code>DEVICE_UID</code> is <b>this server's</b> device UID (<code>dev:...</code>).</p></div><div class="card"><h3>Step 4 &mdash; What happens automatically</h3><ul style="line-height:1.8;"><li><b>Welcome message:</b> every newly enrolled SMS recipient (checkbox on <a href="/contacts">Contacts</a>, or a viewer-added contact) is texted: <i>&quot;You are now receiving alerts from TankAlarm. For help, reply HELP. To opt-out, reply STOP.&quot;</i></li><li><b>STOP</b> (also STOPALL/UNSUBSCRIBE/CANCEL/END/QUIT): Twilio blocks the number at the platform level, and this server adds it to the <b>SMS Opt-Out List</b> &mdash; the contact shows an <b>OPTED OUT</b> badge and all SMS to them is suppressed.</li><li><b>START</b> (also UNSTOP/YES): the server removes them from the list and re-sends the welcome message.</li><li><b>HELP</b>: answered by Twilio &mdash; set the reply text in Twilio Console &rarr; <b>Messaging &rarr; Opt-out management</b>. The server logs it.</li><li><b>SNOOZE / UNSNOOZE</b>: pauses/resumes the recurring reminder texts for every active alarm that texts the sender's number (alarm recipients only &mdash; unknown numbers are ignored). All of the alarm's recipients are notified of the change, and a snooze auto-resets when the sensor returns to normal.</li><li>The opt-out list is managed at the bottom of the <a href="/contacts">Contacts</a> page (admin can manually remove an entry).</li></ul></div><div class="card"><h3>Step 5 &mdash; Verify</h3><ol style="line-height:1.7;"><li>Open <a href="/server-settings">Server Settings</a> and click <b>Send Test SMS</b>.</li><li>Add your own number as a contact and tick its <b>SMS alerts</b> checkbox &mdash; the welcome text should arrive.</li><li>Reply <b>STOP</b>: within about a minute the <b>OPTED OUT</b> badge appears on the <a href="/contacts">Contacts</a> page and the number joins the opt-out list.</li><li>Reply <b>START</b>: the badge clears and the welcome message arrives again.</li></ol></div></main><script>var CODE=["// Twilio Function: forward inbound SMS to the TankAlarm server via Blues Notehub","// Wire it to your number's 'A message comes in' webhook (see Step 3).","const PROJECT_UID = 'app:00000000-0000-0000-0000-000000000000';","const DEVICE_UID = 'dev:000000000000000';","const CLIENT_ID = 'your-notehub-oauth-client-id';","const CLIENT_SECRET = 'your-notehub-oauth-client-secret';","","exports.handler = async function (context, event, callback) {","  const twiml = new Twilio.twiml.MessagingResponse();","  try {","    const tokenRes = await fetch('https://notehub.io/oauth2/token', {","      method: 'POST',","      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },","      body: 'grant_type=client_credentials&client_id=' + CLIENT_ID +","            '&client_secret=' + CLIENT_SECRET","    });","    const token = (await tokenRes.json()).access_token;","    await fetch('https://api.notehub.io/v1/projects/' + PROJECT_UID +","                '/devices/' + DEVICE_UID + '/notes/sms_inbound.qi', {","      method: 'POST',","      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },","      body: JSON.stringify({ body: { from: event.From, body: event.Body } })","    });","  } catch (err) {","    console.error('Notehub forward failed:', err);","  }","  return callback(null, twiml); // empty response - Twilio's opt-out engine sends STOP/HELP replies","};"];document.getElementById('code').textContent=CODE.join("\n");function copyCode(){var t=document.createElement('textarea');t.value=CODE.join("\n");document.body.appendChild(t);t.select();try{document.execCommand('copy');var btn=document.getElementById('copyBtn');btn.textContent='Copied!';setTimeout(function(){btn.textContent='Copy Function Code';},2000);}catch(e){}document.body.removeChild(t);}</script></body></html>)HTML";
 
 static const char CONFIG_GENERATOR_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Client Configuration</title><link rel="stylesheet" href="/style.css"></head><body data-theme="light"><header><div class="bar"><div class="brand">TankAlarm</div><div class="header-actions"><button class="pause-btn" id="pauseBtn" aria-label="Resume data flow" style="display:none">Unpause</button><a class="pill secondary" href="/">Dashboard</a><a class="pill secondary" href="/client-console">Client Console</a><a class="pill" href="/config-generator">Client Config</a><a class="pill secondary" href="/contacts">Contacts</a><a class="pill secondary" href="/server-settings">Server Settings</a><button class="pill secondary" onclick="fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login'})">Logout</button></div></div></header><main><div class="card"><h2>Client Configuration</h2>
 <div class="actions" style="margin-bottom:20px;justify-content:space-between;flex-wrap:wrap;gap:10px;">
@@ -2304,7 +2307,7 @@ state.sparkData=map;state.sparkLoaded=true;state.sparkError=false;renderSparklin
 function renderSparklines(){
 document.querySelectorAll('.dc-sparkline[data-spark-key]').forEach(el=>{
 const key=el.dataset.sparkKey;const readings=state.sparkData[key];if(readings&&readings.length>=2){el.innerHTML='';drawSparkline(el,readings,el.dataset.sparkColor);}else if(state.sparkLoaded){const n=readings?readings.length:0;const msg=state.sparkError?'Trend unavailable':(n===0?'No trend data yet':(n===1?'1 reading recorded':'Need more readings'));el.innerHTML='<span class="spark-label">'+msg+'</span>';}});}
-function buildSiteModel(rawClients){const sites={};rawClients.forEach(c=>{const uid=c.c||'';const site=c.s||'Unknown Site';if(!sites[site])sites[site]={name:site,clients:{}};if(!sites[site].clients[uid])sites[site].clients[uid]={uid:uid,alarm:!!c.a,lastUpdate:c.u||0,vinVoltage:c.v,vinVoltageEpoch:c.ve,otaState:c.os||'',expectedFw:c.efv||'',otaDetail:c.od||'',sol:c.sol||null,updateRequestedEpoch:c.ureq||0,sensors:[]};const cl=sites[site].clients[uid];if(c.a)cl.alarm=true;if(c.u>cl.lastUpdate)cl.lastUpdate=c.u;if(c.ureq&&c.ureq>cl.updateRequestedEpoch)cl.updateRequestedEpoch=c.ureq;const sensors=Array.isArray(c.ts)?c.ts:[];if(sensors.length){sensors.forEach((t,idx)=>{cl.sensors.push({label:t.n||c.n||'Sensor',sensorIndex:t.k||'',userNumber:t.un||0,currentValue:t.l,sensorMa:t.ma,sensorType:t.st||'',objectType:t.ot||'tank',measurementUnit:t.mu||'',contents:t.ct||'',alarm:!!t.a,alarmType:t.at||'',lastUpdate:t.u||0,change24h:t.d,sensorIdx:idx,fault:t.flt||'',_clientUid:uid});});}else if(c.u){cl.sensors.push({label:c.n||'Sensor',sensorIndex:c.k||'',userNumber:c.un||0,currentValue:c.l,sensorMa:c.ma,sensorType:'',objectType:'tank',measurementUnit:'',contents:'',alarm:!!c.a,alarmType:c.at||'',lastUpdate:c.u||0,change24h:undefined,sensorIdx:0,fault:c.flt||'',_clientUid:uid});}});return sites;}
+function buildSiteModel(rawClients){const sites={};rawClients.forEach(c=>{const uid=c.c||'';const site=c.s||'Unknown Site';if(!sites[site])sites[site]={name:site,clients:{}};if(!sites[site].clients[uid])sites[site].clients[uid]={uid:uid,alarm:!!c.a,lastUpdate:c.u||0,vinVoltage:c.v,vinVoltageEpoch:c.ve,otaState:c.os||'',expectedFw:c.efv||'',otaDetail:c.od||'',sol:c.sol||null,updateRequestedEpoch:c.ureq||0,sensors:[]};const cl=sites[site].clients[uid];if(c.a)cl.alarm=true;if(c.u>cl.lastUpdate)cl.lastUpdate=c.u;if(c.ureq&&c.ureq>cl.updateRequestedEpoch)cl.updateRequestedEpoch=c.ureq;const sensors=Array.isArray(c.ts)?c.ts:[];if(sensors.length){sensors.forEach((t,idx)=>{cl.sensors.push({label:t.n||c.n||'Sensor',sensorIndex:t.k||'',userNumber:t.un||0,currentValue:t.l,sensorMa:t.ma,sensorType:t.st||'',objectType:t.ot||'tank',measurementUnit:t.mu||'',contents:t.ct||'',alarm:!!t.a,alarmType:t.at||'',snoozeEpoch:t.sz||0,lastUpdate:t.u||0,change24h:t.d,sensorIdx:idx,fault:t.flt||'',_clientUid:uid});});}else if(c.u){cl.sensors.push({label:c.n||'Sensor',sensorIndex:c.k||'',userNumber:c.un||0,currentValue:c.l,sensorMa:c.ma,sensorType:'',objectType:'tank',measurementUnit:'',contents:'',alarm:!!c.a,alarmType:c.at||'',snoozeEpoch:0,lastUpdate:c.u||0,change24h:undefined,sensorIdx:0,fault:c.flt||'',_clientUid:uid});}});return sites;}
 )HTML" R"HTML(
 function clientStatusColor(cl){if(cl.alarm)return'red';if(!cl.lastUpdate||isStale(cl.lastUpdate))return'yellow';return'green';}
 function solarHealthHtml(cl){if(!cl||!cl.sol)return'<span style="color:var(--muted);">--</span>';var s=cl.sol;var color,label,info='';if(!s.init){color='#dc2626';label='init FAIL';}else if(s.ok&&s.last){color='#10b981';label='OK';if(s.spv)info=' (setpoints verified)';}else if(s.ok&&!s.last){color='#f59e0b';label='last poll FAIL';if(s.err)info=' err='+s.err;}else{color='#dc2626';if(!s.ever){label='NEVER OK';}else{label='DOWN';if(s.lastOkS)label+=' '+s.lastOkS+'s';}if(s.err)info+=' err='+s.err;if(s.resMs)info+=' '+s.resMs+'ms';if(s.maddr)info+=' reg=0x'+s.maddr.toString(16);if(s.impl)info+=' [impl]';}return '<span style="color:'+color+';font-weight:500;" title="'+escapeHtml('RS-485 / SunSaver Modbus: '+label+info)+'">'+escapeHtml(label)+'</span>'+(info?'<span style="color:var(--muted);font-size:0.75rem;"> '+escapeHtml(info)+'</span>':'');}
@@ -2313,11 +2316,11 @@ siteNames.forEach(siteName=>{const site=state.sites[siteName];const section=docu
 )HTML" R"HTML(
 function renderDataCard(t,siteName){const card=document.createElement('div');card.className='data-card';if(t.alarm)card.classList.add('alarm-card');if(t.objectType==='pending'){card.style.opacity='0.6';card.innerHTML=`<div class="dc-type">AWAITING DATA</div><div class="dc-name" style="font-size:0.9rem;">Configured Client</div><div style="font-size:0.85rem;color:var(--muted);margin-top:6px;"><code style="font-size:0.8rem;">${escapeHtml(t._clientUid)}</code></div><div class="dc-meta"><span>Awaiting first report</span><a class="pill secondary" style="font-size:0.7rem;padding:2px 8px;" href="/config-generator?uid=${encodeURIComponent(t._clientUid)}">Edit Config</a></div>`;return card;}
 const ot=t.objectType||'tank';const mu=unitLabel(t.measurementUnit,ot);const val=formatValue(t.currentValue,t.measurementUnit,ot);const stale=isStale(t.lastUpdate);let changeHtml='';if(typeof t.change24h==='number'){const cls=t.change24h>=0?'pos':'neg';const sign=t.change24h>=0?'+':'';changeHtml=`<span class="dc-change ${cls}">${sign}${t.change24h.toFixed(1)} ${mu}/24h</span>`;}
-let alarmHtml='';if(t.alarm)alarmHtml=`<div class="dc-alarm">ALARM: ${escapeHtml(t.alarmType)}</div>`;
+let alarmHtml='';if(t.alarm)alarmHtml=`<div class="dc-alarm">ALARM: ${escapeHtml(t.alarmType)}${t.snoozeEpoch?' - reminders snoozed '+timeAgo(t.snoozeEpoch):''}</div>`;let snoozeHtml='';if(t.alarm)snoozeHtml=`<button class="secondary btn-small" onclick="snoozeAlarm('${escapeHtml(t._clientUid)}',${Number(t.sensorIndex)||1},'${t.snoozeEpoch?'unsnooze':'snooze'}')" ${state.refreshing?'disabled':''}>${t.snoozeEpoch?'Unsnooze':'Snooze Reminders'}</button>`;
 let contentsHtml='';if(t.contents)contentsHtml=`<div class="dc-contents">${escapeHtml(t.contents)}</div>`;
 const staleBadge=stale&&t.lastUpdate?`<span class="status-pill stale">Stale</span>`:'';
 let sparkHtml='';if(SPARKLINE_TYPES.has(ot)){const sparkKey=escapeHtml(t._clientUid)+'|'+(t.sensorIndex==null?1:t.sensorIndex);const sparkColor=ot==='gas'?'#f59e0b':ot==='flow'?'#10b981':'#2563eb';sparkHtml=`<div class="dc-sparkline" data-spark-key="${sparkKey}" data-spark-color="${sparkColor}"><span class="spark-label">Loading trend...</span></div>`;}
-card.innerHTML=`<div class="dc-type">${objectTypeLabel(ot)} ${staleBadge}</div><div class="dc-name">${escapeHtml(t.label||'Sensor')}${t.userNumber?' #'+t.userNumber:''}</div>${contentsHtml}${t.fault?`<div class="dc-value" style="color:var(--danger);">FAULT <small style="color:var(--danger);">${escapeHtml(t.fault)}</small></div>`:`<div class="dc-value">${val} <small>${escapeHtml(mu)}</small></div>${(typeof t.sensorMa==='number'&&t.sensorMa>0)?`<div style="font-size:0.75rem;color:var(--muted);margin-top:-2px;">${t.sensorMa.toFixed(2)} mA</div>`:''}`}${sparkHtml}${changeHtml}${alarmHtml}<div class="dc-meta"><span>${t.lastUpdate?'Updated '+timeAgo(t.lastUpdate):'No data yet'}</span>${t._vinVoltage&&t._vinVoltage>0?'<span>VIN: '+t._vinVoltage.toFixed(2)+'V</span>':''}</div><div class="dc-actions">${updateActionHtml(t)}<button class="secondary btn-small" onclick="clearRelays('${escapeHtml(t._clientUid)}',${t.sensorIdx||0})" ${state.refreshing?'disabled':''}>Clear Relay</button></div>`;return card;}
+card.innerHTML=`<div class="dc-type">${objectTypeLabel(ot)} ${staleBadge}</div><div class="dc-name">${escapeHtml(t.label||'Sensor')}${t.userNumber?' #'+t.userNumber:''}</div>${contentsHtml}${t.fault?`<div class="dc-value" style="color:var(--danger);">FAULT <small style="color:var(--danger);">${escapeHtml(t.fault)}</small></div>`:`<div class="dc-value">${val} <small>${escapeHtml(mu)}</small></div>${(typeof t.sensorMa==='number'&&t.sensorMa>0)?`<div style="font-size:0.75rem;color:var(--muted);margin-top:-2px;">${t.sensorMa.toFixed(2)} mA</div>`:''}`}${sparkHtml}${changeHtml}${alarmHtml}<div class="dc-meta"><span>${t.lastUpdate?'Updated '+timeAgo(t.lastUpdate):'No data yet'}</span>${t._vinVoltage&&t._vinVoltage>0?'<span>VIN: '+t._vinVoltage.toFixed(2)+'V</span>':''}</div><div class="dc-actions">${updateActionHtml(t)}${snoozeHtml}<button class="secondary btn-small" onclick="clearRelays('${escapeHtml(t._clientUid)}',${t.sensorIdx||0})" ${state.refreshing?'disabled':''}>Clear Relay</button></div>`;return card;}
 )HTML" R"HTML(
 function toggleDotInfo(section,cl,siteName){const slot=section.querySelector('.cdot-info-slot');if(state.expandedDot===cl.uid){slot.innerHTML='';state.expandedDot=null;return;}state.expandedDot=cl.uid;const color=clientStatusColor(cl);const statusText=cl.alarm?'ALARM':isStale(cl.lastUpdate)?'Stale / No Data':'Online';const sensorCount=cl.sensors.length;slot.innerHTML=`<div class="cdot-info open"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><div><strong>${escapeHtml(cl.uid)}</strong><span class="status-pill ${color==='red'?'alarm':color==='yellow'?'stale':'ok'}" style="margin-left:8px;">${statusText}</span>${cl.otaState&&cl.otaState!=='ok'?'<span style="margin-left:8px;background:'+(cl.otaState==='pending'?'#f59e0b':'#dc2626')+';color:#fff;padding:1px 6px;border-radius:3px;font-size:0.72rem;" title="'+escapeHtml(cl.otaDetail||'')+'">OTA '+escapeHtml(cl.otaState)+(cl.expectedFw?'&rarr;v'+escapeHtml(cl.expectedFw):'')+'</span>':''}</div><div style="display:flex;gap:6px;"><a class="pill secondary" style="font-size:0.75rem;padding:2px 10px;" href="/config-generator?uid=${encodeURIComponent(cl.uid)}">Edit Config</a><a class="pill secondary" style="font-size:0.75rem;padding:2px 10px;" href="/site-config?site=${encodeURIComponent(siteName)}">Site Config</a><button class="pill secondary" style="font-size:0.75rem;padding:2px 10px;color:var(--danger);border-color:var(--danger);" onclick="deleteClient('${escapeHtml(cl.uid)}')">Remove Client</button></div></div><div style="margin-top:6px;color:var(--muted);font-size:0.85rem;">${sensorCount} sensor${sensorCount!==1?'s':''} &middot; Last update: ${formatEpoch(cl.lastUpdate)} &middot; VIN: ${formatVoltage(cl.vinVoltage)} &middot; RS-485: ${solarHealthHtml(cl)}</div></div>`;}
 function updateStats(){const allClients=Object.values(state.sites).flatMap(s=>Object.values(s.clients));const allSensors=allClients.flatMap(c=>c.sensors);const clientIds=new Set(allClients.map(c=>c.uid));if(els.statClients)els.statClients.textContent=clientIds.size;if(els.statTanks)els.statTanks.textContent=allSensors.length;if(els.statAlarms)els.statAlarms.textContent=allSensors.filter(t=>t.alarm).length;const stale=allSensors.filter(t=>isStale(t.lastUpdate)).length;if(els.statStale)els.statStale.textContent=stale;}
@@ -2339,6 +2342,8 @@ window.requestUpdate=requestUpdate;
 window.logout=function(){fetch('/api/logout',{method:'POST'}).finally(()=>{localStorage.removeItem('tankalarm_token');localStorage.removeItem('tankalarm_session');window.location.href='/login';});};
 async function clearRelays(clientUid,sensorIdx){if(state.refreshing)return;state.refreshing=true;renderSites();try{const res=await fetch('/api/relay/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientUid:clientUid,sensorIdx:sensorIdx})});if(!res.ok){throw new Error(await res.text()||'Clear relay failed');}showToast('Relay clear command sent');setTimeout(()=>refreshData(),1000);}catch(err){showToast(err.message||'Clear relay failed',true);}finally{state.refreshing=false;renderSites();}}
 window.clearRelays=clearRelays;
+async function snoozeAlarm(clientUid,sensorIndex,action){if(state.refreshing)return;state.refreshing=true;renderSites();try{const res=await fetch('/api/alarm/snooze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client:clientUid,sensor:sensorIndex,action:action})});if(!res.ok){throw new Error(await res.text()||'Snooze update failed');}showToast(action==='snooze'?'Reminders snoozed':'Reminders resumed');setTimeout(()=>refreshData(),1000);}catch(err){showToast(err.message||'Snooze update failed',true);}finally{state.refreshing=false;renderSites();}}
+window.snoozeAlarm=snoozeAlarm;
 async function deleteClient(clientUid){if(!confirm('Remove client '+clientUid+' and all its sensor data? This cannot be undone.'))return;try{const res=await fetch('/api/client',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client:clientUid})});if(!res.ok){throw new Error(await res.text()||'Delete failed');}showToast('Client removed: '+clientUid);state.expandedDot=null;refreshData();}catch(err){showToast(err.message||'Failed to remove client',true);}}
 window.deleteClient=deleteClient;
 function applyServerData(data){state.clients=data.cs||[];state.sites=buildSiteModel(state.clients);const srv=data.srv||{};state.paused=!!srv.ps;// If any client has a pending on-demand update request, poll faster so the
@@ -2526,6 +2531,11 @@ static bool samePhoneNumber(const char *a, const char *b);
 static bool isSmsOptedOut(const JsonDocument &contactsDoc, const char *phone);
 static bool setSmsOptOut(const char *phone, bool optedOut);
 static bool sendSingleSms(const char *phone, const char *message);
+static void resolveContactName(JsonDocument &contactsDoc, const char *phone, char *out, size_t outLen);
+static bool isKnownContactPhone(JsonDocument &contactsDoc, const char *phone);
+static bool phoneReceivesAlarm(JsonDocument &contactsDoc, const char *phone, const char *alarmId);
+static bool applyReminderSnooze(SensorRecord &rec, bool snooze, const char *who);
+static void handleAlarmSnoozePost(EthernetClient &client, const String &body);
 static uint8_t collectEnrolledPhones(const JsonDocument &doc, const char *out[], uint8_t maxOut);
 static void sendWelcomeSmsForNewEnrollments(const JsonDocument &oldDoc, bool haveOld, const JsonDocument &newDoc);
 static void handleEmailInbound(JsonDocument &doc, double epoch);
@@ -7381,6 +7391,14 @@ static void logAlarmEvent(const char *clientUid, const char *siteName, uint8_t s
 
 // Mark an alarm as cleared
 static void clearAlarmEvent(const char *clientUid, uint8_t sensorIndex) {
+  // v2.2.13: the alarm is leaving its active state — reset any reminder snooze so the
+  // next excursion alerts and reminds normally. All alarm-clear paths funnel through here.
+  SensorRecord *snoozeRec = findSensorByHash(clientUid, sensorIndex);
+  if (snoozeRec && snoozeRec->reminderSnoozeEpoch > 0.0) {
+    snoozeRec->reminderSnoozeEpoch = 0.0;
+    gSensorRegistryDirty = true;
+    addServerSerialLog("Alarm cleared - reminder snooze reset", "info", "alarm");
+  }
   double now = 0.0;
   if (gLastSyncedEpoch > 0.0) {
     now = gLastSyncedEpoch + (double)(millis() - gLastSyncMillis) / 1000.0;
@@ -9468,6 +9486,12 @@ static void handleWebRequests() {
     } else {
       handleSmsTestPost(client, body);
     }
+  } else if (method == "POST" && path == "/api/alarm/snooze") {
+    if (contentLength > 256) {
+      respondStatus(client, 413, "Payload Too Large");
+    } else {
+      handleAlarmSnoozePost(client, body);
+    }
   } else if (method == "POST" && path == "/api/sms/optout") {
     if (contentLength > 256) {
       respondStatus(client, 413, "Payload Too Large");
@@ -10515,6 +10539,9 @@ static void sendClientDataJson(EthernetClient &client, const String &query) {
     }
     sensorObj["a"] = rec.alarmActive;
     sensorObj["at"] = rec.alarmType;
+    if (rec.reminderSnoozeEpoch > 0.0) {
+      sensorObj["sz"] = rec.reminderSnoozeEpoch;
+    }
     sensorObj["u"] = rec.lastUpdateEpoch;
 
     clientObj["tc"] = sensorList.size();
@@ -13925,6 +13952,38 @@ static void handleSmsInbound(JsonDocument &doc, double epoch) {
     snprintf(detail, sizeof(detail), "START from %s - re-subscribed", from);
     logTransmission("", "", "sms", "optin", detail);
     addServerSerialLog("SMS re-subscribe received", "info", "sms");
+  } else if (!strcmp(word, "SNOOZE") || !strcmp(word, "UNSNOOZE")) {
+    // v2.2.13: pause/resume reminder texts by reply. Honored only from numbers in an active
+    // alarm's resolved SMS recipient set (i.e. numbers that were sent the alarm).
+    bool snooze = (word[0] == 'S');
+    JsonDocument contactsDoc;
+    loadContactsConfig(contactsDoc);
+    char who[24];
+    resolveContactName(contactsDoc, from, who, sizeof(who));
+    uint8_t eligible = 0;
+    uint8_t changed = 0;
+    for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
+      SensorRecord &rec = gSensorRecords[i];
+      if (!rec.alarmActive) continue;
+      char alarmId[64];
+      snprintf(alarmId, sizeof(alarmId), "%s_%d", rec.clientUid, (int)rec.sensorIndex);
+      if (!phoneReceivesAlarm(contactsDoc, from, alarmId)) continue;
+      eligible++;
+      if (applyReminderSnooze(rec, snooze, who[0] != '\0' ? who : "SMS reply")) changed++;
+    }
+    if (changed > 0) {
+      saveSensorRegistry();  // eager — a reboot must not resurrect a silenced reminder
+    }
+    if (eligible == 0) {
+      if (isKnownContactPhone(contactsDoc, from)) {
+        sendSingleSms(from, "No active alarms are associated with this number.");
+      }  // unknown numbers: log only — no replies to strangers
+    } else if (changed == 0) {
+      sendSingleSms(from, snooze ? "Reminders are already snoozed." : "Reminders are not snoozed.");
+    }
+    snprintf(detail, sizeof(detail), "%s from %s - %u alarm(s) changed", word, from, (unsigned)changed);
+    logTransmission("", "", "sms", snooze ? "snooze" : "unsnooze", detail);
+    addServerSerialLog(snooze ? "SMS snooze received" : "SMS unsnooze received", "info", "sms");
   } else if (!strcmp(word, "HELP") || !strcmp(word, "INFO")) {
     snprintf(detail, sizeof(detail), "HELP from %s (Twilio auto-replies)", from);
     logTransmission("", "", "sms", "inbound", detail);
@@ -14408,6 +14467,168 @@ static uint8_t sendEmailAlert(const char *subject, const char *message, const ch
   return 0;
 }
 
+// ============================================================================
+// Reminder snooze (v2.2.13)
+// ============================================================================
+
+// Copy the contact's display name for a phone number ("" when no contact matches).
+static void resolveContactName(JsonDocument &contactsDoc, const char *phone, char *out, size_t outLen) {
+  out[0] = '\0';
+  JsonArray contacts = contactsDoc["contacts"].as<JsonArray>();
+  if (contacts.isNull()) return;
+  for (JsonVariant v : contacts) {
+    JsonObject c = v.as<JsonObject>();
+    if (samePhoneNumber(c["phone"] | "", phone)) {
+      strlcpy(out, c["name"] | "", outLen);
+      return;
+    }
+  }
+}
+
+static bool isKnownContactPhone(JsonDocument &contactsDoc, const char *phone) {
+  JsonArray contacts = contactsDoc["contacts"].as<JsonArray>();
+  if (contacts.isNull()) return false;
+  for (JsonVariant v : contacts) {
+    JsonObject c = v.as<JsonObject>();
+    if (samePhoneNumber(c["phone"] | "", phone)) return true;
+  }
+  return false;
+}
+
+// True when this phone number is in the alarm's resolved SMS recipient set — i.e. a number
+// sendSmsAlert(message, alarmId) would text. Mirrors that resolution exactly (enrollment,
+// association filter, opt-out, legacy fallback) so SMS snooze commands are honored only
+// from numbers that were sent the alarm.
+static bool phoneReceivesAlarm(JsonDocument &contactsDoc, const char *phone, const char *alarmId) {
+  if (!phone || phone[0] == '\0') return false;
+  bool anyResolved = false;
+  JsonArray recipients = contactsDoc["smsAlertRecipients"].as<JsonArray>();
+  JsonArray contacts = contactsDoc["contacts"].as<JsonArray>();
+  if (!recipients.isNull() && !contacts.isNull()) {
+    for (JsonVariant recipientId : recipients) {
+      const char *id = recipientId.as<const char *>();
+      if (!id) continue;
+      for (JsonVariant contactVar : contacts) {
+        JsonObject contact = contactVar.as<JsonObject>();
+        if (strcmp(contact["id"] | "", id) != 0) continue;
+        bool matches = true;
+        if (alarmId && alarmId[0] != '\0' && contact["alarmAssociations"].is<JsonArray>()) {
+          JsonArray assoc = contact["alarmAssociations"].as<JsonArray>();
+          if (assoc.size() > 0) {
+            matches = false;
+            for (JsonVariant a : assoc) {
+              if (strcmp(a | "", alarmId) == 0) { matches = true; break; }
+            }
+          }
+        }
+        const char *cphone = contact["phone"] | "";
+        if (matches && isRealPhoneNumber(cphone) && !isSmsOptedOut(contactsDoc, cphone)) {
+          anyResolved = true;
+          if (samePhoneNumber(cphone, phone)) return true;
+        }
+        break;
+      }
+    }
+  }
+  if (!anyResolved) {
+    // No contacts resolve for this alarm — sendSmsAlert would fall back to the legacy numbers.
+    if (isRealPhoneNumber(gConfig.smsPrimary) && !isSmsOptedOut(contactsDoc, gConfig.smsPrimary) &&
+        samePhoneNumber(gConfig.smsPrimary, phone)) return true;
+    if (isRealPhoneNumber(gConfig.smsSecondary) && !isSmsOptedOut(contactsDoc, gConfig.smsSecondary) &&
+        samePhoneNumber(gConfig.smsSecondary, phone)) return true;
+  }
+  return false;
+}
+
+// One-time notice to the alarm's subscribed recipients when reminders are paused/resumed —
+// without it, reminder silence is indistinguishable from "fixed".
+static void broadcastSnoozeChange(const SensorRecord &rec, bool snoozed, const char *who) {
+  char shortSite[24];
+  strlcpy(shortSite, rec.site, sizeof(shortSite));
+  char message[160];
+  snprintf(message, sizeof(message),
+           "%s: %s%s%d reminders %s by %s. Still in %s alarm (%.1f %s).%s",
+           snoozed ? "SNOOZED" : "RESUMED",
+           shortSite, rec.userNumber > 0 ? " #" : " sensor ",
+           rec.userNumber > 0 ? rec.userNumber : rec.sensorIndex,
+           snoozed ? "paused" : "active again", who,
+           rec.alarmType, rec.currentValue,
+           rec.measurementUnit[0] ? rec.measurementUnit : "in",
+           snoozed ? " Auto-resumes on recovery; reply UNSNOOZE to resume now." : "");
+  char alarmId[64];
+  snprintf(alarmId, sizeof(alarmId), "%s_%d", rec.clientUid, (int)rec.sensorIndex);
+  sendSmsAlert(message, alarmId);
+  sendEmailAlert(snoozed ? "TankAlarm Reminders Snoozed" : "TankAlarm Reminders Resumed", message, alarmId);
+}
+
+// Apply a reminder snooze/unsnooze. Returns true only when state actually changed —
+// callers eager-save the registry and rely on this gate to keep the broadcast one-shot.
+static bool applyReminderSnooze(SensorRecord &rec, bool snooze, const char *who) {
+  if (snooze) {
+    if (!rec.alarmActive || rec.reminderSnoozeEpoch > 0.0) return false;
+    double now = currentEpoch();
+    rec.reminderSnoozeEpoch = (now > 0.0) ? now : 1.0;  // >0 marks snoozed even pre-clock-sync
+  } else {
+    if (rec.reminderSnoozeEpoch <= 0.0) return false;
+    rec.reminderSnoozeEpoch = 0.0;
+    double now = currentEpoch();
+    if (now > 0.0) rec.lastSmsAlertEpoch = now;  // next reminder one full interval from now
+  }
+  gSensorRegistryDirty = true;
+  char detail[96];
+  snprintf(detail, sizeof(detail), "%s sensor %d reminders %s by %.24s",
+           rec.site, (int)rec.sensorIndex, snooze ? "snoozed" : "resumed", who);
+  logTransmission(rec.clientUid, rec.site, "alarm", snooze ? "snooze" : "unsnooze", detail);
+  addServerSerialLog(detail, "info", "alarm");
+  broadcastSnoozeChange(rec, snooze, who);
+  return true;
+}
+
+// POST /api/alarm/snooze {pin?, client, sensor, action:"snooze"|"unsnooze"} — dashboard
+// buttons on alarming sensor cards. Snooze requires an active alarm; unsnooze is always
+// accepted (no-op when not snoozed). Changes are eager-saved so a reboot inside the 5-minute
+// registry window cannot resurrect a silenced reminder.
+static void handleAlarmSnoozePost(EthernetClient &client, const String &body) {
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) {
+    respondStatus(client, 400, F("Invalid JSON"));
+    return;
+  }
+  const char *pinValue = doc["pin"].as<const char *>();
+  if (!requireValidPin(client, pinValue)) {
+    return;
+  }
+  const char *uid = doc["client"] | "";
+  int sensorIdx = doc["sensor"] | -1;
+  const char *action = doc["action"] | "";
+  bool snooze = strcmp(action, "snooze") == 0;
+  if (uid[0] == '\0' || sensorIdx < 0 || sensorIdx > 255 ||
+      (!snooze && strcmp(action, "unsnooze") != 0)) {
+    respondStatus(client, 400, F("client, sensor, action=snooze|unsnooze required"));
+    return;
+  }
+  SensorRecord *rec = findSensorByHash(uid, (uint8_t)sensorIdx);
+  if (!rec) {
+    respondStatus(client, 404, F("Unknown sensor"));
+    return;
+  }
+  if (snooze && !rec->alarmActive) {
+    respondStatus(client, 400, F("No active alarm on this sensor"));
+    return;
+  }
+  bool changed = applyReminderSnooze(*rec, snooze, "dashboard");
+  if (changed) {
+    saveSensorRegistry();
+  }
+  JsonDocument resp;
+  resp["success"] = true;
+  resp["changed"] = changed;
+  resp["snoozed"] = rec->reminderSnoozeEpoch > 0.0;
+  String out;
+  serializeJson(resp, out);
+  respondJson(client, out);
+}
+
 // Re-notification engine (07062026): alarms are edge-triggered — one SMS per excursion —
 // so a missed text meant a tank could sit in alarm silently for days. While a sensor alarm
 // stays active, re-send its SMS every gConfig.smsReminderHours (default 6 h, 0 disables)
@@ -14429,6 +14650,7 @@ static void checkAlarmReminders() {
   for (uint8_t i = 0; i < gSensorRecordCount; ++i) {
     SensorRecord &rec = gSensorRecords[i];
     if (!rec.alarmActive) continue;
+    if (rec.reminderSnoozeEpoch > 0.0) continue;              // snoozed — auto-resets on clear
     if (rec.lastSmsAlertEpoch <= 0.0) continue;               // original alarm never SMS'd
     if (now - rec.lastSmsAlertEpoch < intervalSec) continue;  // not due yet
 
@@ -15426,6 +15648,9 @@ static void saveSensorRegistry() {
         obj["se"] = rec.lastSmsAlertEpoch;
         obj["sa"] = rec.smsAlertsInLastHour;
       }
+      if (rec.reminderSnoozeEpoch > 0.0) {
+        obj["sz"] = rec.reminderSnoozeEpoch;
+      }
     }
     
     // Serialize to buffer and write to file
@@ -15554,6 +15779,7 @@ static void loadSensorRegistry() {
       rec.firstSeenEpoch = obj["fs"] | 0.0;
       rec.lastSmsAlertEpoch = obj["se"] | 0.0;
       rec.smsAlertsInLastHour = obj["sa"] | 0;
+      rec.reminderSnoozeEpoch = obj["sz"] | 0.0;
       
       insertSensorIntoHash(gSensorRecordCount);
       gSensorRecordCount++;
